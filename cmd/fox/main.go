@@ -8,8 +8,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
@@ -177,23 +175,26 @@ func main() {
 		for name, args := range services {
 			must(daemon.Start(name, args))
 		}
-		apiKey := bootstrapLocalKey()
 		fmt.Println("\nFoxByte is up (background):")
 		if web.FS() != nil {
 			fmt.Println("  web UI       https://localhost:8080")
 		}
 		fmt.Println("  control API  https://localhost:8080/api/status")
 		fmt.Println("  agent API    https://localhost:8088   (POST /agents/{id}/branch)")
-		if apiKey != "" {
-			fmt.Printf("  gateway(SQL) postgresql://dbadmin:%s@localhost:6432/main?sslmode=require\n", apiKey)
-		} else {
-			fmt.Println("  gateway(SQL) postgresql://dbadmin:<API_KEY>@localhost:6432/<branch>?sslmode=require")
-		}
+		fmt.Println("  gateway(SQL) postgresql://dbadmin:<API_KEY>@localhost:6432/<branch>?sslmode=require")
 		fmt.Println("  storage      http://localhost:9001   (console login in ~/.fox/secrets.json)")
 		if web.FS() == nil {
 			fmt.Println("\nThe web UI isn't embedded in this build — run it with:  make web-dev   (http://localhost:5173)")
 		}
-		fmt.Println("\nThe connection string above uses a ready-to-go API key (also saved in ~/.fox/config).")
+		// No account and no key are created here. A key is a credential: it
+		// should be made by the person who will use it, once they have signed
+		// in, not minted by a background service and left in a file.
+		if accounts, ok := anyAccount(); ok && !accounts {
+			fmt.Println("\nFirst run: create your account at https://localhost:8080 (or `fox user create <email>`).")
+			fmt.Println("That first account can override the destructive-change guardrail.")
+		}
+		fmt.Println("\nFor the connection string above, make an API key: the API keys page in the")
+		fmt.Println("web UI, or `fox apikey create <email> <name>`. It is shown once.")
 		fmt.Println("Stop everything with: fox stop")
 		notice()
 	case "update":
@@ -566,6 +567,7 @@ func must(err error) {
 func openStore() *auth.Store {
 	s, err := auth.OpenFromEnv()
 	must(err)
+	s.OnFirstUser = func(u auth.User) { branch.AdminForFirstAccount(u.Email) }
 	return s
 }
 
@@ -573,60 +575,15 @@ func foxbyteDir() string { return brand.StateDir() }
 
 func configPath() string { return filepath.Join(foxbyteDir(), "config") }
 
-// bootstrapLocalKey makes a fresh install usable with no manual account steps.
-// On first run it creates a local user and an API key, caching the key in
-// ~/.fox/config so `fox start` can always print a working connection
-// string. Returns the API key, or "" if it can't be determined (in which case
-// the banner falls back to a <API_KEY> placeholder). Never fatal — a bootstrap
-// hiccup must not stop the stack from coming up.
-func bootstrapLocalKey() string {
-	if k := readCachedKey(); k != "" {
-		return k
-	}
+// anyAccount reports whether this install has any account yet, so the banner
+// can tell a first-time user what to do. ok is false if the store cannot be
+// opened, in which case the banner simply says less.
+func anyAccount() (accounts bool, ok bool) {
 	store, err := auth.OpenFromEnv()
 	if err != nil {
-		return ""
+		return false, false
 	}
-	if store.HasAnyUser() {
-		return "" // accounts exist but no cached key — the key is shown only once
-	}
-	pw := make([]byte, 16)
-	if _, err := rand.Read(pw); err != nil {
-		return ""
-	}
-	u, err := store.CreateUser("local@foxbyte", hex.EncodeToString(pw))
-	if err != nil {
-		return ""
-	}
-	key, _, err := store.CreateAPIKey(u.ID, "setup")
-	if err != nil {
-		return ""
-	}
-	writeCachedKey(key)
-	// The install's first user owns it, so it may override the destructive-DDL
-	// guardrail on main (and every branch cloned from it). Best-effort.
-	if err := branch.GrantAdmin("main", u.Email); err != nil {
-		fmt.Fprintln(os.Stderr, "note: could not grant db_admin to "+u.Email+":", err)
-	}
-	return key
-}
-
-func readCachedKey() string {
-	b, err := os.ReadFile(configPath())
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "api_key="); ok {
-			return v
-		}
-	}
-	return ""
-}
-
-func writeCachedKey(key string) {
-	_ = os.MkdirAll(foxbyteDir(), 0o700)
-	_ = os.WriteFile(configPath(), []byte("api_key="+key+"\n"), 0o600)
+	return store.HasAnyUser(), true
 }
 
 func userCreate(email string) error {

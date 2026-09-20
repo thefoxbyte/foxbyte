@@ -97,8 +97,8 @@ function BranchGraph() {
     <svg className="branch-svg" viewBox="0 0 420 170" width="100%" role="img" aria-label="branch graph">
       <defs>
         <linearGradient id="bvg" x1="0" y1="170" x2="420" y2="0">
-          <stop offset="0" stopColor="#8b6dff" />
-          <stop offset="1" stopColor="#34d6f0" />
+          <stop offset="0" stopColor="var(--grad-a)" />
+          <stop offset="1" stopColor="var(--grad-b)" />
         </linearGradient>
       </defs>
       <line className="trunk draw" x1="24" y1="128" x2="396" y2="128" stroke="url(#bvg)" />

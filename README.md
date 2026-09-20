@@ -155,9 +155,11 @@ keeps your locally-built engine instead of downloading a release.
 
 ## Quickstart
 
-After `fox setup` (macOS/Windows) or `fox start` (Linux), the banner prints a
-ready-to-paste connection string and a local API key (also saved in
-`~/.fox/config`). Then:
+After `fox setup` (macOS/Windows) or `fox start` (Linux), open
+<https://localhost:8080> and create your account — the first one on an install
+can override the destructive-change guardrail. Then make an API key on the API
+keys page (or `fox apikey create <email> <name>`; it is shown once) and use it
+as the password in the connection string below. Then:
 
 ```bash
 fox status                       # servers, primary readiness, branches

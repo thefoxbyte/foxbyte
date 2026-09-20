@@ -266,8 +266,9 @@
       <li class="ok">Generated Postgres and MinIO passwords</li><li class="ok">Used by restore too</li></ul></td><td class="tb">Unit (indirect); v2 §1a</td></tr>
     <tr data-id="E2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E2</td><td><b>TLS everywhere</b><ul class="subs">
       <li class="ok">Self-signed TLS on all three services, zero setup</li><li class="part">TLS optional at the gateway (<code>sslmode=disable</code> still connects)</li></ul></td><td class="tb">Unit (<code>TestReadStartupUpgradesTLS</code>)</td></tr>
-    <tr data-id="E3" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">E3</td><td><b>Zero-signup local API key</b><ul class="subs">
-      <li class="ok">First start creates a user, key and connection string</li><li class="part">Windows setup summary doesn't show it</li></ul></td><td class="tb">Manual</td></tr>
+    <tr data-id="E3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E3</td><td><b>Keys are made by a person, not by start</b><ul class="subs">
+      <li class="ok">Start creates no account and no key, and caches none on disk</li><li class="ok">The banner shows the connection string and how to make a key</li>
+      <li class="ok">The first account created gets the admin grant on main</li></ul></td><td class="tb">Integration §1</td></tr>
   </table>
 </section>
 
@@ -469,7 +470,7 @@
     <tr data-id="L5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">L5</td><td><b>Blackbox page</b><ul class="subs">
       <li class="ok">Entries per branch with badges</li><li class="ok">Table / risk / date filters, and "Clear filters"</li><li class="ok">Verify button; a row expands to its statement and session</li></ul></td><td class="tb">v2 §5b; browser</td></tr>
     <tr data-id="L6" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L6</td><td><b>API keys page</b><ul class="subs">
-      <li class="ok">Create, copy, list, revoke</li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">Create, copy, list, revoke</li><li class="ok">A new key is shown inside its connection string (E3's next step)</li></ul></td><td class="tb">Manual; browser review 21 Sep</td></tr>
     <tr data-id="L7" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L7</td><td><b>Landing, Guide &amp; Docs pages</b><ul class="subs">
       <li class="ok">Landing, developer guide, reference</li><li class="ok">Refreshed against the code (https, sslmode, MCP, Blackbox, import routes)</li></ul></td><td class="tb">Type-check + build</td></tr>
     <tr data-id="L8" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L8</td><td><b>Blackbox integrity page</b><ul class="subs">
@@ -481,6 +482,13 @@
     <tr data-id="L10" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L10</td><td><b>App sidebar layout</b><ul class="subs">
       <li class="ok">Every link opens its page, highlighted, with breadcrumb</li><li class="ok">Collapse persists across a reload; theme toggle persists</li>
       <li class="ok">No console errors on any page</li><li class="todo">Under-860px drawer (needs a manual look)</li></ul></td><td class="tb">Type-check + build; browser review 16 Sep</td></tr>
+    <tr data-id="L11" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L11</td><td><b>Design system &amp; FoxByte theme</b><ul class="subs">
+      <li class="ok">Tokens for colour, type, space, radius, elevation and motion; components use no raw values</li>
+      <li class="ok">Ember palette in both themes; filled controls legible (<code>--accent-ink</code>)</li>
+      <li class="ok">Fox mark from theme variables, wordmark from brand.json, favicon</li>
+      <li class="ok">Console, Blackbox, Policies and API keys re-laid out; one table style</li>
+      <li class="ok">Every page reviewed in both themes; console checked at 375px</li>
+      <li class="todo">Not yet reviewed against a running engine with real data</li></ul></td><td class="tb">Type-check + build; browser review 21 Sep</td></tr>
   </table>
 </section>
 

@@ -34,7 +34,7 @@ function ConnectDiagram() {
         <div className="muted" style={{ fontSize: 12 }}>DATABASE_URL → :6432</div>
       </div>
       <div style={arrow}>→</div>
-      <div style={{ ...box, borderColor: 'var(--accent, #7c3aed)' }}>
+      <div style={{ ...box, borderColor: 'var(--accent)' }}>
         <div style={{ fontWeight: 700 }}>FoxByte Gateway</div>
         <div className="muted" style={{ fontSize: 12 }}>one endpoint · :6432</div>
         <div className="muted" style={{ fontSize: 12 }}>database name = branch</div>
@@ -65,7 +65,7 @@ export default function Guide() {
         time-travel, and per-agent databases. It speaks the native Postgres wire protocol, so your
         existing driver, ORM, and SQL work unchanged.</p>
 
-      <div className="note" style={{ borderLeft: '4px solid var(--accent, #7c3aed)', padding: '10px 14px', borderRadius: 10, background: 'var(--panel, var(--card))', border: '1px solid var(--border)' }}>
+      <div className="note" style={{ borderLeft: '4px solid var(--accent)', padding: '10px 14px', borderRadius: 10, background: 'var(--panel, var(--card))', border: '1px solid var(--border)' }}>
         <strong>The one idea to hold onto:</strong> FoxByte gives your app one stable endpoint —
         <code>localhost:6432</code> — and the <strong>database name you connect to is the branch name</strong>.
         Use <code>/main</code> for your primary data, or <code>/feature-x</code> for an instant, isolated copy.
@@ -98,6 +98,11 @@ fox setup`}</Code>
       <p>Your app connects at <code>localhost:6432</code>; the web console &amp; dashboard are served by
         <code>fox start</code> at <code>https://localhost:8080</code> (all platforms) — the same engine,
         no separate web server to run.</p>
+
+      <p>Nothing is started with a key of its own: create your account at <code>https://localhost:8080</code>{' '}
+        (the first account on an install becomes the admin of <code>main</code>), then make a key on the{' '}
+        <a href="/keys">API keys</a> page — or with <code>fox apikey create &lt;email&gt; &lt;name&gt;</code> — and use it as
+        the password everywhere below.</p>
 
       <h2>2 · Create a branch &amp; your schema</h2>
       <p>Work on <code>main</code>, or make an instant isolated branch. Either is a normal Postgres

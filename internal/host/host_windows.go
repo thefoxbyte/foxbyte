@@ -285,33 +285,13 @@ func finishSetup(name string) error {
 	}
 	fmt.Println()
 	fmt.Println(green("FoxByte is running."))
+	fmt.Println("  Open:     https://localhost:8080   — create your account there")
 	fmt.Println("  Try:      fox status")
-	// The first start mints a local API key and caches it in the guest; the
-	// gateway needs it as the password, so print the string that actually works.
-	if key := guestAPIKey(name); key != "" {
-		fmt.Printf("  Connect:  postgresql://dbadmin:%s@localhost:6432/main?sslmode=require\n", key)
-	} else {
-		fmt.Println("  Connect:  postgresql://dbadmin:<API_KEY>@localhost:6432/main?sslmode=require")
-		fmt.Println("            (the key is in ~/.fox/config inside the distro)")
-	}
+	// No key is printed because none is minted: a credential is made by the
+	// person who will use it, from the API keys page or `fox apikey create`.
+	fmt.Println("  Connect:  postgresql://dbadmin:<API_KEY>@localhost:6432/main?sslmode=require")
 	fmt.Println("  Log:      " + setupLogPath())
 	return nil
-}
-
-// guestAPIKey reads the local API key the engine's first start cached inside the
-// distro (~/.fox/config). Returns "" when it isn't there yet — accounts may
-// already exist, in which case no key is cached and the summary says so.
-func guestAPIKey(name string) string {
-	out, err := wslRootOut(name, "cat ~/.fox/config 2>/dev/null || true")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(decodeWSLOutput(out), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "api_key="); ok {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
 }
 
 // shareMountPropagation puts the pool's mounts under shared propagation, once

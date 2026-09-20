@@ -55,6 +55,13 @@ type User struct {
 type Store struct {
 	db  *sql.DB
 	cfg Config
+
+	// OnFirstUser runs when the first account on this install is created,
+	// however it was created: the web sign-up or `fox user create`. The engine
+	// sets it to give that account the admin grant, which nothing else hands
+	// out on a fresh install. This package cannot reach the database engine
+	// itself, so the hook belongs to whoever opens the store.
+	OnFirstUser func(User)
 }
 
 const schema = `
@@ -256,7 +263,7 @@ func OpenFromEnv() (*Store, error) {
 // WebOrigin is the configured UI origin (used for CORS).
 func (s *Store) WebOrigin() string { return s.cfg.WebOrigin }
 
-// HasAnyUser reports whether any account exists (for bootstrap hints).
+// HasAnyUser reports whether any account exists.
 func (s *Store) HasAnyUser() bool {
 	var n int
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
@@ -277,6 +284,7 @@ func (s *Store) CreateUser(email, password string) (User, error) {
 	if email == "" {
 		return User{}, errors.New("email required")
 	}
+	first := !s.HasAnyUser()
 	var hash string
 	if password != "" {
 		h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -290,7 +298,11 @@ func (s *Store) CreateUser(email, password string) (User, error) {
 		return User{}, fmt.Errorf("email already registered")
 	}
 	id, _ := res.LastInsertId()
-	return User{ID: id, Email: email}, nil
+	u := User{ID: id, Email: email}
+	if first && s.OnFirstUser != nil {
+		s.OnFirstUser(u)
+	}
+	return u, nil
 }
 
 // Login verifies email + password.

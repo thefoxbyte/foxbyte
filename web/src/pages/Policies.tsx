@@ -67,19 +67,24 @@ export default function Policies() {
 
   return (
     <div className="fade-up">
-      <h1>Policies</h1>
-      <p className="lead" style={{ marginTop: -2 }}>
-        Blackbox checks every schema change against these rules before it runs. <b>Warn</b> lets it through with a notice;{' '}
-        <b>block</b> refuses it with SQLSTATE <code>BBX01</code> and records the attempt. Changing rules, and overriding a
-        block, needs <code>db_admin</code> — manage who has it under <a href="#who-can-override">Who can override</a>.
-      </p>
-
-      <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
-        <span className="muted" style={{ fontSize: 13 }}>Branch</span>
-        <select value={branch} onChange={e => setBranch(e.target.value)}>
-          {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
-        </select>
-        <button className="ghost" onClick={() => setAdding(a => !a)} disabled={busy}>{adding ? 'Cancel' : 'Add rule'}</button>
+      <div className="page-head">
+        <div>
+          <h1>Policies</h1>
+          <p className="sub">
+            Blackbox checks every schema change against these rules before it runs. <b>Warn</b> lets it through with a notice;{' '}
+            <b>block</b> refuses it with SQLSTATE <code>BBX01</code> and records the attempt. Changing rules, and overriding a
+            block, needs <code>db_admin</code> — manage who has it under <a href="#who-can-override">Who can override</a>.
+          </p>
+        </div>
+        <div className="tools">
+          <label className="field-inline">
+            <span>Branch</span>
+            <select value={branch} onChange={e => setBranch(e.target.value)}>
+              {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+            </select>
+          </label>
+          <button className="ghost" onClick={() => setAdding(a => !a)} disabled={busy}>{adding ? 'Cancel' : 'Add rule'}</button>
+        </div>
       </div>
 
       {err && <div className="err">{err}</div>}

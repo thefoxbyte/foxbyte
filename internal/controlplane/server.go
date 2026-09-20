@@ -48,6 +48,9 @@ func Serve(addr string) error {
 	if err != nil {
 		return err
 	}
+	// Whoever signs up first on a fresh install gets the admin grant: the engine
+	// no longer creates an account of its own to hold it.
+	store.OnFirstUser = func(u auth.User) { branch.AdminForFirstAccount(u.Email) }
 
 	mux := http.NewServeMux()
 	store.MountPublic(mux) // /auth/* (register, login, logout, me, providers, oauth)

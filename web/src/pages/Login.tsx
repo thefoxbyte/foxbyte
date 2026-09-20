@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { login, register, providers, oauthUrl, type Providers } from '../api'
 import { useAuth } from '../auth-context'
+import { Mark, Wordmark } from '../components/brand'
 
 export default function Login() {
   const { user, setUser } = useAuth()
@@ -34,6 +35,7 @@ export default function Login() {
 
   return (
     <div className="authcard fade-up">
+      <div className="auth-brand"><Mark size={30} /><b><Wordmark /></b></div>
       {signupOpen ? (
         <div className="authtabs" role="tablist">
           <button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setErr('') }}>Log in</button>

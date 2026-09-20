@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react'
 import { listKeys, createKey, revokeKey, type ApiKey } from '../api'
 import { useConfirm } from '../confirm'
 
+// The gateway listens beside the control plane, so the host the console was
+// opened on is the host to connect to.
+const dsn = (key: string) =>
+  `postgresql://dbadmin:${key}@${window.location.hostname || 'localhost'}:6432/main?sslmode=require`
+
 export default function ApiKeys() {
   const confirm = useConfirm()
   const [keys, setKeys] = useState<ApiKey[]>([])
@@ -37,24 +42,33 @@ export default function ApiKeys() {
 
   return (
     <div className="fade-up">
-      <h1>API keys</h1>
-      <p className="muted" style={{ marginTop: -2 }}>
-        Use a key as a <code>Bearer</code> token for the API/agent endpoints, or as the
-        password when connecting through the gateway.
-      </p>
-
-      <div className="row">
-        <input placeholder="key name (e.g. ci, laptop)" value={name} onChange={e => setName(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') create() }} style={{ minWidth: 240 }} />
-        <button className="primary" onClick={create} disabled={!name.trim()}>+ Create key</button>
+      <div className="page-head">
+        <div>
+          <h1>API keys</h1>
+          <p className="sub">
+            A key is the password for a connection: send it as a <code>Bearer</code> token to the
+            API and agent endpoints, or as the password when you connect through the gateway.
+          </p>
+        </div>
+        <div className="tools">
+          <input placeholder="key name (e.g. ci, laptop)" value={name} onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') create() }} style={{ minWidth: 220 }} />
+          <button className="primary" onClick={create} disabled={!name.trim()}>Create key</button>
+        </div>
       </div>
       {err && <div className="err">{err}</div>}
 
+      {/* Shown once, and with the connection string already assembled: this is
+          the moment someone actually needs it, right after signing in. */}
       {fresh && (
-        <div className="panel" style={{ marginBottom: 14 }}>
-          <b>New key — copy it now, it won’t be shown again:</b>
-          <pre style={{ marginTop: 8 }}><code>{fresh}</code>
+        <div className="panel key-fresh">
+          <b>New key — copy it now, it won’t be shown again.</b>
+          <pre><code>{fresh}</code>
             <button className="copy" onClick={() => navigator.clipboard?.writeText(fresh)}>copy</button>
+          </pre>
+          <p className="muted">Connect to the <code>main</code> branch with it:</p>
+          <pre><code>{dsn(fresh)}</code>
+            <button className="copy" onClick={() => navigator.clipboard?.writeText(dsn(fresh))}>copy</button>
           </pre>
         </div>
       )}
@@ -64,7 +78,7 @@ export default function ApiKeys() {
           <thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th /></tr></thead>
           <tbody>
             {keys.length === 0
-              ? <tr><td colSpan={4} className="muted">no keys yet</td></tr>
+              ? <tr><td colSpan={4} className="muted">No keys yet — name one above and create it.</td></tr>
               : keys.map(k => (
                 <tr key={k.id}>
                   <td><b>{k.name}</b></td>

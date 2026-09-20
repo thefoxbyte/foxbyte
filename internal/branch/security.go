@@ -5,6 +5,7 @@ package branch
 import (
 	"fmt"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"log"
 	"sort"
 	"strings"
 )
@@ -87,6 +88,19 @@ func ClientQueryTextAs(branchName, sql, tool, actor string) (string, error) {
 		return out, fmt.Errorf("%s", out)
 	}
 	return out, nil
+}
+
+// AdminForFirstAccount gives the first account on an install the admin grant on
+// main, so somebody can override the destructive-change guardrail. Nothing else
+// hands it out on a fresh install, and the engine no longer creates an account
+// of its own to hold it.
+//
+// Best-effort by design: a failure here must not stop an account being created.
+// It is reported, not returned.
+func AdminForFirstAccount(email string) {
+	if err := GrantAdmin("main", email); err != nil {
+		log.Printf("could not give %s the admin grant on main: %v — `fox admin grant %s` does it by hand", email, err, email)
+	}
 }
 
 // GrantAdmin makes email's per-user role a member of db_admin on a branch, so

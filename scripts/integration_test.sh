@@ -46,8 +46,16 @@ sudo docker rm -f minio >/dev/null 2>&1
 
 echo "### 1. fresh start + auth"
 $S stop >/dev/null 2>&1; sleep 1
-$S start >/dev/null 2>&1; sleep 5
+# E3: start creates no account and mints no key. A credential is made by the
+# person who will use it, not by a background service and left in a file.
+rm -rf "$HOME/$BRAND_STATE_DIR/config"
+BANNER="$($S start 2>&1)"; sleep 5
+assert_eq "start prints no API key" "$(echo "$BANNER" | grep -c "$DB_KEY_PREFIX[A-Za-z0-9]")" "0"
+assert_eq "…and caches none on disk" "$([ -f "$HOME/$BRAND_STATE_DIR/config" ] && echo present || echo none)" "none"
+assert_eq "…and says how to make one" "$(echo "$BANNER" | grep -c 'apikey create')" "1"
 printf 'password123\n' | $S user create test@foxbyte.dev >/dev/null 2>&1 || true
+assert_eq "the first account may override the guardrail" \
+  "$(pg pg-main "SELECT pg_has_role('test@foxbyte.dev','$DB_ADMIN_ROLE','member')")" "t"
 KEY="$($S apikey create test@foxbyte.dev ci 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 AUTH="Authorization: Bearer $KEY"
 assert_eq "unauthenticated API is rejected" "$(curl -sk -o /dev/null -w '%{http_code}' https://localhost:8080/api/status)" "401"

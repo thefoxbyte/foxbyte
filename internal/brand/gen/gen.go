@@ -11,6 +11,7 @@
 package gen
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -95,16 +96,24 @@ func Files(root string, b Brand) (map[string][]byte, error) {
 const blockStart = "generated from brand.json -- do not edit by hand, run `make brand`"
 const blockEnd = "end generated"
 
-var blockRe = regexp.MustCompile(`(?s)# ` + regexp.QuoteMeta(blockStart) + `\n.*?# ` + regexp.QuoteMeta(blockEnd))
+// The installers are text files with their own line endings: .gitattributes
+// keeps install.ps1 as CRLF, because PowerShell is Windows-native. The pattern
+// and the replacement follow whatever the file already uses.
+var blockRe = regexp.MustCompile(`(?s)# ` + regexp.QuoteMeta(blockStart) + `\r?\n.*?# ` + regexp.QuoteMeta(blockEnd))
 
 func replaceBlock(cur []byte, block string) ([]byte, error) {
 	if !blockRe.Match(cur) {
 		return nil, fmt.Errorf("no generated block found (expected a line containing %q)", blockStart)
 	}
+	nl := "\n"
+	if bytes.Contains(cur, []byte("\r\n")) {
+		nl = "\r\n"
+		block = strings.ReplaceAll(block, "\n", "\r\n")
+	}
 	// ReplaceAllLiteral, not ReplaceAll: PowerShell's variables start with $,
 	// which ReplaceAll reads as a capture-group reference -- it silently ate
 	// "$Product" and left " = \"FoxByte\"" behind.
-	return blockRe.ReplaceAllLiteral(cur, []byte("# "+blockStart+"\n"+block+"# "+blockEnd)), nil
+	return blockRe.ReplaceAllLiteral(cur, []byte("# "+blockStart+nl+block+"# "+blockEnd)), nil
 }
 
 func goFile(b Brand) string {

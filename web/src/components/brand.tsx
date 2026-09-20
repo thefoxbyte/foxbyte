@@ -8,25 +8,50 @@ import { BRAND } from '../brand'
 // exactly what a rename misses.
 export function Wordmark() {
   const m = /^(.*[a-z])([A-Z].*)$/.exec(BRAND.product)
-  return m ? <>{m[1]}<span>{m[2]}</span></> : <>{BRAND.product}</>
+  // One element around the whole name: the brand row is a flex box, and two
+  // bare children would be spaced by its gap — "Fox Byte".
+  return (
+    <span className="wm">
+      {m ? <>{m[1]}<span className="wm-accent">{m[2]}</span></> : BRAND.product}
+    </span>
+  )
 }
 
-// The mark: a branch splitting in two.
+// The mark: a fox head, built from the same two angles as the branch graph —
+// two ears rising, a muzzle tapering down. It is geometry rather than drawing,
+// so it survives being 20px tall in a sidebar.
+//
+// The gradient is declared in CSS custom properties, not hexes, so the mark
+// follows the theme; the old one stayed dark-mode purple on a white page. The
+// id is per-instance: two marks on one page with the same gradient id would
+// have the second quietly reuse the first.
+let markSeq = 0
+
 export function Mark({ size = 26 }: { size?: number }) {
+  const id = `fox-mark-${++markSeq}`
   return (
-    <svg className="mark" width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+    <svg
+      className="mark" width={size} height={size} viewBox="0 0 32 32"
+      fill="none" role="img" aria-label={BRAND.product}
+    >
       <defs>
-        <linearGradient id="vg" x1="0" y1="24" x2="24" y2="0">
-          <stop offset="0" stopColor="#8b6dff" />
-          <stop offset="1" stopColor="#34d6f0" />
+        <linearGradient id={id} x1="4" y1="2" x2="28" y2="30" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="var(--grad-a)" />
+          <stop offset="1" stopColor="var(--grad-b)" />
         </linearGradient>
       </defs>
-      <path d="M12 22V13" stroke="url(#vg)" strokeWidth="2.4" strokeLinecap="round" />
-      <path d="M12 13C12 9.5 7 9.5 7 5.5" stroke="url(#vg)" strokeWidth="2.4" strokeLinecap="round" />
-      <path d="M12 13C12 9.5 17 9.5 17 5.5" stroke="url(#vg)" strokeWidth="2.4" strokeLinecap="round" />
-      <circle cx="12" cy="22" r="2.1" fill="url(#vg)" />
-      <circle cx="7" cy="4.6" r="2.4" fill="url(#vg)" />
-      <circle cx="17" cy="4.6" r="2.4" fill="url(#vg)" />
+      {/* ears */}
+      <path d="M5.2 3.4 13 7.4 8.6 14.2 4.4 8.2Z" fill={`url(#${id})`} />
+      <path d="M26.8 3.4 19 7.4l4.4 6.8 4.2-6Z" fill={`url(#${id})`} />
+      {/* head: wide at the ears, tapering to the muzzle */}
+      <path
+        d="M16 6.6c4.6 0 8.4 2.4 9.8 6.4 1 2.9.3 6.2-1.9 9.1-1.9 2.5-4.6 4.4-7.9 5.6-3.3-1.2-6-3.1-7.9-5.6-2.2-2.9-2.9-6.2-1.9-9.1 1.4-4 5.2-6.4 9.8-6.4Z"
+        fill={`url(#${id})`}
+      />
+      {/* eyes and muzzle, punched out so the mark reads at small sizes */}
+      <path d="M11.4 15.1c1.3 0 2.2.9 2.2 2s-.9 1.7-2.2 1.7-2.3-.6-2.3-1.7.9-2 2.3-2Z" fill="var(--bg)" />
+      <path d="M20.6 15.1c1.4 0 2.3.9 2.3 2s-1 1.7-2.3 1.7-2.2-.6-2.2-1.7.9-2 2.2-2Z" fill="var(--bg)" />
+      <path d="M16 21.4c1.6 0 2.7.7 2.7 1.6 0 1.1-1.2 2.3-2.7 3.1-1.5-.8-2.7-2-2.7-3.1 0-.9 1.1-1.6 2.7-1.6Z" fill="var(--bg)" opacity=".92" />
     </svg>
   )
 }

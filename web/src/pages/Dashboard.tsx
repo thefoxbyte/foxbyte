@@ -93,7 +93,7 @@ function Backups() {
                 return (
                   <tr key={b.name}>
                     <td>{when(b.finished_at)} {b.newest && <span className="badge primary">newest</span>}</td>
-                    <td className="mono muted" style={{ fontSize: 12 }}>{sizeLabel(b.size_bytes)}</td>
+                    <td className="cell-mono">{sizeLabel(b.size_bytes)}</td>
                     <td className="dsn-cell">
                       <div className="dsn-row">
                         <span className="dsn" title="Copy restore command">{cmd}</span>
@@ -208,7 +208,7 @@ export default function Dashboard() {
       <div className="table-wrap">
         <table>
           <thead>
-            <tr><th>Branch</th><th>Type</th><th>State</th><th>Size (CoW)</th><th>Conns</th><th>Connection string</th><th /></tr>
+            <tr><th>Branch</th><th>Type</th><th>State</th><th>Size (CoW)</th><th className="num">Conns</th><th>Connection string</th><th /></tr>
           </thead>
           <tbody>
             {branches
@@ -221,16 +221,16 @@ export default function Dashboard() {
                 const pct = Math.max(6, Math.round((toBytes(b.used) / maxUsed) * 100))
                 return (
                   <tr key={b.name}>
-                    <td><b>{b.name}</b></td>
+                    <td className="name-cell"><b>{b.name}</b></td>
                     <td><span className={'badge ' + type}>{type}</span></td>
                     <td><span className={'state ' + (running ? 'running' : 'suspended')}><Dot up={running} /> {running ? 'running' : 'suspended'}</span></td>
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                      <div className="meter-row">
                         <div className="cow"><span style={{ width: pct + '%' }} /></div>
-                        <span className="mono muted" style={{ fontSize: 12 }}>{b.used || '—'}</span>
+                        <span className="cell-mono">{b.used || '—'}</span>
                       </div>
                     </td>
-                    <td>{running ? b.connections : '—'}</td>
+                    <td className="num">{running ? b.connections : '—'}</td>
                     <td className="dsn-cell">
                       <div className="dsn-row">
                         <span className="dsn" title="Copy connection string" onClick={() => navigator.clipboard?.writeText(dsn)}>{dsn}</span>
