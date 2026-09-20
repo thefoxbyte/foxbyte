@@ -54,6 +54,15 @@ func guestSteps(name string, o UninstallOptions) []removal {
 		}
 	}
 	steps := []removal{
+		stopStep(func() error {
+			// The guest binary knows what to stop; if it is gone, or its
+			// pidfiles are, take the servers by their command line instead.
+			_ = guestRun(name, guestBin(name)+" stop")
+			for _, bin := range binaryNames() {
+				_ = guestRun(name, "pkill -f '^[^ ]*"+bin+" (controlplane|gateway|serve)' || true")
+			}
+			return nil
+		}),
 		guest("the engine's containers and network in VM "+name,
 			`[ -n "$(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`)$(sudo docker ps -a --format '{{.Names}}' | grep -e '^`+branch.ContainerPrefix+`' -e '^`+branch.ObjStore+`$')" ] || `+
 				`sudo docker network inspect `+branch.Network+` >/dev/null 2>&1`,

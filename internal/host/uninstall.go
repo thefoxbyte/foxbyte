@@ -126,6 +126,18 @@ func uninstall(o UninstallOptions) error {
 	return nil
 }
 
+// stopStep stops the background servers and containers before anything is
+// removed. Without it the state directory goes out from under running servers:
+// they keep the ports, hold a deleted account database, and every key minted
+// afterwards is rejected.
+func stopStep(run func() error) removal {
+	return removal{
+		what:    "the running servers and containers",
+		present: func() bool { return true },
+		run:     run,
+	}
+}
+
 // hostSteps are the same on every platform: this binary, binaries left by
 // retired names, and the state directory.
 func hostSteps(o UninstallOptions) []removal {

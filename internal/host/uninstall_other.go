@@ -6,6 +6,7 @@ package host
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -28,6 +29,7 @@ func uninstallSteps(o UninstallOptions) []removal {
 		}
 	}
 	out := []removal{
+		stopStep(stopStack),
 		sh("the engine's containers and network",
 			`[ -n "$(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`)$(sudo docker ps -a --format '{{.Names}}' | grep -e '^`+branch.ContainerPrefix+`' -e '^`+branch.ObjStore+`$')" ] || `+
 				`sudo docker network inspect `+branch.Network+` >/dev/null 2>&1`,
@@ -54,6 +56,24 @@ func uninstallSteps(o UninstallOptions) []removal {
 		)
 	}
 	return append(out, hostSteps(o)...)
+}
+
+// stopStack stops the background servers and every container, by running this
+// same binary's `stop` -- the one place that knows what they are.
+func stopStack() error {
+	if self, err := os.Executable(); err == nil {
+		_ = exec.Command(self, "stop").Run() // a stack already down is fine
+	}
+	// `stop` finds the servers through the pidfiles in the state directory. If
+	// those are gone -- an interrupted removal, a state directory deleted by
+	// hand -- the servers are still running, still holding the ports and an
+	// account database that no longer exists. Take them by their command line.
+	for _, name := range binaryNames() {
+		for _, svc := range []string{"controlplane", "gateway", "serve"} {
+			_ = exec.Command("pkill", "-f", "^[^ ]*"+name+" "+svc).Run()
+		}
+	}
+	return nil
 }
 
 // shellSucceeds reports whether a check command exits zero.
