@@ -14,7 +14,7 @@ package branch
 import (
 	"errors"
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,15 +23,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/ledger"
-	"github.com/foxbyte/foxbyte/internal/secrets"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/secrets"
 )
 
 const (
 	datasetBase = "dbpool/branches"
 	mountBase   = "/dbpool/branches"
 	network     = "dbnet"
-	image       = "ghcr.io/foxbyte/postgres-walg:16"
+	image       = "ghcr.io/thefoxbyte/postgres-walg:16"
 	// Throwaway loader images used by the migration adapters, run on the shared
 	// network so they can reach both the source and the target instance.
 	// pgloaderImage is built locally on first use — Debian packages pgloader for

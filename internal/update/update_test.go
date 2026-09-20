@@ -182,7 +182,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		if f.delay > 0 {
 			time.Sleep(f.delay)
 		}
-		if r.URL.Path == "/repos/foxbyte/foxbyte/releases" {
+		if r.URL.Path == "/repos/thefoxbyte/foxbyte/releases" {
 			f.lists.Add(1)
 			// Like GitHub, the ETag changes when the list does; a fixed ETag
 			// would answer "not modified" right after a new release.

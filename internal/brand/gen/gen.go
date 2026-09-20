@@ -18,9 +18,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/auth"
-	"github.com/foxbyte/foxbyte/internal/branch"
-	"github.com/foxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // Brand is brand.json. Only the fields the generators use are listed.

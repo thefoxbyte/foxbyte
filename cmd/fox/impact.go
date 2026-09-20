@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
 func argPresent(args []string, flag string) bool {

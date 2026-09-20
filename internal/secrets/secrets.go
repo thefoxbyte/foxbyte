@@ -17,7 +17,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"path/filepath"
 	"sync"

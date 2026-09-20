@@ -5,7 +5,7 @@ package branch
 import (
 	"errors"
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"io"
 	"log"
 	"os/exec"
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // Blackbox 2.0 checkpoints: a Merkle root over a contiguous range of ledger

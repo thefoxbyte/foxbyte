@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 )
 
 // uninstallSteps on Windows: the engine lives in a WSL distro.

@@ -21,7 +21,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"math/big"
 	"net"
 	"os"

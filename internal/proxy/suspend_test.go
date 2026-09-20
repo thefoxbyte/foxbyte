@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
 // A branch that is replicating from a source must survive the reaper: its apply

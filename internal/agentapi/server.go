@@ -15,15 +15,15 @@ package agentapi
 import (
 	"encoding/json"
 	"errors"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"log"
 	"net/http"
 	"net/url"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/auth"
-	"github.com/foxbyte/foxbyte/internal/branch"
-	"github.com/foxbyte/foxbyte/internal/tlsutil"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/tlsutil"
 )
 
 // agentTTL is how long an agent branch may live before the reaper removes it

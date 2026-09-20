@@ -20,13 +20,25 @@
   "env_prefix": "FOX_",
   "state_dir": ".fox",
   "docs_prefix": "FOX_",
-  "repo": "foxbyte/foxbyte",
-  "module": "github.com/foxbyte/foxbyte",
-  "image_repo": "ghcr.io/foxbyte",
+  "repo": "thefoxbyte/foxbyte",
+  "module": "github.com/thefoxbyte/foxbyte",
+  "image_repo": "ghcr.io/thefoxbyte",
   "vm_instance": "fox",
   "test_vm": "fox-test",
   "previous": [
-    { "product": "OxynDB", "cli": "odb", "slug": "oxyndb", "env_prefix": "OXYNDB_", "state_dir": ".oxyndb" },
-    { "product": "VectoraDB", "cli": "vdb", "slug": "vectoradb", "env_prefix": "VECTORADB_", "state_dir": ".vectoradb" }
+    {
+      "product": "OxynDB",
+      "cli": "odb",
+      "slug": "oxyndb",
+      "env_prefix": "OXYNDB_",
+      "state_dir": ".oxyndb"
+    },
+    {
+      "product": "VectoraDB",
+      "cli": "vdb",
+      "slug": "vectoradb",
+      "env_prefix": "VECTORADB_",
+      "state_dir": ".vectoradb"
+    }
   ]
 }

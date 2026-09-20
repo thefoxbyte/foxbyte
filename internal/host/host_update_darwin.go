@@ -6,14 +6,14 @@ package host
 
 import (
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/update"
+	"github.com/thefoxbyte/foxbyte/internal/update"
 )
 
 // limaEngine updates the engine inside the Lima VM.

@@ -9,6 +9,6 @@ export const BRAND = {
   slug: "foxbyte",
   envPrefix: "FOX_",
   stateDir: ".fox",
-  repo: "foxbyte/foxbyte",
-  repoUrl: "https://github.com/foxbyte/foxbyte",
+  repo: "thefoxbyte/foxbyte",
+  repoUrl: "https://github.com/thefoxbyte/foxbyte",
 } as const

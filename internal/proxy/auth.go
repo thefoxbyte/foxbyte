@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/crypto/pbkdf2"
 
-	"github.com/foxbyte/foxbyte/internal/secrets"
+	"github.com/thefoxbyte/foxbyte/internal/secrets"
 )
 
 // backendPassword is the Postgres role password for every branch. It is the

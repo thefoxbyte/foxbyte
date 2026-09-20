@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"regexp"
 	"strings"
 	"text/tabwriter"
 
-	"github.com/foxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // Blackbox policy gate: rules checked on every DDL statement before it runs,

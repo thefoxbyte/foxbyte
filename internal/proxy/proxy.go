@@ -11,16 +11,16 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"io"
 	"log"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/auth"
-	"github.com/foxbyte/foxbyte/internal/branch"
-	"github.com/foxbyte/foxbyte/internal/tlsutil"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/tlsutil"
 )
 
 // authStore verifies API keys presented as the connection password. When nil

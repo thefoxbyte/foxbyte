@@ -6,7 +6,7 @@
 .PHONY: build vet fmt vm-build test integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update test-vm test-vm-stop test-vm-delete
 
 VERSION ?= 0.1.0
-LDFLAGS := -s -w -X github.com/foxbyte/foxbyte/internal/version.Version=$(VERSION)
+LDFLAGS := -s -w -X github.com/thefoxbyte/foxbyte/internal/version.Version=$(VERSION)
 
 build:            ## Build the CLI into ./bin/fox (host)
 	go build -o bin/fox ./cmd/fox

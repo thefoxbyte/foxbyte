@@ -100,7 +100,7 @@ jobs:
   # release being reachable). ensureImage() falls back to building if the pull
   # fails, so this is an optimization, not a hard dependency.
   #
-  # NOTE: the first push creates the ghcr.io/foxbyte/postgres-walg package as
+  # NOTE: the first push creates the ghcr.io/thefoxbyte/postgres-walg package as
   # PRIVATE. Make it public once (org → Packages → package → visibility) so
   # `docker pull` works without auth.
   image:
@@ -126,5 +126,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/foxbyte/postgres-walg:16
-            ghcr.io/foxbyte/postgres-walg:${{ inputs.tag || github.ref_name }}
+            ghcr.io/thefoxbyte/postgres-walg:16
+            ghcr.io/thefoxbyte/postgres-walg:${{ inputs.tag || github.ref_name }}

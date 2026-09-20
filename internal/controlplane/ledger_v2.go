@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
 // registerLedgerV2 mounts the Blackbox 2.0 endpoints (behind auth):

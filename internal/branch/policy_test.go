@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/foxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 func TestValidatePolicyRule(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/branch"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 )
 
 // uninstallSteps on Linux: the engine runs on this machine, so there is no VM

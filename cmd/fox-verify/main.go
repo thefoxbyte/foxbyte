@@ -27,8 +27,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/foxbyte/foxbyte/internal/ledger"
-	"github.com/foxbyte/foxbyte/internal/version"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
 func main() {

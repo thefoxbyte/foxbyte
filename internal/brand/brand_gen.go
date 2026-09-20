@@ -21,11 +21,11 @@ const (
 	// DocsPrefix begins the file names of the living documents.
 	DocsPrefix = "FOX_"
 	// Repo is the GitHub repository, owner and name, exactly as GitHub spells it.
-	Repo = "foxbyte/foxbyte"
+	Repo = "thefoxbyte/foxbyte"
 	// Module is the Go module path.
-	Module = "github.com/foxbyte/foxbyte"
+	Module = "github.com/thefoxbyte/foxbyte"
 	// ImageRepo is the registry namespace the engine image is published under.
-	ImageRepo = "ghcr.io/foxbyte"
+	ImageRepo = "ghcr.io/thefoxbyte"
 	// VMInstance is the engine VM (Lima on macOS, WSL on Windows).
 	VMInstance = "fox"
 	// TestVM is the throwaway VM the integration suites run in.

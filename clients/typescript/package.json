@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc"
   },
-  "repository": { "type": "git", "url": "https://github.com/foxbyte/foxbyte" },
+  "repository": { "type": "git", "url": "https://github.com/thefoxbyte/foxbyte" },
   "devDependencies": {
     "typescript": "^5.4.0"
   }

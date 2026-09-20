@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 func TestScoreImpact(t *testing.T) {

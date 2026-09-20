@@ -111,11 +111,11 @@ prepare_images() {
 	# Tagged with the name the engine runs (internal/branch/branch.go `image`):
 	# a preload under any other name is ignored, and `fox setup` pulls or builds
 	# the image anyway — which is what this whole step exists to avoid.
-	docker build -t ghcr.io/foxbyte/postgres-walg:16 "$repo/docker/postgres"
+	docker build -t ghcr.io/thefoxbyte/postgres-walg:16 "$repo/docker/postgres"
 	docker pull -q "$minio_image"
 	docker pull -q "$mc_image"
 	docker save -o "$work/foxbyte-images.tar" \
-		ghcr.io/foxbyte/postgres-walg:16 "$minio_image" "$mc_image"
+		ghcr.io/thefoxbyte/postgres-walg:16 "$minio_image" "$mc_image"
 	timer "images" "$t"
 }
 

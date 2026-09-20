@@ -54,7 +54,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "### setup: build test releases 0.98.0 and 0.99.0, serve a fake GitHub"
-build() { (cd "$ROOT" && go build -ldflags "-X github.com/foxbyte/foxbyte/internal/version.Version=$1" -o "$2" ./cmd/fox); }
+build() { (cd "$ROOT" && go build -ldflags "-X github.com/thefoxbyte/foxbyte/internal/version.Version=$1" -o "$2" ./cmd/fox); }
 mkdir -p "$T/bin" "$T/www/dl/v0.98.0" "$T/www/dl/v0.99.0" "$T/www/dl/v0.99.5" "$T/www/dl/v1.0.0"
 build 0.98.0 "$V" || { echo "build failed"; exit 1; }
 build 0.99.0 "$T/www/dl/v0.99.0/$ENGINE" || { echo "build failed"; exit 1; }
@@ -76,13 +76,13 @@ def rel(tag, files, pre=False):
     assets.append({"name": "SHA256SUMS", "size": len(sums), "browser_download_url": f"{base}/dl/{tag}/SHA256SUMS"})
     return {"tag_name": tag, "draft": False, "prerelease": pre, "html_url": f"{base}/releases/tag/{tag}", "assets": assets}
 rels = [rel("v1.0.0", [engine], pre=True), rel("v0.99.5", []), rel("v0.99.0", [engine]), rel("v0.98.0", [engine])]
-os.makedirs(os.path.join(www, "repos/foxbyte/foxbyte"), exist_ok=True)
-json.dump(rels, open(os.path.join(www, "repos/foxbyte/foxbyte/releases"), "w"))
+os.makedirs(os.path.join(www, "repos/thefoxbyte/foxbyte"), exist_ok=True)
+json.dump(rels, open(os.path.join(www, "repos/thefoxbyte/foxbyte/releases"), "w"))
 PY
 start_fake_github() {
 	python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$T/www" >/dev/null 2>&1 &
 	HTTP_PID=$!
-	for _ in $(seq 50); do curl -sf "$FOX_UPDATE_BASE_URL/repos/foxbyte/foxbyte/releases" >/dev/null && break; sleep 0.2; done
+	for _ in $(seq 50); do curl -sf "$FOX_UPDATE_BASE_URL/repos/thefoxbyte/foxbyte/releases" >/dev/null && break; sleep 0.2; done
 }
 stop_fake_github() { [ -n "$HTTP_PID" ] && kill "$HTTP_PID" 2>/dev/null; HTTP_PID=""; }
 start_fake_github

@@ -9,7 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // Blackbox diff: which schema changes distinguish two branches. A branch is a

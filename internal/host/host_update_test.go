@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/foxbyte/foxbyte/internal/update"
+	"github.com/thefoxbyte/foxbyte/internal/update"
 )
 
 // fakeEngine stands in for the VM: it records what the updater runs there.
@@ -71,7 +71,7 @@ func fakeReleases(t *testing.T, tamper bool) *httptest.Server {
 	}
 	mux.HandleFunc("/dl/SHA256SUMS", func(w http.ResponseWriter, r *http.Request) { w.Write(sums.Bytes()) })
 	rel.Assets = append(rel.Assets, update.Asset{Name: "SHA256SUMS", URL: srv.URL + "/dl/SHA256SUMS"})
-	mux.HandleFunc("/repos/foxbyte/foxbyte/releases", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/repos/thefoxbyte/foxbyte/releases", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]update.Release{rel})
 	})
 	return srv

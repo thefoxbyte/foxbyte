@@ -3,7 +3,7 @@
 package host
 
 import (
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"path/filepath"
 	"reflect"

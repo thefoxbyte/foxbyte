@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
 // policyCmd handles `fox policy …`, the Blackbox policy gate: rules checked on

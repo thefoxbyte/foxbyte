@@ -20,7 +20,7 @@ const (
 	// DefaultBaseURL is the GitHub API. FOX_UPDATE_BASE_URL points elsewhere (tests).
 	DefaultBaseURL = "https://api.github.com"
 	// DefaultRepo matches the installers; FOX_REPO overrides it.
-	DefaultRepo = "foxbyte/foxbyte"
+	DefaultRepo = "thefoxbyte/foxbyte"
 )
 
 // Asset is one file attached to a release.

@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/branch"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 )
 
 // uninstallSteps on macOS: the engine lives in a Lima VM.

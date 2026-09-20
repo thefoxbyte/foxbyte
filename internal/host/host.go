@@ -17,7 +17,7 @@ package host
 import (
 	"context"
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"io"
 	"net/http"
 	"os"
@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/update"
+	"github.com/thefoxbyte/foxbyte/internal/update"
 )
 
 // Guest environment variable marks a fox process that is already running inside
@@ -194,9 +194,9 @@ func refreshEngineBinary(arch string) string {
 		// Deliberately unverified (an air-gapped mirror, or a release whose
 		// checksums are unreachable). Same behaviour as before verification.
 		fmt.Println("note: FOX_NO_VERIFY is set — the engine download will not be checked against SHA256SUMS.")
-		url := fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", envOr("FOX_REPO", "foxbyte/foxbyte"), asset)
+		url := fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", envOr("FOX_REPO", "thefoxbyte/foxbyte"), asset)
 		if v := envOr("FOX_VERSION", "latest"); v != "latest" {
-			url = fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", envOr("FOX_REPO", "foxbyte/foxbyte"), v, asset)
+			url = fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", envOr("FOX_REPO", "thefoxbyte/foxbyte"), v, asset)
 		}
 		if err := downloadFile(url, dest); err != nil || !isELF(dest) {
 			_ = os.Remove(dest)

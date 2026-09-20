@@ -7,7 +7,7 @@
 #   Linux:  sudo fox start # provisions ZFS/Docker/image and brings everything up
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/foxbyte/foxbyte/main/deploy/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh | sh
 #
 # Every download is checked against the release's SHA256SUMS before it is
 # installed: these binaries are run as root, and a truncated or altered download
@@ -16,7 +16,7 @@
 #
 # Env overrides:
 #   FOX_VERSION   release tag to install         (default: latest)
-#   FOX_REPO      GitHub owner/repo              (default: foxbyte/foxbyte)
+#   FOX_REPO      GitHub owner/repo              (default: thefoxbyte/foxbyte)
 #   FOX_DIST      install from a local dir of prebuilt binaries instead of downloading
 #   FOX_PREFIX    install prefix                 (default: /usr/local)
 #   FOX_BASE_URL  release download base URL      (default: GitHub releases)
@@ -29,7 +29,7 @@ CLI="fox"
 SLUG="foxbyte"
 ENV_PREFIX="FOX_"
 STATE_DIR=".fox"
-DEFAULT_REPO="foxbyte/foxbyte"
+DEFAULT_REPO="thefoxbyte/foxbyte"
 # end generated
 
 REPO="${FOX_REPO:-$DEFAULT_REPO}"

@@ -1,4 +1,4 @@
-module github.com/foxbyte/foxbyte
+module github.com/thefoxbyte/foxbyte
 
 go 1.26
 

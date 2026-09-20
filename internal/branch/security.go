@@ -4,7 +4,7 @@ package branch
 
 import (
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"sort"
 	"strings"
 )

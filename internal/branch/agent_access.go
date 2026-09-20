@@ -13,7 +13,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/auth"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 )
 
 // How an agent reaches its branch.

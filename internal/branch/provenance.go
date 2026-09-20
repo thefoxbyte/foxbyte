@@ -16,9 +16,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/foxbyte/foxbyte/internal/ledger"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // Blackbox agent provenance: which agent session, task and parent session caused

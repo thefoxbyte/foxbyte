@@ -7,7 +7,7 @@ package host
 import (
 	"encoding/base64"
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"io"
 	"os"
 	"os/exec"
@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/version"
+	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
 // hostSetup is the Windows bootstrap: ensure a ZFS-capable WSL2 distro and bring
@@ -431,7 +431,7 @@ func loadPreloadedImages(name string) error {
 	// Distro images built before 16 Sep 2026 tag Postgres `foxbyte/postgres-walg:16`,
 	// which the engine never looks for — re-tag it so the preload is actually used.
 	retag := "; docker image inspect foxbyte/postgres-walg:16 >/dev/null 2>&1 && " +
-		"docker tag foxbyte/postgres-walg:16 ghcr.io/foxbyte/postgres-walg:16 || true"
+		"docker tag foxbyte/postgres-walg:16 ghcr.io/thefoxbyte/postgres-walg:16 || true"
 	if err := wslRoot(name, fmt.Sprintf("set -e; docker load -i %q", tar)+retag); err != nil {
 		// Not fatal: the engine can still build and pull. Losing the fast path
 		// is better than failing an install over it.

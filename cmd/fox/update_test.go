@@ -5,7 +5,7 @@ package main
 import (
 	"testing"
 
-	"github.com/foxbyte/foxbyte/internal/host"
+	"github.com/thefoxbyte/foxbyte/internal/host"
 )
 
 func TestParseUpdateArgs(t *testing.T) {

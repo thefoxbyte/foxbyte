@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/daemon"
-	"github.com/foxbyte/foxbyte/internal/host"
-	"github.com/foxbyte/foxbyte/internal/update"
+	"github.com/thefoxbyte/foxbyte/internal/daemon"
+	"github.com/thefoxbyte/foxbyte/internal/host"
+	"github.com/thefoxbyte/foxbyte/internal/update"
 )
 
 const updateUsage = `usage: fox update [--check] [--yes] [--version vX.Y.Z]

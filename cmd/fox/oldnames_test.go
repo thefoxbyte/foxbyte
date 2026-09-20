@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/foxbyte/foxbyte/internal/branch"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 )
 
 // The product has been renamed twice. A stray old name is a real defect, not a

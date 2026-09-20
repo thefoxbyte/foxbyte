@@ -7,7 +7,7 @@ package host
 
 import (
 	"bytes"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"strings"
 	"unicode/utf16"
 )

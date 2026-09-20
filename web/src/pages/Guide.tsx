@@ -78,23 +78,23 @@ export default function Guide() {
         Docker, ZFS, the storage pool, and the image).</p>
       <p><strong>macOS</strong> (needs <a href="https://lima-vm.io" target="_blank" rel="noreferrer">Lima</a>):</p>
       <Code>{`brew install lima
-curl -fsSL https://raw.githubusercontent.com/foxbyte/foxbyte/main/deploy/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh | sh
 fox setup`}</Code>
       <p><strong>Linux</strong>:</p>
-      <Code>{`curl -fsSL https://raw.githubusercontent.com/foxbyte/foxbyte/main/deploy/install.sh | sh
+      <Code>{`curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh | sh
 sudo fox start`}</Code>
       <p><strong>Windows</strong> (needs <a href="https://learn.microsoft.com/windows/wsl/install" target="_blank" rel="noreferrer">WSL2</a> —
         enable it once with <code>wsl --install</code> in an <strong>Administrator</strong> PowerShell, then reboot).
         Run the commands below <strong>in PowerShell</strong> (not Command Prompt) — <code>irm</code>/<code>iex</code> are
         PowerShell commands:</p>
-      <Code>{`irm https://raw.githubusercontent.com/foxbyte/foxbyte/main/deploy/install.ps1 | iex
+      <Code>{`irm https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.ps1 | iex
 fox setup`}</Code>
       <p className="muted">Seeing <code>irm : not recognized</code>? You're in Command Prompt — open <strong>PowerShell</strong>
         and retry. If scripts are blocked, run <code>Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass</code> first.
         After install, open a <strong>new</strong> terminal so <code>fox</code> is on your PATH.</p>
       <p className="muted">The engine runs inside a dedicated <code>foxbyte</code> WSL2 distro (the analog of
         the macOS VM); your other WSL distros and Docker Desktop are left untouched. Full steps &amp; troubleshooting:{' '}
-        <a href="https://github.com/foxbyte/foxbyte/blob/main/docs/windows-setup.md" target="_blank" rel="noreferrer">Windows setup guide</a>.</p>
+        <a href="https://github.com/thefoxbyte/foxbyte/blob/main/docs/windows-setup.md" target="_blank" rel="noreferrer">Windows setup guide</a>.</p>
       <p>Your app connects at <code>localhost:6432</code>; the web console &amp; dashboard are served by
         <code>fox start</code> at <code>https://localhost:8080</code> (all platforms) — the same engine,
         no separate web server to run.</p>
@@ -185,7 +185,7 @@ fox branch delete feature-x                 # throw it away; main is untouched`}
 curl -H "Authorization: Bearer $FOX_KEY" -X DELETE https://localhost:8088/agents/alice/branch`}</Code>
       <p className="muted">The agent API serves TLS with a self-signed certificate, so add <code>-k</code> to curl
         (or trust the certificate). Agent frameworks can skip HTTP entirely and speak{' '}
-        <a href="https://github.com/foxbyte/foxbyte/blob/main/docs/mcp.md" target="_blank" rel="noreferrer">MCP</a>{' '}
+        <a href="https://github.com/thefoxbyte/foxbyte/blob/main/docs/mcp.md" target="_blank" rel="noreferrer">MCP</a>{' '}
         instead: <code>fox mcp</code>, which takes an API key of its own (<code>FOX_API_KEY</code>) and acts as that account.</p>
 
       <h2>Quick reference</h2>

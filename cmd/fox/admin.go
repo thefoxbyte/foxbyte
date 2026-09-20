@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
 // adminCmd handles `fox admin grant|revoke <email> [--branch <name>]` and

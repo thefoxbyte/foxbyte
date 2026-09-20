@@ -103,7 +103,7 @@ Describe 'installer behaviour' {
     It 'builds a latest asset URL over HTTPS' {
         $u = Get-FoxAsset 'fox-windows-amd64.exe'
         $u | Should -BeLike 'https://*'
-        $u | Should -Be 'https://github.com/foxbyte/foxbyte/releases/latest/download/fox-windows-amd64.exe'
+        $u | Should -Be 'https://github.com/thefoxbyte/foxbyte/releases/latest/download/fox-windows-amd64.exe'
     }
 
     It 'never downloads over plain HTTP' {

@@ -19,8 +19,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/foxbyte/foxbyte/internal/branch"
-	"github.com/foxbyte/foxbyte/internal/version"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
 const protocolVersion = "2024-11-05"

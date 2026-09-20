@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/update"
-	"github.com/foxbyte/foxbyte/internal/version"
+	"github.com/thefoxbyte/foxbyte/internal/update"
+	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
 // UpdateOptions are the flags of `fox update`.

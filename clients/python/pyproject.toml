@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "Apache-2.0" }
 authors = [{ name = "FoxByte" }]
-urls = { Homepage = "https://github.com/foxbyte/foxbyte" }
+urls = { Homepage = "https://github.com/thefoxbyte/foxbyte" }
 
 [tool.setuptools]
 packages = ["foxbyte"]

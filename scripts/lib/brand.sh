@@ -10,7 +10,7 @@ BRAND_CLI="fox"
 BRAND_SLUG="foxbyte"
 BRAND_ENV_PREFIX="FOX_"
 BRAND_STATE_DIR=".fox"
-BRAND_REPO="foxbyte/foxbyte"
+BRAND_REPO="thefoxbyte/foxbyte"
 BRAND_TEST_VM="fox-test"
 BRAND_PREVIOUS_CLIS="odb vdb"
 

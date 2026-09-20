@@ -21,14 +21,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/foxbyte/foxbyte/internal/auth"
-	"github.com/foxbyte/foxbyte/internal/branch"
-	"github.com/foxbyte/foxbyte/internal/daemon"
-	"github.com/foxbyte/foxbyte/internal/secrets"
-	"github.com/foxbyte/foxbyte/internal/tlsutil"
-	"github.com/foxbyte/foxbyte/web"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/daemon"
+	"github.com/thefoxbyte/foxbyte/internal/secrets"
+	"github.com/thefoxbyte/foxbyte/internal/tlsutil"
+	"github.com/thefoxbyte/foxbyte/web"
 )
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/foxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // EnsureLedgerV2 installs (or upgrades) the Blackbox 2.0 additions on a

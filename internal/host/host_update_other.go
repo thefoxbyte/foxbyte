@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/foxbyte/foxbyte/internal/update"
+	"github.com/thefoxbyte/foxbyte/internal/update"
 )
 
 // localEngine updates a Linux install, where `fox` is the engine itself.

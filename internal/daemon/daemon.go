@@ -8,7 +8,7 @@ package daemon
 
 import (
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
 	"path/filepath"

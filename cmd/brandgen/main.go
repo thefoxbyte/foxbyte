@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/foxbyte/foxbyte/internal/brand/gen"
+	"github.com/thefoxbyte/foxbyte/internal/brand/gen"
 )
 
 func main() {

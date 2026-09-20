@@ -17,7 +17,7 @@ Describe 'Get-FoxAsset (latest)' {
     }
     It 'builds a latest release URL' {
         Get-FoxAsset 'fox-windows-amd64.exe' |
-            Should -Be 'https://github.com/foxbyte/foxbyte/releases/latest/download/fox-windows-amd64.exe'
+            Should -Be 'https://github.com/thefoxbyte/foxbyte/releases/latest/download/fox-windows-amd64.exe'
     }
 }
 
@@ -29,7 +29,7 @@ Describe 'Get-FoxAsset (pinned)' {
     AfterAll { $env:FOX_VERSION = $null }
     It 'builds a versioned release URL' {
         Get-FoxAsset 'fox-windows-amd64.exe' |
-            Should -Be 'https://github.com/foxbyte/foxbyte/releases/download/v1.2.3/fox-windows-amd64.exe'
+            Should -Be 'https://github.com/thefoxbyte/foxbyte/releases/download/v1.2.3/fox-windows-amd64.exe'
     }
 }
 

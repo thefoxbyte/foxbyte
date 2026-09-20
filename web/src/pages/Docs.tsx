@@ -82,7 +82,7 @@ export default function Docs() {
       <h2>Agents over MCP</h2>
       <p className="muted">Agent frameworks can skip HTTP: <code>fox mcp</code> speaks the Model Context Protocol on
         stdio, with 16 tools for branches, SQL, Blackbox, impact analysis and the policy gate.{' '}
-        <a href="https://github.com/foxbyte/foxbyte/blob/main/docs/mcp.md" target="_blank" rel="noreferrer">Setup and tool reference</a>.</p>
+        <a href="https://github.com/thefoxbyte/foxbyte/blob/main/docs/mcp.md" target="_blank" rel="noreferrer">Setup and tool reference</a>.</p>
       <table>
         <thead><tr><th>Client config</th><th>Notes</th></tr></thead>
         <tbody>

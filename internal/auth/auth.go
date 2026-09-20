@@ -15,7 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/foxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"log"
 	"os"
 	"path/filepath"
