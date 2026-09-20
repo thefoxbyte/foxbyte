@@ -5,34 +5,30 @@ package branch
 import (
 	"errors"
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/OxynDB/oxyndb/internal/ledger"
+	"github.com/foxbyte/foxbyte/internal/ledger"
 )
 
 // Blackbox 2.0 checkpoints: a Merkle root over a contiguous range of ledger
-// entries, recorded in odb.ledger_checkpoints and written as a read-only anchor
+// entries, recorded in bb.ledger_checkpoints and written as a read-only anchor
 // file outside the database. Integrity trusts the anchor files, so history that
 // was rewritten inside the database — even with a recomputed hash chain — is
-// detected. The same checks are available to anyone via cmd/odb-verify.
+// detected. The same checks are available to anyone via cmd/fox-verify.
 
-// AnchorDir is where a branch's anchor files are written: OXYNDB_ANCHOR_DIR
-// (e.g. a write-once mount) or ~/.oxyndb/anchors, plus the branch name.
+// AnchorDir is where a branch's anchor files are written: FOX_ANCHOR_DIR
+// (e.g. a write-once mount) or ~/.fox/anchors, plus the branch name.
 func AnchorDir(name string) string {
-	base := strings.TrimSpace(os.Getenv("OXYNDB_ANCHOR_DIR"))
+	base := strings.TrimSpace(brand.Getenv("ANCHOR_DIR"))
 	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			home = "/tmp"
-		}
-		base = filepath.Join(home, ".oxyndb", "anchors")
+		base = brand.StatePath("anchors")
 	}
 	return filepath.Join(base, name)
 }
@@ -70,8 +66,8 @@ func ledgerLines(name, sql string) ([]string, error) {
 
 // ledgerV2Tables reports whether the 2.0 capture and checkpoint tables exist.
 func ledgerV2Tables(name string) (ext, checkpoints bool, err error) {
-	lines, err := ledgerLines(name, "SELECT (to_regclass('odb.ledger_ext') IS NOT NULL)::text || '|' || "+
-		"(to_regclass('odb.ledger_checkpoints') IS NOT NULL)::text")
+	lines, err := ledgerLines(name, "SELECT (to_regclass('bb.ledger_ext') IS NOT NULL)::text || '|' || "+
+		"(to_regclass('bb.ledger_checkpoints') IS NOT NULL)::text")
 	if err != nil {
 		return false, false, err
 	}
@@ -104,7 +100,7 @@ func loadLedgerRows(name string, withExt bool, where string) ([]ledger.Row, erro
 // lastCheckpoint returns the last checkpoint's to_id and merkle_root (0, "" if none).
 func lastCheckpoint(name string) (int64, string, error) {
 	lines, err := ledgerLines(name, "SELECT coalesce((SELECT to_id::text || '|' || merkle_root "+
-		"FROM odb.ledger_checkpoints ORDER BY to_id DESC LIMIT 1), '0|')")
+		"FROM bb.ledger_checkpoints ORDER BY to_id DESC LIMIT 1), '0|')")
 	if err != nil {
 		return 0, "", err
 	}
@@ -136,7 +132,7 @@ func Checkpoint(name string) (*ledger.Anchor, string, error) {
 		return nil, "", err
 	}
 	if !hasCheckpoints {
-		return nil, "", fmt.Errorf("ledger checkpoints are not installed on %q — run: odb ledger upgrade %s", name, name)
+		return nil, "", fmt.Errorf("ledger checkpoints are not installed on %q — run: fox ledger upgrade %s", name, name)
 	}
 	lastTo, prevRoot, err := lastCheckpoint(name)
 	if err != nil {
@@ -145,7 +141,7 @@ func Checkpoint(name string) (*ledger.Anchor, string, error) {
 	// The new rows, plus the last chained row before them so the chain link into
 	// the new range is checked too.
 	rows, err := loadLedgerRows(name, withExt, fmt.Sprintf(
-		"WHERE s.id > %d OR s.id = (SELECT max(id) FROM odb.schema_ledger WHERE id <= %d AND row_hash IS NOT NULL)",
+		"WHERE s.id > %d OR s.id = (SELECT max(id) FROM bb.schema_ledger WHERE id <= %d AND row_hash IS NOT NULL)",
 		lastTo, lastTo))
 	if err != nil {
 		return nil, "", err
@@ -164,7 +160,7 @@ func Checkpoint(name string) (*ledger.Anchor, string, error) {
 		return nil, "", nil
 	}
 	if err := ledger.CheckChain(pred, fresh); err != nil {
-		return nil, "", fmt.Errorf("not anchoring %q: %v — inspect with: odb ledger integrity %s", name, err, name)
+		return nil, "", fmt.Errorf("not anchoring %q: %v — inspect with: fox ledger integrity %s", name, err, name)
 	}
 	a, err := ledger.BuildAnchor(name, lastTo+1, prevRoot, fresh)
 	if err != nil {
@@ -172,7 +168,7 @@ func Checkpoint(name string) (*ledger.Anchor, string, error) {
 	}
 	dir := AnchorDir(name)
 	path := filepath.Join(dir, ledger.AnchorFileName(a.ToID))
-	lines, err := ledgerLines(name, fmt.Sprintf(`INSERT INTO odb.ledger_checkpoints
+	lines, err := ledgerLines(name, fmt.Sprintf(`INSERT INTO bb.ledger_checkpoints
   (from_id, to_id, entry_count, last_row_hash, merkle_root, prev_root, algorithm, anchor_uri)
   VALUES (%d, %d, %d, %s, %s, %s, %s, %s) RETURNING id`,
 		a.FromID, a.ToID, a.EntryCount, quoteLiteral(a.LastRowHash), quoteLiteral(a.MerkleRoot),
@@ -189,7 +185,7 @@ func Checkpoint(name string) (*ledger.Anchor, string, error) {
 	if _, err := ledger.WriteAnchor(dir, a); err != nil {
 		return &a, "", fmt.Errorf("checkpoint %d was recorded but its anchor could not be written: %w", a.CheckpointID, err)
 	}
-	if truthyEnv("OXYNDB_ANCHOR_IMMUTABLE") {
+	if truthyEnv("FOX_ANCHOR_IMMUTABLE") {
 		if err := exec.Command("sudo", "chattr", "+i", path).Run(); err != nil {
 			log.Printf("anchor %s: chattr +i failed (%v) — the file is read-only but not immutable", path, err)
 		}
@@ -219,7 +215,7 @@ func Integrity(name string) (ledger.Report, error) {
 	}
 	rep := ledger.Verify(rows, anchors)
 	if hasCheckpoints {
-		if lines, err := ledgerLines(name, "SELECT count(*) FROM odb.ledger_checkpoints"); err == nil && len(lines) > 0 {
+		if lines, err := ledgerLines(name, "SELECT count(*) FROM bb.ledger_checkpoints"); err == nil && len(lines) > 0 {
 			if n, _ := strconv.Atoi(lines[0]); n != len(anchors) {
 				rep.Notes = append(rep.Notes, fmt.Sprintf(
 					"the database lists %d checkpoint(s); %d anchor file(s) are in %s — the anchor files are the source of truth",
@@ -227,13 +223,13 @@ func Integrity(name string) (ledger.Report, error) {
 			}
 		}
 	} else {
-		rep.Notes = append(rep.Notes, "ledger checkpoints are not installed on this branch — run: odb ledger upgrade "+name)
+		rep.Notes = append(rep.Notes, "ledger checkpoints are not installed on this branch — run: fox ledger upgrade "+name)
 	}
 	return rep, nil
 }
 
 // ExportLedger writes every ledger row of a branch, with its capture columns, as
-// JSON lines — a file odb-verify can check offline against the anchors.
+// JSON lines — a file fox-verify can check offline against the anchors.
 func ExportLedger(name string, w io.Writer) error {
 	name, err := ledgerBranchName(name)
 	if err != nil {
@@ -258,14 +254,14 @@ func ExportLedger(name string, w io.Writer) error {
 }
 
 func envDurationOr(key string, def time.Duration) time.Duration {
-	if d, err := time.ParseDuration(strings.TrimSpace(os.Getenv(key))); err == nil && d > 0 {
+	if d, err := time.ParseDuration(strings.TrimSpace(brand.GetenvFull(key))); err == nil && d > 0 {
 		return d
 	}
 	return def
 }
 
 func envIntOr(key string, def int) int {
-	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key))); err == nil && n > 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(brand.GetenvFull(key))); err == nil && n > 0 {
 		return n
 	}
 	return def
@@ -278,8 +274,8 @@ func pendingCheckpointRows(name string) (int, error) {
 	if err != nil || !hasCheckpoints {
 		return -1, err
 	}
-	lines, err := ledgerLines(name, "SELECT count(*) FROM odb.schema_ledger WHERE id > "+
-		"(SELECT coalesce(max(to_id), 0) FROM odb.ledger_checkpoints)")
+	lines, err := ledgerLines(name, "SELECT count(*) FROM bb.schema_ledger WHERE id > "+
+		"(SELECT coalesce(max(to_id), 0) FROM bb.ledger_checkpoints)")
 	if err != nil || len(lines) == 0 {
 		return -1, err
 	}
@@ -287,18 +283,18 @@ func pendingCheckpointRows(name string) (int, error) {
 }
 
 // StartCheckpointer anchors new ledger entries on every running branch in the
-// background: once OXYNDB_CHECKPOINT_INTERVAL (default 10m) has passed since
-// the branch's last checkpoint, or sooner when OXYNDB_CHECKPOINT_ENTRIES
+// background: once FOX_CHECKPOINT_INTERVAL (default 10m) has passed since
+// the branch's last checkpoint, or sooner when FOX_CHECKPOINT_ENTRIES
 // (default 500) entries are waiting. It only looks at branches that are already
-// running, so it never wakes a suspended one. OXYNDB_CHECKPOINTS=off disables it.
+// running, so it never wakes a suspended one. FOX_CHECKPOINTS=off disables it.
 func StartCheckpointer() {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("OXYNDB_CHECKPOINTS"))) {
+	switch strings.ToLower(strings.TrimSpace(brand.Getenv("CHECKPOINTS"))) {
 	case "off", "0", "false", "no":
-		log.Printf("ledger checkpoints: scheduler disabled (OXYNDB_CHECKPOINTS)")
+		log.Printf("ledger checkpoints: scheduler disabled (FOX_CHECKPOINTS)")
 		return
 	}
-	interval := envDurationOr("OXYNDB_CHECKPOINT_INTERVAL", 10*time.Minute)
-	threshold := envIntOr("OXYNDB_CHECKPOINT_ENTRIES", 500)
+	interval := envDurationOr("FOX_CHECKPOINT_INTERVAL", 10*time.Minute)
+	threshold := envIntOr("FOX_CHECKPOINT_ENTRIES", 500)
 	tick := interval
 	if tick > 2*time.Minute {
 		tick = 2 * time.Minute

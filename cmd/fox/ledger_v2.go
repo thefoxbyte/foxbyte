@@ -8,18 +8,18 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/OxynDB/oxyndb/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/branch"
 )
 
-// ledgerV2Cmd handles the Blackbox 2.0 subcommands of `odb ledger`:
+// ledgerV2Cmd handles the Blackbox 2.0 subcommands of `fox ledger`:
 //
-//	odb ledger checkpoint [branch]   anchor new entries outside the database
-//	odb ledger integrity [branch]    check the ledger against its anchors
-//	odb ledger export [branch]       every entry as JSON lines (--format jsonl)
-//	odb ledger entries [branch]      newest entries with their ids (--limit N)
-//	odb ledger sessions [branch]     agent sessions: agent, task, parent session (--limit N)
-//	odb ledger diff <a> <b>          schema changes on each branch since they split (--json)
-//	odb ledger branch-before <id>    a new branch of main as it was just before entry <id>
+//	fox ledger checkpoint [branch]   anchor new entries outside the database
+//	fox ledger integrity [branch]    check the ledger against its anchors
+//	fox ledger export [branch]       every entry as JSON lines (--format jsonl)
+//	fox ledger entries [branch]      newest entries with their ids (--limit N)
+//	fox ledger sessions [branch]     agent sessions: agent, task, parent session (--limit N)
+//	fox ledger diff <a> <b>          schema changes on each branch since they split (--json)
+//	fox ledger branch-before <id>    a new branch of main as it was just before entry <id>
 //
 // It returns false for anything else, leaving the existing subcommands untouched.
 func ledgerV2Cmd(args []string) bool {
@@ -89,12 +89,12 @@ func ledgerV2Cmd(args []string) bool {
 	return true
 }
 
-// branchBeforeCmd: odb ledger branch-before <entry-id> [--branch main] [--as name]
+// branchBeforeCmd: fox ledger branch-before <entry-id> [--branch main] [--as name]
 func branchBeforeCmd(args []string) {
 	id := firstPositional(args, "--branch", "--as")
 	entryID, err := strconv.ParseInt(id, 10, 64)
 	if id == "" || err != nil || entryID <= 0 {
-		fmt.Println("usage: odb ledger branch-before <entry-id> [--branch main] [--as <new-branch>]")
+		fmt.Println("usage: fox ledger branch-before <entry-id> [--branch main] [--as <new-branch>]")
 		os.Exit(2)
 	}
 	src := optValue(args, "--branch")
@@ -109,5 +109,5 @@ func branchBeforeCmd(args []string) {
 	fmt.Printf("branch %q is ready (%ds): %s as it was just before entry %d\n", res.Branch, res.Seconds, res.Source, res.EntryID)
 	fmt.Printf("  excluded   %s %s\n", res.CommandTag, res.Object)
 	fmt.Printf("  target     %s %s (base backup %s)\n", res.TargetKind, res.Target, res.BaseBackup)
-	fmt.Printf("  connect    postgresql://oxyndb:<api-key>@localhost:6432/%s?sslmode=require\n", res.Branch)
+	fmt.Printf("  connect    postgresql://dbadmin:<api-key>@localhost:6432/%s?sslmode=require\n", res.Branch)
 }

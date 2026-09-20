@@ -1,20 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# The canonical OpenAPI description of OxynDB's HTTP APIs. It is embedded in
+# The canonical OpenAPI description of FoxByte's HTTP APIs. It is embedded in
 # the control-plane binary and served at GET /api/openapi.yaml, so any generator
 # can produce a typed client. The hand-written SDKs under clients/ are thin
 # wrappers over these same endpoints.
 openapi: 3.1.0
 info:
-  title: OxynDB API
+  title: FoxByte API
   version: "0.6"
   description: >
-    Control-plane and Agent Branch APIs for OxynDB — serverless PostgreSQL
+    Control-plane and Agent Branch APIs for FoxByte — serverless PostgreSQL
     with instant branching, time-travel, and Blackbox — a tamper-evident record of
     every schema change. Every `/api/branches/{name}/ledger…` path is also served
     at `/api/branches/{name}/blackbox…`.
     All endpoints are served over TLS. Authenticate with an API key
-    (`odb_…`) as a Bearer token.
+    (`key_…`) as a Bearer token.
   license:
     name: AGPL-3.0-or-later
 servers:
@@ -36,7 +36,7 @@ tags:
   - name: pipelines
   - name: import
   - name: backups
-    description: Base backups in object storage — what a point-in-time restore (`odb restore --to`) can start from.
+    description: Base backups in object storage — what a point-in-time restore (`fox restore --to`) can start from.
   - name: keys
   - name: agents
   - name: auth
@@ -141,17 +141,17 @@ paths:
                 allow_destructive:
                   type: boolean
                   description: >-
-                    Apply SET odb.allow_destructive=on to this query. Counts only
-                    when the signed-in user is in odb_admin on the branch (see
+                    Apply SET bb.allow_destructive=on to this query. Counts only
+                    when the signed-in user is in db_admin on the branch (see
                     /admins); anyone else stays blocked. The query runs as the
                     signed-in user's own role.
                 allow_rules:
                   type: array
                   items: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,62}$" }
                   description: >-
-                    Apply SET odb.policy_allow to this query: the per-rule override
-                    for a Blackbox policy block (ODB01), which allow_destructive
-                    does not cover. Counts only for odb_admin members.
+                    Apply SET bb.policy_allow to this query: the per-rule override
+                    for a Blackbox policy block (BBX01), which allow_destructive
+                    does not cover. Counts only for db_admin members.
       responses:
         "200":
           description: Columns and rows, or an error message.
@@ -241,7 +241,7 @@ paths:
                   checkpoint:
                     type: object
                     properties:
-                      format: { type: string, example: oxyndb-ledger-anchor/1 }
+                      format: { type: string, example: ledger-anchor/1 }
                       algorithm: { type: string, example: sha256-merkle-v1 }
                       branch: { type: string }
                       checkpoint_id: { type: integer }
@@ -258,7 +258,7 @@ paths:
     get:
       tags: [ledger]
       summary: Every Blackbox entry with its capture columns, one JSON document per line.
-      description: The input odb-verify checks offline with --export.
+      description: The input fox-verify checks offline with --export.
       parameters: [{ $ref: "#/components/parameters/BranchName" }]
       responses:
         "200":
@@ -418,7 +418,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [policies]
-      summary: Add a rule (odb_admin only).
+      summary: Add a rule (db_admin only).
       parameters: [{ $ref: "#/components/parameters/BranchName" }]
       requestBody:
         required: true
@@ -427,13 +427,13 @@ paths:
         "201": { description: Added. }
         "400": { description: Invalid rule (id, command tag, action, reason or pattern). }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: The signed-in user is not a odb_admin member on this branch. }
+        "403": { description: The signed-in user is not a db_admin member on this branch. }
         "409": { description: A rule with that id exists. }
 
   /api/branches/{name}/policies/{rule}:
     put:
       tags: [policies]
-      summary: Change a rule's action and/or whether it is enabled (odb_admin only).
+      summary: Change a rule's action and/or whether it is enabled (db_admin only).
       parameters:
         - { $ref: "#/components/parameters/BranchName" }
         - { name: rule, in: path, required: true, schema: { type: string } }
@@ -450,18 +450,18 @@ paths:
         "200": { description: Changed. }
         "400": { description: Nothing or something invalid to change. }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: Not a odb_admin member. }
+        "403": { description: Not a db_admin member. }
         "404": { description: No such rule. }
     delete:
       tags: [policies]
-      summary: Remove a custom rule (odb_admin only; built-in rules can only be disabled).
+      summary: Remove a custom rule (db_admin only; built-in rules can only be disabled).
       parameters:
         - { $ref: "#/components/parameters/BranchName" }
         - { name: rule, in: path, required: true, schema: { type: string } }
       responses:
         "200": { description: Removed. }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: Not a odb_admin member. }
+        "403": { description: Not a db_admin member. }
         "404": { description: No such rule. }
         "409": { description: Built-in rule. }
 
@@ -509,13 +509,13 @@ paths:
               schema:
                 type: object
                 properties:
-                  admins: { type: array, items: { type: string }, description: "Emails in odb_admin (superusers are not listed)." }
+                  admins: { type: array, items: { type: string }, description: "Emails in db_admin (superusers are not listed)." }
                   you: { type: string }
                   you_are_admin: { type: boolean }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       tags: [policies]
-      summary: Let a user override blocking rules on this branch (needs odb_admin).
+      summary: Let a user override blocking rules on this branch (needs db_admin).
       parameters: [{ $ref: "#/components/parameters/BranchName" }]
       requestBody:
         required: true
@@ -525,20 +525,20 @@ paths:
       responses:
         "200": { description: Granted. }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: The caller is not in odb_admin on this branch. }
+        "403": { description: The caller is not in db_admin on this branch. }
         "404": { description: No account with that email. }
 
   /api/branches/{name}/admins/{email}:
     delete:
       tags: [policies]
-      summary: Remove a user's permission to override (needs odb_admin).
+      summary: Remove a user's permission to override (needs db_admin).
       parameters:
         - { $ref: "#/components/parameters/BranchName" }
         - { name: email, in: path, required: true, schema: { type: string } }
       responses:
         "200": { description: Revoked. }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: The caller is not in odb_admin on this branch. }
+        "403": { description: The caller is not in db_admin on this branch. }
         "404": { description: That user is not an admin here. }
         "409": { description: That user is the only admin; grant someone else first. }
 
@@ -678,7 +678,7 @@ paths:
       description: >
         What a point-in-time restore can start from. A restore can only reach a point that a
         base backup precedes, so the oldest entry here is the earliest reachable point.
-        Performing a restore is `odb restore --to <timestamp|latest>`, which is not in this API.
+        Performing a restore is `fox restore --to <timestamp|latest>`, which is not in this API.
       responses:
         "200":
           description: OK
@@ -807,7 +807,7 @@ paths:
             application/json:
               schema: { type: object, properties: { user: { type: object } } }
         "400": { description: The password is shorter than 8 characters. }
-        "403": { description: "Signups are closed (OXYNDB_SIGNUP=closed)." }
+        "403": { description: "Signups are closed (FOX_SIGNUP=closed)." }
         "409": { description: That email is already registered. }
 
   /auth/login:
@@ -944,7 +944,7 @@ components:
     apiKey:
       type: http
       scheme: bearer
-      description: An API key (`odb_…`) minted with `odb apikey create`.
+      description: An API key (`key_…`) minted with `fox apikey create`.
   parameters:
     BranchName:
       name: name
@@ -976,7 +976,7 @@ components:
         updated_by: { type: [string, "null"], readOnly: true }
     PolicyDetail:
       type: object
-      description: The DETAIL JSON of a ODB01/ODB02 policy error or warning (docs/policy-errors.md, contract v1).
+      description: The DETAIL JSON of a BBX01/BBX02 policy error or warning (docs/policy-errors.md, contract v1).
       properties:
         v: { type: integer }
         rule_id: { type: string }

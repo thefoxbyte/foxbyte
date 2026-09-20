@@ -17,30 +17,30 @@ type Target struct {
 }
 
 // ImageContextAsset is the Postgres image build context Windows installs ship.
-const ImageContextAsset = "oxyndb-docker-context.tar.gz"
+const ImageContextAsset = "foxbyte-docker-context.tar.gz"
 
 // EngineAsset is the Linux engine binary: it runs in the VM (macOS), the WSL
 // distro (Windows, always x86_64), or directly on a Linux host.
 func EngineAsset(t Target) string {
 	switch t.GOOS {
 	case "windows":
-		return "odb-linux-amd64"
+		return "fox-linux-amd64"
 	case "darwin":
 		if t.GuestArch != "" {
-			return "odb-linux-" + t.GuestArch
+			return "fox-linux-" + t.GuestArch
 		}
 	}
-	return "odb-linux-" + t.HostArch
+	return "fox-linux-" + t.HostArch
 }
 
-// HostAsset is the `odb` binary for the computer itself on macOS and Windows,
+// HostAsset is the `fox` binary for the computer itself on macOS and Windows,
 // or "" on Linux, where the engine binary is the host binary.
 func HostAsset(t Target) string {
 	switch t.GOOS {
 	case "darwin":
-		return "odb-darwin-" + t.HostArch
+		return "fox-darwin-" + t.HostArch
 	case "windows":
-		return "odb-windows-amd64.exe"
+		return "fox-windows-amd64.exe"
 	}
 	return ""
 }
@@ -88,7 +88,7 @@ func Candidates(rels []Release, current Version, t Target, pin string) ([]Releas
 				continue
 			}
 			if v.Compare(current) <= 0 {
-				return nil, fmt.Errorf("%s is not newer than the installed %s — to go back to an older version, reinstall it with the installer (ODB_VERSION=%s)", r.Tag, current, r.Tag)
+				return nil, fmt.Errorf("%s is not newer than the installed %s — to go back to an older version, reinstall it with the installer (FOX_VERSION=%s)", r.Tag, current, r.Tag)
 			}
 			if m := missingAssets(r, required); len(m) > 0 {
 				return nil, fmt.Errorf("release %s is missing %s", r.Tag, strings.Join(m, ", "))
@@ -124,7 +124,7 @@ func Candidates(rels []Release, current Version, t Target, pin string) ([]Releas
 	return out, nil
 }
 
-// Release finds a release to install from, with its checksums — what `odb setup`
+// Release finds a release to install from, with its checksums — what `fox setup`
 // needs, where "newer than what is installed" doesn't apply: setup installs the
 // engine of a chosen release, whatever this machine currently runs.
 //
@@ -197,7 +197,7 @@ func (c *Client) Release(ctx context.Context, tag string, t Target) (*Offer, err
 	return &Offer{Release: r, Version: v, Sums: sums, Required: required}, nil
 }
 
-// Available is the check `odb start` makes: the newest release worth telling the
+// Available is the check `fox start` makes: the newest release worth telling the
 // user about, or nil when this install is up to date.
 //
 // It uses the releases list alone — one request — and does NOT download
@@ -205,7 +205,7 @@ func (c *Client) Release(ctx context.Context, tag string, t Target) (*Offer, err
 // hard (measured on 15 Sep 2026: the same SHA256SUMS took 0.5 s once, then 7–75 s
 // on later requests from the same machine), so fetching it on every start made
 // the notice miss its budget and stay silent. The offer it returns therefore has
-// no Sums; `odb update` calls Resolve, which downloads SHA256SUMS and verifies
+// no Sums; `fox update` calls Resolve, which downloads SHA256SUMS and verifies
 // every file before anything is installed.
 func (c *Client) Available(ctx context.Context, current Version, t Target) (*Offer, error) {
 	rels, err := c.ListReleases(ctx)

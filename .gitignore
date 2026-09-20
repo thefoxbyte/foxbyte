@@ -1,6 +1,6 @@
 # Binaries
 /bin/
-/oxyndb
+/foxbyte
 *.exe
 
 # Go

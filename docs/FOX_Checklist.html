@@ -2,17 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>ODB_Checklist — OxynDB</title>
+<title>FOX_Checklist — FoxByte</title>
 <!--
   ==========================================================================
-  ODB_Checklist  (this HTML file is the editable source)
+  FOX_Checklist  (this HTML file is the editable source)
   --------------------------------------------------------------------------
-  Where OxynDB is: every feature and its sub-features, whether each is
-  built, and how it was tested. The companion of ODB_Feature_Implemented.html
+  Where FoxByte is: every feature and its sub-features, whether each is
+  built, and how it was tested. The companion of FOX_Feature_Implemented.html
   (which explains HOW each feature works) — same ids, one row per feature.
 
   THE RULE: every feature, fix or change updates this file in the SAME commit
-  as the code and ODB_Feature_Implemented.html, then `make feature-doc`
+  as the code and FOX_Feature_Implemented.html, then `make feature-doc`
   re-renders both PDFs. CI (scripts/test_feature_checklist.sh) fails if a
   feature id exists in one document and not the other.
 
@@ -98,13 +98,13 @@
 <!-- ============================ OVERVIEW ============================ -->
 <section class="page">
   <div class="kicker">Living checklist · updated with every change</div>
-  <h1>ODB_<span class="grad">Checklist</span></h1>
+  <h1>FOX_<span class="grad">Checklist</span></h1>
   <div class="rule"></div>
   <div class="meta">
-    <b>What this is:</b> every OxynDB feature and its sub-features — built or not, and how it was tested — so it's clear where we are and what's next.
-    How each feature works is in <code>ODB_Feature_Implemented.pdf</code> (same ids).<br>
-    <b>Last updated:</b> 18 September 2026 &nbsp;·&nbsp; <b>Reflects:</b> <code>main</code> @ <code>785105e</code> (v0.8.7, the OxynDB rename PR #47) + the exact repository path (<code>fix/repo-path-oxyndb</code>)<br>
-    <b>Source:</b> <code>docs/ODB_Checklist.html</code> → <code>make feature-doc</code> → this PDF
+    <b>What this is:</b> every FoxByte feature and its sub-features — built or not, and how it was tested — so it's clear where we are and what's next.
+    How each feature works is in <code>FOX_Feature_Implemented.pdf</code> (same ids).<br>
+    <b>Last updated:</b> 18 September 2026 &nbsp;·&nbsp; <b>Reflects:</b> <code>main</code> @ <code>785105e</code> (v0.8.7, the FoxByte rename PR #47) + the exact repository path (<code>fix/repo-path-foxbyte</code>)<br>
+    <b>Source:</b> <code>docs/FOX_Checklist.html</code> → <code>make feature-doc</code> → this PDF
   </div>
 
   <div class="legend">
@@ -127,7 +127,7 @@
 
   <div class="note">
     <h3>Storage engine — not implemented, by design</h3>
-    <p>OxynDB does <b>not</b> have its own storage engine. Data is stored by <b>PostgreSQL 16's own engine</b> (heap tables, B-tree indexes, write-ahead log) running on local disk inside the stock <code>postgres:16-bookworm</code> image plus wal-g.
+    <p>FoxByte does <b>not</b> have its own storage engine. Data is stored by <b>PostgreSQL 16's own engine</b> (heap tables, B-tree indexes, write-ahead log) running on local disk inside the stock <code>postgres:16-bookworm</code> image plus wal-g.
     This was a locked architecture decision: a Neon-style engine that separates compute from storage over the network adds latency to every transaction, and transaction speed must never be compromised.</p>
     <p>What <b>is</b> built is a storage <i>layer</i> around Postgres: copy-on-write branch drivers — ZFS on macOS/Linux, btrfs on Windows — behind one interface in <code>internal/branch/storage.go</code> (C1), quotas (C6), capacity reporting (C7), and durability to object storage with wal-g + MinIO: WAL archiving, base backups, point-in-time restore (D1–D3).
     Networked storage disaggregation is listed in the README roadmap but not started (see "Not started").</p>
@@ -135,14 +135,14 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-    <li>Run <code>odb update</code> against a real release on macOS and Windows (A9) — cut v0.9.0, install it, then update to v0.9.1.</li>
+    <li>Run <code>fox update</code> against a real release on macOS and Windows (A9) — cut v0.9.0, install it, then update to v0.9.1.</li>
     <li>HA beyond the demo: archive WAL while main runs on the promoted standby, then automatic failover and fencing (D4). <i>(Safety fixes C3, D4 hazards, H7, I5, I6 done.)</i></li>
-    <li>Verify downloads everywhere: installers and <code>odb setup</code>'s engine download still skip <code>SHA256SUMS</code> (A1, A2, A7).</li>
+    <li>Verify downloads everywhere: installers and <code>fox setup</code>'s engine download still skip <code>SHA256SUMS</code> (A1, A2, A7).</li>
     <li><s>Check the web pages that were built but never used signed in: Integrity, Policies, sidebar (L8–L10); add Blackbox filters (L5).</s> Done — both, in the browser.</li>
     <li>Add automated tests where there are none: imports (I1–I3, I7 — I5 and I8 now covered), SDKs (K3, K4), web UI (L*).</li>
     <li>Run the VM integration suites in CI (M2).</li>
   </ol>
-  <div class="foot">ODB_Checklist · overview</div>
+  <div class="foot">FOX_Checklist · overview</div>
 </section>
 
 <!-- ============================ A ============================ -->
@@ -152,37 +152,37 @@
     <tr><th></th><th>ID</th><th>Feature · sub-features</th><th>Tested by</th></tr>
     <tr data-id="A1" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">A1</td><td><b>One-line installer (macOS / Linux)</b><ul class="subs">
       <li class="ok">Detects OS / CPU, downloads the release binary</li><li class="ok">Installs to the prefix (sudo only if needed)</li>
-      <li class="ok">Stages the Linux engine for the VM on macOS</li><li class="ok"><code>ODB_VERSION</code>, <code>ODB_REPO</code>, <code>ODB_DIST</code>, <code>ODB_PREFIX</code></li>
+      <li class="ok">Stages the Linux engine for the VM on macOS</li><li class="ok"><code>FOX_VERSION</code>, <code>FOX_REPO</code>, <code>FOX_DIST</code>, <code>FOX_PREFIX</code></li>
       <li class="ok">Verifies every download against <code>SHA256SUMS</code>; refuses what it can't check</li></ul></td><td class="tb">Unit (<code>test_install_sh.sh</code>, CI); manual</td></tr>
     <tr data-id="A2" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">A2</td><td><b>Windows installer (install.ps1)</b><ul class="subs">
-      <li class="ok">Installs WSL, elevates, resumes after reboot</li><li class="ok">Downloads odb.exe, engine, image build context</li>
-      <li class="ok">Ubuntu rootfs verified against Ubuntu's checksums</li><li class="ok">Adds to PATH and runs <code>odb setup</code></li>
-      <li class="ok">Prefers the prebuilt distro image, falls back to the rootfs</li><li class="ok">Verifies OxynDB's own downloads</li>
+      <li class="ok">Installs WSL, elevates, resumes after reboot</li><li class="ok">Downloads bb.exe, engine, image build context</li>
+      <li class="ok">Ubuntu rootfs verified against Ubuntu's checksums</li><li class="ok">Adds to PATH and runs <code>fox setup</code></li>
+      <li class="ok">Prefers the prebuilt distro image, falls back to the rootfs</li><li class="ok">Verifies FoxByte's own downloads</li>
       <li class="ok">Run on a real Windows machine (distro image downloaded and verified)</li></ul></td><td class="tb">Pester (Windows CI); Windows run 16 Sep</td></tr>
-    <tr data-id="A3" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">A3</td><td><b><code>odb setup</code> on macOS (Lima)</b><ul class="subs">
+    <tr data-id="A3" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">A3</td><td><b><code>fox setup</code> on macOS (Lima)</b><ul class="subs">
       <li class="ok">Creates / starts the Lima VM</li><li class="ok">Installs Docker and ZFS</li>
       <li class="ok">Reinstalls the engine on every run</li><li class="ok">Starts the stack</li>
       <li class="todo">Repair an interrupted VM provisioning</li><li class="todo">Stage the image build context (fallback build)</li></ul></td><td class="tb">Manual (from-scratch VM run)</td></tr>
-    <tr data-id="A4" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">A4</td><td><b><code>odb setup</code> on Windows (WSL2 + btrfs)</b><ul class="subs">
+    <tr data-id="A4" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">A4</td><td><b><code>fox setup</code> on Windows (WSL2 + btrfs)</b><ul class="subs">
       <li class="ok">Imports a dedicated distro with systemd</li><li class="ok">Docker, btrfs and a storage mount unit</li>
       <li class="ok">Quiet steps, detail in install.log</li><li class="ok">Waits for systemd on a cold distro</li>
       <li class="ok">Preloaded images tagged as the engine runs them</li><li class="ok">Summary with API key and <code>sslmode</code></li>
       <li class="ok">Fresh install from v0.8.6 on Windows: preload used, no apt, key in the summary</li></ul></td><td class="tb">Unit (<code>host_wsl_test.go</code>); Windows run 16 Sep</td></tr>
     <tr data-id="A5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">A5</td><td><b>Linux native</b><ul class="subs">
-      <li class="ok">Engine runs in-process, no VM</li><li class="ok"><code>odb setup</code> explains nothing is needed</li></ul></td><td class="tb">VM integration (all suites run on Linux)</td></tr>
+      <li class="ok">Engine runs in-process, no VM</li><li class="ok"><code>fox setup</code> explains nothing is needed</li></ul></td><td class="tb">VM integration (all suites run on Linux)</td></tr>
     <tr data-id="A6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">A6</td><td><b>Command forwarding &amp; host file streaming</b><ul class="subs">
       <li class="ok">macOS → Lima VM, starts the VM if stopped</li><li class="ok">Windows → WSL distro</li>
-      <li class="ok"><code>odb import</code> streams a host file over stdin</li><li class="todo">Stream <code>pipeline run</code> spec files too</li></ul></td><td class="tb">Unit (<code>TestImportLocalFile</code>, <code>TestWSLArgs</code>)</td></tr>
+      <li class="ok"><code>fox import</code> streams a host file over stdin</li><li class="todo">Stream <code>pipeline run</code> spec files too</li></ul></td><td class="tb">Unit (<code>TestImportLocalFile</code>, <code>TestWSLArgs</code>)</td></tr>
     <tr data-id="A7" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">A7</td><td><b>Always-latest engine binary</b><ul class="subs">
-      <li class="ok">Downloads the newest engine into the cache (ELF check)</li><li class="ok"><code>OXYNDB_NO_REFRESH</code>, <code>ODB_VERSION</code></li>
+      <li class="ok">Downloads the newest engine into the cache (ELF check)</li><li class="ok"><code>FOX_NO_REFRESH</code>, <code>FOX_VERSION</code></li>
       <li class="ok">Verified against <code>SHA256SUMS</code>; keeps the staged engine if not</li>
       <li class="ok">Seen verifying on a real Windows install</li></ul></td><td class="tb">Unit (<code>host_test.go</code>, <code>update_test.go</code>); Windows run 16 Sep</td></tr>
-    <tr data-id="A8" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">A8</td><td><b>New-release notice on <code>odb start</code></b><ul class="subs">
+    <tr data-id="A8" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">A8</td><td><b>New-release notice on <code>fox start</code></b><ul class="subs">
       <li class="ok">Background check, 1.5 s limit, printed last</li><li class="ok">Only a promoted, newer, complete release</li>
       <li class="ok">One request per start; a found release remembered 6 h, never &quot;up to date&quot;</li><li class="ok">Off switch; never on dev builds; silent offline</li></ul></td><td class="tb">Unit; update §1, §1b, §2, §3, §8; real Mac check</td></tr>
-    <tr data-id="A9" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">A9</td><td><b><code>odb update</code></b><ul class="subs">
+    <tr data-id="A9" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">A9</td><td><b><code>fox update</code></b><ul class="subs">
       <li class="ok">Downloads and verifies everything before changing anything</li><li class="ok">Stops servers, installs engine, restarts old one on failure</li>
-      <li class="ok"><code>up</code>, Blackbox upgrade, <code>start</code> on the new engine</li><li class="ok">Replaces host <code>odb</code>, keeps previous binaries</li>
+      <li class="ok"><code>up</code>, Blackbox upgrade, <code>start</code> on the new engine</li><li class="ok">Replaces host <code>fox</code>, keeps previous binaries</li>
       <li class="ok"><code>--check</code>, <code>--yes</code>, <code>--version</code></li><li class="ok">Linux path verified end to end</li>
       <li class="ok">macOS path run against real releases (v0.8.3 → v0.8.4 → v0.8.5)</li><li class="todo">Windows path run against a real release (deferred)</li>
       <li class="todo">Release signatures</li></ul></td><td class="tb">Unit; update §4–§7; a real Mac run</td></tr>
@@ -194,13 +194,13 @@
   <h2><span class="al">B</span>CLI &amp; services<span class="cnt"></span></h2>
   <table>
     <tr><th></th><th>ID</th><th>Feature · sub-features</th><th>Tested by</th></tr>
-    <tr data-id="B1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">B1</td><td><b>The <code>odb</code> command set</b><ul class="subs">
+    <tr data-id="B1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">B1</td><td><b>The <code>fox</code> command set</b><ul class="subs">
       <li class="ok">Stack: setup, start, stop, up, down, status, logs, psql, update</li><li class="ok">Branching, backup / restore, HA</li>
       <li class="ok">Blackbox, policy, impact</li><li class="ok">Import, pipelines</li>
-      <li class="ok">Users, API keys, admin</li><li class="ok"><code>odb vm status</code> / <code>odb vm shell</code> (Lima, WSL; Linux says there is no VM)</li>
+      <li class="ok">Users, API keys, admin</li><li class="ok"><code>fox vm status</code> / <code>fox vm shell</code> (Lima, WSL; Linux says there is no VM)</li>
       <li class="todo"><code>branch create --from</code></li></ul></td><td class="tb">Unit (<code>main_test.go</code>, <code>update_test.go</code>); VM suites</td></tr>
     <tr data-id="B2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">B2</td><td><b>Background services (daemon)</b><ul class="subs">
-      <li class="ok">Control plane :8080, gateway :6432, agent API :8088</li><li class="ok">Detached, pidfiles and logs in <code>~/.oxyndb</code></li>
+      <li class="ok">Control plane :8080, gateway :6432, agent API :8088</li><li class="ok">Detached, pidfiles and logs in <code>~/.fox</code></li>
       <li class="ok">Stop (TERM then KILL), status, logs</li><li class="todo">Health check / restart on crash</li></ul></td><td class="tb">Unit (<code>TestStopTerminatesProcess</code>); VM §1</td></tr>
   </table>
 </section>
@@ -251,8 +251,8 @@
       <li class="ok">A point no backup precedes is refused, naming the oldest</li></ul></td><td class="tb">Unit; VM §3, §3b, §6; v2 §1a</td></tr>
     <tr data-id="D4" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">D4</td><td><b>HA standby &amp; failover</b><ul class="subs">
       <li class="ok">Streaming hot standby</li><li class="ok">Manual failover, <code>main</code> rerouted</li>
-      <li class="ok">Nothing deletes or stops the promoted standby</li><li class="ok"><code>odb up</code> brings it back, not the old main</li>
-      <li class="ok"><code>odb ha failback</code>, keeping every write</li><li class="ok">The promoted standby archives WAL, so backups and PITR cover the failover</li>
+      <li class="ok">Nothing deletes or stops the promoted standby</li><li class="ok"><code>fox up</code> brings it back, not the old main</li>
+      <li class="ok"><code>fox ha failback</code>, keeping every write</li><li class="ok">The promoted standby archives WAL, so backups and PITR cover the failover</li>
       <li class="todo">Automatic failover, fencing, multi-host</li></ul></td><td class="tb">Unit; VM §6, §7</td></tr>
   </table>
 </section>
@@ -279,12 +279,12 @@
     <tr data-id="F1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F1</td><td><b>Routing by database name</b><ul class="subs">
       <li class="ok">One endpoint :6432, database name = branch</li><li class="todo">Connection pooling, rate limiting</li></ul></td><td class="tb">Unit; VM §1, §6</td></tr>
     <tr data-id="F2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F2</td><td><b>API-key authentication</b><ul class="subs">
-      <li class="ok"><code>odb_</code> key as the Postgres password</li><li class="ok">Bad key rejected with a Postgres error</li></ul></td><td class="tb">VM §1</td></tr>
+      <li class="ok"><code>key_</code> key as the Postgres password</li><li class="ok">Bad key rejected with a Postgres error</li></ul></td><td class="tb">VM §1</td></tr>
     <tr data-id="F3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F3</td><td><b>Backend login (SCRAM)</b><ul class="subs">
       <li class="ok">Cleartext, md5, SCRAM-SHA-256</li><li class="ok">Clients never see the database password</li>
       <li class="todo">Unit test for SCRAM</li></ul></td><td class="tb">VM §1, §6, §8 (exercised)</td></tr>
     <tr data-id="F4" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">F4</td><td><b>Per-user Postgres login roles</b><ul class="subs">
-      <li class="ok">Role per user, actor can't be forged</li><li class="ok">Permissions of non-superuser <code>odbclient</code></li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">Role per user, actor can't be forged</li><li class="ok">Permissions of non-superuser <code>db_client</code></li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="F5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F5</td><td><b>Attribution session settings</b><ul class="subs">
       <li class="ok">Actor kind, branch, session id per connection</li><li class="part">Kind / branch / session client-settable</li></ul></td><td class="tb">VM §8</td></tr>
     <tr data-id="F6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F6</td><td><b>Ctrl-C (CancelRequest) forwarding</b><ul class="subs">
@@ -323,32 +323,32 @@
       <li class="ok">Who, tool, branch, statement, status, risk</li><li class="ok">Inherited by every branch</li>
       <li class="todo">Role / database changes, some dropped object types</li></ul></td><td class="tb">VM §8</td></tr>
     <tr data-id="H2" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">H2</td><td><b>Hash chain, append-only &amp; verify</b><ul class="subs">
-      <li class="ok">Rows can't be edited or deleted normally</li><li class="ok"><code>odb ledger verify</code></li>
-      <li class="part">Superuser rewrite caught only via anchors (H10–H12)</li><li class="ok"><code>odb.policy</code> changes recorded (append-only, not chained)</li></ul></td><td class="tb">VM §8; v2 §0, §6b</td></tr>
+      <li class="ok">Rows can't be edited or deleted normally</li><li class="ok"><code>fox ledger verify</code></li>
+      <li class="part">Superuser rewrite caught only via anchors (H10–H12)</li><li class="ok"><code>bb.policy</code> changes recorded (append-only, not chained)</li></ul></td><td class="tb">VM §8; v2 §0, §6b</td></tr>
     <tr data-id="H3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H3</td><td><b>Attribution</b><ul class="subs">
       <li class="ok">Humans via their login role</li><li class="ok">Agents via their own <code>agent-&lt;id&gt;</code> role</li>
       <li class="ok">Kind derived from the role, so neither can pose as the other</li>
       <li class="ok">Tool and session are client-declared by design, and labelled so</li></ul></td><td class="tb">Unit; VM §8; v2 §1c</td></tr>
     <tr data-id="H4" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H4</td><td><b>Destructive-DDL guardrail</b><ul class="subs">
-      <li class="ok">DROP TABLE / DROP SCHEMA refused, attempt recorded</li><li class="ok">Override only superusers / <code>odb_admin</code>, use recorded</li>
+      <li class="ok">DROP TABLE / DROP SCHEMA refused, attempt recorded</li><li class="ok">Override only superusers / <code>db_admin</code>, use recorded</li>
       <li class="ok">"flag" and "allow" actions; unknown actions refused</li><li class="ok">No hang when blocked after a write in the same transaction</li></ul></td><td class="tb">VM §8; v2 §1b, §6b</td></tr>
     <tr data-id="H5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H5</td><td><b>Risk flags</b><ul class="subs">
       <li class="ok">Type change, drop column flagged</li><li class="ok">Judged on the running statement (no comments or literals)</li>
       <li class="ok">Automated test</li></ul></td><td class="tb">Unit; v2 §6b</td></tr>
     <tr data-id="H6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H6</td><td><b>Blackbox access (CLI / REST / MCP / UI / SDK)</b><ul class="subs">
       <li class="ok">CLI, REST with filters, MCP, web page, SDKs</li><li class="todo">Per-user access control</li></ul></td><td class="tb">v2 §0, §5</td></tr>
-    <tr data-id="H7" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H7</td><td><b><code>odb ledger revert --to</code></b><ul class="subs">
+    <tr data-id="H7" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H7</td><td><b><code>fox ledger revert --to</code></b><ul class="subs">
       <li class="ok">Help and output say it's a point-in-time restore of main</li><li class="ok">Points to H13 for a branch from before a change</li></ul></td><td class="tb">Unit (help text); VM §3 (the restore)</td></tr>
-    <tr data-id="H8" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H8</td><td><b>Override permission (odb_admin) &amp; upgrade</b><ul class="subs">
-      <li class="ok"><code>odb admin grant|revoke|list</code></li><li class="ok">First user granted automatically</li>
-      <li class="ok"><code>odb blackbox upgrade [--all]</code></li><li class="ok">Grant / revoke from the web (admins only)</li></ul></td><td class="tb">v2 §1b, §6</td></tr>
+    <tr data-id="H8" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H8</td><td><b>Override permission (db_admin) &amp; upgrade</b><ul class="subs">
+      <li class="ok"><code>fox admin grant|revoke|list</code></li><li class="ok">First user granted automatically</li>
+      <li class="ok"><code>fox blackbox upgrade [--all]</code></li><li class="ok">Grant / revoke from the web (admins only)</li></ul></td><td class="tb">v2 §1b, §6</td></tr>
     <tr data-id="H9" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H9</td><td><b>Blackbox 2.0 capture</b><ul class="subs">
       <li class="ok">Transaction id and WAL position per entry</li><li class="ok">Task, tool-call hash, override use</li>
       <li class="ok">Fail-safe, append-only</li><li class="ok">Kill switch not settable by clients</li></ul></td><td class="tb">Unit; v2 §2</td></tr>
     <tr data-id="H10" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H10</td><td><b>Checkpoints &amp; anchors</b><ul class="subs">
       <li class="ok">Merkle root in the database and in read-only anchor files</li><li class="ok">On a schedule and on demand</li>
       <li class="ok">Published anchor format</li><li class="todo">Cloud write-once anchors (S3 Object Lock)</li></ul></td><td class="tb">Unit; v2 §3, §3b</td></tr>
-    <tr data-id="H11" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H11</td><td><b>odb-verify (independent verifier)</b><ul class="subs">
+    <tr data-id="H11" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H11</td><td><b>fox-verify (independent verifier)</b><ul class="subs">
       <li class="ok">Checks a live branch or an export</li><li class="ok">Release binaries for every platform</li></ul></td><td class="tb">Unit; v2 §3</td></tr>
     <tr data-id="H12" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H12</td><td><b>Blackbox integrity &amp; export</b><ul class="subs">
       <li class="ok">INTACT / TAMPERED via CLI, REST, MCP</li><li class="ok">JSON-lines export</li>
@@ -357,14 +357,14 @@
       <li class="ok">Restore + replay up to the change's transaction</li><li class="ok">By transaction id or timestamp</li>
       <li class="ok">CLI, REST, MCP, web panel</li><li class="ok">main untouched</li></ul></td><td class="tb">Unit; v2 §4</td></tr>
     <tr data-id="H14" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H14</td><td><b>Blackbox names &amp; aliases</b><ul class="subs">
-      <li class="ok"><code>odb blackbox</code>, <code>/blackbox</code> routes, MCP and SDK names</li><li class="ok">Every original name still works</li></ul></td><td class="tb">Unit; v2 §5</td></tr>
+      <li class="ok"><code>fox blackbox</code>, <code>/blackbox</code> routes, MCP and SDK names</li><li class="ok">Every original name still works</li></ul></td><td class="tb">Unit; v2 §5</td></tr>
     <tr data-id="H15" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H15</td><td><b>Policy gate (warn / block)</b><ul class="subs">
-      <li class="ok">ODB02 warn / ODB01 block with JSON detail</li><li class="ok">Blocked attempts recorded</li>
-      <li class="ok">Per-rule <code>odb_admin</code> override</li><li class="ok">CLI, REST, MCP, web page; custom rules</li>
+      <li class="ok">BBX02 warn / BBX01 block with JSON detail</li><li class="ok">Blocked attempts recorded</li>
+      <li class="ok">Per-rule <code>db_admin</code> override</li><li class="ok">CLI, REST, MCP, web page; custom rules</li>
       <li class="ok">Patterns match the running statement</li><li class="todo">TRUNCATE</li></ul></td><td class="tb">Unit; v2 §6, §6b</td></tr>
     <tr data-id="H16" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H16</td><td><b>Agent provenance &amp; execute_change</b><ul class="subs">
       <li class="ok">Session, task, parent session on every agent change (also through the Gateway DSN)</li><li class="ok">MCP <code>execute_change</code> with policy preview</li>
-      <li class="ok"><code>odb blackbox sessions</code>, REST</li><li class="part">Provenance is what the agent says (not verified)</li></ul></td><td class="tb">Unit; v2 §7</td></tr>
+      <li class="ok"><code>fox blackbox sessions</code>, REST</li><li class="part">Provenance is what the agent says (not verified)</li></ul></td><td class="tb">Unit; v2 §7</td></tr>
     <tr data-id="H17" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H17</td><td><b>Impact analysis</b><ul class="subs">
       <li class="ok">Dependents (views, foreign keys, indexes, depth)</li><li class="ok">Other branches that have the object</li>
       <li class="ok">Policy verdict and risk score</li><li class="ok">CLI, REST, MCP, inside execute_change</li>
@@ -497,8 +497,8 @@
     <tr data-id="M3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M3</td><td><b>Windows CI</b><ul class="subs">
       <li class="ok">Build, vet, test, Pester, installer encoding</li><li class="todo">End-to-end WSL install test</li></ul></td><td class="tb">CI</td></tr>
     <tr data-id="M4" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M4</td><td><b>Releases &amp; GHCR image</b><ul class="subs">
-      <li class="ok">Binaries for 5 platforms + odb-verify</li><li class="ok">SHA256SUMS merged safely between jobs</li>
-      <li class="ok">Fails unless <code>odb update</code>'s files are published</li><li class="ok">Multi-arch Postgres image on GHCR</li></ul></td><td class="tb">Script tests in CI</td></tr>
+      <li class="ok">Binaries for 5 platforms + fox-verify</li><li class="ok">SHA256SUMS merged safely between jobs</li>
+      <li class="ok">Fails unless <code>fox update</code>'s files are published</li><li class="ok">Multi-arch Postgres image on GHCR</li></ul></td><td class="tb">Script tests in CI</td></tr>
     <tr data-id="M5" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">M5</td><td><b>WSL distro &amp; ZFS builds</b><ul class="subs">
       <li class="ok">Prebuilt distro image</li><li class="ok">Downloaded and verified by the installer (seen on Windows)</li><li class="ok">Preloaded image tagged as the engine runs it</li>
       <li class="ok">Imported on a fresh Windows install; preloaded images loaded</li><li class="part">685 MB download (rootfs fallback covers failures)</li></ul></td><td class="tb">Actions artifacts; Pester; Windows run 16 Sep</td></tr>
@@ -529,7 +529,7 @@
     <h3>Out of scope by decision</h3>
     <p>A custom storage engine (PostgreSQL's own engine is used, for native transaction speed), sharding, Raft / distributed transactions, multi-region, HTAP.</p>
   </div>
-  <div class="foot">ODB_Checklist · keep in step with ODB_Feature_Implemented — CI checks the ids match</div>
+  <div class="foot">FOX_Checklist · keep in step with FOX_Feature_Implemented — CI checks the ids match</div>
 </section>
 
 <script>

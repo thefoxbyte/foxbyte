@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	// DefaultBaseURL is the GitHub API. ODB_UPDATE_BASE_URL points elsewhere (tests).
+	// DefaultBaseURL is the GitHub API. FOX_UPDATE_BASE_URL points elsewhere (tests).
 	DefaultBaseURL = "https://api.github.com"
-	// DefaultRepo matches the installers; ODB_REPO overrides it.
-	DefaultRepo = "OxynDB/oxyndb"
+	// DefaultRepo matches the installers; FOX_REPO overrides it.
+	DefaultRepo = "foxbyte/foxbyte"
 )
 
 // Asset is one file attached to a release.
@@ -58,13 +58,13 @@ type Client struct {
 	NoticePath string // optional: remembers the last start-time check (see BackgroundCheck)
 }
 
-// NewClient builds a client from the environment (ODB_UPDATE_BASE_URL, ODB_REPO).
+// NewClient builds a client from the environment (FOX_UPDATE_BASE_URL, FOX_REPO).
 func NewClient(getenv func(string) string, cachePath string) *Client {
-	base := strings.TrimRight(strings.TrimSpace(getenv("ODB_UPDATE_BASE_URL")), "/")
+	base := strings.TrimRight(strings.TrimSpace(getenv("FOX_UPDATE_BASE_URL")), "/")
 	if base == "" {
 		base = DefaultBaseURL
 	}
-	repo := strings.TrimSpace(getenv("ODB_REPO"))
+	repo := strings.TrimSpace(getenv("FOX_REPO"))
 	if repo == "" {
 		repo = DefaultRepo
 	}
@@ -87,7 +87,7 @@ func (c *Client) request(ctx context.Context, url string) (*http.Request, error)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "odb-updater")
+	req.Header.Set("User-Agent", "fox-updater")
 	return req, nil
 }
 

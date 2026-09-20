@@ -10,26 +10,26 @@ Describe 'Resolve-Arch' {
     }
 }
 
-Describe 'Get-OdbAsset (latest)' {
+Describe 'Get-FoxAsset (latest)' {
     BeforeAll {
-        $env:ODB_VERSION = $null
+        $env:FOX_VERSION = $null
         . "$PSScriptRoot/install.ps1"
     }
     It 'builds a latest release URL' {
-        Get-OdbAsset 'odb-windows-amd64.exe' |
-            Should -Be 'https://github.com/OxynDB/oxyndb/releases/latest/download/odb-windows-amd64.exe'
+        Get-FoxAsset 'fox-windows-amd64.exe' |
+            Should -Be 'https://github.com/foxbyte/foxbyte/releases/latest/download/fox-windows-amd64.exe'
     }
 }
 
-Describe 'Get-OdbAsset (pinned)' {
+Describe 'Get-FoxAsset (pinned)' {
     BeforeAll {
-        $env:ODB_VERSION = 'v1.2.3'
+        $env:FOX_VERSION = 'v1.2.3'
         . "$PSScriptRoot/install.ps1"
     }
-    AfterAll { $env:ODB_VERSION = $null }
+    AfterAll { $env:FOX_VERSION = $null }
     It 'builds a versioned release URL' {
-        Get-OdbAsset 'odb-windows-amd64.exe' |
-            Should -Be 'https://github.com/OxynDB/oxyndb/releases/download/v1.2.3/odb-windows-amd64.exe'
+        Get-FoxAsset 'fox-windows-amd64.exe' |
+            Should -Be 'https://github.com/foxbyte/foxbyte/releases/download/v1.2.3/fox-windows-amd64.exe'
     }
 }
 
@@ -47,7 +47,7 @@ Describe 'Add-ToPath' {
 # staging modules that cannot load. Must agree with zfsBundleName in
 # internal/host/host_wsl.go.
 # TC4.6 -- the installer must not depend on WSL. Choosing the ZFS bundle moved
-# into `odb setup`, which is the first point the right kernel is knowable; an
+# into `fox setup`, which is the first point the right kernel is knowable; an
 # installer that needed WSL first is what forced the old manual multi-step setup.
 Describe 'installer is independent of WSL' {
     BeforeAll { . "$PSScriptRoot/install.ps1" }
@@ -75,36 +75,36 @@ Describe 'installer is independent of WSL' {
 # breaks `irm | iex` ("The term '# ' is not recognized"), and no BOM makes
 # Windows PowerShell 5.1 read non-ASCII as ANSI and fail to parse the file.
 # Pure ASCII with no BOM is the only encoding that satisfies both.
-Describe 'OxynDB release verification' {
+Describe 'FoxByte release verification' {
     # Dot-sourcing loads the installer's functions without running it, as every
     # other block here does. The listing is primed through the same script-scoped
-    # cache Get-OdbSums fills, so these exercise the real lookup rather than a mock.
+    # cache Get-FoxSums fills, so these exercise the real lookup rather than a mock.
     BeforeAll {
         . "$PSScriptRoot/install.ps1"
-        $script:listing = ('a' * 64) + "  odb-windows-amd64.exe`n" + ('b' * 64) + " *oxyndb-distro.tar.gz`n"
+        $script:listing = ('a' * 64) + "  fox-windows-amd64.exe`n" + ('b' * 64) + " *foxbyte-distro.tar.gz`n"
     }
     BeforeEach {
-        $env:ODB_NO_VERIFY = $null
-        Set-Variable -Name OdbSums -Scope Script -Value $script:listing
+        $env:FOX_NO_VERIFY = $null
+        Set-Variable -Name FoxSums -Scope Script -Value $script:listing
     }
-    AfterAll { $env:ODB_NO_VERIFY = $null }
+    AfterAll { $env:FOX_NO_VERIFY = $null }
 
     It 'reads a checksum from the release listing' {
-        Get-OdbChecksum 'odb-windows-amd64.exe' | Should -Be ('a' * 64)
+        Get-FoxChecksum 'fox-windows-amd64.exe' | Should -Be ('a' * 64)
     }
 
     It 'accepts the binary-mode "*name" form' {
-        Get-OdbChecksum 'oxyndb-distro.tar.gz' | Should -Be ('b' * 64)
+        Get-FoxChecksum 'foxbyte-distro.tar.gz' | Should -Be ('b' * 64)
     }
 
     It 'refuses an asset the listing does not name' {
-        { Get-OdbChecksum 'odb-linux-amd64' } | Should -Throw '*not listed in SHA256SUMS*'
+        { Get-FoxChecksum 'fox-linux-amd64' } | Should -Throw '*not listed in SHA256SUMS*'
     }
 
     It 'deletes a file whose checksum does not match and stops the install' {
-        $f = Join-Path $TestDrive 'odb-windows-amd64.exe'
+        $f = Join-Path $TestDrive 'fox-windows-amd64.exe'
         Set-Content -Path $f -Value 'not the real binary' -NoNewline
-        { Assert-OdbChecksum $f 'odb-windows-amd64.exe' } | Should -Throw '*checksum mismatch*'
+        { Assert-FoxChecksum $f 'fox-windows-amd64.exe' } | Should -Throw '*checksum mismatch*'
         Test-Path $f | Should -BeFalse
     }
 
@@ -112,23 +112,23 @@ Describe 'OxynDB release verification' {
         $f = Join-Path $TestDrive 'ok.bin'
         Set-Content -Path $f -Value 'contents' -NoNewline
         $hash = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLower()
-        Set-Variable -Name OdbSums -Scope Script -Value "$hash  ok.bin"
-        { Assert-OdbChecksum $f 'ok.bin' } | Should -Not -Throw
+        Set-Variable -Name FoxSums -Scope Script -Value "$hash  ok.bin"
+        { Assert-FoxChecksum $f 'ok.bin' } | Should -Not -Throw
         Test-Path $f | Should -BeTrue
     }
 
-    It 'skips verification when ODB_NO_VERIFY=1' {
-        $env:ODB_NO_VERIFY = '1'
+    It 'skips verification when FOX_NO_VERIFY=1' {
+        $env:FOX_NO_VERIFY = '1'
         $f = Join-Path $TestDrive 'skip.bin'
         Set-Content -Path $f -Value 'whatever' -NoNewline
-        Get-OdbChecksum 'anything' | Should -BeNullOrEmpty
-        { Assert-OdbChecksum $f 'anything' } | Should -Not -Throw
+        Get-FoxChecksum 'anything' | Should -BeNullOrEmpty
+        { Assert-FoxChecksum $f 'anything' } | Should -Not -Throw
     }
 
     It 'treats an unverifiable staged copy as unusable' {
         $f = Join-Path $TestDrive 'stale.tar.gz'
         Set-Content -Path $f -Value 'stale' -NoNewline
-        Test-OdbChecksum $f 'oxyndb-distro.tar.gz' | Should -BeFalse
+        Test-FoxChecksum $f 'foxbyte-distro.tar.gz' | Should -BeFalse
     }
 }
 
@@ -136,16 +136,16 @@ Describe 'installer prefers the prebuilt distro' {
     BeforeAll { $script:src = Get-Content -Raw (Join-Path $PSScriptRoot 'install.ps1') }
 
     It 'downloads the distro image' {
-        $script:src | Should -Match "Get-OdbAsset 'oxyndb-distro.tar.gz'"
+        $script:src | Should -Match "Get-FoxAsset 'foxbyte-distro.tar.gz'"
     }
 
     It 'falls back to the Ubuntu rootfs when the distro is unusable' {
         $script:src | Should -Match 'falling back to the Ubuntu rootfs'
     }
 
-    It 'verifies every OxynDB asset it keeps' {
-        foreach ($name in 'odb-windows-amd64.exe', 'odb-linux-amd64', 'oxyndb-docker-context.tar.gz', 'oxyndb-distro.tar.gz') {
-            $script:src | Should -Match ([regex]::Escape("Assert-OdbChecksum"))
+    It 'verifies every FoxByte asset it keeps' {
+        foreach ($name in 'fox-windows-amd64.exe', 'fox-linux-amd64', 'foxbyte-docker-context.tar.gz', 'foxbyte-distro.tar.gz') {
+            $script:src | Should -Match ([regex]::Escape("Assert-FoxChecksum"))
             $script:src | Should -Match ([regex]::Escape($name))
         }
     }

@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/OxynDB/oxyndb/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/branch"
 )
 
-// policyCmd handles `odb policy …`, the Blackbox policy gate: rules checked on
+// policyCmd handles `fox policy …`, the Blackbox policy gate: rules checked on
 // every schema change before it runs (docs/policy-errors.md). Rules live in each
 // branch's database; --branch picks one (default main, which new branches copy).
 func policyCmd(args []string) {
@@ -24,7 +24,7 @@ func policyCmd(args []string) {
 		name = "main"
 	}
 	arg := firstPositional(args, "--branch", "--command", "--pattern", "--reason", "--hint", "--limit")
-	const actor = "odb-cli"
+	const actor = "fox-cli"
 	needArg := func() {
 		if arg == "" {
 			policyUsage()
@@ -98,10 +98,10 @@ func policyCmd(args []string) {
 
 func policyUsage() {
 	fmt.Println(`usage:
-  odb policy [list] [--branch <name>]
-  odb policy check "<SQL>" [--branch <name>]
-  odb policy block|warn|enable|disable|remove <rule> [--branch <name>]
-  odb policy add <rule> --command "ALTER TABLE" [--pattern <regex>] [--block] --reason "<why>" [--hint "<next step>"] [--branch <name>]
-  odb policy evaluations [--limit N] [--branch <name>]`)
+  fox policy [list] [--branch <name>]
+  fox policy check "<SQL>" [--branch <name>]
+  fox policy block|warn|enable|disable|remove <rule> [--branch <name>]
+  fox policy add <rule> --command "ALTER TABLE" [--pattern <regex>] [--block] --reason "<why>" [--hint "<next step>"] [--branch <name>]
+  fox policy evaluations [--limit N] [--branch <name>]`)
 	os.Exit(2)
 }

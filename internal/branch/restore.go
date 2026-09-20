@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Point-in-time restore (odb restore --to).
+// Point-in-time restore (fox restore --to).
 //
 // Recovery can only start from a base backup that is already consistent before
 // the point being asked for. The restore used to fetch LATEST whatever the
@@ -91,7 +91,7 @@ func oldestBackupNote(bs []walgBackup) string {
 		}
 	}
 	if oldest.IsZero() {
-		return " (there are no base backups; take one with `odb backup create`)"
+		return " (there are no base backups; take one with `fox backup create`)"
 	}
 	return " (the oldest is from " + oldest.UTC().Format(time.RFC3339) + ")"
 }

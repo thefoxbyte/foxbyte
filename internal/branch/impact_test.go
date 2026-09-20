@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/OxynDB/oxyndb/internal/ledger"
+	"github.com/foxbyte/foxbyte/internal/ledger"
 )
 
 func TestScoreImpact(t *testing.T) {
@@ -53,12 +53,12 @@ func TestScoreImpact(t *testing.T) {
 
 func TestBranchParentParsing(t *testing.T) {
 	for in, want := range map[string]string{
-		"oxyndb/branches/main@for-qa\n": "main",
-		"oxyndb/branches/qa@for-qa-2":   "qa",
+		"dbpool/branches/main@for-qa\n": "main",
+		"dbpool/branches/qa@for-qa-2":   "qa",
 		"-":                             "",
 		"":                              "",
 		"otherpool/x@snap":              "",
-		"oxyndb/branches/a/b@s":         "",
+		"dbpool/branches/a/b@s":         "",
 	} {
 		if got := parentFromZFSOrigin(in); got != want {
 			t.Errorf("parentFromZFSOrigin(%q) = %q, want %q", in, got, want)

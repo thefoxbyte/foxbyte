@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package mcp exposes OxynDB's agent-branch operations over the Model Context
+// Package mcp exposes FoxByte's agent-branch operations over the Model Context
 // Protocol (MCP), so an AI agent framework can — through one standard interface —
 // get its own disposable database, run SQL, see exactly what it changed (from
 // the tamper-evident Blackbox), and throw the database away.
@@ -19,8 +19,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/OxynDB/oxyndb/internal/branch"
-	"github.com/OxynDB/oxyndb/internal/version"
+	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/version"
 )
 
 const protocolVersion = "2024-11-05"
@@ -50,7 +50,7 @@ type rpcError struct {
 // key's account.
 func Serve(key string) error {
 	log.SetOutput(os.Stderr)
-	log.SetPrefix("odb mcp: ")
+	log.SetPrefix("fox mcp: ")
 	who, err := authenticate(key)
 	if err != nil {
 		if errors.Is(err, ErrNoKey) {
@@ -106,7 +106,7 @@ func dispatch(req rpcRequest) (rpcResponse, bool) {
 		resp.Result = map[string]any{
 			"protocolVersion": protocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "oxyndb", "version": version.Version},
+			"serverInfo":      map[string]any{"name": "foxbyte", "version": version.Version},
 		}
 	case "ping":
 		resp.Result = map[string]any{}
@@ -174,7 +174,7 @@ func toolList() []map[string]any {
 				"limit":  map[string]any{"type": "integer", "description": "max rows (default 50)"},
 			}, nil),
 		tool("execute_change",
-			"Run a schema change (or any SQL) on a branch as this agent, with provenance: it is recorded in Blackbox with this MCP session, the task_id and parent_session_id you pass, and a hash of the call. Blackbox policy rules are previewed first and enforced by the database. Returns JSON: status applied | blocked (the policy rule, SQLSTATE ODB01) | error | preview (dry_run), the policy preview, any warnings (ODB02) and the Blackbox entry ids it wrote. Runs without superuser rights.",
+			"Run a schema change (or any SQL) on a branch as this agent, with provenance: it is recorded in Blackbox with this MCP session, the task_id and parent_session_id you pass, and a hash of the call. Blackbox policy rules are previewed first and enforced by the database. Returns JSON: status applied | blocked (the policy rule, SQLSTATE BBX01) | error | preview (dry_run), the policy preview, any warnings (BBX02) and the Blackbox entry ids it wrote. Runs without superuser rights.",
 			map[string]any{
 				"branch":            str("branch name (default main)"),
 				"sql":               str("the SQL to run"),
@@ -197,7 +197,7 @@ func toolList() []map[string]any {
 				"b": str("second branch"),
 			}, []string{"a", "b"}),
 		tool("policy_check",
-			"Preview which Blackbox policy rules a DDL statement would trigger on a branch — warn or block — without running it. A blocked statement fails with SQLSTATE ODB01 (docs/policy-errors.md).",
+			"Preview which Blackbox policy rules a DDL statement would trigger on a branch — warn or block — without running it. A blocked statement fails with SQLSTATE BBX01 (docs/policy-errors.md).",
 			map[string]any{
 				"branch": str("branch name (default main)"),
 				"sql":    str("the DDL statement to check"),

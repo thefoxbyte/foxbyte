@@ -1,7 +1,17 @@
 import { useState } from 'react'
 import { getTheme, toggleTheme } from '../theme'
+import { BRAND } from '../brand'
 
-// The OxynDB mark: a branch splitting in two.
+// Wordmark renders the product name with its last capitalised part picked out
+// in the brand gradient (Fox|Byte). Split here rather than written into the
+// markup: the product has been renamed twice, and a name spread across tags is
+// exactly what a rename misses.
+export function Wordmark() {
+  const m = /^(.*[a-z])([A-Z].*)$/.exec(BRAND.product)
+  return m ? <>{m[1]}<span>{m[2]}</span></> : <>{BRAND.product}</>
+}
+
+// The mark: a branch splitting in two.
 export function Mark({ size = 26 }: { size?: number }) {
   return (
     <svg className="mark" width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>

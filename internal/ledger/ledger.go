@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package ledger holds the OxynDB Blackbox — the RECORD layer. It is a
+// Package ledger holds the FoxByte Blackbox — the RECORD layer. It is a
 // set of PostgreSQL event triggers + tables, installed into the primary and
 // inherited by every copy-on-write branch, that capture, attribute, and enforce
 // policy on every schema change (DDL) the database sees.

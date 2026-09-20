@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package secrets holds the per-install credentials OxynDB generates on first
+// Package secrets holds the per-install credentials FoxByte generates on first
 // run — the Postgres role password and the MinIO/object-store key pair — instead
 // of shipping hardcoded defaults in a public source tree.
 //
 // The values are generated once with crypto/rand, persisted 0600 under
-// ~/.oxyndb/secrets.json, and read by every process that needs them: the
+// ~/.fox/secrets.json, and read by every process that needs them: the
 // engine (which sets them on the containers it starts) and the gateway (which
 // authenticates to the backend with the same Postgres password). Both run in the
-// same guest and share ~/.oxyndb, so they converge on one set. Environment
+// same guest and share ~/.fox, so they converge on one set. Environment
 // variables override any field, for callers who manage their own secrets.
 package secrets
 
@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,17 +25,16 @@ import (
 
 // Secrets is the per-install credential set.
 type Secrets struct {
-	PGPassword    string `json:"pg_password"`    // Postgres role "oxyndb" password
+	PGPassword    string `json:"pg_password"`    // Postgres role "foxbyte" password
 	MinioUser     string `json:"minio_user"`     // MinIO root user / AWS access key id
 	MinioPassword string `json:"minio_password"` // MinIO root password / AWS secret key
 }
 
 const (
-	envPG         = "OXYNDB_PG_PASSWORD"
-	envMinioUser  = "OXYNDB_MINIO_USER"
-	envMinioPass  = "OXYNDB_MINIO_PASSWORD"
-	secretsFile   = "secrets.json"
-	configDirName = ".oxyndb"
+	envPG        = "FOX_PG_PASSWORD"
+	envMinioUser = "FOX_MINIO_USER"
+	envMinioPass = "FOX_MINIO_PASSWORD"
+	secretsFile  = "secrets.json"
 )
 
 var (
@@ -51,13 +51,7 @@ func Load() Secrets {
 	return cached
 }
 
-func configDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, configDirName)
-}
+func configDir() string { return brand.StateDir() }
 
 func loadOrCreate() Secrets {
 	path := filepath.Join(configDir(), secretsFile)
@@ -73,7 +67,7 @@ func loadOrCreate() Secrets {
 		changed = true
 	}
 	if s.MinioUser == "" {
-		s.MinioUser = "odb" + randToken()[:12]
+		s.MinioUser = "fox" + randToken()[:12]
 		changed = true
 	}
 	if s.MinioPassword == "" {

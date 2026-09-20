@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package tlsutil provides a single self-signed TLS certificate that every
-// OxynDB listener (the wire-protocol gateway, the control-plane API, and the
+// FoxByte listener (the wire-protocol gateway, the control-plane API, and the
 // agent API) serves. The cert is generated once on first use and cached under
-// ~/.oxyndb/tls, so a fresh install serves TLS with nothing to configure.
+// ~/.fox/tls, so a fresh install serves TLS with nothing to configure.
 //
 // The point is not a trusted chain — it is encryption on the wire. A client
 // connecting with sslmode=require (Prisma's default, and most cloud drivers)
 // gets an encrypted session and its API key never crosses the network in
-// cleartext. sslmode=verify-full needs a CA-signed cert; point OXYNDB_TLS_CERT
-// and OXYNDB_TLS_KEY at one to use it instead of the generated pair.
+// cleartext. sslmode=verify-full needs a CA-signed cert; point FOX_TLS_CERT
+// and FOX_TLS_KEY at one to use it instead of the generated pair.
 package tlsutil
 
 import (
@@ -21,6 +21,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"math/big"
 	"net"
 	"os"
@@ -30,8 +31,8 @@ import (
 )
 
 const (
-	envCert = "OXYNDB_TLS_CERT"
-	envKey  = "OXYNDB_TLS_KEY"
+	envCert = "FOX_TLS_CERT"
+	envKey  = "FOX_TLS_KEY"
 )
 
 var (
@@ -41,20 +42,16 @@ var (
 	cachedTC *tls.Config
 )
 
-// configDir returns ~/.oxyndb, matching the convention used across the
+// configDir returns ~/.fox, matching the convention used across the
 // codebase (auth store, daemon pidfiles). Falls back to /tmp when the home
 // directory is unavailable, as those callers do.
 func configDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, ".oxyndb")
+	return brand.StateDir()
 }
 
 // EnsureCert returns the paths to a servable cert/key pair, generating a
-// self-signed pair under ~/.oxyndb/tls on first use. OXYNDB_TLS_CERT and
-// OXYNDB_TLS_KEY override it with an existing (e.g. CA-signed) pair; both
+// self-signed pair under ~/.fox/tls on first use. FOX_TLS_CERT and
+// FOX_TLS_KEY override it with an existing (e.g. CA-signed) pair; both
 // must be set together. The result is cached for the process.
 func EnsureCert() (certPath, keyPath string, err error) {
 	mu.Lock()
@@ -168,7 +165,7 @@ func generateSelfSigned(certPath, keyPath string) error {
 	// A long validity: this is a local, regeneratable cert, not a public one.
 	tmpl := x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "localhost", Organization: []string{"OxynDB"}},
+		Subject:               pkix.Name{CommonName: "localhost", Organization: []string{"FoxByte"}},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().AddDate(10, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

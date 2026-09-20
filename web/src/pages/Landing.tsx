@@ -19,7 +19,7 @@ export default function Landing() {
           <span className="eyebrow"><span className="pip" /> Serverless PostgreSQL · open source</span>
           <h1>The database that <span className="gradient-text">branches like code</span>.</h1>
           <p className="sub">
-            OxynDB gives Postgres instant copy-on-write branches, time-travel, a database per AI
+            FoxByte gives Postgres instant copy-on-write branches, time-travel, a database per AI
             agent, and high availability — at native transaction speed.
           </p>
           <div className="cta">
@@ -29,13 +29,13 @@ export default function Landing() {
 
         <div className="hero-visual">
           <div className="terminal">
-            <div className="bar"><i className="r" /><i className="y" /><i className="g" /><span className="t">odb — zsh</span></div>
+            <div className="bar"><i className="r" /><i className="y" /><i className="g" /><span className="t">fox — zsh</span></div>
             <div className="body">
-              <div><span className="prompt">$</span> <span className="cmd">odb branch create feature</span></div>
+              <div><span className="prompt">$</span> <span className="cmd">fox branch create feature</span></div>
               <div className="ok">  ✓ branch “feature” ready in 1.9s · copy-on-write</div>
               <div><span className="prompt">$</span> <span className="cmd">psql …/feature -c "UPDATE …"</span></div>
               <div className="dim">  UPDATE 4200</div>
-              <div><span className="prompt">$</span> <span className="cmd">odb ha failover</span></div>
+              <div><span className="prompt">$</span> <span className="cmd">fox ha failover</span></div>
               <div className="ok">  ✓ standby promoted · same endpoint</div>
               <div><span className="prompt">$</span> <span className="cursor" /></div>
             </div>

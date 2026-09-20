@@ -15,21 +15,21 @@ package agentapi
 import (
 	"encoding/json"
 	"errors"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"time"
 
-	"github.com/OxynDB/oxyndb/internal/auth"
-	"github.com/OxynDB/oxyndb/internal/branch"
-	"github.com/OxynDB/oxyndb/internal/tlsutil"
+	"github.com/foxbyte/foxbyte/internal/auth"
+	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/tlsutil"
 )
 
 // agentTTL is how long an agent branch may live before the reaper removes it
-// (OXYNDB_AGENT_TTL, e.g. "30m"; unset/0 disables reaping).
+// (FOX_AGENT_TTL, e.g. "30m"; unset/0 disables reaping).
 func agentTTL() time.Duration {
-	if v := os.Getenv("OXYNDB_AGENT_TTL"); v != "" {
+	if v := brand.Getenv("AGENT_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			return d
 		}

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package proxy is the oxyndb serverless front door: a single PostgreSQL
+// Package proxy is the foxbyte serverless front door: a single PostgreSQL
 // wire-protocol endpoint that routes each connection to the right branch based
 // on the database name in the client's startup message, then pipes the rest of
 // the session through transparently.
@@ -11,20 +11,20 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"io"
 	"log"
 	"net"
-	"os"
 	"sync"
 	"time"
 
-	"github.com/OxynDB/oxyndb/internal/auth"
-	"github.com/OxynDB/oxyndb/internal/branch"
-	"github.com/OxynDB/oxyndb/internal/tlsutil"
+	"github.com/foxbyte/foxbyte/internal/auth"
+	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/tlsutil"
 )
 
 // authStore verifies API keys presented as the connection password. When nil
-// (OXYNDB_GATEWAY_NOAUTH), the Gateway accepts any client and still mediates
+// (FOX_GATEWAY_NOAUTH), the Gateway accepts any client and still mediates
 // the backend login — convenient for trusted/local use.
 var authStore *auth.Store
 
@@ -34,14 +34,14 @@ var authStore *auth.Store
 var tlsConfig *tls.Config
 
 // gatewayNoAuth reports whether the gateway's API-key check is disabled. The
-// OXYNDB_GATEWAY_NOAUTH escape hatch is only honored in builds made with
+// FOX_GATEWAY_NOAUTH escape hatch is only honored in builds made with
 // `-tags insecure`; release builds compile it out (insecureAllowed == false), so
 // a full auth bypass can never be flipped on in production by an env var.
 func gatewayNoAuth() bool {
 	if !insecureAllowed {
 		return false
 	}
-	v := os.Getenv("OXYNDB_GATEWAY_NOAUTH")
+	v := brand.Getenv("GATEWAY_NOAUTH")
 	return v == "1" || v == "true"
 }
 
@@ -61,7 +61,7 @@ func touch(name string) {
 // realDatabase is the actual Postgres database inside every branch. The client's
 // requested "database" is the branch NAME (routing key), which we rewrite to
 // this before forwarding to the backend.
-const realDatabase = "oxyndb"
+const realDatabase = "foxbyte"
 
 // scopeAllows reports whether a key may open target: an unscoped key opens any
 // branch, a scoped one only the branch it names.
@@ -70,7 +70,7 @@ func scopeAllows(scope, target string) bool { return scope == "" || scope == tar
 // realUser is the Postgres role the Gateway logs clients in as — a non-superuser
 // role, so client sessions obey RLS/GRANTs and cannot bypass the append-only
 // ledger. The API key gates the client; this role bounds what they can do.
-const realUser = "odbclient"
+const realUser = "db_client"
 
 const (
 	codeStartup30 = 196608   // protocol 3.0 StartupMessage
@@ -167,14 +167,14 @@ func relayStartupCaptureKey(client, backend net.Conn, addr string) (string, erro
 // for longer than idle (0 disables suspension).
 func Serve(addr string, idle time.Duration) error {
 	if gatewayNoAuth() {
-		log.Printf("gateway authentication DISABLED (OXYNDB_GATEWAY_NOAUTH) — trusted/local mode")
+		log.Printf("gateway authentication DISABLED (FOX_GATEWAY_NOAUTH) — trusted/local mode")
 	} else {
 		store, err := auth.OpenFromEnv()
 		if err != nil {
 			return fmt.Errorf("open auth store: %w", err)
 		}
 		authStore = store
-		log.Printf("gateway authentication ENABLED — connect with an API key (odb_…) as the password")
+		log.Printf("gateway authentication ENABLED — connect with an API key (key_…) as the password")
 	}
 	if cfg, err := tlsutil.ServerConfig(); err != nil {
 		log.Printf("TLS disabled (could not load certificate): %v — clients must use sslmode=disable", err)
@@ -225,7 +225,7 @@ func handle(client net.Conn) {
 		}
 		u, scope, ok := authStore.VerifyKey(key)
 		if !ok {
-			sendError(client, "28P01", "invalid API key — use a odb_ key as the password")
+			sendError(client, "28P01", "invalid API key — use a key_ key as the password")
 			return
 		}
 		actor, keyScope = u.Email, scope
@@ -290,7 +290,7 @@ func handle(client net.Conn) {
 	}
 	params["user"] = loginUser
 	// Attribution for the Blackbox: inject connection context that the
-	// branch's DDL event triggers read via current_setting('oxyndb.*'). For a
+	// branch's DDL event triggers read via current_setting('foxbyte.*'). For a
 	// per-user login this is a fallback/display value; session_user is authoritative.
 	params["options"] = ledgerOptions(params["options"], actor, target, keyScope == "")
 	if err := backendAuth(backend, params, backendPass); err != nil {

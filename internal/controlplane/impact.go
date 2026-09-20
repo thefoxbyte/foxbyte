@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/OxynDB/oxyndb/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/branch"
 )
 
 // registerImpact mounts Blackbox impact analysis and diff (behind auth):

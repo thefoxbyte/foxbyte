@@ -17,7 +17,7 @@ func TestAuthenticateWithoutAKey(t *testing.T) {
 			t.Fatalf("key %q: expected ErrNoKey, got %v", key, err)
 		}
 	}
-	for _, want := range []string{"odb apikey create", "OXYNDB_API_KEY"} {
+	for _, want := range []string{"fox apikey create", "FOX_API_KEY"} {
 		if !strings.Contains(KeyHelp, want) {
 			t.Errorf("the help should mention %q", want)
 		}

@@ -9,7 +9,7 @@ import (
 	"text/tabwriter"
 )
 
-// LedgerEntry is one ledger entry with its id — what `odb ledger branch-before`
+// LedgerEntry is one ledger entry with its id — what `fox ledger branch-before`
 // and its REST/MCP/web counterparts take. The existing ledger views don't show
 // ids and are left unchanged; this is a separate listing.
 type LedgerEntry struct {
@@ -27,7 +27,7 @@ func entriesQuery(limit int) string {
   'at', to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
   'actor', coalesce(actor, ''), 'command_tag', coalesce(command_tag, ''),
   'object_identity', coalesce(object_identity, ''), 'status', coalesce(status, ''), 'risk', coalesce(risk, ''))
-FROM odb.schema_ledger ORDER BY id DESC LIMIT %d`, limit)
+FROM bb.schema_ledger ORDER BY id DESC LIMIT %d`, limit)
 }
 
 // LedgerEntries returns a branch's newest ledger entries (newest first, at most

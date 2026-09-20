@@ -36,14 +36,14 @@ func TestScopeAllows(t *testing.T) {
 // changes would stop carrying its session (integration-v2 §7 caught this).
 func TestLedgerOptionsLeavesAgentSessionToTheBranch(t *testing.T) {
 	human := ledgerOptions("", "ada@example.com", "main", true)
-	if !strings.Contains(human, "odb.session=") {
+	if !strings.Contains(human, "bb.session=") {
 		t.Errorf("a person's connection should get its own session: %q", human)
 	}
 	agent := ledgerOptions("", "agent-alice", "agent-alice", false)
-	if strings.Contains(agent, "odb.session") {
+	if strings.Contains(agent, "bb.session") {
 		t.Errorf("an agent key's connection must not override the branch's session: %q", agent)
 	}
-	for _, want := range []string{"odb.actor=agent-alice", "odb.actor_kind=agent", "odb.branch=agent-alice"} {
+	for _, want := range []string{"bb.actor=agent-alice", "bb.actor_kind=agent", "bb.branch=agent-alice"} {
 		if !strings.Contains(agent, want) {
 			t.Errorf("agent options %q lack %s", agent, want)
 		}

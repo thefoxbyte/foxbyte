@@ -21,7 +21,7 @@ import (
 )
 
 func TestBuildParseStartupRoundtrip(t *testing.T) {
-	in := map[string]string{"user": "oxyndb", "database": "qa", "application_name": "psql"}
+	in := map[string]string{"user": "foxbyte", "database": "qa", "application_name": "psql"}
 	msg := buildStartup(in)
 
 	if int(binary.BigEndian.Uint32(msg[:4])) != len(msg) {

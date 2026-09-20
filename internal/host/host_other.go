@@ -10,11 +10,11 @@ import (
 	"runtime"
 )
 
-// On Linux the engine runs in-process, so `odb setup` has nothing to do. Any
+// On Linux the engine runs in-process, so `fox setup` has nothing to do. Any
 // other OS is unsupported.
 func hostSetup() error {
 	if runtime.GOOS == "linux" {
-		fmt.Println("Linux host — no VM needed. Run `odb start`.")
+		fmt.Println("Linux host — no VM needed. Run `fox start`.")
 		return nil
 	}
 	return fmt.Errorf("unsupported host OS %q", runtime.GOOS)

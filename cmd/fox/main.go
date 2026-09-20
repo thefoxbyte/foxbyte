@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Command odb is the control CLI for the OxynDB serverless-Postgres
+// Command fox is the control CLI for the FoxByte serverless-Postgres
 // platform. It runs inside the Linux dev VM (ZFS + Docker) and manages the
 // unified stack: object storage (MinIO), the primary Postgres ("main") with WAL
 // archiving, point-in-time restore, and instant copy-on-write branches.
@@ -12,22 +12,23 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/OxynDB/oxyndb/internal/agentapi"
-	"github.com/OxynDB/oxyndb/internal/auth"
-	"github.com/OxynDB/oxyndb/internal/branch"
-	"github.com/OxynDB/oxyndb/internal/controlplane"
-	"github.com/OxynDB/oxyndb/internal/daemon"
-	"github.com/OxynDB/oxyndb/internal/host"
-	"github.com/OxynDB/oxyndb/internal/mcp"
-	"github.com/OxynDB/oxyndb/internal/proxy"
-	"github.com/OxynDB/oxyndb/internal/version"
-	"github.com/OxynDB/oxyndb/web"
+	"github.com/foxbyte/foxbyte/internal/agentapi"
+	"github.com/foxbyte/foxbyte/internal/auth"
+	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/controlplane"
+	"github.com/foxbyte/foxbyte/internal/daemon"
+	"github.com/foxbyte/foxbyte/internal/host"
+	"github.com/foxbyte/foxbyte/internal/mcp"
+	"github.com/foxbyte/foxbyte/internal/proxy"
+	"github.com/foxbyte/foxbyte/internal/version"
+	"github.com/foxbyte/foxbyte/web"
 )
 
 // background services managed by `start`/`stop` (name -> subcommand + flags).
@@ -37,10 +38,10 @@ var services = map[string][]string{
 	"api":          {"serve", "--addr", ":8088"},
 }
 
-const usage = `OxynDB — serverless Postgres control CLI
+const usage = `FoxByte — serverless Postgres control CLI
 
 Usage:
-  odb <command> [args]
+  fox <command> [args]
 
 Setup:
   setup                One-time: create/start the local engine VM (macOS: Lima, Windows: WSL2) and bring the stack up
@@ -71,23 +72,23 @@ Branching:
   branch resume <name>  Start a suspended branch
   branch diff <a> <b>   Schema changes made on each branch since they split (from Blackbox; --json)
 
-Blackbox — the database's record of every schema change (RECORD layer; odb ledger … works too):
+Blackbox — the database's record of every schema change (RECORD layer; fox ledger … works too):
   blackbox [branch] [--limit N]   Show captured DDL changes — attributed & policy-checked
   blackbox verify [branch]        Verify the tamper-evident hash chain is intact
   blackbox upgrade [branch|--all] Apply the current Blackbox definition to existing branches
   blackbox checkpoint [branch]    Anchor new entries outside the database (Merkle checkpoint)
   blackbox integrity [branch]     Check the record against its anchors (detects rewritten history)
-  blackbox export [branch]        Write every entry as JSON lines (for odb-verify / audits)
+  blackbox export [branch]        Write every entry as JSON lines (for fox-verify / audits)
   blackbox entries [branch]       Newest entries with their ids (--limit N)
   blackbox sessions [branch]      Agent sessions: agent, task, parent session, entries (--limit N)
   blackbox diff <a> <b>           Changes on each branch since they split, and objects both changed (--json)
   blackbox branch-before <id>     New branch of main as it was just before entry <id> (--as name)
-  blackbox revert --to <ts>       Point-in-time restore of main into a disposable container on :5433 (same as odb restore)
+  blackbox revert --to <ts>       Point-in-time restore of main into a disposable container on :5433 (same as fox restore)
 
 Blackbox policy gate — checks every schema change before it runs (docs/policy-errors.md):
   policy [list] [--branch b]      Show the rules: action (warn|block) and whether enabled
   policy check "<SQL>"            Preview the rules a statement would trigger (exit 1 if one blocks)
-  policy block|warn <rule>        Refuse matching changes (ODB01) or only warn about them (ODB02)
+  policy block|warn <rule>        Refuse matching changes (BBX01) or only warn about them (BBX02)
   policy enable|disable <rule>    Turn a rule on or off
   policy add <rule> --command "ALTER TABLE" [--pattern <regex>] [--block] --reason "…" [--hint "…"]
   policy remove <rule>            Remove a rule you added (built-in rules can only be disabled)
@@ -124,9 +125,9 @@ Serverless front door:
 
 Agent Branch API:
   serve [--addr :8088] Run the HTTP API: one database branch per AI agent
-  mcp [--key <odb_…>]  Run the MCP server on stdio: an agent framework gets a database,
+  mcp [--key <key_…>]  Run the MCP server on stdio: an agent framework gets a database,
                        runs SQL, sees what it changed (Blackbox), and throws it away.
-                       Needs an API key (OXYNDB_API_KEY or --key); a key scoped
+                       Needs an API key (FOX_API_KEY or --key); a key scoped
                        to one branch limits the server to that branch
 
 Auth (admin):
@@ -138,7 +139,7 @@ Auth (admin):
   admin revoke <email> [--branch <name>]  Remove that permission
   admin list [--branch <name>]            Show who may override (default: main + running branches)
 
-  version              Print the odb version
+  version              Print the fox version
 `
 
 func main() {
@@ -148,7 +149,7 @@ func main() {
 	}
 
 	// On macOS/Windows, forward engine commands into the managed Linux VM so the
-	// user only ever runs `odb …`. On Linux (or inside the VM) this is a no-op.
+	// user only ever runs `fox …`. On Linux (or inside the VM) this is a no-op.
 	if handled, err := host.Maybe(os.Args[1:]); handled {
 		must(err)
 		return
@@ -156,7 +157,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "version", "-v", "--version":
-		fmt.Printf("odb %s\n", version.Version)
+		fmt.Printf("fox %s\n", version.Version)
 	case "setup":
 		must(host.Setup())
 	case "vm":
@@ -165,7 +166,7 @@ func main() {
 		// Linux host: look for a newer release while the stack starts. (macOS and
 		// Windows check on the host before forwarding; the guest never checks.)
 		notice := func() {}
-		if os.Getenv("OXYNDB_IN_GUEST") == "" {
+		if brand.Getenv("IN_GUEST") == "" {
 			notice = host.StartUpdateNotice()
 		}
 		must(branch.Up())
@@ -173,27 +174,27 @@ func main() {
 			must(daemon.Start(name, args))
 		}
 		apiKey := bootstrapLocalKey()
-		fmt.Println("\nOxynDB is up (background):")
+		fmt.Println("\nFoxByte is up (background):")
 		if web.FS() != nil {
 			fmt.Println("  web UI       https://localhost:8080")
 		}
 		fmt.Println("  control API  https://localhost:8080/api/status")
 		fmt.Println("  agent API    https://localhost:8088   (POST /agents/{id}/branch)")
 		if apiKey != "" {
-			fmt.Printf("  gateway(SQL) postgresql://oxyndb:%s@localhost:6432/main?sslmode=require\n", apiKey)
+			fmt.Printf("  gateway(SQL) postgresql://dbadmin:%s@localhost:6432/main?sslmode=require\n", apiKey)
 		} else {
-			fmt.Println("  gateway(SQL) postgresql://oxyndb:<API_KEY>@localhost:6432/<branch>?sslmode=require")
+			fmt.Println("  gateway(SQL) postgresql://dbadmin:<API_KEY>@localhost:6432/<branch>?sslmode=require")
 		}
-		fmt.Println("  storage      http://localhost:9001   (console login in ~/.oxyndb/secrets.json)")
+		fmt.Println("  storage      http://localhost:9001   (console login in ~/.fox/secrets.json)")
 		if web.FS() == nil {
 			fmt.Println("\nThe web UI isn't embedded in this build — run it with:  make web-dev   (http://localhost:5173)")
 		}
-		fmt.Println("\nThe connection string above uses a ready-to-go API key (also saved in ~/.oxyndb/config).")
-		fmt.Println("Stop everything with: odb stop")
+		fmt.Println("\nThe connection string above uses a ready-to-go API key (also saved in ~/.fox/config).")
+		fmt.Println("Stop everything with: fox stop")
 		notice()
 	case "update":
 		updateCmd(os.Args[2:])
-	case "_update-guest": // the engine-side steps of `odb update`
+	case "_update-guest": // the engine-side steps of `fox update`
 		updateGuestCmd(os.Args[2:])
 	case "stop":
 		for name := range services {
@@ -230,7 +231,7 @@ func main() {
 		must(branch.PsqlShell("main"))
 	case "backup":
 		if len(os.Args) < 3 {
-			fmt.Println("usage: odb backup <create|list>")
+			fmt.Println("usage: fox backup <create|list>")
 			os.Exit(2)
 		}
 		switch os.Args[2] {
@@ -245,7 +246,7 @@ func main() {
 	case "restore":
 		ts := restoreArg(os.Args[2:])
 		if ts == "" {
-			fmt.Println("usage: odb restore --to '<timestamp>'|latest")
+			fmt.Println("usage: fox restore --to '<timestamp>'|latest")
 			os.Exit(2)
 		}
 		must(branch.Restore(ts))
@@ -259,7 +260,7 @@ func main() {
 		importCmd(os.Args[2:])
 	case "import-cutover":
 		if len(os.Args) < 3 {
-			fmt.Println("usage: odb import-cutover <instance>")
+			fmt.Println("usage: fox import-cutover <instance>")
 			os.Exit(2)
 		}
 		must(branch.ImportCutover(os.Args[2]))
@@ -269,7 +270,7 @@ func main() {
 		haCmd(os.Args[2:])
 	case "user":
 		if len(os.Args) < 4 || os.Args[2] != "create" {
-			fmt.Println("usage: odb user create <email>")
+			fmt.Println("usage: fox user create <email>")
 			os.Exit(2)
 		}
 		must(userCreate(os.Args[3]))
@@ -297,15 +298,15 @@ func main() {
 	}
 }
 
-// mcpKey is the API key `odb mcp` acts as: `--key <odb_…>`, else
-// OXYNDB_API_KEY. A key on the command line is visible in the process list,
+// mcpKey is the API key `fox mcp` acts as: `--key <key_…>`, else
+// FOX_API_KEY. A key on the command line is visible in the process list,
 // so the environment variable is what a client config should use -- but the
 // flag stays, for trying the server by hand.
 func mcpKey(args []string) string {
 	if k := optValue(args, "--key"); k != "" {
 		return k
 	}
-	return os.Getenv("OXYNDB_API_KEY")
+	return brand.Getenv("API_KEY")
 }
 
 // restoreArg accepts either `--to <ts>` or a bare `<ts>`.
@@ -322,8 +323,8 @@ func restoreArg(args []string) string {
 	return args[0]
 }
 
-// importCmd handles `odb import --from <source> [--as <instance>]`, migrating a
-// Postgres source or a .sql/.csv/.json file into a fresh OxynDB instance.
+// importCmd handles `fox import --from <source> [--as <instance>]`, migrating a
+// Postgres source or a .sql/.csv/.json file into a fresh FoxByte instance.
 func importCmd(args []string) {
 	var source, target, kind, srcname string
 	var continuous bool
@@ -354,7 +355,7 @@ func importCmd(args []string) {
 		}
 	}
 	if source == "" {
-		fmt.Println("usage: odb import --from <postgres://… | file.sql|.csv|.json> [--as <instance>]")
+		fmt.Println("usage: fox import --from <postgres://… | file.sql|.csv|.json> [--as <instance>]")
 		os.Exit(2)
 	}
 	// A dash means the file is streamed on stdin (used when the launcher forwards
@@ -378,11 +379,11 @@ func importCmd(args []string) {
 	must(err)
 }
 
-// pipelineCmd handles `odb pipeline run <spec.json> [--as <instance>]`: an ETL
+// pipelineCmd handles `fox pipeline run <spec.json> [--as <instance>]`: an ETL
 // pipeline (extract → land raw → SQL transforms → tests) into a fresh instance.
 func pipelineCmd(args []string) {
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Println("usage: odb pipeline run <spec.json> [--as <instance>]")
+		fmt.Println("usage: fox pipeline run <spec.json> [--as <instance>]")
 		os.Exit(2)
 	}
 	specPath, target := args[1], ""
@@ -405,8 +406,8 @@ func pipelineCmd(args []string) {
 	}
 }
 
-// ledgerCmd handles `odb ledger [branch] [--limit N]` and
-// `odb ledger revert --to <ts>` (a point-in-time restore of main, like `odb restore`).
+// ledgerCmd handles `fox ledger [branch] [--limit N]` and
+// `fox ledger revert --to <ts>` (a point-in-time restore of main, like `fox restore`).
 func ledgerCmd(args []string) {
 	if ledgerV2Cmd(args) { // checkpoint, integrity, export
 		return
@@ -414,13 +415,13 @@ func ledgerCmd(args []string) {
 	if len(args) > 0 && args[0] == "revert" {
 		ts := restoreArg(args[1:])
 		if ts == "" {
-			fmt.Println("usage: odb ledger revert --to '<timestamp>'|latest")
+			fmt.Println("usage: fox ledger revert --to '<timestamp>'|latest")
 			os.Exit(2)
 		}
-		fmt.Println("Restoring main to that moment in a disposable container on :5433 (the same as `odb restore`).")
+		fmt.Println("Restoring main to that moment in a disposable container on :5433 (the same as `fox restore`).")
 		fmt.Println("Nothing is reverted: main and every branch stay as they are.")
 		must(branch.Restore(ts))
-		fmt.Println("For a branch holding main as it was just before a specific change: odb blackbox branch-before <entry id>  (ids: odb blackbox entries)")
+		fmt.Println("For a branch holding main as it was just before a specific change: fox blackbox branch-before <entry id>  (ids: fox blackbox entries)")
 		return
 	}
 	if len(args) > 0 && args[0] == "upgrade" {
@@ -473,17 +474,17 @@ func durFlag(args []string, name string, def time.Duration) time.Duration {
 	return def
 }
 
-// branchCmd dispatches `odb branch <subcommand>`.
+// branchCmd dispatches `fox branch <subcommand>`.
 func branchCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Println("usage: odb branch <create|list|delete|reset|suspend|resume> [name]")
+		fmt.Println("usage: fox branch <create|list|delete|reset|suspend|resume> [name]")
 		os.Exit(2)
 	}
 	switch args[0] {
 	case "create":
 		name := firstPositional(args[1:], "--from")
 		if name == "" {
-			fmt.Println("usage: odb branch create <name> [--from <branch>]")
+			fmt.Println("usage: fox branch create <name> [--from <branch>]")
 			os.Exit(2)
 		}
 		must(branch.Create(name, optValue(args[1:], "--from")))
@@ -491,13 +492,13 @@ func branchCmd(args []string) {
 		must(branch.List())
 	case "delete":
 		if len(args) < 2 {
-			fmt.Println("usage: odb branch delete <name>")
+			fmt.Println("usage: fox branch delete <name>")
 			os.Exit(2)
 		}
 		must(branch.Delete(args[1]))
 	case "reset":
 		if len(args) < 2 {
-			fmt.Println("usage: odb branch reset <name> [--from <parent>]")
+			fmt.Println("usage: fox branch reset <name> [--from <parent>]")
 			os.Exit(2)
 		}
 		parent := "main"
@@ -510,13 +511,13 @@ func branchCmd(args []string) {
 		must(branch.Reset(args[1], parent))
 	case "suspend":
 		if len(args) < 2 {
-			fmt.Println("usage: odb branch suspend <name>")
+			fmt.Println("usage: fox branch suspend <name>")
 			os.Exit(2)
 		}
 		must(branch.Suspend(args[1]))
 	case "resume":
 		if len(args) < 2 {
-			fmt.Println("usage: odb branch resume <name>")
+			fmt.Println("usage: fox branch resume <name>")
 			os.Exit(2)
 		}
 		must(branch.Wake(args[1]))
@@ -528,10 +529,10 @@ func branchCmd(args []string) {
 	}
 }
 
-// haCmd dispatches `odb ha <subcommand>`.
+// haCmd dispatches `fox ha <subcommand>`.
 func haCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Println("usage: odb ha <enable|status|failover|disable|failback>")
+		fmt.Println("usage: fox ha <enable|status|failover|disable|failback>")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -564,19 +565,13 @@ func openStore() *auth.Store {
 	return s
 }
 
-func oxyndbDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, ".oxyndb")
-}
+func foxbyteDir() string { return brand.StateDir() }
 
-func configPath() string { return filepath.Join(oxyndbDir(), "config") }
+func configPath() string { return filepath.Join(foxbyteDir(), "config") }
 
 // bootstrapLocalKey makes a fresh install usable with no manual account steps.
 // On first run it creates a local user and an API key, caching the key in
-// ~/.oxyndb/config so `odb start` can always print a working connection
+// ~/.fox/config so `fox start` can always print a working connection
 // string. Returns the API key, or "" if it can't be determined (in which case
 // the banner falls back to a <API_KEY> placeholder). Never fatal — a bootstrap
 // hiccup must not stop the stack from coming up.
@@ -595,7 +590,7 @@ func bootstrapLocalKey() string {
 	if _, err := rand.Read(pw); err != nil {
 		return ""
 	}
-	u, err := store.CreateUser("local@oxyndb", hex.EncodeToString(pw))
+	u, err := store.CreateUser("local@foxbyte", hex.EncodeToString(pw))
 	if err != nil {
 		return ""
 	}
@@ -607,7 +602,7 @@ func bootstrapLocalKey() string {
 	// The install's first user owns it, so it may override the destructive-DDL
 	// guardrail on main (and every branch cloned from it). Best-effort.
 	if err := branch.GrantAdmin("main", u.Email); err != nil {
-		fmt.Fprintln(os.Stderr, "note: could not grant odb_admin to "+u.Email+":", err)
+		fmt.Fprintln(os.Stderr, "note: could not grant db_admin to "+u.Email+":", err)
 	}
 	return key
 }
@@ -626,7 +621,7 @@ func readCachedKey() string {
 }
 
 func writeCachedKey(key string) {
-	_ = os.MkdirAll(oxyndbDir(), 0o700)
+	_ = os.MkdirAll(foxbyteDir(), 0o700)
 	_ = os.WriteFile(configPath(), []byte("api_key="+key+"\n"), 0o600)
 }
 
@@ -647,13 +642,13 @@ func userCreate(email string) error {
 
 func apikeyCmd(args []string) {
 	if len(args) < 2 {
-		fmt.Println("usage: odb apikey <create|list|revoke> <email> [name|id]")
+		fmt.Println("usage: fox apikey <create|list|revoke> <email> [name|id]")
 		os.Exit(2)
 	}
 	s := openStore()
 	u, ok := s.UserByEmail(args[1])
 	if !ok {
-		must(fmt.Errorf("no such user: %s (create it with: odb user create %s)", args[1], args[1]))
+		must(fmt.Errorf("no such user: %s (create it with: fox user create %s)", args[1], args[1]))
 	}
 	switch args[0] {
 	case "create":
@@ -676,7 +671,7 @@ func apikeyCmd(args []string) {
 		}
 	case "revoke":
 		if len(args) < 3 {
-			fmt.Println("usage: odb apikey revoke <email> <id>")
+			fmt.Println("usage: fox apikey revoke <email> <id>")
 			os.Exit(2)
 		}
 		must(s.RevokeKey(u.ID, args[2]))

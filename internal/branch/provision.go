@@ -4,6 +4,7 @@ package branch
 
 import (
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,24 +16,24 @@ import (
 // Postgres+wal-g image. Historically an operator created all of these by hand
 // (truncate a file, zpool create, zfs create, docker build) — that is the bulk
 // of the old setup instructions. Provision does it automatically and
-// idempotently, so day-to-day use collapses to a single `odb up`/`odb start`.
+// idempotently, so day-to-day use collapses to a single `fox up`/`fox start`.
 
 const (
-	// pool is derived from datasetBase ("oxyndb/branches" -> "oxyndb").
-	pool = "oxyndb"
+	// pool is derived from datasetBase ("dbpool/branches" -> "dbpool").
+	pool = "dbpool"
 
 	// Defaults for auto-creating the pool on a loopback file when no ZFS pool
 	// exists yet. Overridable via env for operators with a spare block device.
-	defaultZpoolFile = "/var/lib/oxyndb-zpool.img"
+	defaultZpoolFile = "/var/lib/dbpool-zpool.img"
 	defaultZpoolSize = "30G"
 
-	envZpoolDevice  = "OXYNDB_ZPOOL_DEVICE"  // block device or file for the pool vdev
-	envZpoolSize    = "OXYNDB_ZPOOL_SIZE"    // size when creating a file vdev
-	envImageContext = "OXYNDB_IMAGE_CONTEXT" // docker build context for the image
+	envZpoolDevice  = "FOX_ZPOOL_DEVICE"  // block device or file for the pool vdev
+	envZpoolSize    = "FOX_ZPOOL_SIZE"    // size when creating a file vdev
+	envImageContext = "FOX_IMAGE_CONTEXT" // docker build context for the image
 )
 
 func envOr(key, def string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+	if v := strings.TrimSpace(brand.GetenvFull(key)); v != "" {
 		return v
 	}
 	return def

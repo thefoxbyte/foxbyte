@@ -1,9 +1,9 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
 --
--- OxynDB Blackbox impact analysis (Blackbox 2.0 Phase 7) — installed AFTER
+-- FoxByte Blackbox impact analysis (Blackbox 2.0 Phase 7) — installed AFTER
 -- the other Blackbox objects.
 --
--- odb.blast_radius reports what depends on a table, view, materialized view,
+-- bb.blast_radius reports what depends on a table, view, materialized view,
 -- index or sequence — or on one of its columns: the objects a change to it could
 -- break. It follows views built on views up to a depth limit. It only reads the
 -- catalog; nothing here changes an existing object. Idempotent.
@@ -15,7 +15,7 @@
 
 SET session_replication_role = replica;
 
-CREATE OR REPLACE FUNCTION odb.blast_radius(target text, target_column text DEFAULT NULL, max_depth integer DEFAULT 5)
+CREATE OR REPLACE FUNCTION bb.blast_radius(target text, target_column text DEFAULT NULL, max_depth integer DEFAULT 5)
 RETURNS jsonb
 LANGUAGE plpgsql STABLE AS $$
 DECLARE
@@ -125,11 +125,11 @@ BEGIN
     'dependents', items);
 END;
 $$;
-GRANT EXECUTE ON FUNCTION odb.blast_radius(text, text, integer) TO odbclient;
+GRANT EXECUTE ON FUNCTION bb.blast_radius(text, text, integer) TO db_client;
 
 -- Which impact-analysis definition is installed.
-CREATE OR REPLACE FUNCTION odb.blackbox_impact_version() RETURNS text
+CREATE OR REPLACE FUNCTION bb.blackbox_impact_version() RETURNS text
 LANGUAGE sql IMMUTABLE AS $$ SELECT '1' $$;
-GRANT EXECUTE ON FUNCTION odb.blackbox_impact_version() TO odbclient;
+GRANT EXECUTE ON FUNCTION bb.blackbox_impact_version() TO db_client;
 
 SET session_replication_role = DEFAULT;

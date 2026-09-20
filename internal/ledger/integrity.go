@@ -3,7 +3,7 @@
 package ledger
 
 // Integrity checking for the Blackbox, shared by the engine
-// (`odb ledger checkpoint|integrity`) and the standalone odb-verify tool.
+// (`fox ledger checkpoint|integrity`) and the standalone fox-verify tool.
 //
 // This file uses only the Go standard library on purpose: it is everything an
 // auditor needs to trust to check the ledger, so it stays small, readable, and
@@ -25,7 +25,7 @@ import (
 
 // AnchorFormat identifies version 1 of the checkpoint anchor format described in
 // docs/ledger-anchor-format.md. Verifiers reject any other value.
-const AnchorFormat = "oxyndb-ledger-anchor/1"
+const AnchorFormat = "ledger-anchor/1"
 
 // MerkleAlgorithm names how merkle_root is computed (see LeafHash and MerkleRoot).
 const MerkleAlgorithm = "sha256-merkle-v1"
@@ -53,7 +53,7 @@ type Row struct {
 	ExtHash        string // "" when the row has no 2.0 capture
 }
 
-// RowHash recomputes a row's hash exactly as odb._ledger_hash does in SQL: sha256
+// RowHash recomputes a row's hash exactly as bb._ledger_hash does in SQL: sha256
 // over the fields joined with '|', NULLs as empty strings, `at` as UTC text.
 func RowHash(r Row) string {
 	s := strings.Join([]string{
@@ -262,7 +262,7 @@ type chainResult struct {
 }
 
 // chainCheck walks rows in id order, recomputing each chained row's hash and its
-// link to the previous chained row — the same check `odb ledger verify` runs in
+// link to the previous chained row — the same check `fox ledger verify` runs in
 // SQL. prev is the row_hash the first chained row must link to.
 func chainCheck(rows []Row, prev string) chainResult {
 	var c chainResult
@@ -454,19 +454,19 @@ const rowColumns = "s.id, s.at, s.actor, s.actor_kind, s.tool, s.session, s.bran
 func RowsQuery(withExt bool, where string) string {
 	ext, join := "NULL::text AS ext_hash", ""
 	if withExt {
-		ext, join = "e.ext_hash", " LEFT JOIN odb.ledger_ext e ON e.ledger_id = s.id"
+		ext, join = "e.ext_hash", " LEFT JOIN bb.ledger_ext e ON e.ledger_id = s.id"
 	}
 	return "SELECT row_to_json(x)::text FROM (SELECT " + rowColumns + ", " + ext +
-		" FROM odb.schema_ledger s" + join + " " + where + " ORDER BY s.id) x"
+		" FROM bb.schema_ledger s" + join + " " + where + " ORDER BY s.id) x"
 }
 
 // ExportQuery selects every ledger row with all of its capture columns, one JSON
-// document per row in id order — the `odb ledger export` format.
+// document per row in id order — the `fox ledger export` format.
 func ExportQuery(withExt bool) string {
 	if !withExt {
 		return RowsQuery(false, "")
 	}
 	return "SELECT row_to_json(x)::text FROM (SELECT " + rowColumns +
 		", e.ext_hash, e.xid, e.lsn, e.task_id, e.parent_session, e.call_hash, e.override_used" +
-		" FROM odb.schema_ledger s LEFT JOIN odb.ledger_ext e ON e.ledger_id = s.id ORDER BY s.id) x"
+		" FROM bb.schema_ledger s LEFT JOIN bb.ledger_ext e ON e.ledger_id = s.id ORDER BY s.id) x"
 }

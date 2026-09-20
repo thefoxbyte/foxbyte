@@ -12,13 +12,13 @@ func TestSuspendRefusal(t *testing.T) {
 		name, primary string
 		ha, refused   bool
 	}{
-		{"main", "oxyn-main", false, true},
-		{"feature", "oxyn-main", true, false},
-		{"standby", "oxyn-main", true, true},     // the HA standby
-		{"standby", "oxyn-main", false, false},   // no HA: just a branch with that name
-		{"standby", "oxyn-standby", true, true},  // serving main after a failover
-		{"main", "oxyn-standby", true, true},     // the stepped-down old main
-		{"feature", "oxyn-standby", true, false}, // ordinary branches stay suspendable
+		{"main", "pg-main", false, true},
+		{"feature", "pg-main", true, false},
+		{"standby", "pg-main", true, true},     // the HA standby
+		{"standby", "pg-main", false, false},   // no HA: just a branch with that name
+		{"standby", "pg-standby", true, true},  // serving main after a failover
+		{"main", "pg-standby", true, true},     // the stepped-down old main
+		{"feature", "pg-standby", true, false}, // ordinary branches stay suspendable
 	}
 	for _, c := range cases {
 		err := suspendRefusal(c.name, c.primary, c.ha)
@@ -30,31 +30,31 @@ func TestSuspendRefusal(t *testing.T) {
 
 func TestHAGuard(t *testing.T) {
 	for _, action := range []string{"enable", "disable", "failover"} {
-		if err := haGuard(action, "oxyn-main"); err != nil {
+		if err := haGuard(action, "pg-main"); err != nil {
 			t.Errorf("%s with main as primary: %v", action, err)
 		}
-		err := haGuard(action, "oxyn-standby")
-		if err == nil || !strings.Contains(err.Error(), "odb ha failback") {
+		err := haGuard(action, "pg-standby")
+		if err == nil || !strings.Contains(err.Error(), "fox ha failback") {
 			t.Errorf("%s after a failover = %v, want a refusal pointing to failback", action, err)
 		}
 	}
-	if err := haGuard("failback", "oxyn-main"); err == nil {
+	if err := haGuard("failback", "pg-main"); err == nil {
 		t.Error("failback without a failover was allowed")
 	}
-	if err := haGuard("failback", "oxyn-standby"); err != nil {
+	if err := haGuard("failback", "pg-standby"); err != nil {
 		t.Errorf("failback after a failover: %v", err)
 	}
 }
 
 func TestPrimaryPointerGuards(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	if got := PrimaryContainer(); got != "oxyn-main" {
+	if got := PrimaryContainer(); got != "pg-main" {
 		t.Fatalf("fresh install primary = %q", got)
 	}
 	if err := setPrimary("standby"); err != nil {
 		t.Fatal(err)
 	}
-	if got := PrimaryContainer(); got != "oxyn-standby" {
+	if got := PrimaryContainer(); got != "pg-standby" {
 		t.Fatalf("after failover primary = %q", got)
 	}
 	if haGuard("disable", PrimaryContainer()) == nil || suspendRefusal("standby", PrimaryContainer(), true) == nil {
@@ -112,7 +112,7 @@ func TestStandbyRunArgsArchive(t *testing.T) {
 	for _, want := range []string{
 		"archive_mode=on",
 		"archive_command=wal-g wal-push %p",
-		"WALG_S3_PREFIX=s3://oxyndb-wal",
+		"WALG_S3_PREFIX=s3://wal-archive",
 		"AWS_ENDPOINT=http://minio:9000",
 		"/data/standby:/var/lib/postgresql/data",
 	} {

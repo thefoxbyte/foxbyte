@@ -19,14 +19,14 @@ func TestSchemaPolicy(t *testing.T) {
 	}
 	SchemaPolicy := lf(SchemaPolicy)
 	for _, want := range []string{
-		"ERRCODE = 'ODB01'", "ERRCODE = 'ODB02'", // the two SQLSTATEs
-		"CREATE EVENT TRIGGER odb_policy_start ON ddl_command_start", // sorts after odb_guard_start
-		"odb._may_override()",              // same override check as the guardrail
+		"ERRCODE = 'BBX01'", "ERRCODE = 'BBX02'", // the two SQLSTATEs
+		"CREATE EVENT TRIGGER bb_policy_start ON ddl_command_start", // sorts after bb_guard_start
+		"bb._may_override()",               // same override check as the guardrail
 		"'BLOCKED','policy'",               // blocked attempts become Blackbox entries
 		"dblink(conn",                      // …recorded so they survive the rollback
 		"ON CONFLICT (rule_id) DO NOTHING", // admins' rule changes survive a reinstall
 		"SET session_replication_role = replica;", "SET session_replication_role = DEFAULT;",
-		"EXCEPTION WHEN OTHERS THEN\n    RAISE WARNING 'OxynDB Blackbox policy: evaluation skipped",
+		"EXCEPTION WHEN OTHERS THEN\n    RAISE WARNING 'Blackbox policy: evaluation skipped",
 		"'v', 1,", "'rule_id'", "'action'", "'command'", "'matched'", "'reason'", "'hint'",
 		"'override'", "'evaluation_id'", "'blackbox_id'", "'impact'",
 	} {
@@ -43,15 +43,15 @@ func TestSchemaPolicy(t *testing.T) {
 		}
 	}
 	// A client-settable session flag must not be able to switch the gate off.
-	if strings.Contains(SchemaPolicy, "current_setting('odb.v2'") {
-		t.Error("the policy gate must not honour the session setting odb.v2")
+	if strings.Contains(SchemaPolicy, "current_setting('bb.v2'") {
+		t.Error("the policy gate must not honour the session setting bb.v2")
 	}
 	forbidden := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)alter\s+table\s+(if\s+exists\s+)?odb\.(schema_ledger|policy)\b`),
+		regexp.MustCompile(`(?i)alter\s+table\s+(if\s+exists\s+)?bb\.(schema_ledger|policy)\b`),
 		regexp.MustCompile(`(?i)drop\s+(table|trigger|function|event\s+trigger)`),
 		// Redefining an existing function is forbidden; calling one is fine.
-		regexp.MustCompile(`(?i)create\s+(or\s+replace\s+)?function\s+odb\.(_ledger_hash|chain_row|deny_change|guard_ddl_start|log_ddl_end|log_ddl_drop|_ctx|_skip|_may_override|capture_ext|deny_ext_change)\b`),
-		regexp.MustCompile(`(?i)event\s+trigger\s+odb_(guard_start|log_end|log_drop)\b`),
+		regexp.MustCompile(`(?i)create\s+(or\s+replace\s+)?function\s+bb\.(_ledger_hash|chain_row|deny_change|guard_ddl_start|log_ddl_end|log_ddl_drop|_ctx|_skip|_may_override|capture_ext|deny_ext_change)\b`),
+		regexp.MustCompile(`(?i)event\s+trigger\s+key_(guard_start|log_end|log_drop)\b`),
 	}
 	for _, re := range forbidden {
 		if loc := re.FindStringIndex(SchemaPolicy); loc != nil {
@@ -66,11 +66,11 @@ func TestSchemaPolicy(t *testing.T) {
 
 func TestParsePolicyDetail(t *testing.T) {
 	d, err := ParsePolicyDetail(`{"v": 1, "hint": "h", "action": "block", "impact": null, "reason": "r", "command": "ALTER TABLE",
-		"matched": "x", "rule_id": "drop-column", "override": "odb_admin", "blackbox_id": 918, "evaluation_id": 42, "future_key": true}`)
+		"matched": "x", "rule_id": "drop-column", "override": "db_admin", "blackbox_id": 918, "evaluation_id": 42, "future_key": true}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.RuleID != "drop-column" || d.Action != "block" || *d.BlackboxID != 918 || *d.EvaluationID != 42 || *d.Override != "odb_admin" {
+	if d.RuleID != "drop-column" || d.Action != "block" || *d.BlackboxID != 918 || *d.EvaluationID != 42 || *d.Override != "db_admin" {
 		t.Fatalf("parsed %+v", d)
 	}
 	d, err = ParsePolicyDetail(`{"v":1,"rule_id":"drop-index","action":"warn","command":"DROP INDEX","matched":null,"reason":"r","hint":"h","override":null,"evaluation_id":7,"blackbox_id":null,"impact":null}`)

@@ -77,10 +77,10 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           cd dist
-          bash ../scripts/release-checksums.sh "$TAG" oxyndb-distro.tar.gz
+          bash ../scripts/release-checksums.sh "$TAG" foxbyte-distro.tar.gz
 
       - name: Attach the distro image
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
-        run: gh release upload "$TAG" dist/oxyndb-distro.tar.gz --clobber
+        run: gh release upload "$TAG" dist/foxbyte-distro.tar.gz --clobber

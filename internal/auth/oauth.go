@@ -45,7 +45,7 @@ func (s *Store) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := randToken(12)
-	http.SetCookie(w, &http.Cookie{Name: "odb_oauth_state", Value: state, Path: "/", HttpOnly: true, MaxAge: 600})
+	http.SetCookie(w, &http.Cookie{Name: "dbengine_oauth_state", Value: state, Path: "/", HttpOnly: true, MaxAge: 600})
 	http.Redirect(w, r, cfg.AuthCodeURL(state), http.StatusFound)
 }
 
@@ -56,7 +56,7 @@ func (s *Store) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provider not configured", http.StatusNotFound)
 		return
 	}
-	st, err := r.Cookie("odb_oauth_state")
+	st, err := r.Cookie("dbengine_oauth_state")
 	if err != nil || r.URL.Query().Get("state") != st.Value {
 		http.Error(w, "bad oauth state", http.StatusBadRequest)
 		return

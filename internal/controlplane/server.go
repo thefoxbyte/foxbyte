@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package controlplane serves OxynDB's management REST API (JSON only),
+// Package controlplane serves FoxByte's management REST API (JSON only),
 // gated by internal/auth. The web UI is a separate app (see web/).
 package controlplane
 
@@ -21,19 +21,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OxynDB/oxyndb/internal/auth"
-	"github.com/OxynDB/oxyndb/internal/branch"
-	"github.com/OxynDB/oxyndb/internal/daemon"
-	"github.com/OxynDB/oxyndb/internal/secrets"
-	"github.com/OxynDB/oxyndb/internal/tlsutil"
-	"github.com/OxynDB/oxyndb/web"
+	"github.com/foxbyte/foxbyte/internal/auth"
+	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/daemon"
+	"github.com/foxbyte/foxbyte/internal/secrets"
+	"github.com/foxbyte/foxbyte/internal/tlsutil"
+	"github.com/foxbyte/foxbyte/web"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
 
-// ruleIDRe matches a Blackbox policy rule id (odb.policy_rules.rule_id).
+// ruleIDRe matches a Blackbox policy rule id (bb.policy_rules.rule_id).
 var ruleIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 // openapiSpec is the canonical API description, served at GET /api/openapi.yaml
@@ -74,7 +74,7 @@ func Serve(addr string) error {
 	handler := cors(store.WebOrigin())(logging(mux))
 
 	// TLS when a certificate is available (self-signed on first run, or a real
-	// one via OXYNDB_TLS_CERT/KEY), so API keys and session tokens are never
+	// one via FOX_TLS_CERT/KEY), so API keys and session tokens are never
 	// sent in cleartext. Falls back to HTTP only if the cert can't be loaded.
 	scheme := "https"
 	cert, key, tlsErr := tlsutil.EnsureCert()
@@ -202,11 +202,11 @@ func registerAPI(mux *http.ServeMux) {
 		name := r.PathValue("name")
 		var body struct {
 			SQL string `json:"sql"`
-			// AllowDestructive applies SET odb.allow_destructive=on to this one
+			// AllowDestructive applies SET bb.allow_destructive=on to this one
 			// query. The guardrail still decides whether it counts.
 			AllowDestructive bool `json:"allow_destructive"`
-			// AllowRules applies SET odb.policy_allow to this one query: the
-			// per-rule override for a Blackbox policy block (ODB01), which
+			// AllowRules applies SET bb.policy_allow to this one query: the
+			// per-rule override for a Blackbox policy block (BBX01), which
 			// allow_destructive does not cover. Also honoured only for admins.
 			AllowRules []string `json:"allow_rules"`
 		}
@@ -265,7 +265,7 @@ func registerAPI(mux *http.ServeMux) {
 	})
 
 	// Base backups in object storage: what a point-in-time restore can start
-	// from. Read-only -- a restore itself is `odb restore --to`, which needs a
+	// from. Read-only -- a restore itself is `fox restore --to`, which needs a
 	// port on the host and leaves a disposable container behind.
 	mux.HandleFunc("GET /api/backups", func(w http.ResponseWriter, r *http.Request) {
 		list, err := branch.Backups()
@@ -369,7 +369,7 @@ func registerAPI(mux *http.ServeMux) {
 
 func sqlEsc(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
-// ledgerSQL builds a filtered, bounded query over odb.schema_ledger. Filter
+// ledgerSQL builds a filtered, bounded query over bb.schema_ledger. Filter
 // values are single-quote-escaped and only ever appear as string literals.
 func ledgerSQL(q url.Values) string {
 	where := []string{"true"}
@@ -412,7 +412,7 @@ func ledgerSQL(q url.Values) string {
 	}
 	return fmt.Sprintf(`SELECT to_char(at,'YYYY-MM-DD HH24:MI:SS') AS at, actor, actor_kind, tool,
 		branch, command_tag, object_identity, statement, status, risk%s
-		FROM odb.schema_ledger WHERE %s ORDER BY at DESC LIMIT %d OFFSET %d`,
+		FROM bb.schema_ledger WHERE %s ORDER BY at DESC LIMIT %d OFFSET %d`,
 		extra, strings.Join(where, " AND "), limit, offset)
 }
 
@@ -423,12 +423,12 @@ type queryAs struct {
 	// asking and the Blackbox records the real login. Empty for the engine's own
 	// reads, which run as the shared client role.
 	Branch, Actor string
-	// AllowDestructive applies SET odb.allow_destructive=on to this query's
-	// session. It is honoured only for superusers and members of odb_admin.
+	// AllowDestructive applies SET bb.allow_destructive=on to this query's
+	// session. It is honoured only for superusers and members of db_admin.
 	AllowDestructive bool
-	// AllowRules applies SET odb.policy_allow (comma-separated rule ids) to this
+	// AllowRules applies SET bb.policy_allow (comma-separated rule ids) to this
 	// query's session: the override for policy rules, which allow_destructive
-	// does not cover. Also honoured only for superusers and odb_admin members.
+	// does not cover. Also honoured only for superusers and db_admin members.
 	AllowRules []string
 }
 
@@ -438,21 +438,21 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/oxyndb", addr))
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/foxbyte", addr))
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 	// The non-superuser client role, so the web console is bound by the same
 	// rules as any other client (RLS, and the append-only ledger).
-	cfg.User, cfg.Password = "odbclient", secrets.Load().PGPassword
+	cfg.User, cfg.Password = "db_client", secrets.Load().PGPassword
 	if as.Actor != "" && as.Branch != "" {
-		// The signed-in user's own role: a member of odbclient that acts as
-		// odbclient, so data access and object ownership are unchanged, but
-		// session_user is the user. Every console session used to be odbclient,
-		// which is never in odb_admin — so no one, not even an admin, could
+		// The signed-in user's own role: a member of db_client that acts as
+		// db_client, so data access and object ownership are unchanged, but
+		// session_user is the user. Every console session used to be db_client,
+		// which is never in db_admin — so no one, not even an admin, could
 		// override the guardrail from the console.
 		if err := branch.EnsureUserRole(as.Branch, as.Actor); err != nil {
-			log.Printf("console: per-user role %q on %s: %v (using odbclient)", as.Actor, as.Branch, err)
+			log.Printf("console: per-user role %q on %s: %v (using db_client)", as.Actor, as.Branch, err)
 		} else {
 			cfg.User = as.Actor
 		}
@@ -467,7 +467,7 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	// tool should not be the blind spot. The engine's reads skip this.
 	if as.Actor != "" {
 		if _, err := conn.Exec(ctx,
-			"SELECT set_config('odb.actor',$1,false), set_config('odb.actor_kind','human',false), set_config('application_name','console',false)",
+			"SELECT set_config('bb.actor',$1,false), set_config('bb.actor_kind','human',false), set_config('application_name','console',false)",
 			as.Actor); err != nil {
 			return map[string]any{"error": err.Error()}
 		}
@@ -475,12 +475,12 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	// Each console run is its own connection, so a SET typed in one run is gone
 	// by the next; the override has to travel with the query it is meant for.
 	if len(as.AllowRules) > 0 {
-		if _, err := conn.Exec(ctx, "SELECT set_config('odb.policy_allow',$1,false)", strings.Join(as.AllowRules, ",")); err != nil {
+		if _, err := conn.Exec(ctx, "SELECT set_config('bb.policy_allow',$1,false)", strings.Join(as.AllowRules, ",")); err != nil {
 			return map[string]any{"error": err.Error()}
 		}
 	}
 	if as.AllowDestructive {
-		if _, err := conn.Exec(ctx, "SELECT set_config('odb.allow_destructive','on',false)"); err != nil {
+		if _, err := conn.Exec(ctx, "SELECT set_config('bb.allow_destructive','on',false)"); err != nil {
 			return map[string]any{"error": err.Error()}
 		}
 	}

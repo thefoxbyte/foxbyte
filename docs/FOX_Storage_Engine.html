@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>ODB_Storage Engine — OxynDB</title>
+<title>FOX_Storage Engine — FoxByte</title>
 <style>
   @page { size: A4 portrait; margin: 11mm 13mm; }
   * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -43,27 +43,27 @@
 </style>
 </head>
 <body>
-  <div class="kicker">OxynDB · architecture question</div>
+  <div class="kicker">FoxByte · architecture question</div>
   <h1>Do we have a <span class="grad">storage engine</span>?</h1>
   <div class="rule"></div>
-  <div class="meta">15 September 2026 · checked against <code>main</code> @ <code>2bc87ff</code> · companion to ODB_Checklist.pdf and ODB_Feature_Implemented.pdf</div>
+  <div class="meta">15 September 2026 · checked against <code>main</code> @ <code>2bc87ff</code> · companion to FOX_Checklist.pdf and FOX_Feature_Implemented.pdf</div>
 
   <div class="answer">
     <div class="big">No — by design</div>
-    <p>OxynDB has no storage engine of its own. Rows, indexes and the write-ahead log are stored by <b>PostgreSQL 16's own engine</b> on local disk. What OxynDB built is a <b>storage layer around Postgres</b>: instant copy-on-write branches, space management, and durability to object storage.</p>
+    <p>FoxByte has no storage engine of its own. Rows, indexes and the write-ahead log are stored by <b>PostgreSQL 16's own engine</b> on local disk. What FoxByte built is a <b>storage layer around Postgres</b>: instant copy-on-write branches, space management, and durability to object storage.</p>
   </div>
 
   <h2>How data is stored today</h2>
   <div class="stack">
     <div class="layer pg"><div class="t">PostgreSQL 16 engine<small>stock, unmodified</small></div>
-      <div class="d">Heap tables, B-tree and other indexes, MVCC, write-ahead log, crash recovery. Runs in the <code>postgres:16-bookworm</code> image (plus wal-g) as one container per branch: <code>oxyn-main</code>, <code>oxyn-&lt;branch&gt;</code>.</div>
+      <div class="d">Heap tables, B-tree and other indexes, MVCC, write-ahead log, crash recovery. Runs in the <code>postgres:16-bookworm</code> image (plus wal-g) as one container per branch: <code>pg-main</code>, <code>pg-&lt;branch&gt;</code>.</div>
       <span class="st ok">Used as is</span></div>
     <div class="arrow">▼ each branch's data directory lives on ▼</div>
     <div class="layer ours"><div class="t">Copy-on-write branch storage<small>C1 · internal/branch/storage.go</small></div>
-      <div class="d">One <code>storage</code> interface with two drivers. <b>ZFS</b> (macOS VM, Linux): pool on <code>/var/lib/oxyndb-zpool.img</code>, a branch is a snapshot + clone of <code>oxyndb/branches/main</code>. <b>btrfs</b> (Windows WSL): a branch is a subvolume snapshot. A branch of any size is created in seconds and only stores what changes.</div>
+      <div class="d">One <code>storage</code> interface with two drivers. <b>ZFS</b> (macOS VM, Linux): pool on <code>/var/lib/dbpool-zpool.img</code>, a branch is a snapshot + clone of <code>dbpool/branches/main</code>. <b>btrfs</b> (Windows WSL): a branch is a subvolume snapshot. A branch of any size is created in seconds and only stores what changes.</div>
       <span class="st ok">Built, tested</span></div>
     <div class="layer ours"><div class="t">Space management<small>C6, C7</small></div>
-      <div class="d">Reservation for main and optional per-branch caps (ZFS only); used / available shown by <code>odb status</code> and the dashboard.</div>
+      <div class="d">Reservation for main and optional per-branch caps (ZFS only); used / available shown by <code>fox status</code> and the dashboard.</div>
       <span class="st part">Partial</span></div>
     <div class="arrow">▼ main's changes are also copied, off the commit path, to ▼</div>
     <div class="layer ours"><div class="t">Durability to object storage<small>D1–D3 · wal-g + MinIO</small></div>
@@ -93,11 +93,11 @@
   <h2>Where to find it</h2>
   <table>
     <tr><th style="width:28%">Piece</th><th>Code</th><th style="width:22%">Checklist / feature doc</th></tr>
-    <tr><td>Storage drivers (ZFS, btrfs)</td><td><code>internal/branch/storage.go</code>; driver chosen by <code>OXYNDB_STORAGE</code></td><td>C1</td></tr>
+    <tr><td>Storage drivers (ZFS, btrfs)</td><td><code>internal/branch/storage.go</code>; driver chosen by <code>FOX_STORAGE</code></td><td>C1</td></tr>
     <tr><td>Pool / filesystem provisioning</td><td><code>internal/branch/provision.go</code></td><td>C8</td></tr>
     <tr><td>Branch lifecycle on top of it</td><td><code>internal/branch/branch.go</code></td><td>C2, C5</td></tr>
     <tr><td>WAL archiving, backups, restore</td><td><code>docker/postgres/Dockerfile</code> (wal-g), <code>internal/branch/branch.go</code> (<code>Backup</code>, <code>Restore</code>)</td><td>D1–D3, M6</td></tr>
   </table>
-  <div class="foot">ODB_Storage Engine · if the storage design changes, update this page, C1/D1 in both documents, and re-render with Chrome (see make feature-doc)</div>
+  <div class="foot">FOX_Storage Engine · if the storage design changes, update this page, C1/D1 in both documents, and re-render with Chrome (see make feature-doc)</div>
 </body>
 </html>

@@ -11,7 +11,7 @@ import (
 
 func vmStatus() error {
 	if runtime.GOOS == "linux" {
-		fmt.Println("Linux host — OxynDB runs directly on this machine; there is no VM.")
+		fmt.Println("Linux host — FoxByte runs directly on this machine; there is no VM.")
 		return nil
 	}
 	return fmt.Errorf("unsupported host OS %q", runtime.GOOS)
@@ -19,7 +19,7 @@ func vmStatus() error {
 
 func vmShell() error {
 	if runtime.GOOS == "linux" {
-		return fmt.Errorf("Linux host — there is no VM to open a shell in; OxynDB runs directly on this machine")
+		return fmt.Errorf("Linux host — there is no VM to open a shell in; FoxByte runs directly on this machine")
 	}
 	return fmt.Errorf("unsupported host OS %q", runtime.GOOS)
 }

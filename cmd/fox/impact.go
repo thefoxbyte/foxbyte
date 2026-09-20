@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/OxynDB/oxyndb/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/branch"
 )
 
 func argPresent(args []string, flag string) bool {
@@ -26,7 +26,7 @@ func printJSON(v any) {
 	fmt.Println(string(b))
 }
 
-// impactCmd: odb impact "<SQL>" [--branch b] [--object o] [--column c] [--json]
+// impactCmd: fox impact "<SQL>" [--branch b] [--object o] [--column c] [--json]
 //
 // What a change would affect — the objects that depend on what it changes, the
 // other branches that have it, the policy verdict and a score. Nothing is run.
@@ -34,7 +34,7 @@ func impactCmd(args []string) {
 	sql := firstPositional(args, "--branch", "--object", "--column")
 	object, column := optValue(args, "--object"), optValue(args, "--column")
 	if sql == "" && object == "" {
-		fmt.Println(`usage: odb impact "<SQL>" [--branch <name>] [--object <table|view|index>] [--column <name>] [--json]`)
+		fmt.Println(`usage: fox impact "<SQL>" [--branch <name>] [--object <table|view|index>] [--column <name>] [--json]`)
 		os.Exit(2)
 	}
 	name := optValue(args, "--branch")
@@ -50,7 +50,7 @@ func impactCmd(args []string) {
 	fmt.Println(branch.FormatImpact(rep))
 }
 
-// diffCmd: odb blackbox diff <a> <b> [--json], also odb branch diff <a> <b>.
+// diffCmd: fox blackbox diff <a> <b> [--json], also fox branch diff <a> <b>.
 //
 // The schema changes made on each branch since they split, from Blackbox.
 func diffCmd(args []string) {
@@ -61,7 +61,7 @@ func diffCmd(args []string) {
 		}
 	}
 	if len(names) != 2 {
-		fmt.Println("usage: odb blackbox diff <branch-a> <branch-b> [--json]   (also: odb branch diff)")
+		fmt.Println("usage: fox blackbox diff <branch-a> <branch-b> [--json]   (also: fox branch diff)")
 		os.Exit(2)
 	}
 	d, err := branch.DiffLedgers(names[0], names[1])

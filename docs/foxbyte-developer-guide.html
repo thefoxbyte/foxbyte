@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>OxynDB — Developer Guide</title>
+<title>FoxByte — Developer Guide</title>
 <style>
   @page { size: Letter portrait; margin: 14mm; }
   * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -55,23 +55,23 @@
 
 <!-- ===================== PAGE 1 ===================== -->
 <section class="page">
-  <div class="eyebrow">Developer Guide · Build an app on OxynDB</div>
-  <h1>Using OxynDB in your application</h1>
+  <div class="eyebrow">Developer Guide · Build an app on FoxByte</div>
+  <h1>Using FoxByte in your application</h1>
   <div class="rule"></div>
-  <p class="tagline">OxynDB is <b>PostgreSQL</b> with three superpowers — instant branches,
+  <p class="tagline">FoxByte is <b>PostgreSQL</b> with three superpowers — instant branches,
   time-travel, and per-agent databases. Because it speaks the native Postgres wire protocol,
   <b>your existing driver, ORM, and SQL work unchanged</b>. This guide takes you from a clean
   machine to a running app doing full CRUD.</p>
 
   <div class="lead-card">
-    <b>The one idea to hold onto:</b> OxynDB gives your app a single, stable Postgres endpoint
+    <b>The one idea to hold onto:</b> FoxByte gives your app a single, stable Postgres endpoint
     — <code>localhost:6432</code> — and the <b>database name you connect to is the branch name</b>.
     Connect to <code>/main</code> for your primary data, or <code>/feature-x</code> for an instant,
     isolated copy. Everything else is ordinary PostgreSQL.
   </div>
 
-  <p class="caption">How your application talks to OxynDB</p>
-  <svg viewBox="0 0 800 340" width="100%" role="img" aria-label="How an app connects to OxynDB">
+  <p class="caption">How your application talks to FoxByte</p>
+  <svg viewBox="0 0 800 340" width="100%" role="img" aria-label="How an app connects to FoxByte">
     <defs>
       <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
         <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
@@ -97,7 +97,7 @@
 
     <!-- Gateway -->
     <rect x="300" y="120" width="188" height="96" rx="14" fill="#e0f2fe" stroke="#7dd3fc" stroke-width="2"/>
-    <text x="394" y="150" text-anchor="middle" font-size="14.5" class="t ti">OxynDB Gateway</text>
+    <text x="394" y="150" text-anchor="middle" font-size="14.5" class="t ti">FoxByte Gateway</text>
     <text x="394" y="170" text-anchor="middle" font-size="11" class="t su">one endpoint · :6432</text>
     <text x="394" y="188" text-anchor="middle" font-size="11" class="t su">routes by database</text>
     <text x="394" y="204" text-anchor="middle" font-size="11" class="t su">name = branch</text>
@@ -126,15 +126,15 @@
   or at a throwaway copy — instantly.</div>
 
   <div class="foot">
-    <b>OxynDB</b> — serverless PostgreSQL · branches · time-travel · agent databases.
+    <b>FoxByte</b> — serverless PostgreSQL · branches · time-travel · agent databases.
     Open source (AGPL-3.0 core, Apache-2.0 clients). Full docs at the in-app <b>Docs</b> page.
   </div>
 </section>
 
 <!-- ===================== PAGE 2 ===================== -->
 <section class="page">
-  <h2><span class="n">1</span>Run OxynDB on your machine</h2>
-  <p>Install the <code>odb</code> command; it sets up everything else (the local Linux VM on macOS,
+  <h2><span class="n">1</span>Run FoxByte on your machine</h2>
+  <p>Install the <code>fox</code> command; it sets up everything else (the local Linux VM on macOS,
   Docker, ZFS, the storage pool, and the image) for you.</p>
 
   <div class="cols">
@@ -143,21 +143,21 @@
       <pre><code><span class="c"># needs Lima for the local VM</span>
 brew install lima
 curl -fsSL https://raw.githubusercontent.com/\
-OxynDB/oxyndb/main/deploy/install.sh | sh
-odb setup</code></pre>
+foxbyte/foxbyte/main/deploy/install.sh | sh
+fox setup</code></pre>
     </div>
     <div>
       <h3>Linux</h3>
       <pre><code>curl -fsSL https://raw.githubusercontent.com/\
-OxynDB/oxyndb/main/deploy/install.sh | sh
-sudo odb start</code></pre>
+foxbyte/foxbyte/main/deploy/install.sh | sh
+sudo fox start</code></pre>
     </div>
   </div>
 
-  <p><code>odb setup</code> (macOS) / <code>odb start</code> (Linux) brings up the database, the
+  <p><code>fox setup</code> (macOS) / <code>fox start</code> (Linux) brings up the database, the
   single gateway endpoint, and the APIs. Check it:</p>
-  <pre><code>odb status            <span class="c"># servers + main + branches</span>
-odb stop              <span class="c"># stop everything</span></code></pre>
+  <pre><code>fox status            <span class="c"># servers + main + branches</span>
+fox stop              <span class="c"># stop everything</span></code></pre>
 
   <p>You now have:</p>
   <table>
@@ -175,11 +175,11 @@ odb stop              <span class="c"># stop everything</span></code></pre>
   PostgreSQL database — create your schema with plain SQL or your migration tool.</p>
 
   <h3>Optional: an isolated branch to build in</h3>
-  <pre><code>odb branch create dev          <span class="c"># instant copy-on-write branch of main</span>
-odb branch list                <span class="c"># see branches + their copy-on-write size</span></code></pre>
+  <pre><code>fox branch create dev          <span class="c"># instant copy-on-write branch of main</span>
+fox branch list                <span class="c"># see branches + their copy-on-write size</span></code></pre>
 
   <h3>Create the schema (psql through the gateway)</h3>
-  <pre><code>psql <span class="s">"postgres://oxyndb:&lt;API_KEY&gt;@localhost:6432/dev"</span> <span class="c"># or /main</span>
+  <pre><code>psql <span class="s">"postgres://dbadmin:&lt;API_KEY&gt;@localhost:6432/dev"</span> <span class="c"># or /main</span>
 
 <span class="k">CREATE TABLE</span> notes (
   id          <span class="k">serial PRIMARY KEY</span>,
@@ -189,26 +189,26 @@ odb branch list                <span class="c"># see branches + their copy-on-wr
 );</code></pre>
 
   <div class="note">Prefer a GUI or your ORM's migrations? Point them at the same
-  <code>postgres://oxyndb:&lt;API_KEY&gt;@localhost:6432/&lt;branch&gt;</code> URL — OxynDB is just
+  <code>postgres://dbadmin:&lt;API_KEY&gt;@localhost:6432/&lt;branch&gt;</code> URL — FoxByte is just
   PostgreSQL, so tools like Prisma Migrate, Alembic, golang-migrate, Flyway, and TablePlus all work.</div>
 
   <div class="foot"><b>Connection recap:</b> host <code>localhost</code> · port <code>6432</code> ·
-  user <code>oxyndb</code> · password <code>= your API key</code> · database <code>= branch name</code>.
-  Create a key on the <b>API keys</b> page (or <code>odb apikey create &lt;email&gt;</code>).</div>
+  user <code>foxbyte</code> · password <code>= your API key</code> · database <code>= branch name</code>.
+  Create a key on the <b>API keys</b> page (or <code>fox apikey create &lt;email&gt;</code>).</div>
 </section>
 
 <!-- ===================== PAGE 3 ===================== -->
 <section class="page">
   <h2><span class="n">3</span>Connect from your application</h2>
   <p>Put the connection string in an environment variable and use your language's standard Postgres
-  library. Nothing OxynDB-specific is required in your code.</p>
+  library. Nothing FoxByte-specific is required in your code.</p>
 
   <pre><code><span class="c"># .env</span>
-DATABASE_URL=postgres://oxyndb:&lt;API_KEY&gt;@localhost:6432/dev</code></pre>
-  <div class="note"><b>Why <code>postgres://</code>?</b> Because OxynDB <i>is</i> PostgreSQL — the scheme
+DATABASE_URL=postgres://dbadmin:&lt;API_KEY&gt;@localhost:6432/dev</code></pre>
+  <div class="note"><b>Why <code>postgres://</code>?</b> Because FoxByte <i>is</i> PostgreSQL — the scheme
   tells your driver to speak the standard protocol, so every Postgres client and ORM connects with no changes.</div>
   <div class="note"><b>The password is your API key.</b> The Gateway (<code>:6432</code>) requires a valid key —
-  create one on the <b>API keys</b> page (or <code>odb apikey create &lt;email&gt;</code>) and use it as the password.</div>
+  create one on the <b>API keys</b> page (or <code>fox apikey create &lt;email&gt;</code>) and use it as the password.</div>
 
   <h3>Node.js — <code>pg</code></h3>
   <pre><code><span class="k">import</span> { Pool } <span class="k">from</span> <span class="s">'pg'</span>
@@ -230,7 +230,7 @@ console.log(rows[<span class="s">0</span>])</code></pre>
 <span class="k">defer</span> conn.Close(ctx)</code></pre>
 
   <div class="note"><b>ORMs &amp; frameworks:</b> Prisma, Drizzle, TypeORM, SQLAlchemy, Django ORM, GORM,
-  ActiveRecord — set their database URL to the same value. To OxynDB they are ordinary Postgres clients.</div>
+  ActiveRecord — set their database URL to the same value. To FoxByte they are ordinary Postgres clients.</div>
 
   <h2><span class="n">4</span>Create · Read · Update · Delete</h2>
   <p>The full CRUD cycle — plain SQL on the left, the same operations from Node on the right.</p>
@@ -285,7 +285,7 @@ console.log(rows[<span class="s">0</span>])</code></pre>
 <!-- ===================== PAGE 4 ===================== -->
 <section class="page">
   <h2><span class="n">5</span>The superpower: a branch per feature or test</h2>
-  <p>This is where OxynDB changes how you build. A branch is an <b>instant, isolated, full copy</b>
+  <p>This is where FoxByte changes how you build. A branch is an <b>instant, isolated, full copy</b>
   of your database (copy-on-write, so it takes seconds and almost no disk). Point your app at a branch,
   do anything to it, then throw it away — <code>main</code> is never touched.</p>
 
@@ -307,7 +307,7 @@ console.log(rows[<span class="s">0</span>])</code></pre>
     <text x="105" y="143" text-anchor="middle" font-size="10.2" class="t2 su2">real data, untouched</text>
 
     <path class="ed2" d="M180,120 L250,120" marker-end="url(#ar2)"/>
-    <text x="215" y="110" text-anchor="middle" class="t2 el2">odb branch create</text>
+    <text x="215" y="110" text-anchor="middle" class="t2 el2">fox branch create</text>
 
     <!-- branch -->
     <rect x="250" y="98" width="160" height="60" rx="12" fill="#f0fdf4" stroke="#86efac"/>
@@ -326,14 +326,14 @@ console.log(rows[<span class="s">0</span>])</code></pre>
 
     <!-- throwaway -->
     <path class="ed2" d="M660,150 L660,205 L335,205 L335,162" marker-end="url(#ar2)"/>
-    <text x="500" y="222" text-anchor="middle" class="t2 el2">odb branch delete feature-x  —  done, nothing left behind</text>
+    <text x="500" y="222" text-anchor="middle" class="t2 el2">fox branch delete feature-x  —  done, nothing left behind</text>
   </svg>
 
-  <pre><code>odb branch create feature-x                 <span class="c"># seconds, near-zero disk</span>
+  <pre><code>fox branch create feature-x                 <span class="c"># seconds, near-zero disk</span>
 <span class="c"># in your app / CI:</span>
-DATABASE_URL=postgres://oxyndb:&lt;API_KEY&gt;@localhost:6432/feature-x
+DATABASE_URL=postgres://dbadmin:&lt;API_KEY&gt;@localhost:6432/feature-x
 <span class="c"># …run migrations, tests, a demo, anything…</span>
-odb branch delete feature-x                 <span class="c"># throw it away; main is untouched</span></code></pre>
+fox branch delete feature-x                 <span class="c"># throw it away; main is untouched</span></code></pre>
 
   <h3>Great for</h3>
   <ul>
@@ -345,22 +345,22 @@ odb branch delete feature-x                 <span class="c"># throw it away; mai
 
   <h2><span class="n">6</span>One database per AI agent</h2>
   <p>If your app runs AI agents, give each its own disposable database over HTTP — no SQL admin needed.
-  (These HTTP endpoints require an API key; create one with <code>odb apikey create &lt;email&gt;</code>.)</p>
-  <pre><code>curl -H <span class="s">"Authorization: Bearer $ODB_KEY"</span> \
+  (These HTTP endpoints require an API key; create one with <code>fox apikey create &lt;email&gt;</code>.)</p>
+  <pre><code>curl -H <span class="s">"Authorization: Bearer $FOX_KEY"</span> \
      -X POST localhost:8088/agents/alice/branch
-<span class="c"># -> { "dsn": "postgres://…:PORT/oxyndb" }  — the agent connects to that dsn</span>
-curl -H <span class="s">"Authorization: Bearer $ODB_KEY"</span> \
+<span class="c"># -> { "dsn": "postgres://…:PORT/foxbyte" }  — the agent connects to that dsn</span>
+curl -H <span class="s">"Authorization: Bearer $FOX_KEY"</span> \
      -X DELETE localhost:8088/agents/alice/branch   <span class="c"># tear it down</span></code></pre>
 
   <h3>Quick reference</h3>
   <table>
     <thead><tr><th>Task</th><th>Command / value</th></tr></thead>
     <tbody>
-      <tr><td>Start / stop everything</td><td><code>odb start</code> · <code>odb stop</code></td></tr>
-      <tr><td>Connection string</td><td><code>postgres://oxyndb:&lt;API_KEY&gt;@localhost:6432/&lt;branch&gt;</code></td></tr>
-      <tr><td>Create / list / delete a branch</td><td><code>odb branch create|list|delete &lt;name&gt;</code></td></tr>
+      <tr><td>Start / stop everything</td><td><code>fox start</code> · <code>fox stop</code></td></tr>
+      <tr><td>Connection string</td><td><code>postgres://dbadmin:&lt;API_KEY&gt;@localhost:6432/&lt;branch&gt;</code></td></tr>
+      <tr><td>Create / list / delete a branch</td><td><code>fox branch create|list|delete &lt;name&gt;</code></td></tr>
       <tr><td>Open a SQL shell on a branch</td><td><code>psql "…6432/&lt;branch&gt;"</code></td></tr>
-      <tr><td>Time-travel (point-in-time restore)</td><td><code>odb backup create</code> · <code>odb restore --to latest</code></td></tr>
+      <tr><td>Time-travel (point-in-time restore)</td><td><code>fox backup create</code> · <code>fox restore --to latest</code></td></tr>
       <tr><td>Web console &amp; dashboard</td><td><code>make web-dev</code> → <code>localhost:5173</code></td></tr>
     </tbody>
   </table>

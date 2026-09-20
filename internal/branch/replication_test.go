@@ -31,7 +31,7 @@ func TestParseReplication(t *testing.T) {
 	if _, err := parseReplication("rep", func() ([]string, error) { return nil, errors.New("boom") }); err == nil || !strings.Contains(err.Error(), "rep") {
 		t.Errorf("error should name the branch: %v", err)
 	}
-	for _, s := range []string{"subscription", "odb_sub", "srsubstate = 'r'"} {
+	for _, s := range []string{"subscription", "bb_sub", "srsubstate = 'r'"} {
 		if !strings.Contains(replicationSQL, s) {
 			t.Errorf("replicationSQL lacks %q", s)
 		}

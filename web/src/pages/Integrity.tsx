@@ -76,7 +76,7 @@ export default function Integrity() {
       <h1>Blackbox integrity</h1>
       <p className="lead" style={{ marginTop: -2 }}>
         Checkpoints anchor the Blackbox record outside the database, so rewritten, deleted or wiped history is caught — even when
-        someone could edit the database itself. Anyone can re-check independently with the open-source <code>odb-verify</code>.
+        someone could edit the database itself. Anyone can re-check independently with the open-source <code>fox-verify</code>.
       </p>
 
       <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
@@ -93,7 +93,7 @@ export default function Integrity() {
         <h3 style={{ marginTop: 0 }}>Branch from before a change</h3>
         <p className="muted" style={{ marginTop: 0 }}>
           Creates a new branch holding <code>main</code> exactly as it was just before a Blackbox entry — select one below,
-          or find its id with <code>odb blackbox entries</code>. <code>main</code> is not modified. It restores a base backup and replays WAL, so it takes a
+          or find its id with <code>fox blackbox entries</code>. <code>main</code> is not modified. It restores a base backup and replays WAL, so it takes a
           few minutes, and needs a base backup taken before the change.
         </p>
         <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>

@@ -10,11 +10,11 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/OxynDB/oxyndb/internal/ledger"
+	"github.com/foxbyte/foxbyte/internal/ledger"
 )
 
 // Blackbox impact analysis: before a change, what would it affect? The objects
-// that depend on the table, view or column it changes (odb.blast_radius,
+// that depend on the table, view or column it changes (bb.blast_radius,
 // internal/ledger/impact.sql), the other running branches that have the object,
 // what the policy gate would say, and a score with the reasons behind it.
 
@@ -174,8 +174,8 @@ func scoreImpact(r ImpactReport) (int, string, []string) {
 }
 
 func impactErr(name string, err error) error {
-	if strings.Contains(err.Error(), "odb.blast_radius") && strings.Contains(err.Error(), "does not exist") {
-		return fmt.Errorf("Blackbox impact analysis isn't installed on %q — run: odb blackbox upgrade %s", name, name)
+	if strings.Contains(err.Error(), "bb.blast_radius") && strings.Contains(err.Error(), "does not exist") {
+		return fmt.Errorf("Blackbox impact analysis isn't installed on %q — run: fox blackbox upgrade %s", name, name)
 	}
 	return err
 }
@@ -213,7 +213,7 @@ func Impact(name, statement, object, column string) (ImpactReport, error) {
 	if statement != "" {
 		rep.Command = ledger.CommandTag(statement)
 	}
-	lines, err := ledgerLines(name, fmt.Sprintf("SELECT odb.blast_radius(%s, %s, 5)::text", quoteLiteral(t.Object), sqlTextOrNull(&t.Column)))
+	lines, err := ledgerLines(name, fmt.Sprintf("SELECT bb.blast_radius(%s, %s, 5)::text", quoteLiteral(t.Object), sqlTextOrNull(&t.Column)))
 	if err != nil {
 		return ImpactReport{}, impactErr(name, err)
 	}
@@ -297,7 +297,7 @@ func BranchParent(name string) string {
 	return ""
 }
 
-// parentFromZFSOrigin maps "oxyndb/branches/main@for-qa" to "main".
+// parentFromZFSOrigin maps "dbpool/branches/main@for-qa" to "main".
 func parentFromZFSOrigin(origin string) string {
 	origin = strings.TrimSpace(origin)
 	prefix := datasetBase + "/"

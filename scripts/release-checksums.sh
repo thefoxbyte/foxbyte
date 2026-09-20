@@ -6,8 +6,8 @@
 #
 #   release-checksums.sh <tag> <file>...
 #
-# Two workflows attach assets to the same release: release.yml (the odb and
-# odb-verify binaries, the Docker context) and wsl-distro.yml (the Windows distro
+# Two workflows attach assets to the same release: release.yml (the fox and
+# fox-verify binaries, the Docker context) and wsl-distro.yml (the Windows distro
 # image). Both start from the same tag push and either can finish first. The
 # installers verify every download against SHA256SUMS and silently skip any file
 # that isn't listed, so a job that replaces the whole file with only its own

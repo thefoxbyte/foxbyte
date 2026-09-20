@@ -7,14 +7,14 @@ import (
 	"os"
 	"strings"
 
-	"github.com/OxynDB/oxyndb/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/branch"
 )
 
-// adminCmd handles `odb admin grant|revoke <email> [--branch <name>]` and
-// `odb admin list [--branch <name>]`.
+// adminCmd handles `fox admin grant|revoke <email> [--branch <name>]` and
+// `fox admin list [--branch <name>]`.
 //
-// Members of odb_admin may override the destructive-DDL guardrail with
-// SET odb.allow_destructive=on; other users cannot. Roles live inside each
+// Members of db_admin may override the destructive-DDL guardrail with
+// SET bb.allow_destructive=on; other users cannot. Roles live inside each
 // branch's Postgres, so without --branch a change is applied to main (which new
 // branches inherit) and to every running branch.
 func adminCmd(args []string) {
@@ -34,9 +34,9 @@ func adminCmd(args []string) {
 		}
 		u, ok := openStore().UserByEmail(email)
 		if !ok {
-			must(fmt.Errorf("no such user: %s (create it with: odb user create %s)", email, email))
+			must(fmt.Errorf("no such user: %s (create it with: fox user create %s)", email, email))
 		}
-		done := map[string]string{"grant": "granted odb_admin to", "revoke": "revoked odb_admin from"}[sub]
+		done := map[string]string{"grant": "granted db_admin to", "revoke": "revoked db_admin from"}[sub]
 		for _, b := range branches {
 			if sub == "grant" {
 				err = branch.GrantAdmin(b, u.Email)
@@ -73,9 +73,9 @@ func adminCmd(args []string) {
 }
 
 func adminUsage() {
-	fmt.Println("usage: odb admin grant <email> [--branch <name>]\n" +
-		"       odb admin revoke <email> [--branch <name>]\n" +
-		"       odb admin list [--branch <name>]")
+	fmt.Println("usage: fox admin grant <email> [--branch <name>]\n" +
+		"       fox admin revoke <email> [--branch <name>]\n" +
+		"       fox admin list [--branch <name>]")
 	os.Exit(2)
 }
 
@@ -90,14 +90,14 @@ func adminScope(named string) ([]string, error) {
 		return nil, err
 	}
 	if len(running) == 0 || running[0] != "main" {
-		return nil, fmt.Errorf("main is not running — start OxynDB first (odb start)")
+		return nil, fmt.Errorf("main is not running — start FoxByte first (fox start)")
 	}
 	return running, nil
 }
 
-// ledgerUpgradeCmd handles `odb ledger upgrade [branch|--all]`: re-applies the
+// ledgerUpgradeCmd handles `fox ledger upgrade [branch|--all]`: re-applies the
 // current Blackbox definition (idempotent). main is also upgraded on every
-// `odb start`; existing branches keep the definition they were cloned with until
+// `fox start`; existing branches keep the definition they were cloned with until
 // upgraded here.
 func ledgerUpgradeCmd(args []string) {
 	branches := []string{"main"}

@@ -1,7 +1,7 @@
 # Web console screenshots
 
 These images are referenced by the top-level `README.md`. To (re)capture them,
-start the stack (`odb start`), open **https://localhost:8080**, sign in, and
+start the stack (`fox start`), open **https://localhost:8080**, sign in, and
 screenshot each page:
 
 | File | Page | How to reach it |

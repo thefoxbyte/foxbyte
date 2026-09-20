@@ -12,24 +12,25 @@
 # (scripts/lib/test_guard.sh).
 #
 #   make test-vm                 # create or start it
-#   ODB_TEST_VM=name make test-vm
+#   FOX_TEST_VM=name make test-vm
 set -euo pipefail
 
-NAME="${ODB_TEST_VM:-odb-test}"
-GO_VERSION="${ODB_TEST_GO_VERSION:-1.26.0}"
-MARKER=/etc/odb-test-instance
+NAME="${FOX_TEST_VM:-fox-test}"
+GO_VERSION="${FOX_TEST_GO_VERSION:-1.26.0}"
+MARKER=/etc/fox-test-instance
 # Lima forwards a VM's ports to the Mac's localhost. The test stack uses the
 # same ports as a real one (8080, 6432, 8088), so forwarding them could put the
 # test stack behind the user's localhost:8080. The suites talk to the stack from
 # inside the VM, so nothing is forwarded at all.
 NO_FORWARDS='.portForwards=[{"guestIP":"127.0.0.1","guestPortRange":[1,65535],"ignore":true},{"guestIP":"0.0.0.0","guestPortRange":[1,65535],"ignore":true}]'
 
-# odb picks the user's VM by these names (internal/host/host_darwin.go: it
-# prefers "oxyndb", then "default"), so a test VM with either name would
-# quietly become the one every `odb` command talks to.
+# fox picks the user's VM by these names (internal/host/host_darwin.go: the
+# dedicated instance, then one named for a retired product, then "default"), so
+# a test VM with any of them would quietly become the VM every `fox` command
+# talks to.
 case "$NAME" in
-oxyndb | default)
-	echo "refusing: '$NAME' is a name odb uses for a real install — choose another ODB_TEST_VM" >&2
+fox | foxbyte | default | oxyndb | odb | vectoradb | vdb) # legacy: retired instance names
+	echo "refusing: '$NAME' is a name fox uses for a real install — choose another FOX_TEST_VM" >&2
 	exit 2
 	;;
 esac
@@ -80,7 +81,7 @@ sudo tar -C /usr/local -xzf "/tmp/$file"
 sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
 rm -f "/tmp/$file"
 
-echo "OxynDB throwaway test instance — created $(date -u +%FT%TZ) by scripts/test_vm.sh. Integration suites may destroy anything here." | sudo tee "$marker" >/dev/null
+echo "FoxByte throwaway test instance — created $(date -u +%FT%TZ) by scripts/test_vm.sh. Integration suites may destroy anything here." | sudo tee "$marker" >/dev/null
 GUEST
 
 # The docker group applies to new login sessions only; restart so every later

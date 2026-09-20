@@ -1,18 +1,18 @@
-# Contributing to OxynDB
+# Contributing to FoxByte
 
-Thanks for your interest. OxynDB is a serverless-Postgres platform written in
+Thanks for your interest. FoxByte is a serverless-Postgres platform written in
 Go, with a React/TypeScript web app. This guide covers how to build, test, and
 propose changes.
 
 ## Development setup
 
 The engine (ZFS + Docker + Postgres) is Linux-only and runs inside a local VM —
-Lima on macOS, WSL2 on Windows. The `odb` binary is a launcher that forwards
+Lima on macOS, WSL2 on Windows. The `fox` binary is a launcher that forwards
 engine commands into that VM.
 
 ```bash
-make build        # host binary -> ./bin/odb
-make vm-build     # Linux engine binary -> /tmp/odb inside the Lima VM (macOS)
+make build        # host binary -> ./bin/fox
+make vm-build     # Linux engine binary -> /tmp/fox inside the Lima VM (macOS)
 make web-dev      # run the web app against the API (http://localhost:5173)
 ```
 
@@ -31,7 +31,7 @@ changes to the engine lifecycle, run the end-to-end suites:
 make integration integration-v2 integration-update
 ```
 
-They run in a throwaway Lima VM (`odb-test`), created on first use — never in the
+They run in a throwaway Lima VM (`fox-test`), created on first use — never in the
 VM that holds your own install. The suites are destructive by design (they wipe
 Blackbox history, restore `main` to an earlier point, fail HA over and create
 accounts), so each refuses to start anywhere `scripts/test_vm.sh` has not marked.
@@ -45,7 +45,7 @@ Please:
 
 ## Contributor License Agreement (CLA)
 
-OxynDB's core is **AGPL-3.0-or-later**. To keep the option of relicensing the
+FoxByte's core is **AGPL-3.0-or-later**. To keep the option of relicensing the
 project in the future (for example to Apache-2.0), we ask contributors to sign a
 lightweight CLA granting us the right to relicense their contribution, before we
 can merge it. We will provide the CLA link on your first pull request. This is

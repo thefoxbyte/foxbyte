@@ -1,9 +1,9 @@
 # Windows Port — Status
 
-This branch (`feat/windows-support`) adds native Windows support to OxynDB. On Windows the engine
-runs in a dedicated **WSL2** distro named `oxyndb` — the direct analog of the Lima VM used on
-macOS — and `odb.exe` forwards every engine command into it, marking forwarded processes with
-`OXYNDB_IN_GUEST=1` so the in-distro `odb` runs the engine in-process.
+This branch (`feat/windows-support`) adds native Windows support to FoxByte. On Windows the engine
+runs in a dedicated **WSL2** distro named `foxbyte` — the direct analog of the Lima VM used on
+macOS — and `bb.exe` forwards every engine command into it, marking forwarded processes with
+`FOX_IN_GUEST=1` so the in-distro `fox` runs the engine in-process.
 
 Read `docs/windows-setup.md` (the user-facing guide) first.
 
@@ -23,8 +23,8 @@ none /usr/lib/modules/6.6.87.2-microsoft-standard-WSL2 overlay rw,lowerdir=/modu
      upperdir=/lib/modules/6.6.87.2-microsoft-standard-WSL2/rw/upper,...
 ```
 
-Writes there persist across `wsl --terminate` and are private to the distro. So `odb setup` drops
-`zfs.ko` into the `oxyndb` distro's own module tree and runs `depmod`. Consequences:
+Writes there persist across `wsl --terminate` and are private to the distro. So `fox setup` drops
+`zfs.ko` into the `foxbyte` distro's own module tree and runs `depmod`. Consequences:
 
 - `.wslconfig` is never written. No `kernel=`, no `kernelModules=`.
 - Docker Desktop, Rancher Desktop, and every other distro are untouched — this is true by
@@ -43,12 +43,12 @@ Modules only load against the kernel they were built for. Two guards:
    `clone --depth 1` always looks untagged, since `git describe --exact-match` can't resolve the tag
    in a shallow clone. The build exports an empty `LOCALVERSION` to suppress it; an empty
    `.scmversion` does not work. Do not downgrade the assertion to a warning.
-2. The artifact is named for that release (`oxyndb-zfs-<rel>.tar.gz`), and both `odb setup`
+2. The artifact is named for that release (`foxbyte-zfs-<rel>.tar.gz`), and both `fox setup`
    (`zfsBundleName` in `internal/host/host_wsl.go`) and `install.ps1` (`Get-ZfsBundleName`) look it
    up by `uname -r`. A WSL kernel bump therefore surfaces as a missing file with an actionable
    message, not as a module that silently refuses to load.
 
-`verifyZFS` runs on **every** `odb setup`, not just the first, because a WSL update can move the
+`verifyZFS` runs on **every** `fox setup`, not just the first, because a WSL update can move the
 kernel under an already-provisioned distro.
 
 ## Key files
@@ -66,19 +66,19 @@ Each of these was found by running the thing, and each has a fix in
 like new bugs if someone changes that file without knowing them.
 
 **A file vdev cannot back a pool.** `zpool create` on a plain file fails on the
-WSL2 kernel with `cannot create 'oxyndb': no such pool or dataset`; the same
+WSL2 kernel with `cannot create 'foxbyte': no such pool or dataset`; the same
 file behind a loop device works. Setup attaches the pool image to a loop device
-and points the engine at it with `OXYNDB_ZPOOL_DEVICE`.
+and points the engine at it with `FOX_ZPOOL_DEVICE`.
 
 **Loop device numbers are global and contended.** Every WSL2 distro shares one
 kernel, so `/dev/loop*` is a single namespace — Docker Desktop and Rancher
 Desktop take devices from it. A hardcoded number fails with `EBUSY`. Worse, a
 distro that is unregistered while its pool is attached leaves the binding behind
 for as long as the VM lives, still advertising the same
-`/var/lib/oxyndb-zpool.img` path. Matching by path therefore adopts a device
+`/var/lib/dbpool-zpool.img` path. Matching by path therefore adopts a device
 backed by a deleted filesystem, and the pool faults and suspends on first write.
 `zpool-up.sh` matches on the backing **inode**, detaches such corpses, and
-publishes the live device as the stable symlink `/dev/oxyndb-pool`.
+publishes the live device as the stable symlink `/dev/foxbyte-pool`.
 
 **Never detach a loop device that a pool is using.** It suspends pool I/O, and a
 suspended pool can wedge the whole WSL VM — `wsl --shutdown` then hangs and only
@@ -91,7 +91,7 @@ which normalisation runs clean.
 every device, including a stale binding left by an unregistered distro, and the
 old pool's label is still on it. ZFS then imports onto a device whose backing
 file no longer exists, which faults on the first write and suspends the pool.
-The import is scoped to `/dev/oxyndb-pool`. This one is subtle and cost
+The import is scoped to `/dev/foxbyte-pool`. This one is subtle and cost
 several debugging cycles — do not widen it back to `-d /dev`.
 
 **WSL leaves `/` mount propagation private.** A normal systemd boot makes it
@@ -99,7 +99,7 @@ several debugging cycles — do not widen it back to `-d /dev`.
 `systemd-timedated`) clone the mount tree at start-up, so they hold a read-only
 copy of every branch dataset that existed then. With private mounts, ZFS's
 unmount cannot propagate into those namespaces, the copy pins the dataset, and
-`odb branch delete` fails with `dataset is busy` for any branch that existed at
+`fox branch delete` fails with `dataset is busy` for any branch that existed at
 boot. Setup makes the pool's mounts `rshared`, restoring normal Linux behaviour.
 Note the direction: making them *more* private makes this worse.
 
@@ -120,12 +120,12 @@ The engine is not modified (`internal/branch`, `internal/proxy`, … run unchang
 assumptions don't hold for an installed Windows user, and setup compensates:
 
 - **Image build context.** `ensureImage()` finds `docker/postgres` relative to the working
-  directory, which finds nothing for someone who installed `odb` rather than cloning the repo.
+  directory, which finds nothing for someone who installed `fox` rather than cloning the repo.
   `stageImageContext` copies the context into the distro and the forwarded environment sets
-  `OXYNDB_IMAGE_CONTEXT` (an env var the engine already reads).
+  `FOX_IMAGE_CONTEXT` (an env var the engine already reads).
 - **Pool import.** The engine never runs `zpool import`; `ensurePool` falls through to
   `zpool create -f`, which on an un-imported existing pool would destroy it. WSL stops idle distros,
-  so this is reached routinely on Windows. `oxyndb-zpool.service` imports the pool at every boot
+  so this is reached routinely on Windows. `foxbyte-zpool.service` imports the pool at every boot
   (ZFS's own `zfs-import-cache.service` cannot: a loop-backed pool writes no `/etc/zfs/zpool.cache`,
   so its `ConditionPathExists` never holds). If that unit cannot import a pool the image already
   contains, it fails deliberately and `checkZpoolUnit` refuses to run the engine — that refusal is
@@ -133,7 +133,7 @@ assumptions don't hold for an installed Windows user, and setup compensates:
   **Test a stop/restart cycle whenever this area changes.**
 - **First-start readiness.** The engine connects as soon as the Postgres socket appears, but the
   container entrypoint's temporary server is still running initdb, so psql gets
-  `database "oxyndb" does not exist`. initdb on a fresh ZFS pool is slow enough to lose that race
+  `database "foxbyte" does not exist`. initdb on a fresh ZFS pool is slow enough to lose that race
   every time here, so `setupWindows` retries `start` once. Fixing the readiness check in the engine
   would let that retry be deleted.
 

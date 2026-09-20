@@ -16,12 +16,12 @@ func TestSchemaV2IsAdditive(t *testing.T) {
 		t.Fatal("SchemaV2 is empty — is ledger_v2.sql embedded?")
 	}
 	forbidden := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)alter\s+table\s+(if\s+exists\s+)?odb\.schema_ledger`),
-		regexp.MustCompile(`(?i)alter\s+table\s+(if\s+exists\s+)?odb\.policy`),
+		regexp.MustCompile(`(?i)alter\s+table\s+(if\s+exists\s+)?bb\.schema_ledger`),
+		regexp.MustCompile(`(?i)alter\s+table\s+(if\s+exists\s+)?bb\.policy`),
 		regexp.MustCompile(`(?i)drop\s+(table|trigger|function|event\s+trigger)`),
-		regexp.MustCompile(`(?i)function\s+odb\.(_ledger_hash|chain_row|deny_change|guard_ddl_start|log_ddl_end|log_ddl_drop|_ctx|_skip|_may_override)\b`),
-		regexp.MustCompile(`(?i)trigger\s+(odb_chain|odb_append_only|odb_no_truncate)\b`),
-		regexp.MustCompile(`(?i)event\s+trigger\s+odb_(guard_start|log_end|log_drop)\b`),
+		regexp.MustCompile(`(?i)function\s+bb\.(_ledger_hash|chain_row|deny_change|guard_ddl_start|log_ddl_end|log_ddl_drop|_ctx|_skip|_may_override)\b`),
+		regexp.MustCompile(`(?i)trigger\s+(bb_chain|bb_append_only|bb_no_truncate)\b`),
+		regexp.MustCompile(`(?i)event\s+trigger\s+key_(guard_start|log_end|log_drop)\b`),
 	}
 	for _, re := range forbidden {
 		if loc := re.FindStringIndex(SchemaV2); loc != nil {
@@ -38,17 +38,17 @@ func TestSchemaV2IsAdditive(t *testing.T) {
 // install must not leave replication-role changes behind.
 func TestSchemaV2Safety(t *testing.T) {
 	for _, want := range []string{
-		"EXCEPTION WHEN OTHERS THEN",                   // capture errors become warnings
-		"current_setting('odb.v2', true), '') = 'off'", // kill switch
-		"IF odb._capture_disabled() THEN",              // …checked inside the fail-safe block
-		"s.setrole = 0",                                // …honoured database-wide
-		"rolname = session_user",                       // …or in a superuser's own session
-		"SET session_replication_role = replica;",      // install isn't recorded as user DDL
-		"SET session_replication_role = DEFAULT;",      // …and is restored
-		"REVOKE UPDATE, DELETE, TRUNCATE ON odb.ledger_ext FROM PUBLIC;",
-		"CREATE TABLE IF NOT EXISTS odb.ledger_ext", // idempotent
-		"CREATE TABLE IF NOT EXISTS odb.ledger_checkpoints",
-		"REVOKE UPDATE, DELETE, TRUNCATE ON odb.ledger_checkpoints FROM PUBLIC;",
+		"EXCEPTION WHEN OTHERS THEN",                  // capture errors become warnings
+		"current_setting('bb.v2', true), '') = 'off'", // kill switch
+		"IF bb._capture_disabled() THEN",              // …checked inside the fail-safe block
+		"s.setrole = 0",                               // …honoured database-wide
+		"rolname = session_user",                      // …or in a superuser's own session
+		"SET session_replication_role = replica;",     // install isn't recorded as user DDL
+		"SET session_replication_role = DEFAULT;",     // …and is restored
+		"REVOKE UPDATE, DELETE, TRUNCATE ON bb.ledger_ext FROM PUBLIC;",
+		"CREATE TABLE IF NOT EXISTS bb.ledger_ext", // idempotent
+		"CREATE TABLE IF NOT EXISTS bb.ledger_checkpoints",
+		"REVOKE UPDATE, DELETE, TRUNCATE ON bb.ledger_checkpoints FROM PUBLIC;",
 	} {
 		if !strings.Contains(SchemaV2, want) {
 			t.Errorf("ledger_v2.sql is missing %q", want)
@@ -62,21 +62,21 @@ func TestSchemaV2Safety(t *testing.T) {
 	}
 }
 
-// A client's own SET odb.v2 = 'off' must not skip capture: the switch is read
-// only through odb._capture_disabled, never directly by a trigger.
+// A client's own SET bb.v2 = 'off' must not skip capture: the switch is read
+// only through bb._capture_disabled, never directly by a trigger.
 func TestCaptureKillSwitchNotClientSettable(t *testing.T) {
-	fn := strings.Index(SchemaV2, "CREATE OR REPLACE FUNCTION odb._capture_disabled()")
-	body := strings.Index(SchemaV2, "CREATE OR REPLACE FUNCTION odb.capture_ext()")
+	fn := strings.Index(SchemaV2, "CREATE OR REPLACE FUNCTION bb._capture_disabled()")
+	body := strings.Index(SchemaV2, "CREATE OR REPLACE FUNCTION bb.capture_ext()")
 	if fn < 0 || body < 0 || fn > body {
-		t.Fatal("odb._capture_disabled must be defined before capture_ext")
+		t.Fatal("bb._capture_disabled must be defined before capture_ext")
 	}
-	if strings.Count(SchemaV2, "current_setting('odb.v2'") != 1 {
-		t.Error("odb.v2 must be read in exactly one place, odb._capture_disabled")
+	if strings.Count(SchemaV2, "current_setting('bb.v2'") != 1 {
+		t.Error("bb.v2 must be read in exactly one place, bb._capture_disabled")
 	}
 	disabled := SchemaV2[fn:body]
-	for _, want := range []string{"pg_db_role_setting", "s.setrole = 0", "c.cfg = 'odb.v2=off'", "rolsuper", "SECURITY DEFINER"} {
+	for _, want := range []string{"pg_db_role_setting", "s.setrole = 0", "c.cfg = 'bb.v2=off'", "rolsuper", "SECURITY DEFINER"} {
 		if !strings.Contains(disabled, want) {
-			t.Errorf("odb._capture_disabled is missing %q", want)
+			t.Errorf("bb._capture_disabled is missing %q", want)
 		}
 	}
 }

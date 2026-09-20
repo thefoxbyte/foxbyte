@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Windows CI for the odb launcher: the automated [A]/[W-CI] test cases from the
+# Windows CI for the fox launcher: the automated [A]/[W-CI] test cases from the
 # Windows-port plan. Full [W-E2E] (WSL2 + the ZFS kernel + the live stack) needs a
 # self-hosted runner with nested virtualization and is tracked separately.
 name: windows-ci
@@ -33,12 +33,12 @@ jobs:
         shell: bash
         run: |
           for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
-            GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/odb
+            GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/fox
           done
 
       # TC4.4/TC4.5 — installer logic (functions only; guarded main is not run).
       # TC4.* -- installer logic and the Windows install flow. The guarded main is
-      # not run; the E2E-tagged cases are skipped unless ODB_TEST_E2E is set,
+      # not run; the E2E-tagged cases are skipped unless FOX_TEST_E2E is set,
       # since they create a WSL distro and download hundreds of megabytes.
       - name: Pester (installer + Windows install flow)
         shell: pwsh
@@ -87,6 +87,6 @@ jobs:
         run: make release VERSION=ci-test
       - name: assert the Windows release assets exist
         run: |
-          test -f dist/odb-windows-amd64.exe
-          test -f dist/odb-linux-amd64                    # staged into the WSL distro
-          test -f dist/oxyndb-docker-context.tar.gz    # staged as the image build context
+          test -f dist/fox-windows-amd64.exe
+          test -f dist/fox-linux-amd64                    # staged into the WSL distro
+          test -f dist/foxbyte-docker-context.tar.gz    # staged as the image build context

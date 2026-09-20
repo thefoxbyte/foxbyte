@@ -196,7 +196,7 @@ export default function Ledger() {
                   <tr className="lg-detail">
                     <td colSpan={5}>
                       <div className="lg-meta">
-                        <span title="Declared by the client (odb.session), not verified">
+                        <span title="Declared by the client (bb.session), not verified">
                           <span className="muted">session</span> <code>{r.session || '—'}</code>
                           <span className="lg-declared">declared</span>
                         </span>

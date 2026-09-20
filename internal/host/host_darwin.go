@@ -6,6 +6,7 @@ package host
 
 import (
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"io"
 	"os"
 	"os/exec"
@@ -17,17 +18,24 @@ import (
 func hostSetup() error { return setupDarwin() }
 
 func instance() string {
-	if v := strings.TrimSpace(os.Getenv("OXYNDB_LIMA_INSTANCE")); v != "" {
+	if v := strings.TrimSpace(brand.Getenv("LIMA_INSTANCE")); v != "" {
 		return v
 	}
-	// Prefer a dedicated instance; fall back to an existing "default" VM so this
-	// works with a machine already set up the old way.
-	for _, name := range []string{"oxyndb", "default"} {
+	// Prefer the dedicated instance. Otherwise take one that already exists: a
+	// VM from a previous name of the product, or a plain "default" VM on a
+	// machine set up by hand. Without this, a rename would leave the engine
+	// looking at an empty new VM while the data sat in the old one.
+	names := []string{brand.VMInstance}
+	for _, p := range brand.Previous {
+		names = append(names, p.Slug, p.CLI) // legacy: VMs named for a retired product
+	}
+	names = append(names, "default")
+	for _, name := range names {
 		if instanceExists(name) {
 			return name
 		}
 	}
-	return "oxyndb"
+	return brand.VMInstance
 }
 
 func limactl(args ...string) *exec.Cmd {
@@ -54,34 +62,34 @@ func instanceRunning(name string) bool {
 	return err == nil && strings.TrimSpace(string(out)) == "Running"
 }
 
-// guestBin resolves the odb binary path inside the VM: an explicit override, or
-// `odb` on the guest PATH, else the dev build at /tmp/odb.
+// guestBin resolves the fox binary path inside the VM: an explicit override, or
+// `fox` on the guest PATH, else the dev build at /tmp/bb.
 func guestBin(name string) string {
-	if v := strings.TrimSpace(os.Getenv("OXYNDB_GUEST_BIN")); v != "" {
+	if v := strings.TrimSpace(brand.Getenv("GUEST_BIN")); v != "" {
 		return v
 	}
 	out, err := exec.Command("limactl", "shell", name, "--",
-		"sh", "-c", "command -v odb || echo /tmp/odb").Output()
+		"sh", "-c", "command -v fox || echo /tmp/fox").Output()
 	if err == nil {
 		if p := strings.TrimSpace(string(out)); p != "" {
 			return p
 		}
 	}
-	return "/tmp/odb"
+	return "/tmp/fox"
 }
 
 func forward(args []string) error { return forwardStdin(args, os.Stdin) }
 
 func forwardStdin(args []string, stdin io.Reader) error {
 	if _, err := exec.LookPath("limactl"); err != nil {
-		return fmt.Errorf("Lima is required on macOS. Install it with `brew install lima`, then run `odb setup`")
+		return fmt.Errorf("Lima is required on macOS. Install it with `brew install lima`, then run `fox setup`")
 	}
 	name := instance()
 	if !instanceExists(name) {
-		return fmt.Errorf("no OxynDB VM yet — run `odb setup` once to create it")
+		return fmt.Errorf("no FoxByte VM yet — run `fox setup` once to create it")
 	}
 	if !instanceRunning(name) {
-		fmt.Printf("Starting the OxynDB VM (%s)…\n", name)
+		fmt.Printf("Starting the FoxByte VM (%s)…\n", name)
 		if err := limactl("start", name).Run(); err != nil {
 			return fmt.Errorf("starting the VM: %w", err)
 		}
@@ -99,7 +107,7 @@ func setupDarwin() error {
 	if _, err := exec.LookPath("limactl"); err != nil {
 		return fmt.Errorf("Lima is required on macOS.\n" +
 			"Install it with:\n  brew install lima\n" +
-			"then run `odb setup` again")
+			"then run `fox setup` again")
 	}
 	// Fetch the latest engine build up front, so even an existing VM is updated
 	// (not just a freshly created one).
@@ -115,7 +123,7 @@ func setupDarwin() error {
 		}
 		fmt.Printf("VM %q is ready.\n", name)
 	} else {
-		fmt.Printf("Creating the OxynDB VM %q (first run downloads Ubuntu; a few minutes)…\n", name)
+		fmt.Printf("Creating the FoxByte VM %q (first run downloads Ubuntu; a few minutes)…\n", name)
 		if err := limactl("start", "--name", name, "--tty=false", "template://ubuntu").Run(); err != nil {
 			return fmt.Errorf("creating the VM: %w", err)
 		}
@@ -123,7 +131,7 @@ func setupDarwin() error {
 			return err
 		}
 	}
-	// Always (re)install the engine binary, so re-running `odb setup` picks up a
+	// Always (re)install the engine binary, so re-running `fox setup` picks up a
 	// newer build instead of keeping the one already inside the VM.
 	if err := installGuestBinary(name); err != nil {
 		return err
@@ -146,25 +154,25 @@ func provisionGuest(name string) error {
 	return nil
 }
 
-// installGuestBinary copies the bundled Linux odb binary into the VM and puts it
-// on PATH, so `odb` inside the guest is the real engine. Skipped (with a note) if
+// installGuestBinary copies the bundled Linux fox binary into the VM and puts it
+// on PATH, so `fox` inside the guest is the real engine. Skipped (with a note) if
 // no bundled binary is found — e.g. a source checkout that builds its own.
 func installGuestBinary(name string) error {
-	bin := strings.TrimSpace(os.Getenv("OXYNDB_GUEST_BINARY"))
+	bin := strings.TrimSpace(brand.Getenv("GUEST_BINARY"))
 	if bin == "" {
 		bin = bundledLinuxBinary(guestArch(name))
 	}
 	if bin == "" {
-		fmt.Println("Note: no bundled Linux odb binary found — the guest will use /tmp/odb " +
-			"if you built it from source (OXYNDB_GUEST_BINARY overrides this).")
+		fmt.Println("Note: no bundled Linux fox binary found — the guest will use /tmp/fox " +
+			"if you built it from source (FOX_GUEST_BINARY overrides this).")
 		return nil
 	}
-	fmt.Println("Installing the odb engine into the VM…")
-	if err := limactl("copy", bin, name+":/tmp/odb.new").Run(); err != nil {
+	fmt.Println("Installing the fox engine into the VM…")
+	if err := limactl("copy", bin, name+":/tmp/bb.new").Run(); err != nil {
 		return fmt.Errorf("copying the engine binary into the VM: %w", err)
 	}
 	return limactl("shell", name, "--",
-		"sudo", "install", "-m", "0755", "/tmp/odb.new", "/usr/local/bin/odb").Run()
+		"sudo", "install", "-m", "0755", "/tmp/bb.new", "/usr/local/bin/fox").Run()
 }
 
 // guestArch reports the Go arch string for the VM ("arm64"/"amd64").

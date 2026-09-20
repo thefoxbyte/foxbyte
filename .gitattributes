@@ -15,7 +15,7 @@ Makefile        text eol=lf
 go.mod          text eol=lf
 go.sum          text eol=lf
 
-# SQL is embedded into the odb binary and run by psql inside Linux containers;
+# SQL is embedded into the fox binary and run by psql inside Linux containers;
 # keep it LF so every platform builds the same bytes.
 *.sql           text eol=lf
 

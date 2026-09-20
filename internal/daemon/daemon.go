@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package daemon runs OxynDB's long-lived servers (gateway, agent API) as
+// Package daemon runs FoxByte's long-lived servers (gateway, agent API) as
 // detached background processes so they don't hold a terminal. Each service is
-// the oxyndb binary re-invoked with its subcommand, started in a new session
-// (setsid) with a pidfile and a log file under ~/.oxyndb.
+// the foxbyte binary re-invoked with its subcommand, started in a new session
+// (setsid) with a pidfile and a log file under ~/.fox.
 package daemon
 
 import (
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,11 +18,7 @@ import (
 )
 
 func runDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = "/tmp"
-	}
-	d := filepath.Join(home, ".oxyndb")
+	d := brand.StateDir()
 	_ = os.MkdirAll(d, 0o755)
 	return d
 }
@@ -47,7 +44,7 @@ func Alive(name string) bool {
 }
 
 // Start launches a service detached (no-op if already running). args are the
-// oxyndb subcommand and flags, e.g. {"gateway","--addr",":6432"}.
+// foxbyte subcommand and flags, e.g. {"gateway","--addr",":6432"}.
 func Start(name string, args []string) error {
 	if Alive(name) {
 		return nil

@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/OxynDB/oxyndb/internal/daemon"
-	"github.com/OxynDB/oxyndb/internal/host"
-	"github.com/OxynDB/oxyndb/internal/update"
+	"github.com/foxbyte/foxbyte/internal/daemon"
+	"github.com/foxbyte/foxbyte/internal/host"
+	"github.com/foxbyte/foxbyte/internal/update"
 )
 
-const updateUsage = `usage: odb update [--check] [--yes] [--version vX.Y.Z]
+const updateUsage = `usage: fox update [--check] [--yes] [--version vX.Y.Z]
 
-Installs the newest OxynDB release: the new engine, restarted servers, and
+Installs the newest FoxByte release: the new engine, restarted servers, and
 Blackbox upgrades on running branches. Databases, branches, backups and
 settings are not touched.
 
@@ -69,12 +69,12 @@ func parseUpdateArgs(args []string) (host.UpdateOptions, error) {
 	return o, nil
 }
 
-// updateGuestCmd runs the engine-side steps of `odb update` where the engine
+// updateGuestCmd runs the engine-side steps of `fox update` where the engine
 // lives. The host runs it with the NEW engine binary, so the installed engine
 // doesn't need to know these commands. Not meant to be typed.
 func updateGuestCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Println("usage: odb _update-guest stop-services | install-engine --src <file> --dest <path> [--prev <path>]")
+		fmt.Println("usage: fox _update-guest stop-services | install-engine --src <file> --dest <path> [--prev <path>]")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -86,11 +86,11 @@ func updateGuestCmd(args []string) {
 	case "install-engine":
 		src, dest, prev := optValue(args[1:], "--src"), optValue(args[1:], "--dest"), optValue(args[1:], "--prev")
 		if src == "" || dest == "" {
-			fmt.Println("usage: odb _update-guest install-engine --src <file> --dest <path> [--prev <path>]")
+			fmt.Println("usage: fox _update-guest install-engine --src <file> --dest <path> [--prev <path>]")
 			os.Exit(2)
 		}
 		if prev == "" {
-			prev = filepath.Join(oxyndbDir(), "updates", "prev", "odb")
+			prev = filepath.Join(foxbyteDir(), "updates", "prev", "fox")
 		}
 		must(update.InstallBinary(src, dest, prev))
 		fmt.Printf("  installed %s (previous engine kept at %s)\n", dest, prev)

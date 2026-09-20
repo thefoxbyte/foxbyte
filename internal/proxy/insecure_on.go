@@ -5,5 +5,5 @@
 package proxy
 
 // insecureAllowed is true only in builds made with `-tags insecure`, enabling
-// the OXYNDB_GATEWAY_NOAUTH escape hatch for trusted/local use.
+// the FOX_GATEWAY_NOAUTH escape hatch for trusted/local use.
 const insecureAllowed = true

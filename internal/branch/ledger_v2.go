@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/OxynDB/oxyndb/internal/ledger"
+	"github.com/foxbyte/foxbyte/internal/ledger"
 )
 
 // EnsureLedgerV2 installs (or upgrades) the Blackbox 2.0 additions on a
@@ -22,11 +22,11 @@ func EnsureLedgerV2(name string) error {
 	if err := psqlStdin(name, ledger.SchemaPolicy); err != nil {
 		return fmt.Errorf("installing the Blackbox policy gate on %q: %w", name, err)
 	}
-	// Agent provenance (odb.agent_sessions) builds on the same 2.0 objects.
+	// Agent provenance (bb.agent_sessions) builds on the same 2.0 objects.
 	if err := psqlStdin(name, ledger.SchemaProvenance); err != nil {
 		return fmt.Errorf("installing Blackbox provenance on %q: %w", name, err)
 	}
-	// Impact analysis (odb.blast_radius) only reads the catalog.
+	// Impact analysis (bb.blast_radius) only reads the catalog.
 	if err := psqlStdin(name, ledger.SchemaImpact); err != nil {
 		return fmt.Errorf("installing Blackbox impact analysis on %q: %w", name, err)
 	}
@@ -37,6 +37,6 @@ func EnsureLedgerV2(name string) error {
 // must never stop the stack from coming up, so a failure is only reported.
 func ensureLedgerV2BestEffort(name string) {
 	if err := EnsureLedgerV2(name); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: %v — the base ledger is unaffected; retry with: odb ledger upgrade %s\n", err, name)
+		fmt.Fprintf(os.Stderr, "warning: %v — the base ledger is unaffected; retry with: fox ledger upgrade %s\n", err, name)
 	}
 }

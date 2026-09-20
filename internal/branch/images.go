@@ -3,14 +3,14 @@
 package branch
 
 import (
-	"os"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"os/exec"
 	"strings"
 )
 
 // MinIO's container images are no longer served from Docker Hub (minio/minio and
 // minio/mc stopped resolving in 2026); they are still published on quay.io. The
-// engine uses quay.io, pinned to the releases OxynDB was tested with, so a
+// engine uses quay.io, pinned to the releases FoxByte was tested with, so a
 // fresh install gets exactly the server existing installs run rather than
 // whatever "latest" is that day. deploy/wsl-distro/build.sh preloads the same
 // names (a test keeps the two in step).
@@ -19,7 +19,7 @@ const (
 	MCImage    = "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
 
 	// The names installs made before the move pulled from Docker Hub. An install
-	// that already has one cached keeps using it, so upgrading odb needs no pull.
+	// that already has one cached keeps using it, so upgrading fox needs no pull.
 	legacyMinioImage = "minio/minio:latest"
 	legacyMCImage    = "minio/mc:latest"
 )
@@ -44,14 +44,14 @@ func imagePresent(ref string) bool {
 	return exec.Command("sudo", "docker", "image", "inspect", ref).Run() == nil
 }
 
-// minioImage is the MinIO server image to run (OXYNDB_MINIO_IMAGE overrides,
+// minioImage is the MinIO server image to run (FOX_MINIO_IMAGE overrides,
 // e.g. for a registry mirror).
 func minioImage() string {
-	return pickImage(os.Getenv("OXYNDB_MINIO_IMAGE"), MinioImage, legacyMinioImage, imagePresent)
+	return pickImage(brand.Getenv("MINIO_IMAGE"), MinioImage, legacyMinioImage, imagePresent)
 }
 
 // mcImage is the MinIO client image used to create the WAL bucket
-// (OXYNDB_MC_IMAGE overrides).
+// (FOX_MC_IMAGE overrides).
 func mcImage() string {
-	return pickImage(os.Getenv("OXYNDB_MC_IMAGE"), MCImage, legacyMCImage, imagePresent)
+	return pickImage(brand.Getenv("MC_IMAGE"), MCImage, legacyMCImage, imagePresent)
 }

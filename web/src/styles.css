@@ -1,4 +1,4 @@
-/* ============ OxynDB design system ============ */
+/* ============ FoxByte design system ============ */
 :root {
   --font-display: 'Space Grotesk', system-ui, -apple-system, sans-serif;
   --font-body: 'Inter', system-ui, -apple-system, sans-serif;
@@ -419,8 +419,8 @@ button.primary.danger:hover { filter: brightness(1.06); }
 
 .spinner { display: inline-block; width: 13px; height: 13px; margin-right: 8px;
   vertical-align: -1px; border: 2px solid color-mix(in srgb, #fff 55%, transparent);
-  border-top-color: #fff; border-radius: 50%; animation: odb-spin 0.7s linear infinite; }
-@keyframes odb-spin { to { transform: rotate(360deg); } }
+  border-top-color: #fff; border-radius: 50%; animation: fox-spin 0.7s linear infinite; }
+@keyframes fox-spin { to { transform: rotate(360deg); } }
 
 /* --- Console: row → JSON expander --- */
 th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0; text-align: center; }
@@ -533,7 +533,7 @@ th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0;
 
 /* SQL console: reload feedback, the folded system schema, and the override */
 .obj-head button:disabled { cursor: default; }
-.obj-head button.spinning { display: inline-block; animation: odb-spin .8s linear infinite; color: var(--accent); }
+.obj-head button.spinning { display: inline-block; animation: fox-spin .8s linear infinite; color: var(--accent); }
 .obj-show-system { display: block; width: calc(100% - 16px); margin: 10px 8px 8px; padding: 6px 9px; font-size: 12px;
   background: none; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); cursor: pointer; text-align: center; }
 .obj-show-system:hover { color: var(--accent); border-color: var(--accent); }

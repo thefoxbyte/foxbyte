@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>OxynDB — Feature Reference</title>
+<title>FoxByte — Feature Reference</title>
 <!--
   ==========================================================================
-  OxynDB — FEATURE REFERENCE  (this HTML file is the editable source)
+  FoxByte — FEATURE REFERENCE  (this HTML file is the editable source)
   --------------------------------------------------------------------------
   TO ADD A FUTURE FEATURE:
     1. Copy one <section class="feature"> block below.
@@ -16,7 +16,7 @@
   TO RE-RENDER THE PDF (macOS):
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
       --headless --disable-gpu --no-pdf-header-footer \
-      --print-to-pdf=OUT.pdf file://ABSOLUTE/PATH/oxyndb-feature-reference.html
+      --print-to-pdf=OUT.pdf file://ABSOLUTE/PATH/foxbyte-feature-reference.html
   ==========================================================================
 -->
 <style>
@@ -79,12 +79,12 @@
   <div class="kicker">Feature Reference · Living Document</div>
   <h1>Oxyn<span class="grad">DB</span></h1>
   <div class="rule"></div>
-  <p>A complete, descriptive catalogue of every feature built into OxynDB — a
+  <p>A complete, descriptive catalogue of every feature built into FoxByte — a
   serverless PostgreSQL platform with instant branching, time-travel, and a
   database-per-AI-agent model. For each feature: <b>what it is</b>, <b>why we
   built it</b>, <b>what it does</b>, and <b>how it works</b>.</p>
   <div class="meta">
-    <b>Product:</b> OxynDB &nbsp;·&nbsp; <b>Type:</b> Serverless PostgreSQL &nbsp;·&nbsp;
+    <b>Product:</b> FoxByte &nbsp;·&nbsp; <b>Type:</b> Serverless PostgreSQL &nbsp;·&nbsp;
     <b>License:</b> AGPL-3.0 core / Apache-2.0 clients<br>
     <b>Status:</b> MVP complete (branching, time-travel, serverless gateway, HA, auth, web app)<br>
     <b>This document is editable</b> — the HTML source is designed to grow as new features ship.
@@ -135,7 +135,7 @@
     <li><span class="n">15</span><a class="nm" href="#f-install">One-command cross-platform install</a><span class="ds">Install &amp; run, no VM juggling</span></li>
   </ol>
 
-  <div class="foot">OxynDB Feature Reference · living document · re-render from <code>docs/oxyndb-feature-reference.html</code></div>
+  <div class="foot">FoxByte Feature Reference · living document · re-render from <code>docs/foxbyte-feature-reference.html</code></div>
 </section>
 
 <!-- ============================ 01 ============================ -->
@@ -146,7 +146,7 @@
   <div class="frule"></div>
 
   <div class="block what"><h3>What it is</h3>
-    <p>The architectural stance of the whole product. OxynDB runs <b>stock PostgreSQL on local NVMe</b> for the hot read/write path, and moves durability, branching, and time-travel <b>off</b> the commit path entirely. It is the postgres.ai / Database Lab model, implemented in Go.</p></div>
+    <p>The architectural stance of the whole product. FoxByte runs <b>stock PostgreSQL on local NVMe</b> for the hot read/write path, and moves durability, branching, and time-travel <b>off</b> the commit path entirely. It is the postgres.ai / Database Lab model, implemented in Go.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
     <p>The non-negotiable requirement was that <b>transaction speed is never compromised</b>. The popular "serverless Postgres" approach separates compute from storage over the network, which adds latency to every commit and read. We deliberately rejected that trade-off: you should get instant branches and a rewind button <i>without</i> paying a tax on normal queries.</p></div>
@@ -179,7 +179,7 @@
   <div class="block how"><h3>How it works</h3>
     <p>Under the hood a branch is a <code>zfs snapshot</code> of the parent dataset followed by a <code>zfs clone</code> — an O(1), copy-on-write operation regardless of database size. Each branch gets its own Postgres container mounting the clone as its data directory. Only blocks that diverge from the parent consume new space (shown as the "USED" copy-on-write delta).</p></div>
 
-  <div class="try"><b>Try it</b> <code>odb branch create qa &nbsp;·&nbsp; odb branch list &nbsp;·&nbsp; odb branch delete qa</code></div>
+  <div class="try"><b>Try it</b> <code>fox branch create qa &nbsp;·&nbsp; fox branch list &nbsp;·&nbsp; fox branch delete qa</code></div>
   <div class="foot">Engine: ZFS clones · packages internal/branch</div>
 </section>
 
@@ -197,12 +197,12 @@
     <p>Mistakes happen — a bad migration, an accidental <code>DELETE</code>, a bug that corrupts data. Nightly dumps lose everything since the last snapshot. Time-travel lets you recover to the moment <i>before</i> the incident, and lets you inspect historical state for audits or debugging.</p></div>
 
   <div class="block does"><h3>What it does</h3>
-    <p>It continuously captures every change, so you can create a fresh, disposable restored instance at any past point without touching the live database. <code>odb backup create</code> takes a base backup; <code>odb restore --to '&lt;timestamp&gt;'</code> (or <code>--to latest</code>) materialises that state on a separate port.</p></div>
+    <p>It continuously captures every change, so you can create a fresh, disposable restored instance at any past point without touching the live database. <code>fox backup create</code> takes a base backup; <code>fox restore --to '&lt;timestamp&gt;'</code> (or <code>--to latest</code>) materialises that state on a separate port.</p></div>
 
   <div class="block how"><h3>How it works</h3>
     <p>The primary archives its write-ahead log (WAL) <b>continuously and asynchronously</b> to object storage using <b>wal-g</b>, alongside periodic base backups. A restore starts from the nearest base backup and <b>replays WAL</b> forward to the requested target time into a new container — the standard PostgreSQL PITR mechanism, automated end-to-end.</p></div>
 
-  <div class="try"><b>Try it</b> <code>odb backup create &nbsp;·&nbsp; odb restore --to latest</code></div>
+  <div class="try"><b>Try it</b> <code>fox backup create &nbsp;·&nbsp; fox restore --to latest</code></div>
   <div class="foot">Engine: wal-g + object storage</div>
 </section>
 
@@ -248,7 +248,7 @@
   <div class="block how"><h3>How it works</h3>
     <p>The Gateway is a Go TCP server that speaks the PostgreSQL wire protocol. It reads the client's <b>startup message</b>, extracts the requested database (the branch name), ensures that branch is running, dials its backend, and then pipes the session through transparently. Because it operates at the protocol level, ordinary drivers, ORMs, and tools work unchanged.</p></div>
 
-  <div class="try"><b>Try it</b> <code>psql "postgres://oxyndb@localhost:6432/main"</code></div>
+  <div class="try"><b>Try it</b> <code>psql "postgres://dbadmin@localhost:6432/main"</code></div>
   <div class="foot">Engine: internal/proxy (Postgres wire protocol)</div>
 </section>
 
@@ -271,7 +271,7 @@
   <div class="block how"><h3>How it works</h3>
     <p>A reaper goroutine inside the Gateway tracks the last time each branch was routed to and checks live server activity; when a branch is idle with no client backends it stops the container (data on ZFS survives). On the next connect, the router recreates or starts the container from its surviving dataset before forwarding. The primary, standby, and restore targets are deliberately excluded so availability is never affected.</p></div>
 
-  <div class="try"><b>Try it</b> <code>odb gateway --idle 90s &nbsp;·&nbsp; odb branch suspend qa &nbsp;·&nbsp; odb branch resume qa</code></div>
+  <div class="try"><b>Try it</b> <code>fox gateway --idle 90s &nbsp;·&nbsp; fox branch suspend qa &nbsp;·&nbsp; fox branch resume qa</code></div>
   <div class="foot">Engine: reaper in internal/proxy + branch lifecycle</div>
 </section>
 
@@ -279,11 +279,11 @@
 <section class="page feature" id="f-gwauth">
   <div class="fnum">FEATURE 07</div>
   <h2>Gateway authentication</h2>
-  <div class="tagline">The SQL endpoint requires a OxynDB API key as the password — the secret key finally gates database access.</div>
+  <div class="tagline">The SQL endpoint requires a FoxByte API key as the password — the secret key finally gates database access.</div>
   <div class="frule"></div>
 
   <div class="block what"><h3>What it is</h3>
-    <p>Authentication on the SQL front door. To connect through the Gateway you must present a valid OxynDB <b>API key</b> as the connection password; the real database password never leaves the Gateway.</p></div>
+    <p>Authentication on the SQL front door. To connect through the Gateway you must present a valid FoxByte <b>API key</b> as the connection password; the real database password never leaves the Gateway.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
     <p>Without it, anyone who could reach port <code>6432</code> could connect with a known password — the last open door in the platform. This closes it and unifies the security model: the same secret key that authorises the HTTP APIs now authorises database connections.</p></div>
@@ -294,7 +294,7 @@
   <div class="block how"><h3>How it works</h3>
     <p>After reading the startup message the Gateway sends <code>AuthenticationCleartextPassword</code>, reads the client's password, and validates it as an API key (hashed lookup). It then logs in to the backend Postgres <b>on the client's behalf</b> — performing the full handshake, including <b>SCRAM-SHA-256</b> — and finally sends its own <code>AuthenticationOk</code> to the client before piping the session. The client only ever sees its key; the backend credentials stay internal.</p></div>
 
-  <div class="try"><b>Try it</b> <code>PGPASSWORD=odb_… psql "postgres://oxyndb@localhost:6432/main"</code></div>
+  <div class="try"><b>Try it</b> <code>PGPASSWORD=key_… psql "postgres://dbadmin@localhost:6432/main"</code></div>
   <div class="foot">Engine: internal/proxy/auth.go (SCRAM mediation)</div>
 </section>
 
@@ -312,12 +312,12 @@
     <p>A primary can fail. Applications should survive that without downtime or reconfiguration — ideally keeping the exact same connection string. This demonstrates the replication → promotion → rerouting mechanism end-to-end.</p></div>
 
   <div class="block does"><h3>What it does</h3>
-    <p><code>odb ha enable</code> provisions a hot standby that streams changes from the primary with minimal lag; <code>odb ha status</code> shows replication state; <code>odb ha failover</code> promotes the standby and makes the Gateway route <code>main</code> to it, so clients keep working through the same endpoint. <code>odb ha disable</code> removes it.</p></div>
+    <p><code>fox ha enable</code> provisions a hot standby that streams changes from the primary with minimal lag; <code>fox ha status</code> shows replication state; <code>fox ha failover</code> promotes the standby and makes the Gateway route <code>main</code> to it, so clients keep working through the same endpoint. <code>fox ha disable</code> removes it.</p></div>
 
   <div class="block how"><h3>How it works</h3>
     <p>The standby is built with <code>pg_basebackup</code> and streams WAL <b>asynchronously</b> (no commit-latency cost). Failover calls <code>pg_promote()</code> and updates a primary-pointer file that the Gateway consults, so a connection to <code>main</code> transparently lands on the promoted node. The auto-suspend reaper is careful never to stop the standby.</p></div>
 
-  <div class="try"><b>Try it</b> <code>odb ha enable &nbsp;·&nbsp; odb ha status &nbsp;·&nbsp; odb ha failover</code></div>
+  <div class="try"><b>Try it</b> <code>fox ha enable &nbsp;·&nbsp; fox ha status &nbsp;·&nbsp; fox ha failover</code></div>
   <div class="foot">Engine: streaming replication + pg_promote()</div>
 </section>
 
@@ -329,7 +329,7 @@
   <div class="frule"></div>
 
   <div class="block what"><h3>What it is</h3>
-    <p>OxynDB's AI-native interface: an HTTP API that hands each AI agent its own private database branch, created and destroyed on demand.</p></div>
+    <p>FoxByte's AI-native interface: an HTTP API that hands each AI agent its own private database branch, created and destroyed on demand.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
     <p>Autonomous agents need somewhere to read and write state safely — without corrupting shared data or interfering with each other. Manually provisioning databases per agent is impractical. This turns "a database per agent" into a single API call, which is the product's long-term north star (an agent state substrate).</p></div>
@@ -340,7 +340,7 @@
   <div class="block how"><h3>How it works</h3>
     <p>The API (on <code>:8088</code>) wraps the branching engine (feature 02): a request creates a copy-on-write branch named for the agent and returns its DSN. The endpoints are authenticated with an API key, so only authorised callers can mint agent databases.</p></div>
 
-  <div class="try"><b>Try it</b> <code>curl -H "Authorization: Bearer odb_…" -X POST localhost:8088/agents/alice/branch</code></div>
+  <div class="try"><b>Try it</b> <code>curl -H "Authorization: Bearer key_…" -X POST localhost:8088/agents/alice/branch</code></div>
   <div class="foot">Engine: internal/agentapi over the branching engine</div>
 </section>
 
@@ -355,7 +355,7 @@
     <p>A REST/JSON management API (on <code>:8080</code>) that exposes the platform's state and operations programmatically.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
-    <p>Operations shouldn't require shell access to the host. A clean API makes OxynDB scriptable and automatable, and provides a single backend that the web UI and any external tooling can share.</p></div>
+    <p>Operations shouldn't require shell access to the host. A clean API makes FoxByte scriptable and automatable, and provides a single backend that the web UI and any external tooling can share.</p></div>
 
   <div class="block does"><h3>What it does</h3>
     <p>It reports live status (primary readiness, branch and agent counts, HA state, storage), lists and creates branches, suspends/resumes and deletes them, and runs SQL against any branch — all over authenticated HTTP.</p></div>
@@ -363,7 +363,7 @@
   <div class="block how"><h3>How it works</h3>
     <p>Built on Go's standard <code>net/http</code> with method-and-path routing; SQL execution uses the <b>pgx</b> driver against the target branch. Every <code>/api/*</code> route is wrapped in the authentication middleware and served with credentialed CORS so the browser app can call it securely.</p></div>
 
-  <div class="try"><b>Try it</b> <code>curl -H "Authorization: Bearer odb_…" localhost:8080/api/status</code></div>
+  <div class="try"><b>Try it</b> <code>curl -H "Authorization: Bearer key_…" localhost:8080/api/status</code></div>
   <div class="foot">Engine: internal/controlplane (net/http + pgx)</div>
 </section>
 
@@ -381,12 +381,12 @@
     <p>A database platform must run unattended. Requiring several foreground terminals to keep servers alive is unworkable for real use, demos, or self-hosting.</p></div>
 
   <div class="block does"><h3>What it does</h3>
-    <p><code>odb start</code> brings up the stack and all servers in the background; <code>odb stop</code> tears everything down; <code>odb status</code> shows what's running; <code>odb logs [gateway|api]</code> prints a server's log.</p></div>
+    <p><code>fox start</code> brings up the stack and all servers in the background; <code>fox stop</code> tears everything down; <code>fox status</code> shows what's running; <code>fox logs [gateway|api]</code> prints a server's log.</p></div>
 
   <div class="block how"><h3>How it works</h3>
-    <p>Each service is launched as a detached process (via <code>setsid</code>) with its PID and log file recorded under <code>~/.oxyndb/</code>. A small services map defines what <code>start</code>/<code>stop</code> manage, and initialisation is idempotent so repeated starts are safe.</p></div>
+    <p>Each service is launched as a detached process (via <code>setsid</code>) with its PID and log file recorded under <code>~/.fox/</code>. A small services map defines what <code>start</code>/<code>stop</code> manage, and initialisation is idempotent so repeated starts are safe.</p></div>
 
-  <div class="try"><b>Try it</b> <code>odb start &nbsp;·&nbsp; odb status &nbsp;·&nbsp; odb logs gateway &nbsp;·&nbsp; odb stop</code></div>
+  <div class="try"><b>Try it</b> <code>fox start &nbsp;·&nbsp; fox status &nbsp;·&nbsp; fox logs gateway &nbsp;·&nbsp; fox stop</code></div>
   <div class="foot">Engine: internal/daemon</div>
 </section>
 
@@ -401,15 +401,15 @@
     <p>The identity layer: email/password accounts, optional GitHub and Google sign-in, and server-side sessions that gate every protected surface.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
-    <p>To share or expose OxynDB beyond a single trusted machine, access must be controlled. Authentication secures the dashboard, console, and APIs, and is the groundwork for future multi-tenant "projects".</p></div>
+    <p>To share or expose FoxByte beyond a single trusted machine, access must be controlled. Authentication secures the dashboard, console, and APIs, and is the groundwork for future multi-tenant "projects".</p></div>
 
   <div class="block does"><h3>What it does</h3>
     <p>Users can register, log in, and log out; a secure session cookie keeps them signed in; social login is offered when configured. Protected pages and API routes reject unauthenticated requests.</p></div>
 
   <div class="block how"><h3>How it works</h3>
-    <p>Account data lives in a self-contained <b>SQLite</b> database (<code>~/.oxyndb/oxyndb.db</code>). Passwords are stored as <b>bcrypt</b> hashes (never plaintext). Sessions are opaque random tokens kept in an <b>httpOnly</b> cookie and validated server-side. OAuth uses the standard authorization-code flow with GitHub/Google, enabled only when client credentials are supplied.</p></div>
+    <p>Account data lives in a self-contained <b>SQLite</b> database (<code>~/.fox/auth.db</code>). Passwords are stored as <b>bcrypt</b> hashes (never plaintext). Sessions are opaque random tokens kept in an <b>httpOnly</b> cookie and validated server-side. OAuth uses the standard authorization-code flow with GitHub/Google, enabled only when client credentials are supplied.</p></div>
 
-  <div class="try"><b>Try it</b> <code>odb user create you@example.com &nbsp;·&nbsp; or sign up in the web app</code></div>
+  <div class="try"><b>Try it</b> <code>fox user create you@example.com &nbsp;·&nbsp; or sign up in the web app</code></div>
   <div class="foot">Engine: internal/auth (SQLite · bcrypt · OAuth2)</div>
 </section>
 
@@ -430,9 +430,9 @@
     <p>You can create keys (shown once), list them by prefix, and revoke them instantly. A key is presented as a <code>Bearer</code> token to the APIs, or as the password when connecting through the Gateway; revoking it cuts off everything using it.</p></div>
 
   <div class="block how"><h3>How it works</h3>
-    <p>Each key is a random secret with a <code>odb_</code> prefix. Only a <b>SHA-256 hash</b> plus a short display prefix is stored — the full key is never recoverable. Verification hashes the presented key and looks it up, so a leaked database never exposes usable credentials.</p></div>
+    <p>Each key is a random secret with a <code>key_</code> prefix. Only a <b>SHA-256 hash</b> plus a short display prefix is stored — the full key is never recoverable. Verification hashes the presented key and looks it up, so a leaked database never exposes usable credentials.</p></div>
 
-  <div class="try"><b>Try it</b> <code>odb apikey create you@example.com &nbsp;·&nbsp; or the API keys page in the web app</code></div>
+  <div class="try"><b>Try it</b> <code>fox apikey create you@example.com &nbsp;·&nbsp; or the API keys page in the web app</code></div>
   <div class="foot">Engine: internal/auth (sha256-hashed keys)</div>
 </section>
 
@@ -444,7 +444,7 @@
   <div class="frule"></div>
 
   <div class="block what"><h3>What it is</h3>
-    <p>A standalone web app that presents OxynDB: a marketing landing page, a developer guide, a reference, a live operations <b>dashboard</b>, and a <b>SQL console / schema browser</b>.</p></div>
+    <p>A standalone web app that presents FoxByte: a marketing landing page, a developer guide, a reference, a live operations <b>dashboard</b>, and a <b>SQL console / schema browser</b>.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
     <p>A great database platform needs a great front end — for onboarding, day-to-day operations, and data exploration — without dropping to the terminal. It also showcases the product and provides a consistent, branded experience.</p></div>
@@ -463,22 +463,22 @@
 <section class="page feature" id="f-install">
   <div class="fnum">FEATURE 15</div>
   <h2>One-command cross-platform install</h2>
-  <div class="tagline">Install the <code>odb</code> command and run one command — the Linux VM, Docker, ZFS, pool, and image are set up for you.</div>
+  <div class="tagline">Install the <code>fox</code> command and run one command — the Linux VM, Docker, ZFS, pool, and image are set up for you.</div>
   <div class="frule"></div>
 
   <div class="block what"><h3>What it is</h3>
-    <p>The distribution story: a single installer and a single command bring OxynDB up on macOS and Linux (with Windows as a fast-follow), hiding all the infrastructure setup.</p></div>
+    <p>The distribution story: a single installer and a single command bring FoxByte up on macOS and Linux (with Windows as a fast-follow), hiding all the infrastructure setup.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
-    <p>The engine needs Linux + Docker + ZFS, which historically meant a long, error-prone setup. For anyone to actually adopt OxynDB, getting started had to collapse to "install, then run."</p></div>
+    <p>The engine needs Linux + Docker + ZFS, which historically meant a long, error-prone setup. For anyone to actually adopt FoxByte, getting started had to collapse to "install, then run."</p></div>
 
   <div class="block does"><h3>What it does</h3>
-    <p>A one-line installer places the <code>odb</code> command; then <code>odb setup</code> (macOS) or <code>odb start</code> (Linux) creates the environment, provisions the copy-on-write pool and the image, and brings the database, Gateway, and APIs up — no manual steps. Every day-to-day command is just <code>odb …</code> on every OS.</p></div>
+    <p>A one-line installer places the <code>fox</code> command; then <code>fox setup</code> (macOS) or <code>fox start</code> (Linux) creates the environment, provisions the copy-on-write pool and the image, and brings the database, Gateway, and APIs up — no manual steps. Every day-to-day command is just <code>fox …</code> on every OS.</p></div>
 
   <div class="block how"><h3>How it works</h3>
-    <p>The <code>odb</code> binary is a <b>launcher</b>: on macOS it transparently manages and forwards commands into a Lima VM; on Linux it runs natively. The engine's <code>Provision()</code> step auto-creates the ZFS pool (on a loopback file), datasets, and Docker image on first run. Release binaries for all platforms are produced by a cross-compilation step, and the installer fetches the right one.</p></div>
+    <p>The <code>fox</code> binary is a <b>launcher</b>: on macOS it transparently manages and forwards commands into a Lima VM; on Linux it runs natively. The engine's <code>Provision()</code> step auto-creates the ZFS pool (on a loopback file), datasets, and Docker image on first run. Release binaries for all platforms are produced by a cross-compilation step, and the installer fetches the right one.</p></div>
 
-  <div class="try"><b>Try it</b> <code>curl -fsSL …/install.sh | sh &nbsp;·&nbsp; odb setup</code></div>
+  <div class="try"><b>Try it</b> <code>curl -fsSL …/install.sh | sh &nbsp;·&nbsp; fox setup</code></div>
   <div class="foot">Engine: internal/host launcher + install.sh + make release</div>
 </section>
 
