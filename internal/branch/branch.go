@@ -49,7 +49,28 @@ const (
 	// are frozen (see brand.json and docs/branding.md).
 	containerPrefix = "pg-"
 	walBucket       = "wal-archive"
-	objStoreWait    = 60 // seconds to wait for the object store before giving up
+	objStoreVolume  = "objstore-data"
+	// objStoreEndpoint is where wal-g and mc reach the object store. It follows
+	// objStore: when the container was renamed and this was not, WAL archiving,
+	// backups and restores all failed to resolve the host.
+	objStoreEndpoint = "http://" + objStore + ":9000"
+	objStoreWait     = 60 // seconds to wait for the object store before giving up
+)
+
+// The same names, exported: the uninstaller removes what the engine creates, and
+// both must mean the same thing. Frozen and brand-free (see docs/branding.md).
+const (
+	// Database and ClientRole are what the Gateway must log clients into; it
+	// used to spell them out again, and after a rename it connected to a
+	// database that no longer existed.
+	Database        = pgDatabase
+	ClientRole      = "db_client"
+	ContainerPrefix = containerPrefix
+	ObjStore        = objStore
+	ObjStoreVolume  = objStoreVolume
+	Network         = network
+	WALBucket       = walBucket
+	ManagedLabel    = managedLabel
 )
 
 // Credentials are generated per install (internal/secrets), not hardcoded. The
@@ -108,6 +129,7 @@ func startContainer(name string, primary bool) error {
 	args := []string{"run", "-d",
 		"--name", container(name),
 		"--network", network,
+		"--label", managedLabel,
 		"-e", "POSTGRES_USER=" + pgUser,
 		"-e", "POSTGRES_PASSWORD=" + pgPass(),
 		"-e", "POSTGRES_DB=" + pgDatabase,
@@ -127,15 +149,8 @@ func startContainer(name string, primary bool) error {
 		}
 	}
 	if primary {
-		args = append(args,
-			"-e", "WALG_S3_PREFIX=s3://"+walBucket,
-			"-e", "AWS_ACCESS_KEY_ID="+minioUser(),
-			"-e", "AWS_SECRET_ACCESS_KEY="+minioPass(),
-			"-e", "AWS_ENDPOINT=http://minio:9000",
-			"-e", "AWS_S3_FORCE_PATH_STYLE=true",
-			"-e", "AWS_REGION=us-east-1",
-			"-e", "WALG_COMPRESSION_METHOD=lz4",
-		)
+		args = append(args, walgEnv()...)
+		args = append(args, "-e", "WALG_COMPRESSION_METHOD=lz4")
 	}
 	args = append(args, image)
 	if primary {
@@ -543,7 +558,7 @@ func Up() error {
 			"-e", "MINIO_ROOT_USER="+minioUser(),
 			"-e", "MINIO_ROOT_PASSWORD="+minioPass(),
 			"-p", "9000:9000", "-p", "9001:9001",
-			"-v", "objstore-data:/data",
+			"-v", objStoreVolume+":/data",
 			minioImage(), "server", "/data", "--console-address", ":9001",
 		); err != nil {
 			return err
@@ -627,16 +642,14 @@ func Restore(ts string) error {
 		fmt.Printf("starting from base backup %s (the newest one that precedes %s)\n", backup, ts)
 	}
 	quiet("docker", "rm", "-f", container(name))
-	if err := run("docker", "run", "-d",
+	args := []string{"run", "-d",
 		"--name", container(name), "--network", network,
-		"-e", "WALG_S3_PREFIX=s3://"+walBucket,
-		// The same per-install MinIO credentials the primary archives WAL with —
-		// the object store rejects anything else, so a hardcoded pair can't fetch.
-		"-e", "AWS_ACCESS_KEY_ID="+minioUser(),
-		"-e", "AWS_SECRET_ACCESS_KEY="+minioPass(),
-		"-e", "AWS_ENDPOINT=http://minio:9000",
-		"-e", "AWS_S3_FORCE_PATH_STYLE=true",
-		"-e", "AWS_REGION=us-east-1",
+		"--label", managedLabel,
+	}
+	// The same per-install object-store credentials the primary archives WAL
+	// with — the store rejects anything else, so a hardcoded pair cannot fetch.
+	args = append(args, walgEnv()...)
+	args = append(args,
 		"-e", "PGDATA=/var/lib/postgresql/data/pgdata",
 		"-e", "RECOVERY_TARGET_TIME="+ts,
 		"-e", "BACKUP_NAME="+backup,
@@ -646,7 +659,8 @@ func Restore(ts string) error {
 		// the chosen base backup instead of the image's LATEST-only entrypoint.
 		"--entrypoint", "bash",
 		image, "-c", restorePITRScript,
-	); err != nil {
+	)
+	if err := run("docker", args...); err != nil {
 		return err
 	}
 	if err := waitRecovered(name); err != nil {

@@ -438,13 +438,13 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/foxbyte", addr))
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/%s", addr, branch.Database))
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 	// The non-superuser client role, so the web console is bound by the same
 	// rules as any other client (RLS, and the append-only ledger).
-	cfg.User, cfg.Password = "db_client", secrets.Load().PGPassword
+	cfg.User, cfg.Password = branch.ClientRole, secrets.Load().PGPassword
 	if as.Actor != "" && as.Branch != "" {
 		// The signed-in user's own role: a member of db_client that acts as
 		// db_client, so data access and object ownership are unchanged, but

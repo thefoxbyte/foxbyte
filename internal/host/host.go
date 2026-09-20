@@ -38,6 +38,9 @@ var localCommands = map[string]bool{
 	"": true, "help": true, "-h": true, "--help": true,
 	"version": true, "-v": true, "--version": true,
 	"setup": true, "vm": true, "update": true,
+	// uninstall removes the VM itself, the host binary and the host's state
+	// directory, so it must not be forwarded into the VM it is deleting.
+	"uninstall": true,
 }
 
 // Maybe performs host-side dispatch.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/foxbyte/foxbyte/internal/branch"
 	"github.com/foxbyte/foxbyte/internal/brand"
 )
 
@@ -112,8 +113,9 @@ func repoFiles(t *testing.T) []string {
 		switch {
 		case binary.MatchString(path),
 			d.Name() == "go.sum", d.Name() == "package-lock.json",
-			d.Name() == "brand.json", // the register of retired names
-			generatedFromBrand(path): // …and what is generated from it
+			d.Name() == "brand.json",  // the register of retired names
+			d.Name() == "branding.md", // the document explaining them
+			generatedFromBrand(path):  // …and what is generated from it
 			return nil
 		}
 		if abs, _ := filepath.Abs(path); abs == self {
@@ -169,4 +171,46 @@ func trim(line string) string {
 		line = line[:160] + "…"
 	}
 	return fmt.Sprint(line)
+}
+
+// The names of durable things — the database, the client role, the object
+// store, the network, the pool — are defined once, in the package that creates
+// them, and used everywhere else through those constants.
+//
+// Spelling one out a second time is how two bugs got in during the rename: the
+// object store's container was renamed while wal-g still addressed
+// http://minio:9000 (archiving, backups and restore all failed to resolve it),
+// and the Gateway and SQL console kept connecting to a database whose name had
+// changed. Both were a literal that nobody thought of as a name.
+func TestDurableNamesAreNotSpeltOutTwice(t *testing.T) {
+	// value -> the constant to use instead.
+	owned := map[string]string{
+		branch.Database:        "branch.Database",
+		branch.ClientRole:      "branch.ClientRole",
+		branch.ObjStore:        "branch.ObjStore",
+		branch.ObjStoreVolume:  "branch.ObjStoreVolume",
+		branch.Network:         "branch.Network",
+		branch.Pool:            "branch.Pool",
+		branch.WALBucket:       "branch.WALBucket",
+		branch.ContainerPrefix: "branch.ContainerPrefix",
+	}
+	for _, f := range repoFiles(t) {
+		// The package that owns them, and the generated shell library that
+		// hands them to the test suites, are where they are allowed to appear.
+		if !strings.HasSuffix(f, ".go") ||
+			strings.Contains(f, "internal/branch/") ||
+			strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		scanFile(t, f, func(n int, line string) {
+			if strings.Contains(strings.ToLower(line), "legacy:") {
+				return
+			}
+			for value, konst := range owned {
+				if strings.Contains(line, `"`+value+`"`) {
+					t.Errorf("%s:%d writes %q out again — use %s: %s", f, n, value, konst, trim(line))
+				}
+			}
+		})
+	}
 }

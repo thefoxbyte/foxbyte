@@ -77,32 +77,38 @@ var (
 func StateDir() string {
 	stateDirOnce.Do(func() {
 		home, err := os.UserHomeDir()
-		if err != nil {
+		if err != nil || home == "" {
 			stateDirPath = StateDirName
 			return
 		}
-		stateDirPath = filepath.Join(home, StateDirName)
-		if _, err := os.Stat(stateDirPath); err == nil {
-			return
-		}
-		for _, p := range Previous {
-			if p.StateDir == "" {
-				continue
-			}
-			old := filepath.Join(home, p.StateDir)
-			if _, err := os.Stat(old); err != nil {
-				continue
-			}
-			if err := os.Rename(old, stateDirPath); err != nil {
-				log.Printf("could not move %s to %s: %v", old, stateDirPath, err)
-				stateDirPath = old // keep using it where it is
-				return
-			}
-			log.Printf("moved %s to %s (%s was renamed from %s)", old, stateDirPath, Product, p.Product)
-			return
-		}
+		stateDirPath = resolveStateDir(home)
 	})
 	return stateDirPath
+}
+
+// resolveStateDir is StateDir for one home directory, without the caching, so
+// it can be tested.
+func resolveStateDir(home string) string {
+	dir := filepath.Join(home, StateDirName)
+	if _, err := os.Stat(dir); err == nil {
+		return dir
+	}
+	for _, p := range Previous {
+		if p.StateDir == "" {
+			continue
+		}
+		old := filepath.Join(home, p.StateDir)
+		if _, err := os.Stat(old); err != nil {
+			continue
+		}
+		if err := os.Rename(old, dir); err != nil {
+			log.Printf("could not move %s to %s: %v", old, dir, err)
+			return old // keep using it where it is
+		}
+		log.Printf("moved %s to %s (%s was renamed from %s)", old, dir, Product, p.Product)
+		return dir
+	}
+	return dir
 }
 
 // StatePath joins elements onto the state directory.

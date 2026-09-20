@@ -21,6 +21,8 @@ import (
 const (
 	// pool is derived from datasetBase ("dbpool/branches" -> "dbpool").
 	pool = "dbpool"
+	// Pool is the same name, exported for the uninstaller.
+	Pool = pool
 
 	// Defaults for auto-creating the pool on a loopback file when no ZFS pool
 	// exists yet. Overridable via env for operators with a spare block device.

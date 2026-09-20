@@ -55,3 +55,21 @@ func TestContainerName(t *testing.T) {
 		t.Errorf("container = %q, want pg-main", got)
 	}
 }
+
+// Everything that reaches the object store must address it by the name the
+// container actually has. Renaming the container from "minio" to objstore while
+// the wal-g environment still said http://minio:9000 broke WAL archiving,
+// backups and point-in-time restore at once: the host simply did not resolve.
+func TestWalgEnvPointsAtTheObjectStore(t *testing.T) {
+	env := strings.Join(walgEnv(), " ")
+	if !strings.Contains(env, "AWS_ENDPOINT=http://"+objStore+":9000") {
+		t.Errorf("wal-g is not pointed at %q: %s", objStore, env)
+	}
+	if !strings.Contains(env, "WALG_S3_PREFIX=s3://"+walBucket) {
+		t.Errorf("wal-g is not pointed at the %q bucket: %s", walBucket, env)
+	}
+	// The endpoint is derived, not written out a second time.
+	if objStoreEndpoint != "http://"+objStore+":9000" {
+		t.Errorf("objStoreEndpoint = %q, which does not follow objStore = %q", objStoreEndpoint, objStore)
+	}
+}

@@ -46,6 +46,8 @@ Usage:
 Setup:
   setup                One-time: create/start the local engine VM (macOS: Lima, Windows: WSL2) and bring the stack up
   vm [status|shell]    The engine VM (macOS: Lima, Windows: WSL2): its state and size, or a shell inside it
+  uninstall [--keep-data] [--yes]
+                       Remove FoxByte from this machine: containers, storage, state and the command
   update [--check]     Install the newest release: new engine, restarted servers, Blackbox upgrades — data untouched
                        (--yes skips the confirmation, --version vX.Y.Z picks a release)
 
@@ -162,6 +164,8 @@ func main() {
 		must(host.Setup())
 	case "vm":
 		must(host.VM(os.Args[2:]))
+	case "uninstall":
+		must(host.Uninstall(os.Args[2:]))
 	case "start":
 		// Linux host: look for a newer release while the stack starts. (macOS and
 		// Windows check on the host before forwarding; the guest never checks.)

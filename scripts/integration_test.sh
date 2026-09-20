@@ -9,6 +9,8 @@ set -uo pipefail
 # Refuses to run anywhere but the throwaway test VM (see scripts/lib/test_guard.sh).
 # A guard that can't be found must stop the suite, not let it carry on.
 . "$(cd "$(dirname "$0")" && pwd)/lib/test_guard.sh" || exit 2
+# Names in one place (generated from brand.json by `make brand`).
+. "$(cd "$(dirname "$0")" && pwd)/lib/brand.sh"
 
 S="${FOX_BIN:-/tmp/fox}"
 # The Gateway authenticates with an API key, passed via PGPASSWORD where used.
@@ -22,6 +24,25 @@ assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3
 # pg <container> <sql>  -> tuples-only result
 pg() { local c="$1"; shift; sudo docker exec -e PGPASSWORD=foxbyte "$c" psql -U dbadmin -d appdb -tAc "$*" 2>/dev/null; }
 jget() { python3 -c 'import sys,json; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
+
+echo "### 0. a foreign container named \"minio\" does not break the stack"
+# The object store used to be called plainly "minio". A container of that name
+# is common on a developer's machine, and the two collided: `setup` found the
+# foreign one, skipped creating its own, and then waited for ever for it on a
+# network it was never attached to -- printing one DNS error per second.
+$S stop >/dev/null 2>&1; sleep 1
+sudo docker rm -f minio >/dev/null 2>&1
+sudo docker run -d --name minio --network bridge alpine:3 sleep 600 >/dev/null 2>&1
+START_OUT="$(timeout 600 $S start 2>&1)"; START_RC=$?
+[ "$START_RC" = 0 ] || { echo "--- start output ---"; echo "$START_OUT" | tail -20; echo "--- end ---"; }
+assert_eq "start succeeds with a foreign \"minio\" present" "$START_RC" "0"
+# The stack has just come up for the first time in this VM; give the servers a
+# moment before anything connects to them.
+sleep 5
+assert_eq "…and the object store is ours, on our network" \
+  "$(sudo docker inspect -f '{{.State.Running}}' "$DB_OBJECT_STORE" 2>/dev/null)|$(sudo docker inspect -f '{{json .NetworkSettings.Networks}}' "$DB_OBJECT_STORE" 2>/dev/null | grep -c "$DB_NETWORK")" "true|1"
+assert_eq "…and the foreign container is untouched" "$(sudo docker inspect -f '{{.State.Running}}' minio 2>/dev/null)" "true"
+sudo docker rm -f minio >/dev/null 2>&1
 
 echo "### 1. fresh start + auth"
 $S stop >/dev/null 2>&1; sleep 1

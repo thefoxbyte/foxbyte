@@ -61,7 +61,7 @@ func touch(name string) {
 // realDatabase is the actual Postgres database inside every branch. The client's
 // requested "database" is the branch NAME (routing key), which we rewrite to
 // this before forwarding to the backend.
-const realDatabase = "foxbyte"
+const realDatabase = branch.Database
 
 // scopeAllows reports whether a key may open target: an unscoped key opens any
 // branch, a scoped one only the branch it names.
@@ -70,7 +70,7 @@ func scopeAllows(scope, target string) bool { return scope == "" || scope == tar
 // realUser is the Postgres role the Gateway logs clients in as — a non-superuser
 // role, so client sessions obey RLS/GRANTs and cannot bypass the append-only
 // ledger. The API key gates the client; this role bounds what they can do.
-const realUser = "db_client"
+const realUser = branch.ClientRole
 
 const (
 	codeStartup30 = 196608   // protocol 3.0 StartupMessage
