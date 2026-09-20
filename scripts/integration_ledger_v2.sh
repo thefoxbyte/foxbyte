@@ -11,6 +11,8 @@ set -uo pipefail
 # Refuses to run anywhere but the throwaway test VM (see scripts/lib/test_guard.sh).
 # A guard that can't be found must stop the suite, not let it carry on.
 . "$(cd "$(dirname "$0")" && pwd)/lib/test_guard.sh" || exit 2
+# Names in one place (generated from brand.json by `make brand`).
+. "$(cd "$(dirname "$0")" && pwd)/lib/brand.sh"
 
 S="${FOX_BIN:-/tmp/fox}"
 GATEWAY="postgresql://dbadmin@127.0.0.1:6432"
@@ -162,7 +164,7 @@ assert_eq "MCP run_sql runs as the client role" "$(mcp_call run_sql '{"sql":"SEL
 assert_eq "MCP run_sql cannot disable triggers" \
   "$(mcp_call run_sql '{"sql":"SET session_replication_role=replica"}' | grep -c 'permission denied')" "1"
 assert_eq "FOX_MCP_SUPERUSER=1 restores the old role" \
-  "$(mcp_call run_sql '{"sql":"SELECT session_user"}' FOX_MCP_SUPERUSER=1 | grep -c 'foxbyte')" "1"
+  "$(mcp_call run_sql '{"sql":"SELECT session_user"}' FOX_MCP_SUPERUSER=1 | grep -c "$DB_SUPERUSER")" "1"
 # K6: the MCP server acts as an API key's account, and refuses to run without one.
 assert_eq "fox mcp without a key exits non-zero" \
   "$(printf '' | $S mcp >/dev/null 2>/tmp/mcpnokey.log; echo $?)" "1"
@@ -224,11 +226,11 @@ assert_eq "the base ledger still records that DDL" \
   "$(pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE command_tag='CREATE TABLE' AND object_identity='public.v2safe' AND id > $SAFEMARK")" "1"
 pg pg-main "ALTER TABLE bb.ledger_ext DROP CONSTRAINT v2_test_fail" >/dev/null
 # Kill switch: bb.v2=off stops capture for new sessions.
-pg pg-main "ALTER DATABASE foxbyte SET bb.v2 = 'off'" >/dev/null
+pg pg-main "ALTER DATABASE $DB_DATABASE SET bb.v2 = 'off'" >/dev/null
 gw "$KEY" main "CREATE TABLE v2off(x int)" >/dev/null
 OFFID="$(pg pg-main "SELECT max(id) FROM bb.schema_ledger WHERE object_identity='public.v2off'")"
 assert_eq "kill switch disables capture" "$(pg pg-main "SELECT count(*) FROM bb.ledger_ext WHERE ledger_id=$OFFID")" "0"
-pg pg-main "ALTER DATABASE foxbyte RESET bb.v2" >/dev/null
+pg pg-main "ALTER DATABASE $DB_DATABASE RESET bb.v2" >/dev/null
 # …but it isn't a client's to flip: a session SET is honoured only for a superuser.
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS v2nocap; DROP TABLE IF EXISTS v2nocap_admin; DROP TABLE IF EXISTS v2nocap_su" >/dev/null
 gw "$KEY" main "SET bb.v2 = 'off'; CREATE TABLE v2nocap(x int)" >/dev/null
@@ -732,7 +734,7 @@ OUT="$(PGPASSWORD="$KEY" timeout 60 psql "$GATEWAY/main" -X -v VERBOSITY=verbose
 assert_eq "guardrail: a blocked DROP TABLE after a write in the same transaction no longer hangs, error unchanged" \
   "$(echo "$OUT" | grep -c '42501: guardrail: DROP TABLE is blocked by policy (set bb.allow_destructive=on to override)')|$([ $(( $(date +%s) - S0 )) -lt 30 ] && echo fast)" "1|fast"
 assert_eq "no session left waiting" \
-  "$(pg pg-main "SELECT count(*) FROM pg_stat_activity WHERE datname='foxbyte' AND wait_event_type IN ('Lock','Extension') AND pid <> pg_backend_pid()")" "0"
+  "$(pg pg-main "SELECT count(*) FROM pg_stat_activity WHERE datname='$DB_DATABASE' AND wait_event_type IN ('Lock','Extension') AND pid <> pg_backend_pid()")" "0"
 
 HB="$(pg pg-main "SELECT coalesce(max(id),0) FROM bb.policy_history")"
 pg pg-main "SET bb.actor = 'v2-audit'; INSERT INTO bb.policy VALUES ('DROP INDEX','flag') ON CONFLICT (op) DO UPDATE SET action = 'flag'" >/dev/null

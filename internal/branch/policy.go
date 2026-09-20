@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/brand"
 	"regexp"
 	"strings"
 	"text/tabwriter"
@@ -75,7 +76,7 @@ func sqlTextOrNull(p *string) string {
 
 func policyActor(actor string) string {
 	if actor == "" {
-		return "fox"
+		return brand.CLI
 	}
 	return actor
 }

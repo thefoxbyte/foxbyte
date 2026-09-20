@@ -7,6 +7,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"github.com/foxbyte/foxbyte/internal/ledger"
 	"io"
 	"net/url"
 	"os"
@@ -247,7 +248,7 @@ func TableCount(name string) int {
 	out, _ := capture("docker", "exec", container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc",
 		`SELECT count(*) FROM information_schema.tables
-		 WHERE table_schema NOT IN ('pg_catalog','information_schema','fox')`)
+		 WHERE table_schema NOT IN ('pg_catalog','information_schema','`+ledger.SchemaName+`')`)
 	n, _ := strconv.Atoi(strings.TrimSpace(out))
 	return n
 }

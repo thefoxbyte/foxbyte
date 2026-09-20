@@ -360,8 +360,8 @@ assert_eq "…and says so" "$(grep -c "is removed" /tmp/uninstall-all.log)" "1"
 # Safe to run twice: everything checks before it removes.
 $S uninstall --yes >/tmp/uninstall-again.log 2>&1
 assert_eq "running it again is harmless" "$?" "0"
-assert_eq "…and says there is nothing to remove" \
-  "$(grep -c 'Nothing to remove' /tmp/uninstall-again.log)" "1"
+assert_eq "…and finds no data left to remove" \
+  "$(grep -c 'removing the databases' /tmp/uninstall-again.log)" "0"
 
 echo "### cleanup"
 $S branch delete itb >/dev/null 2>&1

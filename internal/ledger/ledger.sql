@@ -4,9 +4,11 @@
 -- itself. Event triggers capture every DDL change, attribute it (human vs
 -- agent, tool, session, branch), and enforce guardrails on destructive DDL.
 --
--- The ledger lives in schema "fox" (deliberately NOT "foxbyte", which is the
--- role name and therefore the "$user" default schema — an unqualified user table
--- must land in public and be captured, not hidden inside our own schema).
+-- The ledger lives in schema "bb". It carries no product name on purpose: it is
+-- written into every database, so renaming the product must not reach it. It
+-- must also differ from the Postgres role name, which is the "$user" default
+-- schema — an unqualified user table must land in public and be captured, not
+-- hidden inside our own schema.
 --
 -- Idempotent: event triggers are dropped first so re-installing never fires them
 -- on its own DDL. Installed into `main`; inherited by every ZFS-clone branch,

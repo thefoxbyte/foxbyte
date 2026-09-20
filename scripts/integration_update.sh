@@ -13,6 +13,8 @@ set -uo pipefail
 # Refuses to run anywhere but the throwaway test VM (see scripts/lib/test_guard.sh).
 # A guard that can't be found must stop the suite, not let it carry on.
 . "$(cd "$(dirname "$0")" && pwd)/lib/test_guard.sh" || exit 2
+# Names in one place (generated from brand.json by `make brand`).
+. "$(cd "$(dirname "$0")" && pwd)/lib/brand.sh"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ARCH="$(go env GOARCH)"
