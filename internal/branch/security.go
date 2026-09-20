@@ -19,6 +19,10 @@ import (
 // behaviour for setups that depend on it (e.g. an agent running CREATE EXTENSION).
 
 // truthyEnv reports whether an environment variable is set to a true value.
+// AdminRole may override the destructive-DDL guardrail. Brand-free: it is a
+// cluster-global role in an existing install, so a rename must not touch it.
+const AdminRole = "db_admin"
+
 func truthyEnv(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(brand.GetenvFull(key))) {
 	case "1", "true", "yes", "on":

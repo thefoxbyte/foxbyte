@@ -17,6 +17,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/foxbyte/foxbyte/internal/auth"
+	"github.com/foxbyte/foxbyte/internal/branch"
+	"github.com/foxbyte/foxbyte/internal/ledger"
 )
 
 // Brand is brand.json. Only the fields the generators use are listed.
@@ -97,7 +101,10 @@ func replaceBlock(cur []byte, block string) ([]byte, error) {
 	if !blockRe.Match(cur) {
 		return nil, fmt.Errorf("no generated block found (expected a line containing %q)", blockStart)
 	}
-	return blockRe.ReplaceAll(cur, []byte("# "+blockStart+"\n"+block+"# "+blockEnd)), nil
+	// ReplaceAllLiteral, not ReplaceAll: PowerShell's variables start with $,
+	// which ReplaceAll reads as a capture-group reference -- it silently ate
+	// "$Product" and left " = \"FoxByte\"" behind.
+	return blockRe.ReplaceAllLiteral(cur, []byte("# "+blockStart+"\n"+block+"# "+blockEnd)), nil
 }
 
 func goFile(b Brand) string {
@@ -176,19 +183,25 @@ BRAND_TEST_VM=%q
 BRAND_PREVIOUS_CLIS=%q
 
 # Names that are deliberately brand-free, so a rename never touches an install.
-DB_SCHEMA=bb
-DB_CLIENT_ROLE=db_client
-DB_ADMIN_ROLE=db_admin
-DB_SUPERUSER=dbadmin
-DB_DATABASE=appdb
-DB_POOL=dbpool
-DB_NETWORK=dbnet
-DB_CONTAINER_PREFIX=pg-
-DB_OBJECT_STORE=objstore
-DB_WAL_BUCKET=wal-archive
-DB_KEY_PREFIX=key_
+# Taken from the packages that create them, not written out again.
+DB_SCHEMA=%s
+DB_CLIENT_ROLE=%s
+DB_ADMIN_ROLE=%s
+DB_SUPERUSER=%s
+DB_DATABASE=%s
+DB_POOL=%s
+DB_NETWORK=%s
+DB_CONTAINER_PREFIX=%s
+DB_OBJECT_STORE=%s
+DB_OBJECT_STORE_VOLUME=%s
+DB_WAL_BUCKET=%s
+DB_MANAGED_LABEL=%s
+DB_KEY_PREFIX=%s
 `, b.Product, b.CLI, b.Slug, b.EnvPrefix, b.StateDir, b.Repo, b.TestVM,
-		strings.TrimSpace(prev.String()))
+		strings.TrimSpace(prev.String()),
+		ledger.SchemaName, branch.ClientRole, branch.AdminRole, branch.Superuser, branch.Database,
+		branch.Pool, branch.Network, branch.ContainerPrefix, branch.ObjStore, branch.ObjStoreVolume,
+		branch.WALBucket, strings.TrimSuffix(branch.ManagedLabel, "=1"), auth.KeyPrefix)
 }
 
 func tsFile(b Brand) string {

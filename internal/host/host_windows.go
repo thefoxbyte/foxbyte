@@ -317,7 +317,7 @@ func guestAPIKey(name string) string {
 // shareMountPropagation puts the pool's mounts under shared propagation, once
 // the pool exists.
 //
-// foxbyte-zpool.service does this on every boot, but on the very first run the
+// dbpool-storage.service does this on every boot, but on the very first run the
 // pool is created by `fox start` after that unit has already run. Without it the
 // first session's mounts stay private, and any sandboxed systemd service that
 // starts afterwards pins them — see the note on finish() in zpoolUpScript.

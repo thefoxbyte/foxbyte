@@ -125,7 +125,7 @@ assumptions don't hold for an installed Windows user, and setup compensates:
   `FOX_IMAGE_CONTEXT` (an env var the engine already reads).
 - **Pool import.** The engine never runs `zpool import`; `ensurePool` falls through to
   `zpool create -f`, which on an un-imported existing pool would destroy it. WSL stops idle distros,
-  so this is reached routinely on Windows. `foxbyte-zpool.service` imports the pool at every boot
+  so this is reached routinely on Windows. `dbpool-storage.service` imports the pool at every boot
   (ZFS's own `zfs-import-cache.service` cannot: a loop-backed pool writes no `/etc/zfs/zpool.cache`,
   so its `ConditionPathExists` never holds). If that unit cannot import a pool the image already
   contains, it fails deliberately and `checkZpoolUnit` refuses to run the engine — that refusal is

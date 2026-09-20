@@ -158,7 +158,7 @@ echo "### 5b. continuous import: status and cutover from the API (I8)"
 # running the same image main does.
 IMG="$(sudo docker inspect -f '{{.Config.Image}}' pg-main)"
 sudo docker rm -f itsrc >/dev/null 2>&1; $S branch delete itrep >/dev/null 2>&1
-sudo docker run -d --name itsrc --network foxbyte -e POSTGRES_PASSWORD=srcpw "$IMG" postgres -c wal_level=logical >/dev/null
+sudo docker run -d --name itsrc --network "$DB_NETWORK" -e POSTGRES_PASSWORD=srcpw "$IMG" postgres -c wal_level=logical >/dev/null
 for i in $(seq 1 60); do sudo docker exec itsrc pg_isready -U postgres -q && break; sleep 1; done
 sudo docker exec itsrc psql -U postgres -q -c "CREATE TABLE items(id int PRIMARY KEY, v text); INSERT INTO items VALUES (1,'a'),(2,'b'),(3,'c');" >/dev/null
 SSE="$(curl -sk -N --max-time 180 -H "$AUTH" -H 'Content-Type: application/json' -X POST \
@@ -283,7 +283,7 @@ pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ledg" >/dev/null 2
 
 echo "### 9. ETL pipeline (extract -> transform -> test)"
 sudo docker rm -f mongo-src >/dev/null 2>&1
-sudo docker run -d --name mongo-src --network foxbyte mongo:7 >/dev/null 2>&1
+sudo docker run -d --name mongo-src --network "$DB_NETWORK" mongo:7 >/dev/null 2>&1
 for i in $(seq 1 40); do sudo docker exec mongo-src mongosh --quiet --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 && break; sleep 1; done
 sudo docker exec mongo-src mongosh --quiet shop --eval \
   'db.buildings.insertMany([{name:"Empire State",floors:102,addr:{city:"New York"}},{name:"Willis Tower",floors:108,addr:{city:"Chicago"}},{name:"Aon Center",floors:83,addr:{city:"Chicago"}}])' >/dev/null 2>&1
@@ -337,6 +337,31 @@ printf '[{"a":1},{"a":2}]' > /tmp/imp_ok.json
 $S branch delete jsonok >/dev/null 2>&1
 $S import --from /tmp/imp_ok.json --as jsonok >/dev/null 2>&1
 assert_eq "a valid JSON array still imports (exit 0)" "$?" "0"
+
+echo "### 12. fox uninstall (B1)"
+# Removal used to be a list of commands to run by hand. This runs last: it takes
+# the stack apart, so nothing after it has a stack to use.
+$S uninstall --keep-data --yes >/tmp/uninstall-keep.log 2>&1
+assert_eq "uninstall --keep-data removes the containers" \
+  "$(sudo docker ps -aq --filter "label=$DB_MANAGED_LABEL" | wc -l | tr -d ' ')" "0"
+assert_eq "…and keeps the storage pool" "$(sudo zpool list -H -o name "$DB_POOL" 2>/dev/null)" "$DB_POOL"
+assert_eq "…and keeps archived WAL and base backups" \
+  "$(sudo docker volume ls --format '{{.Name}}' | grep -cx "$DB_OBJECT_STORE-data")" "1"
+assert_eq "…and keeps accounts and secrets" "$([ -f "$HOME/$BRAND_STATE_DIR/secrets.json" ] && echo kept)" "kept"
+
+$S uninstall --yes >/tmp/uninstall-all.log 2>&1
+assert_eq "uninstall removes the storage pool" \
+  "$(sudo zpool list -H -o name "$DB_POOL" 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "…and the archived WAL and base backups" \
+  "$(sudo docker volume ls --format '{{.Name}}' | grep -cx "$DB_OBJECT_STORE-data")" "0"
+assert_eq "…and the accounts, keys and anchors" "$([ -d "$HOME/$BRAND_STATE_DIR" ] && echo present || echo gone)" "gone"
+assert_eq "…and says so" "$(grep -c "is removed" /tmp/uninstall-all.log)" "1"
+
+# Safe to run twice: everything checks before it removes.
+$S uninstall --yes >/tmp/uninstall-again.log 2>&1
+assert_eq "running it again is harmless" "$?" "0"
+assert_eq "…and says there is nothing to remove" \
+  "$(grep -c 'Nothing to remove' /tmp/uninstall-again.log)" "1"
 
 echo "### cleanup"
 $S branch delete itb >/dev/null 2>&1

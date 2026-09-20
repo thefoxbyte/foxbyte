@@ -15,6 +15,7 @@ BRAND_TEST_VM="fox-test"
 BRAND_PREVIOUS_CLIS="odb vdb"
 
 # Names that are deliberately brand-free, so a rename never touches an install.
+# Taken from the packages that create them, not written out again.
 DB_SCHEMA=bb
 DB_CLIENT_ROLE=db_client
 DB_ADMIN_ROLE=db_admin
@@ -24,5 +25,7 @@ DB_POOL=dbpool
 DB_NETWORK=dbnet
 DB_CONTAINER_PREFIX=pg-
 DB_OBJECT_STORE=objstore
+DB_OBJECT_STORE_VOLUME=objstore-data
 DB_WAL_BUCKET=wal-archive
+DB_MANAGED_LABEL=dev.dbengine.managed
 DB_KEY_PREFIX=key_

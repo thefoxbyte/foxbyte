@@ -29,6 +29,10 @@ import (
 // OAuthApp holds a provider's client credentials.
 type OAuthApp struct{ ClientID, ClientSecret string }
 
+// KeyPrefix begins every API key. Brand-free on purpose: the product has been
+// renamed twice, and a key already issued must keep working.
+const KeyPrefix = "key_"
+
 func (a OAuthApp) enabled() bool { return a.ClientID != "" && a.ClientSecret != "" }
 
 // Config is the auth configuration (usually built from the environment).
@@ -369,7 +373,7 @@ func (s *Store) CreateScopedAPIKey(userID int64, name, scope string) (string, Ke
 		name = "key"
 	}
 	scope = strings.TrimSpace(scope)
-	secret := "key_" + randToken(24)
+	secret := KeyPrefix + randToken(24)
 	id := randToken(8)
 	prefix := secret[:12]
 	now := time.Now().Unix()

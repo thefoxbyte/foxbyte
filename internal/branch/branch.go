@@ -64,6 +64,7 @@ const (
 	// used to spell them out again, and after a rename it connected to a
 	// database that no longer existed.
 	Database        = pgDatabase
+	Superuser       = pgUser
 	ClientRole      = "db_client"
 	ContainerPrefix = containerPrefix
 	ObjStore        = objStore

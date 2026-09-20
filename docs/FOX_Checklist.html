@@ -103,7 +103,7 @@
   <div class="meta">
     <b>What this is:</b> every FoxByte feature and its sub-features — built or not, and how it was tested — so it's clear where we are and what's next.
     How each feature works is in <code>FOX_Feature_Implemented.pdf</code> (same ids).<br>
-    <b>Last updated:</b> 18 September 2026 &nbsp;·&nbsp; <b>Reflects:</b> <code>main</code> @ <code>785105e</code> (v0.8.7, the FoxByte rename PR #47) + the exact repository path (<code>fix/repo-path-foxbyte</code>)<br>
+    <b>Last updated:</b> 21 September 2026 &nbsp;·&nbsp; <b>Reflects:</b> <code>main</code> @ <code>2778762</code> (v1.0.1, exact repository path PR #1) + the FoxByte rename and brand indirection (<code>chore/foxbyte</code>)<br>
     <b>Source:</b> <code>docs/FOX_Checklist.html</code> → <code>make feature-doc</code> → this PDF
   </div>
 
@@ -198,7 +198,7 @@
       <li class="ok">Stack: setup, start, stop, up, down, status, logs, psql, update</li><li class="ok">Branching, backup / restore, HA</li>
       <li class="ok">Blackbox, policy, impact</li><li class="ok">Import, pipelines</li>
       <li class="ok">Users, API keys, admin</li><li class="ok"><code>fox vm status</code> / <code>fox vm shell</code> (Lima, WSL; Linux says there is no VM)</li>
-      <li class="todo"><code>branch create --from</code></li></ul></td><td class="tb">Unit (<code>main_test.go</code>, <code>update_test.go</code>); VM suites</td></tr>
+      <li class="todo"><code>branch create --from</code></li><li class="ok"><code>fox uninstall</code> removes it all, retired installs included</li></ul></td><td class="tb">Unit (<code>main_test.go</code>, <code>update_test.go</code>); VM suites</td></tr>
     <tr data-id="B2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">B2</td><td><b>Background services (daemon)</b><ul class="subs">
       <li class="ok">Control plane :8080, gateway :6432, agent API :8088</li><li class="ok">Detached, pidfiles and logs in <code>~/.fox</code></li>
       <li class="ok">Stop (TERM then KILL), status, logs</li><li class="todo">Health check / restart on crash</li></ul></td><td class="tb">Unit (<code>TestStopTerminatesProcess</code>); VM §1</td></tr>

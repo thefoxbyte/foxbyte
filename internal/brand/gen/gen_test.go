@@ -5,6 +5,7 @@ package gen
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,33 @@ func TestGeneratedFilesAreInStep(t *testing.T) {
 		}
 		if string(got) != string(want) {
 			t.Errorf("%s is out of step with brand.json — run `make brand`", rel)
+		}
+	}
+}
+
+// The installers carry literals, because they are fetched standalone from
+// GitHub. PowerShell names its variables with a $, which Go's regexp replacement
+// reads as a capture-group reference -- it once ate "$Product" and left an
+// assignment with no variable, which would have shipped a broken installer.
+func TestInstallerBlocksKeepTheirVariables(t *testing.T) {
+	b, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := Files(root, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := string(files[filepath.Join("deploy", "install.ps1")])
+	for _, want := range []string{`$Product = "` + b.Product + `"`, `$Cli = "` + b.CLI + `"`, `$DefaultRepo = "` + b.Repo + `"`} {
+		if !strings.Contains(ps, want) {
+			t.Errorf("install.ps1 is missing %s", want)
+		}
+	}
+	sh := string(files[filepath.Join("deploy", "install.sh")])
+	for _, want := range []string{`PRODUCT="` + b.Product + `"`, `CLI="` + b.CLI + `"`, `DEFAULT_REPO="` + b.Repo + `"`} {
+		if !strings.Contains(sh, want) {
+			t.Errorf("install.sh is missing %s", want)
 		}
 	}
 }

@@ -60,3 +60,16 @@ func ctxFunction(t *testing.T) string {
 	}
 	return rest[:end]
 }
+
+// SchemaName is what the shell library and the uninstaller are generated from,
+// so it must be what the SQL actually creates. If the two drift, tools go
+// looking for a schema that is not there.
+func TestSchemaNameMatchesSQL(t *testing.T) {
+	if !strings.Contains(Schema, "CREATE SCHEMA IF NOT EXISTS "+SchemaName) {
+		t.Errorf("ledger.sql does not create schema %q", SchemaName)
+	}
+	// And every object in it is qualified with the same name.
+	if !strings.Contains(Schema, SchemaName+".schema_ledger") {
+		t.Errorf("ledger.sql does not put schema_ledger in %q", SchemaName)
+	}
+}

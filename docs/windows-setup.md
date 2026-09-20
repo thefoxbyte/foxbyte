@@ -84,7 +84,7 @@ for this WSL kernel" message rather than a module that silently refuses to load.
 | `WSL is present but not healthy` | Enable virtualization in the BIOS and the *Virtual Machine Platform* feature; `wsl --update`. |
 | `ZFS is not usable in the "foxbyte" distro` | The staged modules were built for a different kernel. Check `wsl -d appdb -- uname -r` against the bundle filename in `%LOCALAPPDATA%\Programs\foxbyte`. |
 | `systemd did not finish booting` | `wsl --terminate foxbyte`, then re-run `fox setup`. |
-| `the FoxByte ZFS pool device is not ready` | Deliberate stop: the pool could not be imported, and FoxByte will not run the engine in case it recreates the pool over your data. Run `wsl --terminate foxbyte` and retry; if it persists, see `journalctl -u foxbyte-zpool.service` inside the distro. |
+| `the FoxByte ZFS pool device is not ready` | Deliberate stop: the pool could not be imported, and FoxByte will not run the engine in case it recreates the pool over your data. Run `wsl --terminate foxbyte` and retry; if it persists, see `journalctl -u dbpool-storage.service` inside the distro. |
 | `pool I/O is currently suspended` | The pool lost its backing device. `wsl --terminate foxbyte` and re-run `fox setup`; the pool is re-imported at boot. |
 | `wsl` commands hang and `wsl --shutdown` never returns | A suspended ZFS pool can wedge the WSL VM. In an **Administrator** PowerShell: `Restart-Service WSLService -Force` (a reboot also clears it). |
 

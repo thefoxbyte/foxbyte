@@ -26,12 +26,12 @@ $ErrorActionPreference = 'Stop'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
 # generated from brand.json -- do not edit by hand, run `make brand`
- = "FoxByte"
- = "fox"
- = "foxbyte"
- = "FOX_"
- = ".fox"
- = "foxbyte/foxbyte"
+$Product = "FoxByte"
+$Cli = "fox"
+$Slug = "foxbyte"
+$EnvPrefix = "FOX_"
+$StateDir = ".fox"
+$DefaultRepo = "foxbyte/foxbyte"
 # end generated
 
 $Repo    = if ($env:FOX_REPO)    { $env:FOX_REPO }    else { $DefaultRepo }
