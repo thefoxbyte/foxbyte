@@ -17,20 +17,27 @@ import (
 // to delete — the containers, the pool and the storage service are removed
 // where they are.
 func uninstallSteps(o UninstallOptions) []removal {
-	sh := func(what, script string, data bool) removal {
+	// present is a check, not a guess: "already gone" has to be true, or a
+	// second run reports work it did not do.
+	sh := func(what, present, script string, data bool) removal {
 		return removal{
 			what:    what,
 			data:    data,
-			present: func() bool { return true },
+			present: func() bool { return shellSucceeds(present) },
 			run:     func() error { return shellRun(script) },
 		}
 	}
 	out := []removal{
 		sh("the engine's containers and network",
-			`sudo docker rm -f $(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`) 2>/dev/null || true; `+
-				`sudo docker rm -f `+branch.ObjStore+` $(sudo docker ps -a --format '{{.Names}}' | grep '^`+branch.ContainerPrefix+`') 2>/dev/null || true; `+
+			`[ -n "$(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`)$(sudo docker ps -a --format '{{.Names}}' | grep -e '^`+branch.ContainerPrefix+`' -e '^`+branch.ObjStore+`$')" ] || `+
+				`sudo docker network inspect `+branch.Network+` >/dev/null 2>&1`,
+			// -v takes each container's anonymous volumes with it, which would
+			// otherwise pile up unreferenced.
+			`sudo docker rm -f -v $(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`) 2>/dev/null || true; `+
+				`sudo docker rm -f -v `+branch.ObjStore+` $(sudo docker ps -a --format '{{.Names}}' | grep '^`+branch.ContainerPrefix+`') 2>/dev/null || true; `+
 				`sudo docker network rm `+branch.Network+` 2>/dev/null || true`, false),
 		sh("the storage service",
+			`test -f /etc/systemd/system/`+branch.Pool+`-storage.service`,
 			`sudo systemctl disable --now `+branch.Pool+`-storage.service 2>/dev/null || true; `+
 				`sudo rm -f /etc/systemd/system/`+branch.Pool+`-storage.service /usr/local/lib/dbengine/storage-up.sh; `+
 				`sudo systemctl daemon-reload 2>/dev/null || true`, false),
@@ -38,13 +45,20 @@ func uninstallSteps(o UninstallOptions) []removal {
 	if !o.KeepData {
 		out = append(out,
 			sh("the databases and their storage pool",
+				`sudo zpool list -H -o name `+branch.Pool+` >/dev/null 2>&1 || test -f /var/lib/`+branch.Pool+`-zpool.img`,
 				`sudo zpool destroy -f `+branch.Pool+` 2>/dev/null || true; `+
 					`sudo rm -f /var/lib/`+branch.Pool+`-zpool.img /var/lib/`+branch.Pool+`-btrfs.img`, true),
 			sh("archived WAL and base backups",
+				`[ -n "$(sudo docker volume ls -q --filter name=^`+branch.ObjStoreVolume+`$)" ]`,
 				`sudo docker volume rm -f `+branch.ObjStoreVolume+` 2>/dev/null || true`, true),
 		)
 	}
 	return append(out, hostSteps(o)...)
+}
+
+// shellSucceeds reports whether a check command exits zero.
+func shellSucceeds(script string) bool {
+	return exec.Command("sh", "-c", script).Run() == nil
 }
 
 func shellRun(script string) error {

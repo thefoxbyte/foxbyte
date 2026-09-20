@@ -41,34 +41,43 @@ func uninstallSteps(o UninstallOptions) []removal {
 // guestSteps empties a VM we did not create (or keeps its data, with
 // --keep-data), leaving the VM itself in place.
 func guestSteps(name string, o UninstallOptions) []removal {
-	guest := func(what, script string, data bool) removal {
+	// present runs its check inside the VM, so "already gone" is true rather
+	// than assumed.
+	guest := func(what, present, script string, data bool) removal {
 		return removal{
 			what: what,
 			data: data,
 			present: func() bool {
-				return instanceExists(name)
+				return instanceExists(name) && guestRun(name, present) == nil
 			},
 			run: func() error { return guestRun(name, script) },
 		}
 	}
 	steps := []removal{
 		guest("the engine's containers and network in VM "+name,
-			`sudo docker rm -f $(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`) 2>/dev/null || true; `+
-				`sudo docker rm -f `+branch.ObjStore+` $(sudo docker ps -a --format '{{.Names}}' | grep '^`+branch.ContainerPrefix+`' ) 2>/dev/null || true; `+
+			`[ -n "$(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`)$(sudo docker ps -a --format '{{.Names}}' | grep -e '^`+branch.ContainerPrefix+`' -e '^`+branch.ObjStore+`$')" ] || `+
+				`sudo docker network inspect `+branch.Network+` >/dev/null 2>&1`,
+			// -v takes each container's anonymous volumes with it.
+			`sudo docker rm -f -v $(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`) 2>/dev/null || true; `+
+				`sudo docker rm -f -v `+branch.ObjStore+` $(sudo docker ps -a --format '{{.Names}}' | grep '^`+branch.ContainerPrefix+`' ) 2>/dev/null || true; `+
 				`sudo docker network rm `+branch.Network+` 2>/dev/null || true`, false),
 	}
 	if !o.KeepData {
 		steps = append(steps,
 			guest("the databases and their storage pool in VM "+name,
+				`sudo zpool list -H -o name `+branch.Pool+` >/dev/null 2>&1 || test -f /var/lib/`+branch.Pool+`-zpool.img`,
 				`sudo zpool destroy -f `+branch.Pool+` 2>/dev/null || true; `+
 					`sudo rm -f /var/lib/`+branch.Pool+`-zpool.img /var/lib/`+branch.Pool+`-btrfs.img`, true),
 			guest("archived WAL and base backups in VM "+name,
+				`[ -n "$(sudo docker volume ls -q --filter name=^`+branch.ObjStoreVolume+`$)" ]`,
 				`sudo docker volume rm -f `+branch.ObjStoreVolume+` 2>/dev/null || true`, true),
 			guest("the engine's state in VM "+name,
+				`ls -d ~/`+brand.StateDirName+stateDirGlob()+` >/dev/null 2>&1`,
 				`rm -rf ~/`+brand.StateDirName+stateDirGlob(), true),
 		)
 	}
 	steps = append(steps, guest("the engine binary in VM "+name,
+		`ls `+strings.Join(guestBinaryPaths(), " ")+` >/dev/null 2>&1`,
 		`sudo rm -f `+strings.Join(guestBinaryPaths(), " "), false))
 	return steps
 }
