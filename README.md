@@ -1,6 +1,13 @@
-# FoxByte
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/foxbyte-logo-dark.png" />
+    <img src="docs/brand/foxbyte-logo.png" alt="FoxByte — the database that branches like code" width="420" />
+  </picture>
+</p>
 
-**Postgres for AI agents — instant branches, and a tamper-evident record of every schema change.**
+<p align="center">
+  <b>Postgres for AI agents — instant branches, and a tamper-evident record of every schema change.</b>
+</p>
 
 FoxByte is a **serverless PostgreSQL** platform. It keeps the hot transaction
 path on stock Postgres on local NVMe (native commit latency) and moves
