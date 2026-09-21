@@ -116,8 +116,3 @@ func winPathToMnt(p string) string {
 func parseKernelRelease(raw []byte) string {
 	return strings.TrimSpace(decodeWSLOutput(raw))
 }
-
-// distroImageName is the prebuilt distro: Ubuntu with Docker, btrfs tools,
-// the engine and the container images already in place. Importing it replaces
-// an apt install, a docker build and three registry pulls on the user's machine.
-const distroImageName = "foxbyte-distro.tar.gz"

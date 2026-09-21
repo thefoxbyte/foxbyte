@@ -50,13 +50,13 @@
 
   <div class="answer">
     <div class="big">No — by design</div>
-    <p>FoxByte has no storage engine of its own. Rows, indexes and the write-ahead log are stored by <b>PostgreSQL 16's own engine</b> on local disk. What FoxByte built is a <b>storage layer around Postgres</b>: instant copy-on-write branches, space management, and durability to object storage.</p>
+    <p>FoxByte has no storage engine of its own. Rows, indexes and the write-ahead log are stored by <b>PostgreSQL 18's own engine</b> on local disk. What FoxByte built is a <b>storage layer around Postgres</b>: instant copy-on-write branches, space management, and durability to object storage.</p>
   </div>
 
   <h2>How data is stored today</h2>
   <div class="stack">
-    <div class="layer pg"><div class="t">PostgreSQL 16 engine<small>stock, unmodified</small></div>
-      <div class="d">Heap tables, B-tree and other indexes, MVCC, write-ahead log, crash recovery. Runs in the <code>postgres:16-bookworm</code> image (plus wal-g) as one container per branch: <code>pg-main</code>, <code>pg-&lt;branch&gt;</code>.</div>
+    <div class="layer pg"><div class="t">PostgreSQL 18 engine<small>stock, unmodified</small></div>
+      <div class="d">Heap tables, B-tree and other indexes, MVCC, write-ahead log, crash recovery. Runs in the <code>postgres:18-bookworm</code> image (plus wal-g; an install created on 16 keeps running 16) as one container per branch: <code>pg-main</code>, <code>pg-&lt;branch&gt;</code>.</div>
       <span class="st ok">Used as is</span></div>
     <div class="arrow">▼ each branch's data directory lives on ▼</div>
     <div class="layer ours"><div class="t">Copy-on-write branch storage<small>C1 · internal/branch/storage.go</small></div>

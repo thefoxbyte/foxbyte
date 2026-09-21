@@ -14,7 +14,7 @@
 # network round trip that can fail halfway and leave a half-built distro. It also
 # removes them from every user's machine and does them once, here.
 #
-# Output: dist/foxbyte-distro.tar.gz
+# Output: dist/foxbyte-distro.tar.zst
 #
 # Runs on a Linux builder with Docker (CI: ubuntu-latest). Needs
 # dist/fox-linux-amd64 to exist first --
@@ -108,14 +108,18 @@ prepare_images() {
 	# test keeps these names in step with it).
 	local minio_image="quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
 	local mc_image="quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
-	# Tagged with the name the engine runs (internal/branch/branch.go `image`):
-	# a preload under any other name is ignored, and `fox setup` pulls or builds
-	# the image anyway — which is what this whole step exists to avoid.
-	docker build -t ghcr.io/thefoxbyte/postgres-walg:16 "$repo/docker/postgres"
+	# Tagged with the name a fresh install runs (internal/branch/images.go
+	# PostgresImageFor(PGMajor); a unit test keeps it in step): a preload under
+	# any other name is ignored, and `fox setup` pulls or builds the image anyway
+	# — which is what this whole step exists to avoid. Only the fresh-install
+	# major is preloaded: an install on an older one already has its image.
+	local pg_major=18
+	docker build -t "ghcr.io/thefoxbyte/postgres-walg:$pg_major" \
+		--build-arg "PG_MAJOR=$pg_major" "$repo/docker/postgres"
 	docker pull -q "$minio_image"
 	docker pull -q "$mc_image"
 	docker save -o "$work/foxbyte-images.tar" \
-		ghcr.io/thefoxbyte/postgres-walg:16 "$minio_image" "$mc_image"
+		"ghcr.io/thefoxbyte/postgres-walg:$pg_major" "$minio_image" "$mc_image"
 	timer "images" "$t"
 }
 
@@ -137,22 +141,32 @@ sudo mv "$work/foxbyte-images.tar" "$images_dir/foxbyte-images.tar"
 sudo chmod 0644 "$images_dir/foxbyte-images.tar"
 
 echo "==> repackage"
-# pigz, not gzip: this compresses ~1.7 GB and gzip is single-threaded, which made
-# it one of the slowest steps for no reason. Output is ordinary gzip, byte-for-
-# byte loadable by `wsl --import`, and measured at the same size. Falls back to
-# gzip where pigz is unavailable.
+# zstd, not gzip. This is the one large download of a Windows install (~1.7 GB
+# of rootfs and container images), and zstd at -19 with a long window makes it
+# markedly smaller than gzip ever did while unpacking fast enough that the time
+# saved downloading is not spent again waiting. --long=27 is a 128 MiB window:
+# it finds the libraries the rootfs and the Postgres image both carry, which a
+# short window cannot see. fox unpacks it (internal/host/distro_image.go),
+# because `wsl --import` and Windows' tar.exe are only dependable with gzip; a
+# test keeps this window within what that decoder accepts.
+#
+# The gzip size is measured on the same bytes and printed beside it, so the
+# saving is a number in every build log, not a claim.
 t=$(date +%s)
 sudo rm -f "$root/etc/resolv.conf"
-if command -v pigz >/dev/null 2>&1; then
-	sudo tar -C "$root" -cpf - . | pigz -6 -p "$(nproc)" > "$out/foxbyte-distro.tar.gz"
-else
-	echo "    note: pigz not found, falling back to single-threaded gzip"
-	sudo tar -C "$root" -czpf "$out/foxbyte-distro.tar.gz" .
-fi
-sudo chown "$(id -u):$(id -g)" "$out/foxbyte-distro.tar.gz"
+command -v zstd >/dev/null 2>&1 || sudo apt-get install -y -qq zstd >/dev/null
+sudo tar -C "$root" -cpf - . | zstd -19 --long=27 -T0 -q -o "$out/foxbyte-distro.tar.zst"
+sudo chown "$(id -u):$(id -g)" "$out/foxbyte-distro.tar.zst"
 timer "repackage" "$t"
 
+if command -v pigz >/dev/null 2>&1; then gz="pigz -6 -p $(nproc)"; else gz="gzip -6"; fi
+gz_bytes=$(sudo tar -C "$root" -cpf - . | $gz | wc -c)
+zst_bytes=$(stat -c %s "$out/foxbyte-distro.tar.zst")
+
 echo
-ls -la "$out/foxbyte-distro.tar.gz" | awk '{printf "distro image: %s (%.0f MB)\n", $NF, $5/1048576}'
+awk -v z="$zst_bytes" -v g="$gz_bytes" -v f="$out/foxbyte-distro.tar.zst" 'BEGIN {
+	printf "distro image: %s (%.0f MB)\n", f, z/1048576
+	printf "  as gzip -6 it would be %.0f MB: zstd saves %.0f MB (%.0f%%)\n", g/1048576, (g-z)/1048576, 100*(g-z)/g
+}'
 timer "total" "$started"
 echo "fox setup imports this, mounts its btrfs storage, and starts."

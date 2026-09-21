@@ -135,8 +135,15 @@ Describe 'FoxByte release verification' {
 Describe 'installer prefers the prebuilt distro' {
     BeforeAll { $script:src = Get-Content -Raw (Join-Path $PSScriptRoot 'install.ps1') }
 
-    It 'downloads the distro image' {
-        $script:src | Should -Match "Get-FoxAsset 'foxbyte-distro.tar.gz'"
+    It 'downloads the distro image, zstd first and gzip for older releases' {
+        # Single-quoted: inside double quotes PowerShell would interpolate $name
+        # (unset here), and the pattern would look for "foreach ( in ...)".
+        $script:src | Should -Match ([regex]::Escape('foreach ($name in ''foxbyte-distro.tar.zst'', ''foxbyte-distro.tar.gz'')'))
+        $script:src | Should -Match ([regex]::Escape('Get-FoxAsset $name'))
+    }
+
+    It 'skips an image the release does not list instead of downloading a 404' {
+        $script:src | Should -Match ([regex]::Escape('if (-not (Test-FoxAssetListed $name)) { continue }'))
     }
 
     It 'falls back to the Ubuntu rootfs when the distro is unusable' {
@@ -144,7 +151,7 @@ Describe 'installer prefers the prebuilt distro' {
     }
 
     It 'verifies every FoxByte asset it keeps' {
-        foreach ($name in 'fox-windows-amd64.exe', 'fox-linux-amd64', 'foxbyte-docker-context.tar.gz', 'foxbyte-distro.tar.gz') {
+        foreach ($name in 'fox-windows-amd64.exe', 'fox-linux-amd64', 'foxbyte-docker-context.tar.gz', 'foxbyte-distro.tar.zst', 'foxbyte-distro.tar.gz') {
             $script:src | Should -Match ([regex]::Escape("Assert-FoxChecksum"))
             $script:src | Should -Match ([regex]::Escape($name))
         }

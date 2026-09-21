@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
@@ -23,7 +24,7 @@ import (
 func hostSetup() error { return setupWindows() }
 
 // currentDistro resolves the WSL2 distro name: an explicit override, else the
-// dedicated "foxbyte" distro.
+// dedicated distro, brand.VMInstance ("fox").
 func currentDistro() string { return resolveWSLDistro(brand.Getenv("WSL_DISTRO")) }
 
 func wslInstalled() bool {
@@ -313,14 +314,25 @@ func shareMountPropagation(name string) error {
 func importDistro(name string) error {
 	rootfs := bundledRootfs()
 	if rootfs == "" {
-		return fmt.Errorf("the Ubuntu rootfs was not found next to bb.exe — reinstall with install.ps1")
+		return fmt.Errorf("the Ubuntu rootfs was not found next to fox.exe — reinstall with install.ps1")
 	}
 	installDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "foxbyte", "wsl")
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return err
 	}
+	if strings.HasSuffix(rootfs, ".zst") {
+		step("Unpacking the FoxByte distro image")
+	}
+	// Unpacked next to the download, which is in the user's own writable
+	// install folder; the tar is removed once imported and the .zst is kept, so
+	// a re-run of setup does not download it again.
+	file, done, err := importableDistro(rootfs, filepath.Dir(rootfs))
+	if err != nil {
+		return fmt.Errorf("unpacking the distro image (it needs about 2 GB free while it imports): %w", err)
+	}
+	defer done()
 	step(fmt.Sprintf("Creating the %q WSL distro", name))
-	if err := wslQuiet("--import", name, installDir, rootfs); err != nil {
+	if err := wslQuiet("--import", name, installDir, file); err != nil {
 		return fmt.Errorf("importing the WSL distro: %w", err)
 	}
 	// systemd for `systemctl enable --now docker` and the ZFS import units;
@@ -403,8 +415,11 @@ func loadPreloadedImages(name string) error {
 		return nil
 	}
 	// Already loaded (a re-run): the engine's own check is `docker image
-	// inspect`, so match it rather than guessing from the tarball's presence.
-	if wslRoot(name, "docker image inspect foxbyte/postgres-walg:16 >/dev/null 2>&1") == nil {
+	// inspect`, so match it rather than guessing from the tarball's presence —
+	// and match the image the preload actually carries. This probed the
+	// pre-Sept-16 legacy name, which a newer distro never has, so every re-run
+	// loaded the whole tarball again.
+	if wslRoot(name, "docker image inspect "+branch.PostgresImageFor(branch.PGMajor)+" >/dev/null 2>&1") == nil {
 		return nil
 	}
 	step("Loading the preinstalled container images")
@@ -626,7 +641,7 @@ func installGuestBinaryWSL(name string) error {
 	return wslRoot(name, fmt.Sprintf("install -m 0755 %q /usr/local/bin/fox", src))
 }
 
-// installDir is the directory holding bb.exe — where the installer stages
+// installDir is the directory holding fox.exe — where the installer stages
 // assets and where setup caches anything it downloads.
 func installDir() string {
 	if exe, err := os.Executable(); err == nil {
@@ -636,7 +651,7 @@ func installDir() string {
 }
 
 // assetDirs lists the places the installer (or a dev build) puts support files,
-// relative to bb.exe.
+// relative to fox.exe.
 func assetDirs() []string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -651,7 +666,7 @@ func assetDirs() []string {
 	}
 }
 
-// bundledAsset finds a support file (ZFS bundle, rootfs) shipped next to bb.exe
+// bundledAsset finds a support file (ZFS bundle, rootfs) shipped next to fox.exe
 // by the installer, or in ./dist for a dev build.
 func bundledAsset(basename string) string {
 	for _, d := range assetDirs() {
@@ -681,7 +696,7 @@ func bundledDir(basename string) string {
 // docker build and three registry pulls. A plain Ubuntu rootfs still works, and
 // setup does that extra work itself.
 func bundledRootfs() string {
-	for _, n := range []string{distroImageName, "foxbyte-rootfs.tar.gz", "foxbyte-rootfs.tar"} {
+	for _, n := range append(append([]string{}, distroImageNames...), "foxbyte-rootfs.tar.gz", "foxbyte-rootfs.tar") {
 		if p := bundledAsset(n); p != "" {
 			return p
 		}

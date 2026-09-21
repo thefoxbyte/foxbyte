@@ -248,7 +248,7 @@ func walgEnv() []string {
 // whichever container is primary and whatever environment it was started with.
 func listBaseBackups() ([]walgBackup, error) {
 	args := append([]string{"docker", "run", "--rm", "--network", network}, walgEnv()...)
-	args = append(args, image, "wal-g", "backup-list", "--json", "--detail")
+	args = append(args, pgImage(), "wal-g", "backup-list", "--json", "--detail")
 	out, err := exec.Command("sudo", args...).Output()
 	if err != nil {
 		var ee *exec.ExitError
@@ -429,7 +429,7 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 		"-e", "RECOVERY_TARGET="+target,
 		"-v", mountpoint(newName)+":/var/lib/postgresql/data",
 		"--entrypoint", "bash",
-		image, "-c", restoreBeforeScript)
+		pgImage(), "-c", restoreBeforeScript)
 	if out, err := exec.Command("sudo", args...).CombinedOutput(); err != nil {
 		return fail(fmt.Errorf("starting the restore: %v: %s", err, strings.TrimSpace(string(out))))
 	}

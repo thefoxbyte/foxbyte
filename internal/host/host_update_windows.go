@@ -109,7 +109,7 @@ func platformUpdateHooks(eh engineHost) updateHooks {
 }
 
 // refreshImageContext replaces the Postgres image build context in the distro
-// and next to bb.exe with the release's, keeping the previous copies as
+// and next to fox.exe with the release's, keeping the previous copies as
 // .prev. Only future image builds use it: running containers and the built
 // image are left alone.
 func refreshImageContext(name, archive string) error {
@@ -124,7 +124,7 @@ func refreshImageContext(name, archive string) error {
 		return fmt.Errorf("refreshing the image build context in the distro: %w", err)
 	}
 	if err := update.ReplaceDirFromTarGz(archive, filepath.Join(installDir(), "docker-context")); err != nil {
-		return fmt.Errorf("refreshing the image build context next to bb.exe: %w", err)
+		return fmt.Errorf("refreshing the image build context next to fox.exe: %w", err)
 	}
 	return nil
 }
@@ -134,12 +134,12 @@ func replaceHostBinary(files map[string]string, t update.Target) error {
 	if err != nil {
 		return err
 	}
-	prev := filepath.Join(cacheDir(), "updates", "prev", "bb.exe")
+	prev := filepath.Join(cacheDir(), "updates", "prev", brand.CLI+".exe")
 	if err := update.SwapExecutable(files[update.HostAsset(t)], exe, prev); err != nil {
 		return err
 	}
 	refreshEngineCache(files, t)
-	// The installer stages the engine next to bb.exe too; setup looks there
+	// The installer stages the engine next to fox.exe too; setup looks there
 	// after the cache.
 	engine := filepath.Join(installDir(), update.EngineAsset(t))
 	if regularFile(engine) {

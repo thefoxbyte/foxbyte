@@ -2,7 +2,7 @@
 
 This branch (`feat/windows-support`) adds native Windows support to FoxByte. On Windows the engine
 runs in a dedicated **WSL2** distro named `foxbyte` — the direct analog of the Lima VM used on
-macOS — and `bb.exe` forwards every engine command into it, marking forwarded processes with
+macOS — and `fox.exe` forwards every engine command into it, marking forwarded processes with
 `FOX_IN_GUEST=1` so the in-distro `fox` runs the engine in-process.
 
 Read `docs/windows-setup.md` (the user-facing guide) first.
@@ -24,7 +24,7 @@ none /usr/lib/modules/6.6.87.2-microsoft-standard-WSL2 overlay rw,lowerdir=/modu
 ```
 
 Writes there persist across `wsl --terminate` and are private to the distro. So `fox setup` drops
-`zfs.ko` into the `foxbyte` distro's own module tree and runs `depmod`. Consequences:
+`zfs.ko` into the `fox` distro's own module tree and runs `depmod`. Consequences:
 
 - `.wslconfig` is never written. No `kernel=`, no `kernelModules=`.
 - Docker Desktop, Rancher Desktop, and every other distro are untouched — this is true by

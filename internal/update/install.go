@@ -82,7 +82,7 @@ func InstallBinary(src, dest, prev string) error {
 		return err
 	}
 	dir := filepath.Dir(dest)
-	tmp := filepath.Join(dir, ".bb.new")
+	tmp := filepath.Join(dir, ".update.new")
 	if dirWritable(dir) {
 		if err := CopyFile(src, tmp, 0o755); err != nil {
 			_ = os.Remove(tmp)

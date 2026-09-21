@@ -49,7 +49,7 @@ Describe 'installer encoding' {
 
 # The installer must not need WSL. Choosing the ZFS bundle by asking a running
 # distro for `uname -r` is what forced users to install WSL and Ubuntu by hand,
-# reboot, and re-run the installer -- and left a bb.exe that could not set
+# reboot, and re-run the installer -- and left a launcher that could not set
 # itself up when they did not.
 Describe 'installer does not depend on WSL' {
     BeforeAll { . $Installer }
@@ -196,7 +196,7 @@ Describe 'end to end' -Tag 'E2E' {
         try {
             & $Installer
             $LASTEXITCODE | Should -Be 0
-            Test-Path (Join-Path $script:Prefix 'bb.exe') | Should -BeTrue
+            Test-Path (Join-Path $script:Prefix 'fox.exe') | Should -BeTrue
             Test-Path (Join-Path $script:Prefix 'fox-linux-amd64') | Should -BeTrue
             # The ZFS bundle must NOT be staged: setup fetches it, because only
             # setup knows the kernel.
@@ -207,6 +207,6 @@ Describe 'end to end' -Tag 'E2E' {
     }
 
     It 'reports a version' -Skip:(-not $env:FOX_TEST_E2E) {
-        & (Join-Path $script:Prefix 'bb.exe') version | Should -Match 'fox'
+        & (Join-Path $script:Prefix 'fox.exe') version | Should -Match 'fox'
     }
 }

@@ -1,7 +1,7 @@
 # FoxByte on Windows
 
 FoxByte's engine is Linux-only (ZFS + Docker + Postgres). On Windows it runs inside a dedicated
-**WSL2** distro — the direct analog of the Lima VM used on macOS. The native `bb.exe` launcher
+**WSL2** distro — the direct analog of the Lima VM used on macOS. The native `fox.exe` launcher
 forwards every engine command into that distro, so day to day you just type `fox …`.
 
 ## Prerequisites
@@ -25,9 +25,9 @@ It does the whole job:
 
 1. installs the WSL components if absent (asking for admin once, **without** installing a Linux
    distribution) — if Windows needs a restart to finish, it says so and resumes automatically after;
-2. downloads `bb.exe` into `%LOCALAPPDATA%\Programs\foxbyte` and adds it to your PATH — including
+2. downloads `fox.exe` into `%LOCALAPPDATA%\Programs\foxbyte` and adds it to your PATH — including
    the current window, so `fox` works immediately;
-3. runs `fox setup`, which imports the dedicated `foxbyte` distro, installs Docker, downloads and
+3. runs `fox setup`, which imports the dedicated `fox` distro, installs Docker, downloads and
    installs the OpenZFS module matching **your** WSL kernel, verifies `modprobe zfs` actually works,
    and brings the stack up.
 
@@ -62,7 +62,7 @@ none /usr/lib/modules/6.6.87.2-microsoft-standard-WSL2 overlay rw,lowerdir=/modu
      upperdir=/lib/modules/6.6.87.2-microsoft-standard-WSL2/rw/upper,...
 ```
 
-So `fox setup` writes `zfs.ko` into the **`foxbyte` distro's** upper layer and runs `depmod`. Your
+So `fox setup` writes `zfs.ko` into the **`fox` distro's** upper layer and runs `depmod`. Your
 `%UserProfile%\.wslconfig` is never modified, no `kernel=` or `kernelModules=` line is added, and
 Docker Desktop, Rancher Desktop, and your other distros keep running the stock kernel untouched.
 
@@ -82,16 +82,16 @@ for this WSL kernel" message rather than a module that silently refuses to load.
 | The install stops asking you to restart | Enabling the WSL components needs a reboot. Restart; the installer resumes on its own. If it doesn't, run the one-liner again. |
 | `no ZFS module bundle published for this WSL kernel` | This release has no module built for your kernel (`wsl -e uname -r`). See *Supported WSL kernels* below — a maintainer can add yours in about an hour. Do **not** `wsl --update`: that moves the kernel further ahead, not closer. |
 | `WSL is present but not healthy` | Enable virtualization in the BIOS and the *Virtual Machine Platform* feature; `wsl --update`. |
-| `ZFS is not usable in the "foxbyte" distro` | The staged modules were built for a different kernel. Check `wsl -d appdb -- uname -r` against the bundle filename in `%LOCALAPPDATA%\Programs\foxbyte`. |
-| `systemd did not finish booting` | `wsl --terminate foxbyte`, then re-run `fox setup`. |
-| `the FoxByte ZFS pool device is not ready` | Deliberate stop: the pool could not be imported, and FoxByte will not run the engine in case it recreates the pool over your data. Run `wsl --terminate foxbyte` and retry; if it persists, see `journalctl -u dbpool-storage.service` inside the distro. |
-| `pool I/O is currently suspended` | The pool lost its backing device. `wsl --terminate foxbyte` and re-run `fox setup`; the pool is re-imported at boot. |
+| `ZFS is not usable in the "fox" distro` | The staged modules were built for a different kernel. Check `wsl -d fox -- uname -r` against the bundle filename in `%LOCALAPPDATA%\Programs\foxbyte`. |
+| `systemd did not finish booting` | `wsl --terminate fox`, then re-run `fox setup`. |
+| `the FoxByte ZFS pool device is not ready` | Deliberate stop: the pool could not be imported, and FoxByte will not run the engine in case it recreates the pool over your data. Run `wsl --terminate fox` and retry; if it persists, see `journalctl -u dbpool-storage.service` inside the distro. |
+| `pool I/O is currently suspended` | The pool lost its backing device. `wsl --terminate fox` and re-run `fox setup`; the pool is re-imported at boot. |
 | `wsl` commands hang and `wsl --shutdown` never returns | A suspended ZFS pool can wedge the WSL VM. In an **Administrator** PowerShell: `Restart-Service WSLService -Force` (a reboot also clears it). |
 
 ## Uninstall
 
 ```powershell
-wsl --unregister foxbyte                       # remove the distro + its data
+wsl --unregister fox                           # remove the distro + its data
 wsl --shutdown                                   # release its loop device
 Remove-Item -Recurse "$env:LOCALAPPDATA\Programs\foxbyte"
 Remove-Item -Recurse "$env:LOCALAPPDATA\foxbyte"

@@ -75,8 +75,8 @@ func ensurePool() error {
 	return activeStorage().ensureReady()
 }
 
-func imageExists() bool {
-	return exec.Command("sudo", "docker", "image", "inspect", image).Run() == nil
+func imageExists(ref string) bool {
+	return exec.Command("sudo", "docker", "image", "inspect", ref).Run() == nil
 }
 
 // ensureImage guarantees the Postgres+wal-g image is present. It prefers pulling
@@ -85,7 +85,8 @@ func imageExists() bool {
 // context — for contributors, offline installs, or before the image is
 // published.
 func ensureImage() error {
-	if imageExists() {
+	image := pgImage()
+	if imageExists(image) {
 		return nil
 	}
 	fmt.Printf("Fetching image %s…\n", image)
@@ -98,7 +99,18 @@ func ensureImage() error {
 			"set %s to the docker/postgres directory, or pre-build the image", image, envImageContext)
 	}
 	fmt.Printf("Building image %s from %s (this can take a minute)…\n", image, ctx)
-	return run("docker", "build", "-t", image, ctx)
+	return run("docker", buildImageArgs(image, ctx)...)
+}
+
+// buildImageArgs builds the engine image for the major its tag names: one
+// Dockerfile serves every supported major through its PG_MAJOR argument, so a
+// local build of the 16 image for an older install is still a 16 image.
+func buildImageArgs(image, ctx string) []string {
+	args := []string{"build", "-t", image}
+	if m := imageMajor(image); m != "" {
+		args = append(args, "--build-arg", "PG_MAJOR="+m)
+	}
+	return append(args, ctx)
 }
 
 // findImageContext looks for the docker/postgres build context near the current

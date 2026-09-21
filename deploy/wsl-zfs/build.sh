@@ -10,7 +10,7 @@
 #
 #   none /usr/lib/modules/<rel> overlay lowerdir=/modules,upperdir=/lib/modules/<rel>/rw/upper,...
 #
-# So `fox setup` just drops zfs.ko/spl.ko into the foxbyte distro's own module
+# So `fox setup` just drops zfs.ko/spl.ko into the fox distro's own module
 # overlay and runs depmod. Nothing outside that distro is touched — no custom
 # kernel, no .wslconfig edit, no effect on Docker Desktop / Rancher Desktop.
 #
