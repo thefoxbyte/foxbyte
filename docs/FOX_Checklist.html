@@ -512,14 +512,14 @@
     <tr data-id="M5" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">M5</td><td><b>WSL distro &amp; ZFS builds</b><ul class="subs">
       <li class="ok">Prebuilt distro image</li><li class="ok">Downloaded and verified by the installer (seen on Windows)</li><li class="ok">Preloaded image tagged as the engine runs it</li>
       <li class="ok">Imported on a fresh Windows install; preloaded images loaded</li><li class="ok">Published zstd-compressed, with the gzip size measured beside it in every build log</li><li class="part">zstd unpack on a real Windows install (unit-tested only); the gzip image was 685 MB</li></ul></td><td class="tb">Actions artifacts; Pester; Windows run 16 Sep</td></tr>
-    <tr data-id="M6" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">M6</td><td><b>Postgres image</b><ul class="subs">
+    <tr data-id="M6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M6</td><td><b>Postgres image</b><ul class="subs">
       <li class="ok">PostgreSQL 18 + wal-g for a fresh install; one image per supported major (16, 18)</li>
       <li class="ok">The image follows the data: an install on 16 keeps running 16 after an update</li>
       <li class="ok">A branch on the wrong major is refused before <code>docker run</code>, with the way out</li>
       <li class="ok">The major lives in one place, and a test holds the Dockerfile, release matrix and Windows preload to it</li>
-      <li class="todo">The three suites run on an 18 cluster (wal-g, PITR, HA failback, Blackbox attribution)</li>
+      <li class="ok">All three suites pass on PostgreSQL 18.6: 108 + 277 + 51 checks (21 Sep)</li>
       <li class="todo">A command that moves an install from 16 to 18, and a portable backup to take first</li>
-      <li class="todo">pgvector</li></ul></td><td class="tb">Unit; suites pending on 18</td></tr>
+      <li class="todo">pgvector</li></ul></td><td class="tb">Unit; all three suites on 18</td></tr>
   </table>
 </section>
 
