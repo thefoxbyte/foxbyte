@@ -136,7 +136,9 @@ Describe 'installer prefers the prebuilt distro' {
     BeforeAll { $script:src = Get-Content -Raw (Join-Path $PSScriptRoot 'install.ps1') }
 
     It 'downloads the distro image, zstd first and gzip for older releases' {
-        $script:src | Should -Match ([regex]::Escape("foreach ($name in 'foxbyte-distro.tar.zst', 'foxbyte-distro.tar.gz')"))
+        # Single-quoted: inside double quotes PowerShell would interpolate $name
+        # (unset here), and the pattern would look for "foreach ( in ...)".
+        $script:src | Should -Match ([regex]::Escape('foreach ($name in ''foxbyte-distro.tar.zst'', ''foxbyte-distro.tar.gz'')'))
         $script:src | Should -Match ([regex]::Escape('Get-FoxAsset $name'))
     }
 
