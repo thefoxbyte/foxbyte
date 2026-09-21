@@ -113,3 +113,18 @@ func TestBuildImageArgsPassTheMajor(t *testing.T) {
 		t.Errorf("an image with no major in its tag should build with the Dockerfile default: %s", got)
 	}
 }
+
+// A local build can always happen: an explicit context first, then a checkout
+// of the repository, then the copy built into fox. There is no "no context".
+func TestChooseImageContext(t *testing.T) {
+	if dir, where := chooseImageContext("/ctx", "docker/postgres"); dir != "/ctx" || !strings.Contains(where, envImageContext) {
+		t.Errorf("an explicit context wins: %q %q", dir, where)
+	}
+	if dir, _ := chooseImageContext("", "../docker/postgres"); dir != "../docker/postgres" {
+		t.Errorf("a checkout comes next: %q", dir)
+	}
+	dir, where := chooseImageContext("", "")
+	if dir != "" || !strings.Contains(where, "built into") {
+		t.Errorf("with neither, the built-in copy is used: %q %q", dir, where)
+	}
+}

@@ -163,7 +163,7 @@ export default function Import() {
       </div>
 
       <p className="muted" style={{ marginTop: 16, fontSize: 13 }}>
-        Large or scripted migrations — and SQLite files — can also use the <code>fox import</code> CLI, which streams
+        Large or scripted migrations can also use the <code>fox import</code> CLI, which streams
         a file from anywhere on your machine into a new instance.
       </p>
       <ContinuousImports />

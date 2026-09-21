@@ -32,7 +32,7 @@ release: web-build   ## Cross-compile release binaries + the Windows image conte
 			go build -trimpath -ldflags "$(LDFLAGS)" -o dist/fox-verify-$$os-$$arch$$ext ./cmd/fox-verify; \
 	done
 	@echo "  building foxbyte-docker-context.tar.gz"
-	@tar -C docker/postgres -czf dist/foxbyte-docker-context.tar.gz .
+	@tar -C docker/postgres --exclude='*.go' -czf dist/foxbyte-docker-context.tar.gz .
 	@echo "release binaries in ./dist (version $(VERSION))"
 	@echo "note: the Windows installer also needs the ZFS module bundle (see make wsl-zfs / docs/windows-setup.md)"
 

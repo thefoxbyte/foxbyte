@@ -135,13 +135,12 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-    <li>Run <code>fox update</code> against a real release on macOS and Windows (A9) — cut v0.9.0, install it, then update to v0.9.1.</li>
-    <li>HA beyond the demo: archive WAL while main runs on the promoted standby, then automatic failover and fencing (D4). <i>(Safety fixes C3, D4 hazards, H7, I5, I6 done.)</i></li>
-    <li>Verify downloads everywhere: installers and <code>fox setup</code>'s engine download still skip <code>SHA256SUMS</code> (A1, A2, A7).</li>
-    <li><s>Check the web pages that were built but never used signed in: Integrity, Policies, sidebar (L8–L10); add Blackbox filters (L5).</s> Done — both, in the browser.</li>
-    <li>Add automated tests where there are none: imports (I1–I3, I7 — I5 and I8 now covered), SDKs (K3, K4), web UI (L*).</li>
-    <li>Run the VM integration suites in CI (M2).</li>
-  </ol>
+      <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
+      <li>Make the <code>postgres-walg</code> image package public, so installs pull it instead of building it for a few minutes (C8).</li>
+      <li>Run the VM integration suites in CI on every pull request (M2).</li>
+      <li>Add automated tests where there are none: imports (I1–I3, I7), SDKs (K3, K4), web UI (L*).</li>
+      <li>HA beyond the demo: automatic failover and fencing (D4).</li>
+    </ol>
   <div class="foot">FOX_Checklist · overview</div>
 </section>
 
@@ -162,7 +161,7 @@
     <tr data-id="A3" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">A3</td><td><b><code>fox setup</code> on macOS (Lima)</b><ul class="subs">
       <li class="ok">Creates / starts the Lima VM</li><li class="ok">Installs Docker and ZFS</li>
       <li class="ok">Reinstalls the engine on every run</li><li class="ok">Starts the stack</li>
-      <li class="todo">Repair an interrupted VM provisioning</li><li class="todo">Stage the image build context (fallback build)</li></ul></td><td class="tb">Manual (from-scratch VM run)</td></tr>
+      <li class="ok">Repairs an interrupted provisioning on the next run (dpkg interrupted, half-installed packages)</li><li class="ok">Image builds from the copy inside fox when it cannot be pulled (C8)</li></ul></td><td class="tb">Unit; run against a deliberately broken VM, 21 Sep</td></tr>
     <tr data-id="A4" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">A4</td><td><b><code>fox setup</code> on Windows (WSL2 + btrfs)</b><ul class="subs">
       <li class="ok">Imports a dedicated distro with systemd</li><li class="ok">Docker, btrfs and a storage mount unit</li>
       <li class="ok">Quiet steps, detail in install.log</li><li class="ok">Waits for systemd on a cold distro</li>
@@ -197,8 +196,9 @@
     <tr data-id="B1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">B1</td><td><b>The <code>fox</code> command set</b><ul class="subs">
       <li class="ok">Stack: setup, start, stop, up, down, status, logs, psql, update</li><li class="ok">Branching, backup / restore, HA</li>
       <li class="ok">Blackbox, policy, impact</li><li class="ok">Import, pipelines</li>
+      <li class="ok">backup export / restore, pg status / upgrade</li>
       <li class="ok">Users, API keys, admin</li><li class="ok"><code>fox vm status</code> / <code>fox vm shell</code> (Lima, WSL; Linux says there is no VM)</li>
-      <li class="todo"><code>branch create --from</code></li><li class="ok"><code>fox uninstall</code> removes it all, retired installs included</li></ul></td><td class="tb">Unit (<code>main_test.go</code>, <code>update_test.go</code>); VM suites</td></tr>
+      <li class="ok"><code>branch create --from</code></li><li class="ok"><code>fox uninstall</code> removes it all, retired installs included</li></ul></td><td class="tb">Unit (<code>main_test.go</code>, <code>update_test.go</code>); VM suites</td></tr>
     <tr data-id="B2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">B2</td><td><b>Background services (daemon)</b><ul class="subs">
       <li class="ok">Control plane :8080, gateway :6432, agent API :8088</li><li class="ok">Detached, pidfiles and logs in <code>~/.fox</code></li>
       <li class="ok">Stop (TERM then KILL), status, logs</li><li class="todo">Health check / restart on crash</li></ul></td><td class="tb">Unit (<code>TestStopTerminatesProcess</code>); VM §1</td></tr>
@@ -229,8 +229,9 @@
     <tr data-id="C7" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">C7</td><td><b>Capacity &amp; status</b><ul class="subs">
       <li class="ok">Services, main health, backups, branches</li><li class="ok">Storage used / available</li>
       <li class="part">btrfs "used" is apparent size</li></ul></td><td class="tb">VM §1</td></tr>
-    <tr data-id="C8" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">C8</td><td><b>Provisioning &amp; image pull</b><ul class="subs">
-      <li class="ok">Docker, storage pool and image prepared on <code>up</code></li><li class="ok">Pulls from GHCR, builds locally as fallback</li></ul></td><td class="tb">Manual</td></tr>
+    <tr data-id="C8" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">C8</td><td><b>Provisioning &amp; image pull</b><ul class="subs">
+      <li class="ok">Docker, storage pool and image prepared on <code>up</code></li><li class="ok">Pulls from GHCR, builds locally as fallback</li>
+      <li class="ok">The build context is built into fox, so the fallback works on any install</li></ul></td><td class="tb">Unit; VM §11b</td></tr>
   </table>
 </section>
 
@@ -261,6 +262,7 @@
       <li class="ok">Restore into a new branch, same or newer major; Blackbox checked exact</li>
       <li class="part">Host copy on macOS/Windows unit-tested only</li></ul></td><td class="tb">Unit; VM pg-upgrade §1</td></tr>
     <tr data-id="D6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">D6</td><td><b>PostgreSQL major upgrade</b><ul class="subs">
+      <li class="ok"><code>fox pg status</code>: the major of the install and of each branch</li>
       <li class="ok">Plan with every change crossed, found-in-your-data first; refusals say what to do</li>
       <li class="ok">Asks, exports, then reloads every carried branch on the new major</li>
       <li class="ok">Data, roles, API keys and every Blackbox entry come across</li>
@@ -423,7 +425,7 @@
     <tr data-id="I11" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">I11</td><td><b>Import REST endpoints</b><ul class="subs">
       <li class="ok">From a connection string or an uploaded file</li><li class="todo">Target name validation</li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="I12" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">I12</td><td><b>Web Import page</b><ul class="subs">
-      <li class="ok">Database and file panels with live console</li><li class="part">Mentions a SQLite loader that doesn't exist</li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">Database and file panels with live console</li><li class="ok">No longer claims a SQLite loader that doesn't exist</li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="I13" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">I13</td><td><b>Exact identifier fidelity</b><ul class="subs">
       <li class="ok">Case kept (<code>userId</code>, <code>leaseAiChats</code>)</li><li class="part">Field order of JSON sources not kept</li></ul></td><td class="tb">Unit; VM §10</td></tr>
   </table>
@@ -533,8 +535,14 @@
       <li class="ok">A branch on the wrong major is refused before <code>docker run</code>, with the way out</li>
       <li class="ok">The major lives in one place, and a test holds the Dockerfile, release matrix and Windows preload to it</li>
       <li class="ok">All three suites pass on PostgreSQL 18.6: 108 + 277 + 51 checks (21 Sep)</li>
-      <li class="todo">A command that moves an install from 16 to 18, and a portable backup to take first</li>
+      <li class="ok">A command that moves an install from 16 to 18 (D6), and a portable backup to take first (D5)</li>
       <li class="todo">pgvector</li></ul></td><td class="tb">Unit; all three suites on 18</td></tr>
+    <tr data-id="M7" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M7</td><td><b>Product name in one file</b><ul class="subs">
+      <li class="ok">brand.json → Go, shell, web and installer blocks, regenerated by <code>make brand</code></li>
+      <li class="ok">Stored names brand-free and frozen: a rename never migrates an install</li>
+      <li class="ok">Retired env prefixes, state directory, VM names and installs still handled</li>
+      <li class="ok">Guards: retired names anywhere, product names in stored SQL, durable names spelt twice</li>
+      <li class="part">The sweep is text substitution: review its diff (it over-reached twice)</li></ul></td><td class="tb">Unit (brand, gen, oldnames), in CI via go test</td></tr>
   </table>
 </section>
 
