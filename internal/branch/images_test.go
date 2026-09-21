@@ -67,3 +67,48 @@ func TestDistroPreloadsTheEngineImages(t *testing.T) {
 		}
 	}
 }
+
+// The PostgreSQL major is named in four files that cannot import Go: the
+// Dockerfile's default, the release workflow's image matrix, and the Windows
+// distro's preload. When they drift, nothing fails loudly — a fresh install
+// pulls or builds an image the preload was meant to save, or an install on an
+// older major finds no image published for it. So they are held to
+// PGMajor and SupportedPGMajors here.
+func TestPostgresMajorIsInStepEverywhere(t *testing.T) {
+	read := func(path string) string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		return string(b)
+	}
+
+	docker := read("../../docker/postgres/Dockerfile")
+	if !strings.Contains(docker, "ARG PG_MAJOR="+PGMajor+"\n") {
+		t.Errorf("docker/postgres/Dockerfile should default PG_MAJOR to %s (PGMajor)", PGMajor)
+	}
+	if !strings.Contains(docker, "FROM postgres:${PG_MAJOR}-") {
+		t.Error("docker/postgres/Dockerfile should build FROM postgres:${PG_MAJOR}-…, so one file serves every major")
+	}
+
+	distro := read("../../deploy/wsl-distro/build.sh")
+	if !strings.Contains(distro, "local pg_major="+PGMajor+"\n") {
+		t.Errorf("deploy/wsl-distro/build.sh should preload the PostgreSQL %s image a fresh install runs", PGMajor)
+	}
+	if strings.Count(distro, "postgres-walg:$pg_major") < 2 {
+		t.Error("deploy/wsl-distro/build.sh should build and save the image under postgres-walg:$pg_major")
+	}
+
+	workflow := read("../../.github/workflows/release.yml")
+	var matrix []string
+	for _, m := range SupportedPGMajors {
+		matrix = append(matrix, `"`+m+`"`)
+	}
+	if want := "pg: [" + strings.Join(matrix, ", ") + "]"; !strings.Contains(workflow, want) {
+		t.Errorf(".github/workflows/release.yml should publish an image for every supported major: %s", want)
+	}
+	if !strings.Contains(workflow, "PG_MAJOR=${{ matrix.pg }}") {
+		t.Error(".github/workflows/release.yml should pass the matrix major to the build as PG_MAJOR")
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
@@ -403,8 +404,11 @@ func loadPreloadedImages(name string) error {
 		return nil
 	}
 	// Already loaded (a re-run): the engine's own check is `docker image
-	// inspect`, so match it rather than guessing from the tarball's presence.
-	if wslRoot(name, "docker image inspect foxbyte/postgres-walg:16 >/dev/null 2>&1") == nil {
+	// inspect`, so match it rather than guessing from the tarball's presence —
+	// and match the image the preload actually carries. This probed the
+	// pre-Sept-16 legacy name, which a newer distro never has, so every re-run
+	// loaded the whole tarball again.
+	if wslRoot(name, "docker image inspect "+branch.PostgresImageFor(branch.PGMajor)+" >/dev/null 2>&1") == nil {
 		return nil
 	}
 	step("Loading the preinstalled container images")

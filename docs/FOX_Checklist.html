@@ -127,7 +127,7 @@
 
   <div class="note">
     <h3>Storage engine — not implemented, by design</h3>
-    <p>FoxByte does <b>not</b> have its own storage engine. Data is stored by <b>PostgreSQL 16's own engine</b> (heap tables, B-tree indexes, write-ahead log) running on local disk inside the stock <code>postgres:16-bookworm</code> image plus wal-g.
+    <p>FoxByte does <b>not</b> have its own storage engine. Data is stored by <b>PostgreSQL's own engine</b> (heap tables, B-tree indexes, write-ahead log) running on local disk inside the stock <code>postgres:18-bookworm</code> image plus wal-g (<code>postgres:16-bookworm</code> for an install created before 21 Sep 2026).
     This was a locked architecture decision: a Neon-style engine that separates compute from storage over the network adds latency to every transaction, and transaction speed must never be compromised.</p>
     <p>What <b>is</b> built is a storage <i>layer</i> around Postgres: copy-on-write branch drivers — ZFS on macOS/Linux, btrfs on Windows — behind one interface in <code>internal/branch/storage.go</code> (C1), quotas (C6), capacity reporting (C7), and durability to object storage with wal-g + MinIO: WAL archiving, base backups, point-in-time restore (D1–D3).
     Networked storage disaggregation is listed in the README roadmap but not started (see "Not started").</p>
@@ -512,8 +512,14 @@
     <tr data-id="M5" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">M5</td><td><b>WSL distro &amp; ZFS builds</b><ul class="subs">
       <li class="ok">Prebuilt distro image</li><li class="ok">Downloaded and verified by the installer (seen on Windows)</li><li class="ok">Preloaded image tagged as the engine runs it</li>
       <li class="ok">Imported on a fresh Windows install; preloaded images loaded</li><li class="part">685 MB download (rootfs fallback covers failures)</li></ul></td><td class="tb">Actions artifacts; Pester; Windows run 16 Sep</td></tr>
-    <tr data-id="M6" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">M6</td><td><b>Postgres image</b><ul class="subs">
-      <li class="ok">Postgres 16 + wal-g</li><li class="todo">pgvector</li></ul></td><td class="tb">Manual</td></tr>
+    <tr data-id="M6" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">M6</td><td><b>Postgres image</b><ul class="subs">
+      <li class="ok">PostgreSQL 18 + wal-g for a fresh install; one image per supported major (16, 18)</li>
+      <li class="ok">The image follows the data: an install on 16 keeps running 16 after an update</li>
+      <li class="ok">A branch on the wrong major is refused before <code>docker run</code>, with the way out</li>
+      <li class="ok">The major lives in one place, and a test holds the Dockerfile, release matrix and Windows preload to it</li>
+      <li class="todo">The three suites run on an 18 cluster (wal-g, PITR, HA failback, Blackbox attribution)</li>
+      <li class="todo">A command that moves an install from 16 to 18, and a portable backup to take first</li>
+      <li class="todo">pgvector</li></ul></td><td class="tb">Unit; suites pending on 18</td></tr>
   </table>
 </section>
 

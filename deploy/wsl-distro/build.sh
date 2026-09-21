@@ -108,14 +108,18 @@ prepare_images() {
 	# test keeps these names in step with it).
 	local minio_image="quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
 	local mc_image="quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
-	# Tagged with the name the engine runs (internal/branch/branch.go `image`):
-	# a preload under any other name is ignored, and `fox setup` pulls or builds
-	# the image anyway — which is what this whole step exists to avoid.
-	docker build -t ghcr.io/thefoxbyte/postgres-walg:16 "$repo/docker/postgres"
+	# Tagged with the name a fresh install runs (internal/branch/images.go
+	# PostgresImageFor(PGMajor); a unit test keeps it in step): a preload under
+	# any other name is ignored, and `fox setup` pulls or builds the image anyway
+	# — which is what this whole step exists to avoid. Only the fresh-install
+	# major is preloaded: an install on an older one already has its image.
+	local pg_major=18
+	docker build -t "ghcr.io/thefoxbyte/postgres-walg:$pg_major" \
+		--build-arg "PG_MAJOR=$pg_major" "$repo/docker/postgres"
 	docker pull -q "$minio_image"
 	docker pull -q "$mc_image"
 	docker save -o "$work/foxbyte-images.tar" \
-		ghcr.io/thefoxbyte/postgres-walg:16 "$minio_image" "$mc_image"
+		"ghcr.io/thefoxbyte/postgres-walg:$pg_major" "$minio_image" "$mc_image"
 	timer "images" "$t"
 }
 

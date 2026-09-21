@@ -118,7 +118,7 @@ func standbyRunArgs(dataPath string) []string {
 	}
 	args = append(args, walgEnv()...)
 	args = append(args, "-e", "WALG_COMPRESSION_METHOD=lz4")
-	return append(args, image, "postgres",
+	return append(args, pgImage(), "postgres",
 		"-c", "wal_level=replica",
 		"-c", "archive_mode=on",
 		"-c", "archive_command=wal-g wal-push %p",
@@ -152,7 +152,7 @@ func HAEnable() error {
 	if err := run("docker", "run", "--rm", "--user", pgUID, "--network", network,
 		"-e", "PGPASSWORD="+pgPass(),
 		"-v", store.standbyPath()+":/data",
-		image,
+		pgImage(),
 		"pg_basebackup", "-h", primary, "-U", pgUser, "-D", "/data/pgdata",
 		"-R", "-X", "stream", "-c", "fast"); err != nil {
 		return err
@@ -301,7 +301,7 @@ func HAFailback() error {
 	if err := run("docker", "run", "--rm", "--user", pgUID, "--network", network,
 		"-e", "PGPASSWORD="+pgPass(),
 		"-v", mountpoint("main")+":/data",
-		image,
+		pgImage(),
 		"pg_basebackup", "-h", standby, "-U", pgUser, "-D", "/data/pgdata",
 		"-R", "-X", "stream", "-c", "fast"); err != nil {
 		return stopped(err)
@@ -329,7 +329,7 @@ func HAFailback() error {
 		return restart(err)
 	}
 	out, err := capture("docker", "run", "--rm", "--user", pgUID,
-		"-v", store.standbyPath()+":/data", image, "pg_controldata", "/data/pgdata")
+		"-v", store.standbyPath()+":/data", pgImage(), "pg_controldata", "/data/pgdata")
 	if err != nil {
 		return restart(fmt.Errorf("reading the standby's final WAL position: %w", err))
 	}

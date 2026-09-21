@@ -31,7 +31,6 @@ const (
 	datasetBase = "dbpool/branches"
 	mountBase   = "/dbpool/branches"
 	network     = "dbnet"
-	image       = "ghcr.io/thefoxbyte/postgres-walg:16"
 	// Throwaway loader images used by the migration adapters, run on the shared
 	// network so they can reach both the source and the target instance.
 	// pgloaderImage is built locally on first use — Debian packages pgloader for
@@ -126,6 +125,10 @@ func ensureNetwork() error {
 // archives WAL to object storage (MinIO); branches do not archive — they are
 // ephemeral copy-on-write clones.
 func startContainer(name string, primary bool) error {
+	img := pgImage()
+	if err := checkDataMajor(name, dataMajor(name), img); err != nil {
+		return err
+	}
 	quiet("docker", "rm", "-f", container(name))
 	args := []string{"run", "-d",
 		"--name", container(name),
@@ -153,7 +156,7 @@ func startContainer(name string, primary bool) error {
 		args = append(args, walgEnv()...)
 		args = append(args, "-e", "WALG_COMPRESSION_METHOD=lz4")
 	}
-	args = append(args, image)
+	args = append(args, img)
 	if primary {
 		args = append(args,
 			"postgres",
@@ -627,7 +630,7 @@ func Backup() error {
 // the backups are in object storage, not in any one container.
 func BackupList() error {
 	args := append([]string{"run", "--rm", "--network", network}, walgEnv()...)
-	args = append(args, image, "wal-g", "backup-list", "--detail")
+	args = append(args, pgImage(), "wal-g", "backup-list", "--detail")
 	return run("docker", args...)
 }
 
@@ -659,7 +662,7 @@ func Restore(ts string) error {
 		// BranchBeforeEntry does, so installs whose image predates it still get
 		// the chosen base backup instead of the image's LATEST-only entrypoint.
 		"--entrypoint", "bash",
-		image, "-c", restorePITRScript,
+		pgImage(), "-c", restorePITRScript,
 	)
 	if err := run("docker", args...); err != nil {
 		return err

@@ -103,8 +103,16 @@ jobs:
   # NOTE: the first push creates the ghcr.io/thefoxbyte/postgres-walg package as
   # PRIVATE. Make it public once (org → Packages → package → visibility) so
   # `docker pull` works without auth.
+  #
+  # One image per supported PostgreSQL major (internal/branch/images.go's
+  # SupportedPGMajors; a test keeps this matrix in step with it). An install keeps
+  # running the major its data was created with, so the older one must stay
+  # pullable after a fresh install moves on.
   image:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pg: ["16", "18"]
     permissions:
       contents: read
       packages: write
@@ -119,12 +127,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push (amd64 + arm64)
+      - name: Build and push PostgreSQL ${{ matrix.pg }} (amd64 + arm64)
         uses: docker/build-push-action@v6
         with:
           context: docker/postgres
           platforms: linux/amd64,linux/arm64
+          build-args: PG_MAJOR=${{ matrix.pg }}
           push: true
+          # The source label links the package to this repository, so it takes
+          # the repository's permissions instead of starting out unlinked.
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
-            ghcr.io/thefoxbyte/postgres-walg:16
-            ghcr.io/thefoxbyte/postgres-walg:${{ inputs.tag || github.ref_name }}
+            ghcr.io/thefoxbyte/postgres-walg:${{ matrix.pg }}
+            ghcr.io/thefoxbyte/postgres-walg:${{ matrix.pg }}-${{ inputs.tag || github.ref_name }}

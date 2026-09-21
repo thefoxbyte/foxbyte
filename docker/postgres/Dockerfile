@@ -1,14 +1,24 @@
 # syntax=docker/dockerfile:1
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Stock PostgreSQL 16 + wal-g (object-storage WAL archival, base backups, PITR).
+# Stock PostgreSQL + wal-g (object-storage WAL archival, base backups, PITR).
 # wal-g is installed as a pinned prebuilt release binary matching the build arch,
 # so this image builds natively on both amd64 and Apple Silicon (arm64).
 #
+# One Dockerfile serves every PostgreSQL major the engine supports: PG_MAJOR
+# picks the base, and the release workflow publishes one image per major
+# (postgres-walg:16, postgres-walg:18), because an install keeps running the
+# major its data was created with. The default is the major a fresh install
+# gets -- internal/branch/images.go's PGMajor, which a test keeps this in step
+# with.
+#
 # The ubuntu-20.04 build is used deliberately: it links against an older glibc
 # and therefore runs on the Debian bookworm base (glibc is forward-compatible).
+# Bookworm is kept for every major for that reason, although 18 defaults to
+# trixie.
 
-FROM postgres:16-bookworm
+ARG PG_MAJOR=18
+FROM postgres:${PG_MAJOR}-bookworm
 
 ARG WALG_VERSION=v3.0.9
 RUN set -eux; \

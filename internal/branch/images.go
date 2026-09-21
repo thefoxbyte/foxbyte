@@ -22,7 +22,23 @@ const (
 	// that already has one cached keeps using it, so upgrading fox needs no pull.
 	legacyMinioImage = "minio/minio:latest"
 	legacyMCImage    = "minio/mc:latest"
+
+	// PGMajor is the PostgreSQL major a fresh install runs.
+	PGMajor = "18"
 )
+
+// SupportedPGMajors are the PostgreSQL majors this fox can run an install on.
+// A fresh install gets PGMajor; an install created under an older one keeps
+// running it (pgImage follows the data, not the binary) until its owner moves
+// it. The release workflow publishes an engine image for each, and a test keeps
+// the workflow, the Dockerfile and the Windows preload in step with this list.
+var SupportedPGMajors = []string{"16", PGMajor}
+
+// PostgresImageFor names the engine image — stock Postgres plus wal-g, built
+// from docker/postgres — for one PostgreSQL major.
+func PostgresImageFor(major string) string {
+	return brand.ImageRepo + "/postgres-walg:" + major
+}
 
 // pickImage chooses the image to run: an explicit override, else the pinned
 // image if it is present, else a legacy image already on this machine, else the
