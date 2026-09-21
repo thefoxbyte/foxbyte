@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -28,7 +29,12 @@ func TestWriteContextMatchesTheSources(t *testing.T) {
 			t.Errorf("%s differs from docker/postgres/%s", name, name)
 		}
 	}
-	if fi, err := os.Stat(filepath.Join(dir, "restore-entrypoint.sh")); err != nil || fi.Mode()&0o111 == 0 {
-		t.Error("the entrypoint must stay executable: the Dockerfile COPYs it and chmods it, but a build context should not rely on that")
+	// Windows has no executable bit to keep: a mode written as 0755 reads back
+	// without the x bits there. The context is only ever built on Linux (in the
+	// VM or the WSL distro), which is where this matters.
+	if runtime.GOOS != "windows" {
+		if fi, err := os.Stat(filepath.Join(dir, "restore-entrypoint.sh")); err != nil || fi.Mode()&0o111 == 0 {
+			t.Error("the entrypoint must stay executable: the Dockerfile COPYs it and chmods it, but a build context should not rely on that")
+		}
 	}
 }
