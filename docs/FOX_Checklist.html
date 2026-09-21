@@ -503,7 +503,9 @@
       <li class="ok">Build, vet, test, gofmt</li><li class="ok">Release script tests, checklist sync check</li>
       <li class="todo">VM integration suites in CI</li></ul></td><td class="tb">CI</td></tr>
     <tr data-id="M3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M3</td><td><b>Windows CI</b><ul class="subs">
-      <li class="ok">Build, vet, test, Pester, installer encoding</li><li class="todo">End-to-end WSL install test</li></ul></td><td class="tb">CI</td></tr>
+      <li class="ok">Build, vet, test, Pester, installer encoding</li>
+      <li class="ok">Guard tests read backslash paths, and generated files are pinned to LF (21 Sep)</li>
+      <li class="todo">End-to-end WSL install test</li></ul></td><td class="tb">CI</td></tr>
     <tr data-id="M4" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M4</td><td><b>Releases &amp; GHCR image</b><ul class="subs">
       <li class="ok">Binaries for 5 platforms + fox-verify</li><li class="ok">SHA256SUMS merged safely between jobs</li>
       <li class="ok">Fails unless <code>fox update</code>'s files are published</li><li class="ok">Multi-arch Postgres image on GHCR</li></ul></td><td class="tb">Script tests in CI</td></tr>

@@ -92,6 +92,33 @@ func TestStoredNamesAreBrandFree(t *testing.T) {
 	}
 }
 
+// exemptFromDurableNames reports whether a file may spell a durable name out:
+// the package that defines them, and the tests that assert on them. The path is
+// expected with forward slashes (see slashPath).
+func exemptFromDurableNames(f string) bool {
+	return !strings.HasSuffix(f, ".go") ||
+		strings.Contains(f, "internal/branch/") ||
+		strings.HasSuffix(f, "_test.go")
+}
+
+// The exemption above is a string match on a path, and the repository is tested
+// on Windows too, where the walk yields backslashes. It broke there once and
+// nowhere else, so the Windows spelling is checked from every OS.
+func TestDurableNameExemptionsReadWindowsPaths(t *testing.T) {
+	for _, p := range []string{
+		`..\..\internal\branch\branch.go`,
+		`..\..\internal\branch\provision.go`,
+		"../../internal/branch/security.go",
+	} {
+		if !exemptFromDurableNames(slashPath(p)) {
+			t.Errorf("%s defines the durable names and must be exempt, but was not", p)
+		}
+	}
+	if exemptFromDurableNames(slashPath(`..\..\internal\controlplane\server.go`)) {
+		t.Error("a file outside internal/branch must not be exempt")
+	}
+}
+
 func repoFiles(t *testing.T) []string {
 	t.Helper()
 	root := filepath.Join("..", "..")
@@ -121,7 +148,7 @@ func repoFiles(t *testing.T) []string {
 		if abs, _ := filepath.Abs(path); abs == self {
 			return nil
 		}
-		out = append(out, path)
+		out = append(out, slashPath(path))
 		return nil
 	})
 	if err != nil {
@@ -129,6 +156,16 @@ func repoFiles(t *testing.T) []string {
 	}
 	return out
 }
+
+// slashPath writes a path with forward slashes on every operating system, so
+// the rules below ("internal/branch/", "docs/") can be plain string matches.
+// On Windows the walk yields `..\..\internal\branch\branch.go`, which
+// matched none of them: TestDurableNamesAreNotSpeltOutTwice then scanned the
+// package that owns those names and reported all nine of its own definitions
+// as duplicates. Replacing the separator explicitly, rather than with
+// filepath.ToSlash, keeps the behaviour identical on every OS -- including in
+// the test below, which feeds it a Windows path while running on Linux.
+func slashPath(p string) string { return strings.ReplaceAll(p, `\`, "/") }
 
 // generatedFromBrand reports whether a file is written by cmd/brandgen. Those
 // carry the retired names on purpose: that is what brand.json is for.
@@ -195,11 +232,7 @@ func TestDurableNamesAreNotSpeltOutTwice(t *testing.T) {
 		branch.ContainerPrefix: "branch.ContainerPrefix",
 	}
 	for _, f := range repoFiles(t) {
-		// The package that owns them, and the generated shell library that
-		// hands them to the test suites, are where they are allowed to appear.
-		if !strings.HasSuffix(f, ".go") ||
-			strings.Contains(f, "internal/branch/") ||
-			strings.HasSuffix(f, "_test.go") {
+		if exemptFromDurableNames(f) {
 			continue
 		}
 		scanFile(t, f, func(n int, line string) {
