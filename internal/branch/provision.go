@@ -84,8 +84,12 @@ func imageExists(ref string) bool {
 // being reachable at install time) and falls back to building from the repo
 // context — for contributors, offline installs, or before the image is
 // published.
-func ensureImage() error {
-	image := pgImage()
+func ensureImage() error { return ensureImageRef(pgImage()) }
+
+// ensureImageRef guarantees one engine image is present: pulled, or built from
+// the context for the major its tag names. `fox pg upgrade` needs the new
+// major's image while the install still runs on the old one.
+func ensureImageRef(image string) error {
 	if imageExists(image) {
 		return nil
 	}

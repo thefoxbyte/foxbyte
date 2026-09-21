@@ -27,3 +27,9 @@ func forward(args []string) error { return forwardStdin(args, nil) }
 func forwardStdin(args []string, stdin io.Reader) error {
 	return fmt.Errorf("unsupported host OS %q — cannot forward to a VM", runtime.GOOS)
 }
+
+// Never reached on Linux, where there is no VM to cross into; they exist so
+// the shared commands link on every platform.
+func copyFromGuest(guestPath, hostPath string) error { return copyFile(guestPath, hostPath) }
+func copyToGuest(hostPath, guestPath string) error   { return copyFile(hostPath, guestPath) }
+func removeInGuest(guestPath string)                 {}

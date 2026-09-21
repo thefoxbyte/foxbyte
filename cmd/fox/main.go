@@ -62,6 +62,19 @@ Durability / time-travel:
   backup create        Base backup of 'main' -> object storage
   backup list          List base backups in object storage
   restore --to <ts>    PITR into a disposable container on port 5433 (ts or 'latest')
+  backup export [--out <file>] [--branch <name>]...
+                       Portable copy of every non-agent branch (pg_dump + roles + Blackbox),
+                       verified, on this machine; it survives a PostgreSQL major change
+  backup restore <file> [--branch <name>] --as <new>
+                       Restore one branch of an export into a new branch
+
+PostgreSQL versions:
+  pg status            Which PostgreSQL this install and each branch run
+  pg upgrade [--dry-run] [--yes] [--export <file> | --i-have-a-backup]
+                       Move this install to the PostgreSQL this fox ships: shows every
+                       change first, takes an export, keeps the old databases
+  pg upgrade --rollback | --finalize
+                       Go back to the kept databases, or delete them
 
 Branching:
   branch create <name> [--from <branch>]  Instant copy-on-write branch of main, or of another branch
@@ -236,7 +249,7 @@ func main() {
 		must(branch.PsqlShell("main"))
 	case "backup":
 		if len(os.Args) < 3 {
-			fmt.Println("usage: fox backup <create|list>")
+			fmt.Println("usage: fox backup <create|list|export|restore>")
 			os.Exit(2)
 		}
 		switch os.Args[2] {
@@ -244,10 +257,33 @@ func main() {
 			must(branch.Backup())
 		case "list":
 			must(branch.BackupList())
+		case "export":
+			must(exportCmd(os.Args[3:], true))
+		case "restore":
+			a, err := host.ParseRestoreArgs(os.Args[3:])
+			must(err)
+			must(branch.RestoreExport(a.File, a.Branch, a.As))
+			fmt.Printf("Restored %s from %s into the new branch %q.\n", a.Branch, a.File, a.As)
 		default:
 			fmt.Printf("unknown backup subcommand: %s\n", os.Args[2])
 			os.Exit(2)
 		}
+	case "_export-guest": // the VM's half of `fox backup export` from a host
+		must(exportCmd(os.Args[2:], false))
+	case "pg", "postgres":
+		pgCmd(os.Args[2:])
+	case "_pg-upgrade-plan": // the VM's halves of `fox pg upgrade` from a host
+		os.Exit(pgPlan())
+	case "_pg-upgrade-apply":
+		must(branch.ApplyUpgrade())
+	case "_pg-rollback-plan":
+		must(showRollback())
+	case "_pg-rollback":
+		must(branch.RollbackUpgrade())
+	case "_pg-finalize-plan":
+		must(branch.ShowFinalize(os.Stdout))
+	case "_pg-finalize":
+		must(branch.FinalizeUpgrade())
 	case "restore":
 		ts := restoreArg(os.Args[2:])
 		if ts == "" {
@@ -639,6 +675,97 @@ func apikeyCmd(args []string) {
 		fmt.Println("revoked")
 	default:
 		fmt.Printf("unknown apikey subcommand: %s\n", args[0])
+		os.Exit(2)
+	}
+}
+
+// exportCmd writes an export where --out says (by default into the state
+// directory) and, when announce is set, says where it went. The VM's half of a
+// host export stays quiet about its temporary path: the host names the real one.
+func exportCmd(args []string, announce bool) error {
+	a, err := host.ParseExportArgs(args)
+	if err != nil {
+		return err
+	}
+	out := a.Out
+	if out == "" {
+		out = host.DefaultExportPath()
+	}
+	m, err := branch.Export(branch.ExportOptions{Out: out, Branches: a.Branches})
+	if err != nil {
+		return err
+	}
+	if _, err := branch.ReadExport(out, ""); err != nil {
+		return fmt.Errorf("the export was written but does not verify: %w", err)
+	}
+	if announce {
+		fmt.Printf("Export written to %s — %d branch(es), verified.\n", out, len(m.Branches))
+	}
+	return nil
+}
+
+// pgPlan prints the upgrade plan and returns the exit status the host reads:
+// 0 ready, 1 refused, host.PlanExitUpToDate nothing to do.
+func pgPlan() int {
+	p, err := branch.PlanUpgrade()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	p.Render(os.Stdout)
+	switch {
+	case p.UpToDate():
+		return host.PlanExitUpToDate
+	case len(p.Refusals()) > 0:
+		return 1
+	}
+	return 0
+}
+
+func showRollback() error {
+	r, err := branch.PlanRollback()
+	if err != nil {
+		return err
+	}
+	r.Render(os.Stdout)
+	return nil
+}
+
+// pgCmd is `fox pg …` on Linux and inside the VM; on a host, `pg upgrade` is
+// run by host.Maybe, which forwards each step here.
+func pgCmd(args []string) {
+	if len(args) == 0 {
+		fmt.Println("usage: fox pg <status|upgrade>")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "status":
+		must(branch.PGStatus(os.Stdout))
+	case "upgrade":
+		a, err := host.ParsePgUpgradeArgs(args[1:])
+		must(err)
+		switch {
+		case a.Rollback:
+			must(host.ConfirmThen(a.UpgradeOptions, showRollback, branch.RollbackUpgrade))
+		case a.Finalize:
+			must(host.ConfirmThen(a.UpgradeOptions, func() error { return branch.ShowFinalize(os.Stdout) }, branch.FinalizeUpgrade))
+		default:
+			must(host.RunUpgrade(host.UpgradeSteps{
+				Plan: func() error {
+					switch pgPlan() {
+					case 0:
+						return nil
+					case host.PlanExitUpToDate:
+						return host.ErrUpToDate
+					}
+					return fmt.Errorf("refusing to upgrade (see above) — nothing was changed")
+				},
+				Export: func(out string) error { return exportCmd([]string{"--out", out}, true) },
+				Apply:  branch.ApplyUpgrade,
+			}, a.UpgradeOptions, os.Stdin, os.Stdout))
+		}
+	default:
+		fmt.Printf("unknown pg subcommand: %s\n", args[0])
 		os.Exit(2)
 	}
 }

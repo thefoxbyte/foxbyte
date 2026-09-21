@@ -102,6 +102,12 @@ func quiet(name string, args ...string) {
 }
 
 // capture runs a privileged command and returns its trimmed stdout.
+// execSudo prepares a privileged command for a caller that wires its own input
+// or output.
+func execSudo(name string, args ...string) *exec.Cmd {
+	return exec.Command("sudo", append([]string{name}, args...)...)
+}
+
 func capture(name string, args ...string) (string, error) {
 	out, err := exec.Command("sudo", append([]string{name}, args...)...).Output()
 	return strings.TrimSpace(string(out)), err

@@ -60,6 +60,17 @@ func Maybe(args []string) (handled bool, err error) {
 	if localCommands[sub] {
 		return false, nil
 	}
+	// Commands with a half on each side of the VM: the file an export produces,
+	// or a restore reads, is the user's, on the host.
+	if sub == "backup" && len(args) > 1 && args[1] == "export" {
+		return true, hostExport(args[2:])
+	}
+	if sub == "backup" && len(args) > 1 && args[1] == "restore" {
+		return true, hostRestore(args[2:])
+	}
+	if sub == "pg" && len(args) > 1 && args[1] == "upgrade" {
+		return true, hostPgUpgrade(args[2:])
+	}
 	if sub == "start" {
 		// Look for a newer release while the stack starts; the notice (if any)
 		// is the last line printed.

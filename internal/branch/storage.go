@@ -73,6 +73,19 @@ type storage interface {
 	// protectPrimary applies any driver-specific guard that keeps the primary
 	// writable when branches grow (a ZFS reservation). Idempotent, best-effort.
 	protectPrimary()
+
+	// A holding area outside the branch namespace, for data that must be kept
+	// but must not be a branch: `fox pg upgrade` moves every branch into one so
+	// a rollback is a move back rather than a restore. Nothing that lists or
+	// routes to branches can see into it.
+	//
+	// stash moves a branch into the holding area `lot`, unstash moves it back,
+	// stashed lists what a lot holds (nil for a lot that does not exist), and
+	// dropStash deletes a lot and everything in it.
+	stash(branch, lot string) error
+	unstash(branch, lot string) error
+	stashed(lot string) ([]string, error)
+	dropStash(lot string) error
 }
 
 // activeStorage returns the configured driver.
@@ -218,6 +231,49 @@ func (zfsStorage) destroy(branch string) error {
 func isOriginSnapshotFor(snapshot, branch string) bool {
 	return strings.HasPrefix(snapshot, datasetBase+"/") && strings.HasSuffix(snapshot, "@for-"+branch) &&
 		!strings.Contains(strings.TrimSuffix(snapshot, "@for-"+branch), "@")
+}
+
+// stashDataset is a lot's dataset: a sibling of the branches, so it mounts
+// outside mountBase and no branch listing reaches it.
+func stashDataset(lot string) string { return pool + "/" + lot }
+
+// stash renames the branch's dataset into the lot. Clones stay valid across a
+// rename (their origin follows the snapshot), so main and its branches can be
+// moved in any order.
+func (zfsStorage) stash(branch, lot string) error {
+	if err := run("zfs", "create", "-p", stashDataset(lot)); err != nil {
+		return err
+	}
+	return run("zfs", "rename", dataset(branch), stashDataset(lot)+"/"+branch)
+}
+
+func (zfsStorage) unstash(branch, lot string) error {
+	return run("zfs", "rename", stashDataset(lot)+"/"+branch, dataset(branch))
+}
+
+func (zfsStorage) stashed(lot string) ([]string, error) {
+	out, err := capture("zfs", "list", "-H", "-o", "name", "-d", "1", stashDataset(lot))
+	if err != nil {
+		return nil, nil // no such lot
+	}
+	var names []string
+	for _, ln := range strings.Fields(out) {
+		if ln != stashDataset(lot) {
+			names = append(names, filepath.Base(ln))
+		}
+	}
+	return names, nil
+}
+
+// dropStash destroys the lot recursively. -R also takes the snapshots the old
+// branches were cloned from, which live under the lot's copy of main; nothing
+// outside the lot depends on them, because whatever replaced those branches
+// was created empty.
+func (zfsStorage) dropStash(lot string) error {
+	if !datasetExists(stashDataset(lot)) {
+		return nil
+	}
+	return run("zfs", "destroy", "-R", stashDataset(lot))
 }
 
 func (zfsStorage) list() error {
@@ -366,6 +422,48 @@ func (btrfsStorage) disableCoW(branch string) error {
 
 func (btrfsStorage) destroy(branch string) error {
 	return run("btrfs", "subvolume", "delete", btrfsSubvol(branch))
+}
+
+// btrfsLot is a lot's directory. Everything must stay inside the one btrfs
+// filesystem mounted at btrfsMount, so the lot is a dot-directory there: the
+// branch listing's "*/" glob does not match it.
+func btrfsLot(lot string) string { return filepath.Join(btrfsMount, "."+lot) }
+
+func (btrfsStorage) stash(branch, lot string) error {
+	if err := run("mkdir", "-p", btrfsLot(lot)); err != nil {
+		return err
+	}
+	return run("mv", btrfsSubvol(branch), filepath.Join(btrfsLot(lot), branch))
+}
+
+func (btrfsStorage) unstash(branch, lot string) error {
+	return run("mv", filepath.Join(btrfsLot(lot), branch), btrfsSubvol(branch))
+}
+
+func (btrfsStorage) stashed(lot string) ([]string, error) {
+	out, err := capture("sh", "-c", fmt.Sprintf("ls -1 %s 2>/dev/null || true", btrfsLot(lot)))
+	if err != nil {
+		return nil, err
+	}
+	f := strings.Fields(out)
+	if len(f) == 0 {
+		return nil, nil
+	}
+	return f, nil
+}
+
+func (b btrfsStorage) dropStash(lot string) error {
+	names, err := b.stashed(lot)
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		if err := run("btrfs", "subvolume", "delete", filepath.Join(btrfsLot(lot), n)); err != nil {
+			return err
+		}
+	}
+	quiet("rmdir", btrfsLot(lot))
+	return nil
 }
 
 func (b btrfsStorage) list() error {

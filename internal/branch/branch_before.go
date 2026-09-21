@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -233,9 +234,46 @@ func walArchived(lastArchived, segment string) bool {
 	return lastArchived[:24] >= segment[:24]
 }
 
-func walgEnv() []string {
+// walArchiveFile records, in main's dataset but outside PGDATA, where this
+// cluster's WAL and base backups live in the bucket. It is absent on every
+// install that has never been through `fox pg upgrade`, which archives to the
+// bucket's root as it always has.
+//
+// An upgrade starts a new cluster whose WAL numbering begins again, so its
+// segment names would collide with the old cluster's in the same place — and a
+// rollback would find its own archive overwritten. Each upgraded cluster gets a
+// prefix of its own, written into main's dataset so it follows the data: after
+// a rollback the old main has no such file, and archives to the root again.
+const walArchiveFile = "wal-archive-prefix"
+
+var walPrefixRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// walgPrefixFor turns the file's contents into a WALG_S3_PREFIX: the bucket's
+// root for no file, or for anything that is not a plain path segment.
+func walgPrefixFor(contents string) string {
+	seg := strings.TrimSpace(contents)
+	if !walPrefixRe.MatchString(seg) {
+		return "s3://" + walBucket
+	}
+	return "s3://" + walBucket + "/" + seg
+}
+
+// walgPrefix is this install's archive location, read from main's dataset
+// whichever branch is primary: after a failover the standby serves main, but
+// its data is a copy of main's PGDATA and does not carry the file.
+func walgPrefix() string {
+	out, err := capture("cat", filepath.Join(mountpoint("main"), walArchiveFile))
+	if err != nil {
+		return walgPrefixFor("")
+	}
+	return walgPrefixFor(out)
+}
+
+func walgEnv() []string { return walgEnvFor(walgPrefix()) }
+
+func walgEnvFor(prefix string) []string {
 	return []string{
-		"-e", "WALG_S3_PREFIX=s3://" + walBucket,
+		"-e", "WALG_S3_PREFIX=" + prefix,
 		"-e", "AWS_ACCESS_KEY_ID=" + minioUser(),
 		"-e", "AWS_SECRET_ACCESS_KEY=" + minioPass(),
 		"-e", "AWS_ENDPOINT=" + objStoreEndpoint,
