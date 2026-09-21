@@ -709,3 +709,23 @@ func bundledRootfs() string {
 func prebuiltDistro(name string) bool {
 	return wslRoot(name, "test -x /usr/bin/dockerd && test -x /usr/local/sbin/zpool") == nil
 }
+
+// A WSL distro's files are reachable from Windows at \\wsl.localhost\<distro>\,
+// so a file crosses with an ordinary copy, byte for byte. The distro must be
+// running for the share to answer; forwarding a command starts it.
+func guestUNC(guestPath string) string {
+	return `\\wsl.localhost\` + currentDistro() + strings.ReplaceAll(guestPath, "/", `\`)
+}
+
+func copyFromGuest(guestPath, hostPath string) error {
+	return copyFile(guestUNC(guestPath), hostPath)
+}
+
+func copyToGuest(hostPath, guestPath string) error {
+	if err := wslRoot(currentDistro(), "true"); err != nil { // make sure it is up
+		return err
+	}
+	return copyFile(hostPath, guestUNC(guestPath))
+}
+
+func removeInGuest(guestPath string) { _ = os.Remove(guestUNC(guestPath)) }

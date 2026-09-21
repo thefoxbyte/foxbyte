@@ -61,7 +61,7 @@ func TestContainerName(t *testing.T) {
 // the wal-g environment still said http://minio:9000 broke WAL archiving,
 // backups and point-in-time restore at once: the host simply did not resolve.
 func TestWalgEnvPointsAtTheObjectStore(t *testing.T) {
-	env := strings.Join(walgEnv(), " ")
+	env := strings.Join(walgEnvFor(walgPrefixFor("")), " ")
 	if !strings.Contains(env, "AWS_ENDPOINT=http://"+objStore+":9000") {
 		t.Errorf("wal-g is not pointed at %q: %s", objStore, env)
 	}
@@ -71,5 +71,24 @@ func TestWalgEnvPointsAtTheObjectStore(t *testing.T) {
 	// The endpoint is derived, not written out a second time.
 	if objStoreEndpoint != "http://"+objStore+":9000" {
 		t.Errorf("objStoreEndpoint = %q, which does not follow objStore = %q", objStoreEndpoint, objStore)
+	}
+}
+
+// An upgraded cluster archives under its own prefix; anything else — no file,
+// or contents that are not a plain segment — means the bucket's root, which is
+// where every install archived before upgrades existed.
+func TestWalgPrefixFor(t *testing.T) {
+	root := "s3://" + walBucket
+	for in, want := range map[string]string{
+		"":                        root,
+		"pg18-20260921t120000z\n": root + "/pg18-20260921t120000z",
+		"pg18-20260921t120000z":   root + "/pg18-20260921t120000z",
+		"../elsewhere":            root,
+		"pg18/../../x":            root,
+		"PG18":                    root, // not what the upgrade writes
+	} {
+		if got := walgPrefixFor(in); got != want {
+			t.Errorf("walgPrefixFor(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

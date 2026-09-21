@@ -246,7 +246,13 @@ fox backup create               # base backup -> object storage
 fox backup list
 fox restore --to latest         # PITR into a disposable container on port 5433
 fox restore --to '2026-08-24 15:07:00+00'
+fox backup export               # portable copy of every branch, on this machine
+fox backup restore <file> --as <new-branch>
 ```
+
+A base backup belongs to one PostgreSQL major; an export (`pg_dump`, roles and
+the Blackbox, verified against its own checksums) restores into the same or any
+newer one.
 
 **High availability**
 
@@ -354,10 +360,10 @@ between majors behind your back. That is a migration, and it stays your call.
 |---|---|
 | Fresh install | PostgreSQL 18 |
 | Still supported for existing installs | PostgreSQL 16 |
-| Moving an install to a newer major | not automated yet — take a portable dump, reinstall, import it ([how](docs/postgres-versions.md#moving-an-install-to-a-newer-major)) |
+| Moving an install to a newer major | `fox pg upgrade` — shows every change first, takes an export, keeps the old databases until you say so ([how](docs/postgres-versions.md#moving-an-install-to-a-newer-major)) |
 
 A base backup (`fox backup create`) belongs to one major and cannot be restored
-into another; a `pg_dump` can. [docs/postgres-versions.md](docs/postgres-versions.md)
+into another; an export (`fox backup export`) can. [docs/postgres-versions.md](docs/postgres-versions.md)
 has the details, and the checklist for moving FoxByte itself to the next major.
 
 ## What FoxByte is not

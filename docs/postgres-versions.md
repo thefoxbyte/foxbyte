@@ -39,45 +39,71 @@ an image of the same major as your data.
 
 | | Survives a major change? |
 |---|---|
-| `fox backup create` (a `wal-g` base backup) and the WAL archive | **No.** Physical backups belong to one major and one cluster. After a move they can only be read by running the old major's image. |
-| A `pg_dump` of your database | **Yes.** SQL is portable across majors. Take one before any move. |
+| `fox backup create` (a `wal-g` base backup) and the WAL archive | **No.** Physical backups belong to one major and one cluster. After an upgrade they stay in object storage and come back with `fox pg upgrade --rollback`. |
+| `fox backup export` | **Yes.** A `pg_dump` of every branch, with its roles and its Blackbox, restorable into the same or any newer major. |
+
+```
+fox backup export                          # every branch except agents' -> ~/.fox/exports/
+fox backup export --out ~/before.tar --branch main
+fox backup restore ~/before.tar --as restored          # main, into a new branch
+fox backup restore ~/before.tar --branch qa --as qa-copy
+```
+
+An export is one `.tar`: a manifest, and for each branch its `pg_dump` (custom
+format, owners and privileges kept), its roles — each branch is its own
+cluster, and a per-user login role lives only on the branch that user reached —
+and a `SHA256SUMS` over everything. On macOS and Windows it is written inside
+the VM, copied to your disk, and checked against those sums there; a copy that
+does not verify is deleted rather than kept. A restore checks them again,
+refuses an export from a newer major than the install runs, and afterwards
+checks that the Blackbox came across exactly: every entry, ending in the same
+hash.
 
 ## Moving an install to a newer major
 
-**There is no command for this yet.** One is planned: `fox backup export`, a
-portable dump of every branch with the roles it needs, and `fox pg upgrade`,
-which moves an install in place — inventory, a warning listing what changes
-between your major and the new one, a refusal to proceed without a fresh
-export, a rollback point, and a Blackbox verification at the end. Until it
-exists, staying on 16 is fully supported, and the manual route is below.
+```
+fox pg status              # which major the install and each branch run
+fox pg upgrade --dry-run   # everything that would change; nothing is done
+fox pg upgrade             # asks, exports, upgrades
+```
 
-The manual route replaces the install. Accounts, API keys, the Blackbox history
-and base backups do **not** come across — only your database contents. It is
-not covered by the test suites; check the result before relying on it.
+`fox pg upgrade` does four things, in this order, and stops at the first that
+fails:
 
-1. Export main (repeat with `pg-<branch>` for each branch you want to keep).
-   macOS:
+1. **Shows the plan.** Every branch and whether it is carried; what changes for
+   you; and every PostgreSQL change between your major and the new one, taken
+   from each release's own migration notes, with the ones found in *your*
+   databases first (an expression index, an MD5 password, an inheritance tree,
+   an unlogged partitioned table…). It refuses, saying what to do instead, when
+   high availability is on (`fox ha disable` first), when main is served by the
+   standby after a failover, when a Blackbox does not verify, or when an
+   earlier upgrade's databases are still kept.
+2. **Asks.** Type `fox` to go on. `--yes` skips the question.
+3. **Takes an export** of every carried branch, onto your disk
+   (`--export <file>` chooses where). `--i-have-a-backup` skips it — only if
+   you have one.
+4. **Upgrades.** Every database is offline while it runs. Each branch is dumped
+   with the new major's `pg_dump` and reloaded into a new cluster — a reload,
+   not `pg_upgrade`, so every index is rebuilt — and its Blackbox must come
+   across exactly. The new main archives WAL under a prefix of its own and
+   takes its first base backup.
 
-   ```
-   limactl shell fox -- sudo docker exec pg-main \
-     pg_dump -U dbadmin --no-owner --no-acl --exclude-schema=bb appdb > appdb.sql
-   ```
+What it keeps, and what it does not:
 
-   Windows: `wsl -d fox -- docker exec pg-main pg_dump -U dbadmin --no-owner --no-acl --exclude-schema=bb appdb > appdb.sql`.
-   `--exclude-schema=bb` leaves out FoxByte's own bookkeeping, which the new
-   install creates for itself.
-2. Check the file: `tail appdb.sql` should end with `PostgreSQL database dump complete`.
-3. Remove the old install completely: `fox uninstall`.
-4. Install again (see the README). The new install runs PostgreSQL 18.
-5. Create your account at https://localhost:8080 and make a new API key.
-6. Load the dump into main. macOS:
-
-   ```
-   limactl shell fox -- sudo docker exec -i pg-main psql -U dbadmin -d appdb -v ON_ERROR_STOP=1 < appdb.sql
-   ```
-
-   Every table it creates is recorded in the new install's Blackbox as a new
-   change: the history starts again from the load.
+- **The old databases are kept, untouched**, outside the branch namespace,
+  until `fox pg upgrade --finalize` deletes them. Until then
+  `fox pg upgrade --rollback` returns to them — deleting any branch made after
+  the upgrade, and saying so before it asks. Any failure during the upgrade is
+  rolled back the same way before the command returns.
+- **Point-in-time restore starts again.** The new cluster cannot use the old
+  one's base backups or WAL. They stay in object storage, and a rollback brings
+  them back.
+- **Agent branches are not carried**; they are disposable by design. They stay
+  in the kept copy until `--finalize`.
+- **Carried branches become full copies** of their data, no longer sharing
+  blocks with main, until you re-create them from it.
+- **Accounts, API keys and roles come across.** Keys live in the state
+  directory, and each branch's roles travel in its export.
 
 ## Moving FoxByte itself to the next major
 
@@ -116,8 +142,12 @@ For maintainers. Last done: 16 → 18, on 21 Sep 2026.
 5. **Run the three suites on the new major** in the throwaway VM:
    `make integration`, `make integration-v2`, `make integration-update`.
    Nothing ships on a major these have not passed on.
-6. **Write down what changes for users** between each supported major and the
-   new one — the list `fox pg upgrade` will print before it moves anything.
+6. **Write down what changes for users.** Add the new release's notes to
+   `pgNotes` in `internal/branch/pgnotes.go`, from its "Migration" section,
+   with a probe where a database can show whether it is affected.
+   `TestEveryUpgradeHopHasNotes` fails until every hop from a supported major
+   to the new one has them — this is the list `fox pg upgrade` prints before
+   it moves anything.
 7. **Update the living documents** — M6 and its neighbours in
    `docs/FOX_Feature_Implemented.html`, `docs/FOX_Checklist.html`,
    `docs/FOX_Storage_Engine.html`, this page, the README's version table — and
@@ -127,8 +157,9 @@ For maintainers. Last done: 16 → 18, on 21 Sep 2026.
    to pull with `unauthorized`.
 
 Dropping an old major from `SupportedPGMajors` strands every install still on
-it: they can no longer pull their image. Only do it once there is a supported
-way to move off it, and say so in the release notes.
+it: they can no longer pull their image, and `fox pg upgrade` needs the old
+cluster running to dump it. Only drop a major after a release has shipped the
+upgrade to its users, and say so in that release's notes.
 
 Things that deliberately stay put: `internal/host/host_windows.go` re-tags a
 legacy `foxbyte/postgres-walg:16` preload from Windows distro images built

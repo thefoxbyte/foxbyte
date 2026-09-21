@@ -639,13 +639,6 @@ CREATE OR REPLACE TRIGGER bb_no_truncate BEFORE TRUNCATE ON bb.schema_ledger
   FOR EACH STATEMENT EXECUTE FUNCTION bb.deny_change();
 REVOKE UPDATE, DELETE, TRUNCATE ON bb.schema_ledger FROM PUBLIC;
 
-CREATE EVENT TRIGGER bb_guard_start ON ddl_command_start
-  EXECUTE FUNCTION bb.guard_ddl_start();
-CREATE EVENT TRIGGER bb_log_end ON ddl_command_end
-  EXECUTE FUNCTION bb.log_ddl_end();
-CREATE EVENT TRIGGER bb_log_drop ON sql_drop
-  EXECUTE FUNCTION bb.log_ddl_drop();
-
 -- ── Least-privilege client role ─────────────────────────────────────────────
 -- The gateway logs clients in as this NON-superuser role, so a client session is
 -- subject to RLS and GRANTs and cannot bypass the append-only ledger — only a
@@ -675,3 +668,17 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA bb TO db_client;
 -- …except the one that advances a run's statement position: a client calling it
 -- could line a blocked statement up with a harmless one's text.
 REVOKE EXECUTE ON FUNCTION bb._statement_texts(text, text, text) FROM PUBLIC, db_client;
+
+-- ── Capture on ───────────────────────────────────────────────────────────────
+-- Last, deliberately. This script re-runs on every `fox start`, and its own
+-- statements must not be recorded as schema changes: the header's promise is
+-- that re-installing never fires the triggers on its own DDL. The privilege
+-- block above is not on objects in bb, so bb._skip cannot filter it; with the
+-- triggers created before it, every start appended its nine GRANT/REVOKE/
+-- ALTER DEFAULT PRIVILEGES statements to the Blackbox as unattributed changes.
+CREATE EVENT TRIGGER bb_guard_start ON ddl_command_start
+  EXECUTE FUNCTION bb.guard_ddl_start();
+CREATE EVENT TRIGGER bb_log_end ON ddl_command_end
+  EXECUTE FUNCTION bb.log_ddl_end();
+CREATE EVENT TRIGGER bb_log_drop ON sql_drop
+  EXECUTE FUNCTION bb.log_ddl_drop();

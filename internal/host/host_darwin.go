@@ -187,3 +187,18 @@ func guestArch(name string) string {
 	}
 	return "arm64" // Lima defaults to the host arch; Apple Silicon is arm64
 }
+
+// Files cross between the Mac and the VM with `limactl copy`, which is scp:
+// byte for byte. A stream through `limactl shell` could be given a terminal and
+// have its line endings rewritten, which would ruin an archive silently.
+func copyFromGuest(guestPath, hostPath string) error {
+	return limactl("copy", instance()+":"+guestPath, hostPath).Run()
+}
+
+func copyToGuest(hostPath, guestPath string) error {
+	return limactl("copy", hostPath, instance()+":"+guestPath).Run()
+}
+
+func removeInGuest(guestPath string) {
+	_ = exec.Command("limactl", "shell", instance(), "--", "rm", "-f", guestPath).Run()
+}

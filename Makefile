@@ -3,7 +3,7 @@
 # FoxByte runs inside the Linux dev VM (ZFS + Docker); day-to-day operation is
 # via `lima /tmp/fox <command>`. This Makefile just builds/checks the CLI.
 
-.PHONY: build vet fmt vm-build test integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update test-vm test-vm-stop test-vm-delete
+.PHONY: build vet fmt vm-build test integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade test-vm test-vm-stop test-vm-delete
 
 VERSION ?= 0.1.0
 LDFLAGS := -s -w -X github.com/thefoxbyte/foxbyte/internal/version.Version=$(VERSION)
@@ -73,6 +73,12 @@ integration-v2: test-vm   ## Run the Blackbox 2.0 checks (behaviour-unchanged + 
 # so the test VM gets the current build installed there first.
 integration-update: test-vm ## Run the `fox update` / new-release notice checks against a fake GitHub in the test VM
 	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox && sudo install -m 0755 /tmp/fox /usr/local/bin/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_update.sh"
+
+# Builds a PostgreSQL 16 install, exports and restores it, upgrades it to the
+# major this fox ships, rolls back, upgrades again and finalizes. It uninstalls
+# the stack at both ends, so it runs on its own.
+integration-pg-upgrade: test-vm ## Run the export/restore and `fox pg upgrade` checks (16 -> the shipped major) in the test VM
+	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_pg_upgrade.sh"
 
 web-dev:          ## DEPRECATED: the engine serves the UI at https://localhost:8080 (`fox start`). Hot-reload dev server only.
 	@echo "note: 'make web-dev' is deprecated — 'fox start' serves the UI at https://localhost:8080."
