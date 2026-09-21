@@ -35,7 +35,7 @@ func TestAgentRolePassword(t *testing.T) {
 // for, since the Gateway serves it.
 func TestAgentGatewayDSN(t *testing.T) {
 	t.Setenv(EnvGatewayHostPort, "localhost:6432")
-	got := agentGatewayDSN("agent-alice", "odb_secret/key+value")
+	got := agentGatewayDSN("agent-alice", "key_secret/key+value")
 	u, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("unparsable DSN %q: %v", got, err)
@@ -49,7 +49,7 @@ func TestAgentGatewayDSN(t *testing.T) {
 	if u.User.Username() != "agent-alice" {
 		t.Errorf("user = %q, want agent-alice", u.User.Username())
 	}
-	if pw, _ := u.User.Password(); pw != "odb_secret/key+value" {
+	if pw, _ := u.User.Password(); pw != "key_secret/key+value" {
 		t.Errorf("password = %q, want it round-tripped through escaping", pw)
 	}
 	// Carried over from the DSN this replaced: an agent is never the superuser.
@@ -80,7 +80,7 @@ func TestGatewayHostPort(t *testing.T) {
 		t.Errorf("split = %q/%q, want localhost/6432", host, port)
 	}
 
-	// `odb gateway --addr` is configurable, so agents must be able to be told
+	// `fox gateway --addr` is configurable, so agents must be able to be told
 	// where it really is.
 	t.Setenv(EnvGatewayHostPort, "db.internal:7000")
 	if got := gatewayHostPort(); got != "db.internal:7000" {

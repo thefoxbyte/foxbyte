@@ -6,7 +6,7 @@ package daemon
 
 import "os/exec"
 
-// OxynDB's long-lived servers run only inside the Linux guest (WSL2); on the
+// FoxByte's long-lived servers run only inside the Linux guest (WSL2); on the
 // Windows host, host.Maybe forwards every engine command, so this package is
 // never exercised there. These stubs exist solely so the host binary compiles
 // for windows/amd64.

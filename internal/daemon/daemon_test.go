@@ -17,7 +17,7 @@ import (
 // the pidfile without confirming the process died, so `status` reported "stopped"
 // while the old process kept serving and a later `start` couldn't rebind the port.
 func TestStopTerminatesProcess(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // runDir() → $HOME/.oxyndb
+	t.Setenv("HOME", t.TempDir()) // runDir() → $HOME/.fox
 
 	// A process that ignores SIGTERM, forcing the SIGKILL escalation path.
 	cmd := exec.Command("sh", "-c", "trap '' TERM; sleep 60")

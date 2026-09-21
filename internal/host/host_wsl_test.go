@@ -3,6 +3,7 @@
 package host
 
 import (
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,7 +13,7 @@ import (
 
 // TC1.1 — distro name resolution.
 func TestResolveWSLDistro(t *testing.T) {
-	cases := map[string]string{"": "oxyndb", "  ": "oxyndb", "mine": "mine", "  spaced  ": "spaced"}
+	cases := map[string]string{"": brand.VMInstance, "  ": brand.VMInstance, "mine": "mine", "  spaced  ": "spaced"}
 	for in, want := range cases {
 		if got := resolveWSLDistro(in); got != want {
 			t.Errorf("resolveWSLDistro(%q) = %q, want %q", in, got, want)
@@ -23,13 +24,13 @@ func TestResolveWSLDistro(t *testing.T) {
 // TC1.2 — the wsl.exe argument list, including the in-guest marker and the
 // staged image-context path.
 func TestWSLArgs(t *testing.T) {
-	got := wslArgs("oxyndb", "/usr/local/bin/odb", guestEnv(), []string{"branch", "list"})
-	want := []string{"-d", "oxyndb", "--", "env",
-		"OXYNDB_IN_GUEST=1",
+	got := wslArgs(brand.VMInstance, "/usr/local/bin/fox", guestEnv(), []string{"branch", "list"})
+	want := []string{"-d", brand.VMInstance, "--", "env",
+		"FOX_IN_GUEST=1",
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"OXYNDB_IMAGE_CONTEXT=/usr/local/share/oxyndb/docker/postgres",
-		"OXYNDB_STORAGE=btrfs",
-		"/usr/local/bin/odb", "branch", "list"}
+		"FOX_IMAGE_CONTEXT=/usr/local/share/dbengine/docker/postgres",
+		"FOX_STORAGE=btrfs",
+		"/usr/local/bin/fox", "branch", "list"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("wslArgs = %q, want %q", got, want)
 	}
@@ -50,9 +51,9 @@ func encodeUTF16LE(s string, bom bool) []byte {
 func TestDecodeWSLList(t *testing.T) {
 	raw := "  NAME            STATE           VERSION\n" +
 		"* Ubuntu          Running         2\n" +
-		"  oxyndb       Stopped         2\n"
+		"  foxbyte       Stopped         2\n"
 	got := decodeWSLList(encodeUTF16LE(raw, true))
-	want := []wslDistro{{"Ubuntu", "Running"}, {"oxyndb", "Stopped"}}
+	want := []wslDistro{{"Ubuntu", "Running"}, {"foxbyte", "Stopped"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("decodeWSLList = %+v, want %+v", got, want)
 	}
@@ -65,7 +66,7 @@ func TestDecodeWSLList(t *testing.T) {
 // TC1.6 — Windows path → WSL /mnt path.
 func TestWinPathToMnt(t *testing.T) {
 	cases := map[string]string{
-		`C:\Users\x\odb-linux-amd64`: "/mnt/c/Users/x/odb-linux-amd64",
+		`C:\Users\x\fox-linux-amd64`: "/mnt/c/Users/x/fox-linux-amd64",
 		`D:\a b\file`:                "/mnt/d/a b/file",
 		`/already/posix`:             "/already/posix",
 	}

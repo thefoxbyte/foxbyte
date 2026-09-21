@@ -10,13 +10,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/OxynDB/oxyndb/internal/auth"
-	"github.com/OxynDB/oxyndb/internal/branch"
-	"github.com/OxynDB/oxyndb/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // registerPolicy mounts the Blackbox policy gate endpoints (behind auth). Reading
-// and previewing are open to any signed-in user; changing rules needs odb_admin
+// and previewing are open to any signed-in user; changing rules needs db_admin
 // on the branch.
 //
 //	GET    /api/branches/{name}/policies               rules
@@ -44,7 +44,7 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 			return "", false
 		}
 		if !ok {
-			writeErr(w, 403, fmt.Errorf("%s needs odb_admin on %q — ask an admin to grant it on the Policies page, or run: odb admin grant %s --branch %s", what, name, u.Email, name))
+			writeErr(w, 403, fmt.Errorf("%s needs db_admin on %q — ask an admin to grant it on the Policies page, or run: fox admin grant %s --branch %s", what, name, u.Email, name))
 			return "", false
 		}
 		return u.Email, true
@@ -173,9 +173,9 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 		writeJSON(w, 200, evs)
 	})
 
-	// Who may override a blocking rule: members of odb_admin (and superusers).
+	// Who may override a blocking rule: members of db_admin (and superusers).
 	// Anyone signed in may look, so the console can tell a user whether an
-	// override will work before they try; granting and revoking need odb_admin
+	// override will work before they try; granting and revoking need db_admin
 	// on the branch, like changing rules — otherwise anyone could grant
 	// themselves.
 	mux.HandleFunc("GET /api/branches/{name}/admins", func(w http.ResponseWriter, r *http.Request) {
@@ -257,7 +257,7 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 		// Removing the last admin would leave nobody who can grant it back from
 		// the web console.
 		if len(names) == 1 {
-			writeErr(w, 409, fmt.Errorf("%s is the only admin on %q — grant someone else first (or run: odb admin revoke %s --branch %s)", email, name, email, name))
+			writeErr(w, 409, fmt.Errorf("%s is the only admin on %q — grant someone else first (or run: fox admin revoke %s --branch %s)", email, name, email, name))
 			return
 		}
 		if err := branch.RevokeAdmin(name, email); err != nil {

@@ -9,10 +9,12 @@ set -uo pipefail
 # Refuses to run anywhere but the throwaway test VM (see scripts/lib/test_guard.sh).
 # A guard that can't be found must stop the suite, not let it carry on.
 . "$(cd "$(dirname "$0")" && pwd)/lib/test_guard.sh" || exit 2
+# Names in one place (generated from brand.json by `make brand`).
+. "$(cd "$(dirname "$0")" && pwd)/lib/brand.sh"
 
-S="${OXYNDB_BIN:-/tmp/odb}"
+S="${FOX_BIN:-/tmp/fox}"
 # The Gateway authenticates with an API key, passed via PGPASSWORD where used.
-GATEWAY="postgresql://oxyndb@127.0.0.1:6432"
+GATEWAY="postgresql://dbadmin@127.0.0.1:6432"
 PASS=0
 FAIL=0
 
@@ -20,32 +22,59 @@ ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 # pg <container> <sql>  -> tuples-only result
-pg() { local c="$1"; shift; sudo docker exec -e PGPASSWORD=oxyndb "$c" psql -U oxyndb -d oxyndb -tAc "$*" 2>/dev/null; }
+pg() { local c="$1"; shift; sudo docker exec -e PGPASSWORD=foxbyte "$c" psql -U dbadmin -d appdb -tAc "$*" 2>/dev/null; }
 jget() { python3 -c 'import sys,json; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
+
+echo "### 0. a foreign container named \"minio\" does not break the stack"
+# The object store used to be called plainly "minio". A container of that name
+# is common on a developer's machine, and the two collided: `setup` found the
+# foreign one, skipped creating its own, and then waited for ever for it on a
+# network it was never attached to -- printing one DNS error per second.
+$S stop >/dev/null 2>&1; sleep 1
+sudo docker rm -f minio >/dev/null 2>&1
+sudo docker run -d --name minio --network bridge alpine:3 sleep 600 >/dev/null 2>&1
+START_OUT="$(timeout 600 $S start 2>&1)"; START_RC=$?
+[ "$START_RC" = 0 ] || { echo "--- start output ---"; echo "$START_OUT" | tail -20; echo "--- end ---"; }
+assert_eq "start succeeds with a foreign \"minio\" present" "$START_RC" "0"
+# The stack has just come up for the first time in this VM; give the servers a
+# moment before anything connects to them.
+sleep 5
+assert_eq "…and the object store is ours, on our network" \
+  "$(sudo docker inspect -f '{{.State.Running}}' "$DB_OBJECT_STORE" 2>/dev/null)|$(sudo docker inspect -f '{{json .NetworkSettings.Networks}}' "$DB_OBJECT_STORE" 2>/dev/null | grep -c "$DB_NETWORK")" "true|1"
+assert_eq "…and the foreign container is untouched" "$(sudo docker inspect -f '{{.State.Running}}' minio 2>/dev/null)" "true"
+sudo docker rm -f minio >/dev/null 2>&1
 
 echo "### 1. fresh start + auth"
 $S stop >/dev/null 2>&1; sleep 1
-$S start >/dev/null 2>&1; sleep 5
-printf 'password123\n' | $S user create test@oxyndb.dev >/dev/null 2>&1 || true
-KEY="$($S apikey create test@oxyndb.dev ci 2>/dev/null | grep -o 'odb_[A-Za-z0-9_-]*')"
+# E3: start creates no account and mints no key. A credential is made by the
+# person who will use it, not by a background service and left in a file.
+rm -rf "$HOME/$BRAND_STATE_DIR/config"
+BANNER="$($S start 2>&1)"; sleep 5
+assert_eq "start prints no API key" "$(echo "$BANNER" | grep -c "$DB_KEY_PREFIX[A-Za-z0-9]")" "0"
+assert_eq "…and caches none on disk" "$([ -f "$HOME/$BRAND_STATE_DIR/config" ] && echo present || echo none)" "none"
+assert_eq "…and says how to make one" "$(echo "$BANNER" | grep -c 'apikey create')" "1"
+printf 'password123\n' | $S user create test@foxbyte.dev >/dev/null 2>&1 || true
+assert_eq "the first account may override the guardrail" \
+  "$(pg pg-main "SELECT pg_has_role('test@foxbyte.dev','$DB_ADMIN_ROLE','member')")" "t"
+KEY="$($S apikey create test@foxbyte.dev ci 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 AUTH="Authorization: Bearer $KEY"
 assert_eq "unauthenticated API is rejected" "$(curl -sk -o /dev/null -w '%{http_code}' https://localhost:8080/api/status)" "401"
 assert_eq "control plane reports main ready" "$(curl -sk -H "$AUTH" https://localhost:8080/api/status | jget mainReady)" "True"
 assert_eq "gateway rejects a bad key" "$(PGPASSWORD=nope psql "$GATEWAY/main" -tAc 'select 1' 2>&1 | grep -c 'invalid API key' | awk '{print ($1 >= 1)}')" "1"
 assert_eq "gateway accepts the API key" "$(PGPASSWORD="$KEY" psql "$GATEWAY/main" -tAc 'select 1' 2>/dev/null)" "1"
 
-# B1: `odb vm` is implemented; on Linux there is no VM to show or enter.
-assert_eq "odb vm on Linux says there is no VM" "$($S vm 2>&1 | grep -c 'there is no VM')|$($S vm >/dev/null 2>&1; echo $?)" "1|0"
-assert_eq "odb vm shell on Linux fails with a reason" "$($S vm shell 2>&1 | grep -c 'no VM to open a shell in')|$($S vm shell >/dev/null 2>&1; echo $?)" "1|1"
-assert_eq "odb vm rejects an unknown subcommand" "$($S vm reboot >/dev/null 2>&1; echo $?)" "1"
+# B1: `fox vm` is implemented; on Linux there is no VM to show or enter.
+assert_eq "fox vm on Linux says there is no VM" "$($S vm 2>&1 | grep -c 'there is no VM')|$($S vm >/dev/null 2>&1; echo $?)" "1|0"
+assert_eq "fox vm shell on Linux fails with a reason" "$($S vm shell 2>&1 | grep -c 'no VM to open a shell in')|$($S vm shell >/dev/null 2>&1; echo $?)" "1|1"
+assert_eq "fox vm rejects an unknown subcommand" "$($S vm reboot >/dev/null 2>&1; echo $?)" "1"
 
 # G5: the console, API and OAuth callbacks are served over https on :8080, so the
 # defaults point there (they pointed at http:// and a retired dev server on :5173).
-COOKIE="$(curl -sk -i -X POST -H 'Content-Type: application/json' -d '{"email":"test@oxyndb.dev","password":"password123"}' https://localhost:8080/auth/login | grep -i '^set-cookie:')"
+COOKIE="$(curl -sk -i -X POST -H 'Content-Type: application/json' -d '{"email":"test@foxbyte.dev","password":"password123"}' https://localhost:8080/auth/login | grep -i '^set-cookie:')"
 assert_eq "login sets a Secure, SameSite=Lax session cookie" \
   "$(echo "$COOKIE" | grep -ci 'secure')|$(echo "$COOKIE" | grep -ci 'samesite=lax')" "1|1"
 $S stop >/dev/null 2>&1; sleep 1
-OXYNDB_GITHUB_CLIENT_ID=it-client OXYNDB_GITHUB_CLIENT_SECRET=it-secret $S start >/dev/null 2>&1; sleep 5
+FOX_GITHUB_CLIENT_ID=it-client FOX_GITHUB_CLIENT_SECRET=it-secret $S start >/dev/null 2>&1; sleep 5
 assert_eq "OAuth calls back to https://localhost:8080 by default" \
   "$(curl -sk -o /dev/null -w '%{redirect_url}' https://localhost:8080/auth/oauth/github | grep -c 'redirect_uri=https%3A%2F%2Flocalhost%3A8080%2Fauth%2Foauth%2Fgithub%2Fcallback')" "1"
 $S stop >/dev/null 2>&1; sleep 1
@@ -54,45 +83,45 @@ $S start >/dev/null 2>&1; sleep 5
 echo "### 2. branch isolation"
 $S branch delete itb >/dev/null 2>&1
 $S branch create itb >/dev/null 2>&1
-pg oxyn-itb "CREATE TABLE iso(x int); INSERT INTO iso VALUES (1);" >/dev/null
-assert_eq "branch sees its own write" "$(pg oxyn-itb 'SELECT count(*) FROM iso')" "1"
-assert_eq "main isolated from branch" "$(pg oxyn-main "SELECT to_regclass('public.iso') IS NULL")" "t"
+pg pg-itb "CREATE TABLE iso(x int); INSERT INTO iso VALUES (1);" >/dev/null
+assert_eq "branch sees its own write" "$(pg pg-itb 'SELECT count(*) FROM iso')" "1"
+assert_eq "main isolated from branch" "$(pg pg-main "SELECT to_regclass('public.iso') IS NULL")" "t"
 
 # B1: branch create --from copies another branch, not main.
 $S branch delete itfrom >/dev/null 2>&1
 $S branch create itfrom --from itb >/dev/null 2>&1
-assert_eq "branch create --from copies that branch's data" "$(pg oxyn-itfrom 'SELECT count(*) FROM iso')" "1"
-assert_eq "…and main still doesn't have it" "$(pg oxyn-main "SELECT to_regclass('public.iso') IS NULL")" "t"
+assert_eq "branch create --from copies that branch's data" "$(pg pg-itfrom 'SELECT count(*) FROM iso')" "1"
+assert_eq "…and main still doesn't have it" "$(pg pg-main "SELECT to_regclass('public.iso') IS NULL")" "t"
 assert_eq "branch create --from a missing branch says so" "$($S branch create itnope --from no-such-branch 2>&1 | grep -c 'no branch to create from')" "1"
 assert_eq "REST: from a missing branch is 404" \
   "$(curl -sk -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -X POST -d '{"name":"itnope","from":"no-such-branch"}' https://localhost:8080/api/branches)" "404"
 $S branch delete itfrom >/dev/null 2>&1
 assert_eq "REST: create from a branch (201, names the parent)" \
-  "$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST -d '{"name":"itfrom","from":"itb"}' https://localhost:8080/api/branches | jget from)|$(pg oxyn-itfrom 'SELECT count(*) FROM iso')" "itb|1"
+  "$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST -d '{"name":"itfrom","from":"itb"}' https://localhost:8080/api/branches | jget from)|$(pg pg-itfrom 'SELECT count(*) FROM iso')" "itb|1"
 $S branch delete itfrom >/dev/null 2>&1
 
 echo "### 3. time-travel / PITR"
 # The guardrail blocks DROP TABLE without the override, which silently kept the
 # previous run's rows (failback now keeps writes made during a failover).
-pg oxyn-main "SET odb.allow_destructive=on; DROP TABLE IF EXISTS pit; CREATE TABLE pit(id int); INSERT INTO pit SELECT generate_series(1,3);" >/dev/null
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS pit; CREATE TABLE pit(id int); INSERT INTO pit SELECT generate_series(1,3);" >/dev/null
 $S backup create >/dev/null 2>&1
-pg oxyn-main "SELECT pg_switch_wal();" >/dev/null; sleep 3
+pg pg-main "SELECT pg_switch_wal();" >/dev/null; sleep 3
 $S restore --to latest >/dev/null 2>&1; sleep 1
-assert_eq "PITR restores 3 rows" "$(pg oxyn-restore 'SELECT count(*) FROM pit')" "3"
-sudo docker rm -f oxyn-restore >/dev/null 2>&1
+assert_eq "PITR restores 3 rows" "$(pg pg-restore 'SELECT count(*) FROM pit')" "3"
+sudo docker rm -f pg-restore >/dev/null 2>&1
 
 echo "### 3b. PITR to a point before the newest base backup (D3)"
 # The restore used to fetch LATEST whatever the target was, so a point earlier
 # than the newest base backup could not be reached: recovery started after it.
-pg oxyn-main "SET odb.allow_destructive=on; DROP TABLE IF EXISTS tt; CREATE TABLE tt(id int);" >/dev/null
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS tt; CREATE TABLE tt(id int);" >/dev/null
 $S backup create >/dev/null 2>&1                       # base backup A, before everything below
-pg oxyn-main "INSERT INTO tt SELECT generate_series(1,3);" >/dev/null
-pg oxyn-main "SELECT pg_switch_wal();" >/dev/null; sleep 3
-T1="$(pg oxyn-main "SELECT to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS') || '+00'")"
+pg pg-main "INSERT INTO tt SELECT generate_series(1,3);" >/dev/null
+pg pg-main "SELECT pg_switch_wal();" >/dev/null; sleep 3
+T1="$(pg pg-main "SELECT to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS') || '+00'")"
 sleep 2
-pg oxyn-main "INSERT INTO tt SELECT generate_series(4,9);" >/dev/null
+pg pg-main "INSERT INTO tt SELECT generate_series(4,9);" >/dev/null
 $S backup create >/dev/null 2>&1                       # base backup B, finished AFTER T1
-pg oxyn-main "SELECT pg_switch_wal();" >/dev/null; sleep 4
+pg pg-main "SELECT pg_switch_wal();" >/dev/null; sleep 4
 # The new read-only listing: newest first, with the newest flagged.
 BK="$(curl -sk -H "$AUTH" https://localhost:8080/api/backups)"
 assert_eq "the API lists base backups, newest first, flagging the newest" \
@@ -101,26 +130,26 @@ NEWEST="$(echo "$BK" | python3 -c 'import sys,json; print(json.load(sys.stdin)[0
 OUT="$($S restore --to "$T1" 2>&1)"; sleep 1
 assert_eq "restore says which base backup it starts from" "$(echo "$OUT" | grep -c 'starting from base backup')" "1"
 assert_eq "…and it is not the newest one" "$(echo "$OUT" | grep -c "$NEWEST")" "0"
-assert_eq "PITR reaches a point before the newest backup (3 rows, not 9)" "$(pg oxyn-restore 'SELECT count(*) FROM tt')" "3"
-sudo docker rm -f oxyn-restore >/dev/null 2>&1
+assert_eq "PITR reaches a point before the newest backup (3 rows, not 9)" "$(pg pg-restore 'SELECT count(*) FROM tt')" "3"
+sudo docker rm -f pg-restore >/dev/null 2>&1
 # A point no base backup precedes is refused, saying what the archive reaches.
 OLD="$($S restore --to '2020-01-01 00:00:00+00' 2>&1)"
 assert_eq "a point before every base backup is refused" "$(echo "$OLD" | grep -c 'no base backup had finished by')" "1"
 assert_eq "…the refusal names the oldest backup" "$(echo "$OLD" | grep -c 'the oldest is from')" "1"
-assert_eq "…and nothing was left behind" "$(sudo docker ps -aq --filter 'name=^oxyn-restore$' | wc -l | tr -d ' ')" "0"
+assert_eq "…and nothing was left behind" "$(sudo docker ps -aq --filter 'name=^pg-restore$' | wc -l | tr -d ' ')" "0"
 # latest still works exactly as before.
 $S restore --to latest >/dev/null 2>&1; sleep 1
-assert_eq "restore --to latest still reaches the end of the archive (9 rows)" "$(pg oxyn-restore 'SELECT count(*) FROM tt')" "9"
-sudo docker rm -f oxyn-restore >/dev/null 2>&1
+assert_eq "restore --to latest still reaches the end of the archive (9 rows)" "$(pg pg-restore 'SELECT count(*) FROM tt')" "9"
+sudo docker rm -f pg-restore >/dev/null 2>&1
 
 echo "### 4. suspend / resume"
 $S branch suspend itb >/dev/null 2>&1
-assert_eq "branch suspends" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-itb 2>/dev/null)" "exited"
+assert_eq "branch suspends" "$(sudo docker inspect -f '{{.State.Status}}' pg-itb 2>/dev/null)" "exited"
 $S branch resume itb >/dev/null 2>&1
-assert_eq "branch resumes" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-itb 2>/dev/null)" "running"
+assert_eq "branch resumes" "$(sudo docker inspect -f '{{.State.Status}}' pg-itb 2>/dev/null)" "running"
 $S branch suspend main >/dev/null 2>&1
 assert_eq "suspending main is refused" "$?" "1"
-assert_eq "main keeps running" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-main 2>/dev/null)" "running"
+assert_eq "main keeps running" "$(sudo docker inspect -f '{{.State.Status}}' pg-main 2>/dev/null)" "running"
 
 echo "### 5. agent branch API"
 RESP="$(curl -sk -H "$AUTH" -X POST https://localhost:8088/agents/itest/branch)"
@@ -135,9 +164,9 @@ assert_eq "the agent's key dies with its branch" \
 echo "### 5b. continuous import: status and cutover from the API (I8)"
 # A real PostgreSQL source with logical replication, on the stack's network,
 # running the same image main does.
-IMG="$(sudo docker inspect -f '{{.Config.Image}}' oxyn-main)"
+IMG="$(sudo docker inspect -f '{{.Config.Image}}' pg-main)"
 sudo docker rm -f itsrc >/dev/null 2>&1; $S branch delete itrep >/dev/null 2>&1
-sudo docker run -d --name itsrc --network oxyndb -e POSTGRES_PASSWORD=srcpw "$IMG" postgres -c wal_level=logical >/dev/null
+sudo docker run -d --name itsrc --network "$DB_NETWORK" -e POSTGRES_PASSWORD=srcpw "$IMG" postgres -c wal_level=logical >/dev/null
 for i in $(seq 1 60); do sudo docker exec itsrc pg_isready -U postgres -q && break; sleep 1; done
 sudo docker exec itsrc psql -U postgres -q -c "CREATE TABLE items(id int PRIMARY KEY, v text); INSERT INTO items VALUES (1,'a'),(2,'b'),(3,'c');" >/dev/null
 SSE="$(curl -sk -N --max-time 180 -H "$AUTH" -H 'Content-Type: application/json' -X POST \
@@ -148,10 +177,10 @@ repl() { curl -sk -H "$AUTH" https://localhost:8080/api/branches/itrep/replicati
 for i in $(seq 1 60); do [ "$(repl | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["tables"] > 0 and d["tables_ready"] == d["tables"])')" = True ] && break; sleep 1; done
 assert_eq "status: the initial copy finishes (1 of 1 tables)" \
   "$(repl | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["replicating"], d["tables_ready"], d["tables"])')" "True 1 1"
-assert_eq "the initial copy has the rows" "$(pg oxyn-itrep 'SELECT count(*) FROM items')" "3"
+assert_eq "the initial copy has the rows" "$(pg pg-itrep 'SELECT count(*) FROM items')" "3"
 sudo docker exec itsrc psql -U postgres -q -c "INSERT INTO items VALUES (4,'d')" >/dev/null
-for i in $(seq 1 30); do [ "$(pg oxyn-itrep 'SELECT count(*) FROM items')" = 4 ] && break; sleep 1; done
-assert_eq "a change on the source streams across" "$(pg oxyn-itrep 'SELECT count(*) FROM items')" "4"
+for i in $(seq 1 30); do [ "$(pg pg-itrep 'SELECT count(*) FROM items')" = 4 ] && break; sleep 1; done
+assert_eq "a change on the source streams across" "$(pg pg-itrep 'SELECT count(*) FROM items')" "4"
 # A replicating branch has no client connections of its own -- the apply worker
 # is a background worker -- so the reaper used to suspend it two minutes in and
 # the import silently stopped. A short-idle gateway, with a plain branch as the
@@ -161,8 +190,8 @@ nohup "$S" gateway --addr :6502 --idle 8s >/tmp/itrepgateway.log 2>&1 &
 RPI=$!
 sleep 28
 kill "$RPI" 2>/dev/null
-assert_eq "a replicating branch survives the reaper" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-itrep 2>/dev/null)" "running"
-assert_eq "…while an idle plain branch is still suspended" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-itidle 2>/dev/null)" "exited"
+assert_eq "a replicating branch survives the reaper" "$(sudo docker inspect -f '{{.State.Status}}' pg-itrep 2>/dev/null)" "running"
+assert_eq "…while an idle plain branch is still suspended" "$(sudo docker inspect -f '{{.State.Status}}' pg-itidle 2>/dev/null)" "exited"
 assert_eq "…and it is still streaming afterwards" "$(repl | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["replicating"], d["tables_ready"], d["tables"])')" "True 1 1"
 $S branch delete itidle >/dev/null 2>&1
 assert_eq "the list of continuous imports includes it" \
@@ -171,7 +200,7 @@ assert_eq "cutover makes the branch standalone" \
   "$(curl -sk -H "$AUTH" -X POST https://localhost:8080/api/branches/itrep/replication/cutover | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["status"], d["tables"])')" "standalone 1"
 assert_eq "…and it no longer replicates" "$(repl | python3 -c 'import sys,json; print(json.load(sys.stdin)["replicating"])')" "False"
 sudo docker exec itsrc psql -U postgres -q -c "INSERT INTO items VALUES (5,'e')" >/dev/null; sleep 5
-assert_eq "…so later source changes don't arrive, and the data stays" "$(pg oxyn-itrep 'SELECT count(*) FROM items')" "4"
+assert_eq "…so later source changes don't arrive, and the data stays" "$(pg pg-itrep 'SELECT count(*) FROM items')" "4"
 assert_eq "cutting over again is refused (409)" \
   "$(curl -sk -o /dev/null -w '%{http_code}' -H "$AUTH" -X POST https://localhost:8080/api/branches/itrep/replication/cutover)" "409"
 assert_eq "cutover of a branch that never replicated is refused (409)" \
@@ -180,7 +209,7 @@ $S branch delete itrep >/dev/null 2>&1; sudo docker rm -f itsrc >/dev/null 2>&1
 
 echo "### 6. HA: replication + failover + failback"
 $S ha enable >/dev/null 2>&1; sleep 2
-assert_eq "standby is streaming" "$(pg oxyn-main "SELECT count(*) FROM pg_stat_replication WHERE state='streaming'")" "1"
+assert_eq "standby is streaming" "$(pg pg-main "SELECT count(*) FROM pg_stat_replication WHERE state='streaming'")" "1"
 $S ha failover >/dev/null 2>&1; sleep 3
 W="$(PGPASSWORD="$KEY" psql "$GATEWAY/main" -tAqc "INSERT INTO pit VALUES (99) RETURNING 'okwrite'" 2>&1 | head -1)"
 assert_eq "write succeeds via gateway after failover" "$W" "okwrite"
@@ -191,43 +220,43 @@ for a in enable disable failover; do
 done
 $S branch suspend standby >/dev/null 2>&1
 assert_eq "suspending the promoted standby is refused" "$?" "1"
-assert_eq "promoted standby still running" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-standby 2>/dev/null)" "running"
-# `odb stop` removes containers; `odb up` must bring the promoted standby back, not the old main.
-sudo docker rm -f oxyn-standby >/dev/null 2>&1
+assert_eq "promoted standby still running" "$(sudo docker inspect -f '{{.State.Status}}' pg-standby 2>/dev/null)" "running"
+# `fox stop` removes containers; `fox up` must bring the promoted standby back, not the old main.
+sudo docker rm -f pg-standby >/dev/null 2>&1
 $S up >/dev/null 2>&1; sleep 2
-assert_eq "up recreates the promoted standby" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-standby 2>/dev/null)" "running"
-assert_eq "up leaves the old main stopped" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-main 2>/dev/null)" "exited"
-assert_eq "the post-failover write is on the standby" "$(pg oxyn-standby 'SELECT count(*) FROM pit WHERE id=99')" "1"
+assert_eq "up recreates the promoted standby" "$(sudo docker inspect -f '{{.State.Status}}' pg-standby 2>/dev/null)" "running"
+assert_eq "up leaves the old main stopped" "$(sudo docker inspect -f '{{.State.Status}}' pg-main 2>/dev/null)" "exited"
+assert_eq "the post-failover write is on the standby" "$(pg pg-standby 'SELECT count(*) FROM pit WHERE id=99')" "1"
 # D2/D4: the promoted standby archives WAL and is what a backup is taken from.
-# Before this, a promoted standby ran with no archiving and `odb backup create`
-# still targeted the stopped oxyn-main, so nothing written after a failover
+# Before this, a promoted standby ran with no archiving and `fox backup create`
+# still targeted the stopped pg-main, so nothing written after a failover
 # could be backed up or restored.
-assert_eq "the promoted standby archives WAL" "$(pg oxyn-standby "SELECT current_setting('archive_mode')")" "on"
-pg oxyn-standby "INSERT INTO pit VALUES (101)" >/dev/null
-pg oxyn-standby "SELECT pg_switch_wal()" >/dev/null; sleep 6
-assert_eq "…and its archiver is shipping segments" "$(pg oxyn-standby 'SELECT archived_count > 0 AND last_failed_wal IS NULL FROM pg_stat_archiver')" "t"
+assert_eq "the promoted standby archives WAL" "$(pg pg-standby "SELECT current_setting('archive_mode')")" "on"
+pg pg-standby "INSERT INTO pit VALUES (101)" >/dev/null
+pg pg-standby "SELECT pg_switch_wal()" >/dev/null; sleep 6
+assert_eq "…and its archiver is shipping segments" "$(pg pg-standby 'SELECT archived_count > 0 AND last_failed_wal IS NULL FROM pg_stat_archiver')" "t"
 BEFORE="$(curl -sk -H "$AUTH" https://localhost:8080/api/backups | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')"
 BOUT="$($S backup create 2>&1)"
 assert_eq "backup create says it is backing up the standby" "$(echo "$BOUT" | grep -c 'serving main since the failover')" "1"
 assert_eq "…and one more base backup is stored" \
   "$(curl -sk -H "$AUTH" https://localhost:8080/api/backups | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))')" "$((BEFORE + 1))"
 assert_eq "backup list works with main stopped" "$($S backup list 2>/dev/null | grep -c 'base_')" "$((BEFORE + 1))"
-assert_eq "status names the container serving main" "$($S status 2>/dev/null | grep -c 'served by oxyn-standby since the failover')" "1"
+assert_eq "status names the container serving main" "$($S status 2>/dev/null | grep -c 'served by pg-standby since the failover')" "1"
 # End to end: a point-in-time restore now reaches a write made after the failover.
-pg oxyn-standby "SELECT pg_switch_wal()" >/dev/null; sleep 5
+pg pg-standby "SELECT pg_switch_wal()" >/dev/null; sleep 5
 $S restore --to latest >/dev/null 2>&1; sleep 1
-assert_eq "PITR reaches a write made after the failover" "$(pg oxyn-restore 'SELECT count(*) FROM pit WHERE id=101')" "1"
-sudo docker rm -f oxyn-restore >/dev/null 2>&1
+assert_eq "PITR reaches a write made after the failover" "$(pg pg-restore 'SELECT count(*) FROM pit WHERE id=101')" "1"
+sudo docker rm -f pg-restore >/dev/null 2>&1
 $S ha failback >/tmp/failback.log 2>&1
 assert_eq "ha failback exits 0" "$?" "0"
-assert_eq "main is primary again (not in recovery)" "$(pg oxyn-main 'SELECT pg_is_in_recovery()')" "f"
-assert_eq "primary pointer is back on main" "$(cat "$HOME/.oxyndb/primary" 2>/dev/null)" "main"
-assert_eq "failback kept the post-failover write" "$(pg oxyn-main 'SELECT count(*) FROM pit WHERE id=99')" "1"
-assert_eq "old standby removed" "$(sudo docker ps -aq --filter 'name=^oxyn-standby$' | wc -l | tr -d ' ')" "0"
+assert_eq "main is primary again (not in recovery)" "$(pg pg-main 'SELECT pg_is_in_recovery()')" "f"
+assert_eq "primary pointer is back on main" "$(cat "$HOME/.fox/primary" 2>/dev/null)" "main"
+assert_eq "failback kept the post-failover write" "$(pg pg-main 'SELECT count(*) FROM pit WHERE id=99')" "1"
+assert_eq "old standby removed" "$(sudo docker ps -aq --filter 'name=^pg-standby$' | wc -l | tr -d ' ')" "0"
 W="$(PGPASSWORD="$KEY" psql "$GATEWAY/main" -tAqc "INSERT INTO pit VALUES (100) RETURNING 'okwrite'" 2>&1 | head -1)"
 assert_eq "gateway writes to main after failback" "$W" "okwrite"
-pg oxyn-main "SELECT pg_switch_wal()" >/dev/null; sleep 5
-assert_eq "main archives WAL again" "$(pg oxyn-main 'SELECT archived_count > 0 AND last_failed_wal IS NULL FROM pg_stat_archiver')" "t"
+pg pg-main "SELECT pg_switch_wal()" >/dev/null; sleep 5
+assert_eq "main archives WAL again" "$(pg pg-main 'SELECT archived_count > 0 AND last_failed_wal IS NULL FROM pg_stat_archiver')" "t"
 
 echo "### 7. regression: reaper never suspends the standby"
 $S ha enable >/dev/null 2>&1; sleep 2
@@ -235,34 +264,34 @@ $S branch create rgn >/dev/null 2>&1
 nohup "$S" gateway --addr :6501 --idle 8s >/tmp/rgngateway.log 2>&1 &
 RP=$!
 sleep 28
-assert_eq "standby survives the reaper" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-standby 2>/dev/null)" "running"
-assert_eq "ordinary branch is suspended" "$(sudo docker inspect -f '{{.State.Status}}' oxyn-rgn 2>/dev/null)" "exited"
+assert_eq "standby survives the reaper" "$(sudo docker inspect -f '{{.State.Status}}' pg-standby 2>/dev/null)" "running"
+assert_eq "ordinary branch is suspended" "$(sudo docker inspect -f '{{.State.Status}}' pg-rgn 2>/dev/null)" "exited"
 kill "$RP" 2>/dev/null
 $S branch delete rgn >/dev/null 2>&1
 $S ha disable >/dev/null 2>&1
 
 echo "### 8. Blackbox (schema ledger, RECORD layer)"
-pg oxyn-main "SET odb.allow_destructive=on; DROP TABLE IF EXISTS ledg CASCADE" >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ledg CASCADE" >/dev/null 2>&1
 # Clean slate: the ledger is append-only now, so clearing it for a deterministic
 # count requires deliberately disabling triggers (session_replication_role).
-pg oxyn-main "SET session_replication_role=replica; DELETE FROM odb.schema_ledger; SET session_replication_role=DEFAULT" >/dev/null 2>&1
+pg pg-main "SET session_replication_role=replica; DELETE FROM bb.schema_ledger; SET session_replication_role=DEFAULT" >/dev/null 2>&1
 PGPASSWORD="$KEY" psql "$GATEWAY/main" -qc "CREATE TABLE ledg(x int)" >/dev/null 2>&1
 assert_eq "ledger captures DDL, attributed to the human key" \
-  "$(pg oxyn-main "SELECT actor_kind FROM odb.schema_ledger WHERE command_tag='CREATE TABLE' AND object_identity='public.ledg'")" "human"
+  "$(pg pg-main "SELECT actor_kind FROM bb.schema_ledger WHERE command_tag='CREATE TABLE' AND object_identity='public.ledg'")" "human"
 BLK="$(PGPASSWORD="$KEY" psql "$GATEWAY/main" -qc "DROP TABLE ledg" 2>&1 | grep -c 'blocked by policy')"
 assert_eq "guardrail blocks a destructive DROP" "$BLK" "1"
 assert_eq "blocked attempt is recorded durably" \
-  "$(pg oxyn-main "SELECT count(*) FROM odb.schema_ledger WHERE status='BLOCKED' AND command_tag='DROP TABLE'")" "1"
+  "$(pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE status='BLOCKED' AND command_tag='DROP TABLE'")" "1"
 # Tamper-evidence: the ledger is append-only, and the hash chain verifies intact.
 assert_eq "ledger is append-only (a plain DELETE is blocked)" \
-  "$(sudo docker exec oxyn-main psql -U oxyndb -d oxyndb -tAc "DELETE FROM odb.schema_ledger WHERE id=(SELECT max(id) FROM odb.schema_ledger)" 2>&1 | grep -c 'append-only')" "1"
+  "$(sudo docker exec pg-main psql -U dbadmin -d appdb -tAc "DELETE FROM bb.schema_ledger WHERE id=(SELECT max(id) FROM bb.schema_ledger)" 2>&1 | grep -c 'append-only')" "1"
 assert_eq "hash chain verifies intact (0 broken rows)" \
-  "$(pg oxyn-main "SELECT count(*) FROM (SELECT (row_hash <> odb._ledger_hash(s.*) OR prev_hash IS DISTINCT FROM coalesce(lag(row_hash) OVER (ORDER BY id),'')) AS broken FROM odb.schema_ledger s WHERE row_hash IS NOT NULL) x WHERE broken")" "0"
-pg oxyn-main "SET odb.allow_destructive=on; DROP TABLE IF EXISTS ledg" >/dev/null 2>&1
+  "$(pg pg-main "SELECT count(*) FROM (SELECT (row_hash <> bb._ledger_hash(s.*) OR prev_hash IS DISTINCT FROM coalesce(lag(row_hash) OVER (ORDER BY id),'')) AS broken FROM bb.schema_ledger s WHERE row_hash IS NOT NULL) x WHERE broken")" "0"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ledg" >/dev/null 2>&1
 
 echo "### 9. ETL pipeline (extract -> transform -> test)"
 sudo docker rm -f mongo-src >/dev/null 2>&1
-sudo docker run -d --name mongo-src --network oxyndb mongo:7 >/dev/null 2>&1
+sudo docker run -d --name mongo-src --network "$DB_NETWORK" mongo:7 >/dev/null 2>&1
 for i in $(seq 1 40); do sudo docker exec mongo-src mongosh --quiet --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 && break; sleep 1; done
 sudo docker exec mongo-src mongosh --quiet shop --eval \
   'db.buildings.insertMany([{name:"Empire State",floors:102,addr:{city:"New York"}},{name:"Willis Tower",floors:108,addr:{city:"Chicago"}},{name:"Aon Center",floors:83,addr:{city:"Chicago"}}])' >/dev/null 2>&1
@@ -272,9 +301,9 @@ cat > /tmp/etl_ok.json << 'JSON'
 JSON
 $S pipeline run /tmp/etl_ok.json --as etltest >/dev/null 2>&1
 assert_eq "ETL passing pipeline exits 0" "$?" "0"
-assert_eq "ETL landed raw source in the raw schema" "$(pg oxyn-etltest "SELECT to_regclass('raw.buildings') IS NOT NULL")" "t"
-assert_eq "ETL model flattened jsonb into a column" "$(pg oxyn-etltest "SELECT city FROM public.stg_buildings WHERE name='Empire State'")" "New York"
-assert_eq "ETL aggregate model computed" "$(pg oxyn-etltest "SELECT n FROM public.city_counts WHERE city='Chicago'")" "2"
+assert_eq "ETL landed raw source in the raw schema" "$(pg pg-etltest "SELECT to_regclass('raw.buildings') IS NOT NULL")" "t"
+assert_eq "ETL model flattened jsonb into a column" "$(pg pg-etltest "SELECT city FROM public.stg_buildings WHERE name='Empire State'")" "New York"
+assert_eq "ETL aggregate model computed" "$(pg pg-etltest "SELECT n FROM public.city_counts WHERE city='Chicago'")" "2"
 
 $S branch delete etlfail >/dev/null 2>&1
 cat > /tmp/etl_fail.json << 'JSON'
@@ -282,7 +311,7 @@ cat > /tmp/etl_fail.json << 'JSON'
 JSON
 $S pipeline run /tmp/etl_fail.json --as etlfail >/dev/null 2>&1
 assert_eq "ETL failing test yields non-zero exit" "$?" "1"
-assert_eq "ETL failed run keeps its data" "$(pg oxyn-etlfail "SELECT count(*) FROM public.stg_b")" "3"
+assert_eq "ETL failed run keeps its data" "$(pg pg-etlfail "SELECT count(*) FROM public.stg_b")" "3"
 
 echo "### 10. schema fidelity (source field names preserved exactly)"
 sudo docker exec mongo-src mongosh --quiet shop --eval \
@@ -292,9 +321,9 @@ cat > /tmp/faith.json << 'JSON'
 {"source":"mongodb://mongo-src/shop","models":[{"name":"stg","sql":"SELECT \"userId\", \"createdAt\", \"gallery\" FROM {{ source('leaseAiChats') }}"}]}
 JSON
 $S pipeline run /tmp/faith.json --as faithtest >/dev/null 2>&1
-assert_eq "camelCase column preserved (userId, not userid)" "$(pg oxyn-faithtest "SELECT count(*) FROM information_schema.columns WHERE table_schema='raw' AND table_name='leaseAiChats' AND column_name='userId'")" "1"
-assert_eq "nested array kept as jsonb" "$(pg oxyn-faithtest "SELECT data_type FROM information_schema.columns WHERE table_schema='raw' AND table_name='leaseAiChats' AND column_name='gallery'")" "jsonb"
-assert_eq "transform resolves the case-sensitive source" "$(pg oxyn-faithtest "SELECT count(*) FROM public.stg")" "1"
+assert_eq "camelCase column preserved (userId, not userid)" "$(pg pg-faithtest "SELECT count(*) FROM information_schema.columns WHERE table_schema='raw' AND table_name='leaseAiChats' AND column_name='userId'")" "1"
+assert_eq "nested array kept as jsonb" "$(pg pg-faithtest "SELECT data_type FROM information_schema.columns WHERE table_schema='raw' AND table_name='leaseAiChats' AND column_name='gallery'")" "jsonb"
+assert_eq "transform resolves the case-sensitive source" "$(pg pg-faithtest "SELECT count(*) FROM public.stg")" "1"
 
 echo "### 11. imports fail on bad input instead of reporting success"
 printf 'CREATE TABLE good(x int);\nINSERT INTO good VALUES (1),(2);\nINSERT INTO missing_table VALUES (1);\n' > /tmp/imp_bad.sql
@@ -302,7 +331,7 @@ $S branch delete impbad >/dev/null 2>&1
 OUT="$($S import --from /tmp/imp_bad.sql --as impbad 2>&1)"
 assert_eq ".sql with a failing statement exits 1" "$?" "1"
 assert_eq "the failing statement is listed" "$(grep -c '1 statement(s) failed' <<<"$OUT")" "1"
-assert_eq "the rest of the dump still loaded" "$(pg oxyn-impbad 'SELECT count(*) FROM good')" "2"
+assert_eq "the rest of the dump still loaded" "$(pg pg-impbad 'SELECT count(*) FROM good')" "2"
 printf 'CREATE TABLE ok1(x int);\nINSERT INTO ok1 VALUES (1);\n' > /tmp/imp_ok.sql
 $S branch delete impok >/dev/null 2>&1
 $S import --from /tmp/imp_ok.sql --as impok >/dev/null 2>&1
@@ -316,6 +345,31 @@ printf '[{"a":1},{"a":2}]' > /tmp/imp_ok.json
 $S branch delete jsonok >/dev/null 2>&1
 $S import --from /tmp/imp_ok.json --as jsonok >/dev/null 2>&1
 assert_eq "a valid JSON array still imports (exit 0)" "$?" "0"
+
+echo "### 12. fox uninstall (B1)"
+# Removal used to be a list of commands to run by hand. This runs last: it takes
+# the stack apart, so nothing after it has a stack to use.
+$S uninstall --keep-data --yes >/tmp/uninstall-keep.log 2>&1
+assert_eq "uninstall --keep-data removes the containers" \
+  "$(sudo docker ps -aq --filter "label=$DB_MANAGED_LABEL" | wc -l | tr -d ' ')" "0"
+assert_eq "…and keeps the storage pool" "$(sudo zpool list -H -o name "$DB_POOL" 2>/dev/null)" "$DB_POOL"
+assert_eq "…and keeps archived WAL and base backups" \
+  "$(sudo docker volume ls --format '{{.Name}}' | grep -cx "$DB_OBJECT_STORE-data")" "1"
+assert_eq "…and keeps accounts and secrets" "$([ -f "$HOME/$BRAND_STATE_DIR/secrets.json" ] && echo kept)" "kept"
+
+$S uninstall --yes >/tmp/uninstall-all.log 2>&1
+assert_eq "uninstall removes the storage pool" \
+  "$(sudo zpool list -H -o name "$DB_POOL" 2>/dev/null | wc -l | tr -d ' ')" "0"
+assert_eq "…and the archived WAL and base backups" \
+  "$(sudo docker volume ls --format '{{.Name}}' | grep -cx "$DB_OBJECT_STORE-data")" "0"
+assert_eq "…and the accounts, keys and anchors" "$([ -d "$HOME/$BRAND_STATE_DIR" ] && echo present || echo gone)" "gone"
+assert_eq "…and says so" "$(grep -c "is removed" /tmp/uninstall-all.log)" "1"
+
+# Safe to run twice: everything checks before it removes.
+$S uninstall --yes >/tmp/uninstall-again.log 2>&1
+assert_eq "running it again is harmless" "$?" "0"
+assert_eq "…and finds no data left to remove" \
+  "$(grep -c 'removing the databases' /tmp/uninstall-again.log)" "0"
 
 echo "### cleanup"
 $S branch delete itb >/dev/null 2>&1

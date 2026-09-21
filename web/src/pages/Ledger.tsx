@@ -103,47 +103,60 @@ export default function Ledger() {
 
   return (
     <div className="fade-up">
-      <h1>Blackbox</h1>
-      <p className="lead" style={{ marginTop: -2 }}>
-        A record the database keeps about itself — every schema change, attributed and policy-checked.
-      </p>
-
-      <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
-        <span className="muted" style={{ fontSize: 13 }}>Branch</span>
-        <select value={branch} onChange={e => setBranch(e.target.value)}>
-          {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
-        </select>
-        <div className="seg">
-          {STATUS.map(s => (
-            <button key={s || 'all'} className={status === s ? 'active' : ''} onClick={() => setStatus(s)}>
-              {s || 'All'}
-            </button>
-          ))}
+      <div className="page-head">
+        <div>
+          <h1>Blackbox</h1>
+          <p className="sub">A record the database keeps about itself — every schema change, attributed and policy-checked.</p>
         </div>
-        <div className="seg">
-          {KIND.map(k => (
-            <button key={k || 'all'} className={kind === k ? 'active' : ''} onClick={() => setKind(k)}>
-              {k ? k[0].toUpperCase() + k.slice(1) : 'Any actor'}
-            </button>
-          ))}
+        <div className="tools">
+          <label className="field-inline">
+            <span>Branch</span>
+            <select value={branch} onChange={e => setBranch(e.target.value)}>
+              {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+            </select>
+          </label>
+          <button className="ghost" onClick={() => loadPage(true)} disabled={busy}>{busy ? '…' : 'Refresh'}</button>
+          <button className="ghost" onClick={runVerify} disabled={verifying} title="Recompute the hash chain">
+            {verifying ? 'Verifying…' : 'Verify'}
+          </button>
         </div>
-        <button className="ghost" onClick={() => loadPage(true)} disabled={busy}>{busy ? '…' : 'Refresh'}</button>
-        <button className="ghost" onClick={runVerify} disabled={verifying} title="Recompute the hash chain">
-          {verifying ? 'Verifying…' : 'Verify'}
-        </button>
       </div>
 
-      <div className="row" style={{ flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
-        <input placeholder="actor…" value={actor} onChange={e => setActor(e.target.value)} style={{ minWidth: 140 }} aria-label="Filter by actor" />
-        <input placeholder="table or object…" value={table} onChange={e => setTable(e.target.value)} style={{ minWidth: 160 }} aria-label="Filter by table" />
-        <select value={risk} onChange={e => setRisk(e.target.value)} aria-label="Filter by risk">
-          {RISK.map(r => <option key={r || 'any'} value={r}>{r || 'any risk'}</option>)}
-        </select>
-        <span className="muted" style={{ fontSize: 13 }}>from</span>
-        <input type="date" value={since} onChange={e => setSince(e.target.value)} aria-label="From date" />
-        <span className="muted" style={{ fontSize: 13 }}>to</span>
-        <input type="date" value={until} onChange={e => setUntil(e.target.value)} aria-label="To date" />
-        {filtered && <button className="ghost" onClick={clearFilters}>Clear filters</button>}
+      {/* One toolbar for every filter: the coarse ones (status, actor kind) as
+          segmented controls, the specific ones as fields beside them. */}
+      <div className="filterbar">
+        <div className="filterbar-row">
+          <div className="seg">
+            {STATUS.map(s => (
+              <button key={s || 'all'} className={status === s ? 'active' : ''} onClick={() => setStatus(s)}>
+                {s || 'All'}
+              </button>
+            ))}
+          </div>
+          <div className="seg">
+            {KIND.map(k => (
+              <button key={k || 'all'} className={kind === k ? 'active' : ''} onClick={() => setKind(k)}>
+                {k ? k[0].toUpperCase() + k.slice(1) : 'Any actor'}
+              </button>
+            ))}
+          </div>
+          {filtered && <button className="ghost clear" onClick={clearFilters}>Clear filters</button>}
+        </div>
+        <div className="filterbar-row">
+          <input placeholder="actor…" value={actor} onChange={e => setActor(e.target.value)} aria-label="Filter by actor" />
+          <input placeholder="table or object…" value={table} onChange={e => setTable(e.target.value)} aria-label="Filter by table" />
+          <select value={risk} onChange={e => setRisk(e.target.value)} aria-label="Filter by risk">
+            {RISK.map(r => <option key={r || 'any'} value={r}>{r || 'any risk'}</option>)}
+          </select>
+          <label className="field-inline">
+            <span>From</span>
+            <input type="date" value={since} onChange={e => setSince(e.target.value)} aria-label="From date" />
+          </label>
+          <label className="field-inline">
+            <span>To</span>
+            <input type="date" value={until} onChange={e => setUntil(e.target.value)} aria-label="To date" />
+          </label>
+        </div>
       </div>
 
       {verify && (verify.broken === 0 ? (
@@ -161,7 +174,7 @@ export default function Ledger() {
       {verifyErr && <div className="err">Couldn’t verify: {verifyErr}</div>}
       {err && <div className="err">{err.includes('schema_ledger') ? 'Blackbox is not installed on this branch yet.' : err}</div>}
 
-      <div className="table-wrap" style={{ marginTop: 14 }}>
+      <div className="table-wrap">
         <table>
           <thead>
             <tr>
@@ -196,7 +209,7 @@ export default function Ledger() {
                   <tr className="lg-detail">
                     <td colSpan={5}>
                       <div className="lg-meta">
-                        <span title="Declared by the client (odb.session), not verified">
+                        <span title="Declared by the client (bb.session), not verified">
                           <span className="muted">session</span> <code>{r.session || '—'}</code>
                           <span className="lg-declared">declared</span>
                         </span>

@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// ETL pipelines (ELT). Because OxynDB *is* Postgres, a pipeline extracts a
+// ETL pipelines (ELT). Because FoxByte *is* Postgres, a pipeline extracts a
 // source, lands it raw, then transforms it with SQL models run on the branch's
 // own Postgres, and validates the result with data-quality tests:
 //

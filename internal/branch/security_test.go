@@ -14,21 +14,21 @@ func TestTruthyEnv(t *testing.T) {
 		{"", false}, {"0", false}, {"false", false}, {"no", false},
 		{"1", true}, {"true", true}, {"TRUE", true}, {" yes ", true}, {"on", true},
 	} {
-		t.Setenv("OXYNDB_TEST_TRUTHY", tc.val)
-		if got := truthyEnv("OXYNDB_TEST_TRUTHY"); got != tc.want {
+		t.Setenv("FOX_TEST_TRUTHY", tc.val)
+		if got := truthyEnv("FOX_TEST_TRUTHY"); got != tc.want {
 			t.Errorf("truthyEnv(%q) = %v, want %v", tc.val, got, tc.want)
 		}
 	}
 }
 
 func TestSuperuserSwitchesDefaultOff(t *testing.T) {
-	t.Setenv("OXYNDB_AGENT_SUPERUSER", "")
-	t.Setenv("OXYNDB_MCP_SUPERUSER", "")
+	t.Setenv("FOX_AGENT_SUPERUSER", "")
+	t.Setenv("FOX_MCP_SUPERUSER", "")
 	if AgentSuperuser() || MCPSuperuser() {
 		t.Error("superuser compatibility switches must be off by default")
 	}
-	t.Setenv("OXYNDB_AGENT_SUPERUSER", "1")
-	t.Setenv("OXYNDB_MCP_SUPERUSER", "1")
+	t.Setenv("FOX_AGENT_SUPERUSER", "1")
+	t.Setenv("FOX_MCP_SUPERUSER", "1")
 	if !AgentSuperuser() || !MCPSuperuser() {
 		t.Error("superuser compatibility switches should turn on with =1")
 	}

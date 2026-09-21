@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FOX_Storage Engine — FoxByte</title>
+<style>
+  @page { size: A4 portrait; margin: 11mm 13mm; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #0f172a; line-height: 1.38; font-size: 11px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 10.2px; background: #f1f5f9; padding: 0 3px; border-radius: 3px; }
+  .kicker { letter-spacing: .18em; text-transform: uppercase; font-size: 10.5px; font-weight: 700; color: #7c3aed; }
+  h1 { font-size: 27px; margin: 4px 0 2px; letter-spacing: -.02em; }
+  .grad { background: linear-gradient(90deg,#7c3aed,#06b6d4); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .rule { height: 4px; width: 80px; background: linear-gradient(90deg,#7c3aed,#06b6d4); border-radius: 3px; margin: 7px 0; }
+  .meta { font-size: 11px; color: #64748b; margin-bottom: 10px; }
+  h2 { font-size: 14px; margin: 10px 0 5px; padding-bottom: 4px; border-bottom: 3px solid; border-image: linear-gradient(90deg,#7c3aed,#06b6d4) 1; }
+  p { margin: 4px 0; }
+  .answer { display: flex; gap: 12px; align-items: center; background: #f5f3ff; border: 1px solid #ddd6fe; border-left: 5px solid #7c3aed; border-radius: 10px; padding: 10px 14px; margin: 6px 0 4px; }
+  .answer .big { font-size: 22px; font-weight: 800; color: #7c3aed; white-space: nowrap; }
+  .answer p { font-size: 12px; margin: 0; }
+  .stack { margin: 6px 0; }
+  .layer { border: 1px solid #e2e8f0; border-radius: 9px; padding: 5px 10px; margin-bottom: 4px; display: grid; grid-template-columns: 150px 1fr 88px; gap: 10px; align-items: center; }
+  .layer .t { font-weight: 700; font-size: 11.5px; }
+  .layer .t small { display: block; font-weight: 500; color: #64748b; font-size: 9.8px; }
+  .layer .d { font-size: 10.6px; color: #334155; }
+  .layer.pg { background: #ecfeff; border-color: #a5f3fc; }
+  .layer.ours { background: #f5f3ff; border-color: #ddd6fe; }
+  .layer.no { background: #f8fafc; border-style: dashed; color: #64748b; }
+  .arrow { text-align: center; color: #94a3b8; font-size: 11px; margin: -2px 0 3px; }
+  .st { display: inline-block; font-size: 9.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; white-space: nowrap; text-align: center; }
+  .st.ok { background: #dcfce7; color: #166534; }
+  .st.part { background: #fef3c7; color: #92400e; }
+  .st.no { background: #e2e8f0; color: #475569; }
+  table { width: 100%; border-collapse: collapse; font-size: 10.6px; margin: 4px 0 6px; }
+  th { text-align: left; background: #f5f3ff; color: #334155; font-weight: 700; padding: 4px 7px; border-bottom: 1px solid #ddd6fe; }
+  td { padding: 4px 7px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .box { border: 1px solid #e2e8f0; border-radius: 9px; padding: 8px 11px; }
+  .box h3 { margin: 0 0 4px; font-size: 12px; }
+  .box ul { margin: 0; padding-left: 16px; font-size: 10.6px; }
+  .foot { margin-top: 10px; font-size: 9.5px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 5px; }
+</style>
+</head>
+<body>
+  <div class="kicker">FoxByte · architecture question</div>
+  <h1>Do we have a <span class="grad">storage engine</span>?</h1>
+  <div class="rule"></div>
+  <div class="meta">15 September 2026 · checked against <code>main</code> @ <code>2bc87ff</code> · companion to FOX_Checklist.pdf and FOX_Feature_Implemented.pdf</div>
+
+  <div class="answer">
+    <div class="big">No — by design</div>
+    <p>FoxByte has no storage engine of its own. Rows, indexes and the write-ahead log are stored by <b>PostgreSQL 16's own engine</b> on local disk. What FoxByte built is a <b>storage layer around Postgres</b>: instant copy-on-write branches, space management, and durability to object storage.</p>
+  </div>
+
+  <h2>How data is stored today</h2>
+  <div class="stack">
+    <div class="layer pg"><div class="t">PostgreSQL 16 engine<small>stock, unmodified</small></div>
+      <div class="d">Heap tables, B-tree and other indexes, MVCC, write-ahead log, crash recovery. Runs in the <code>postgres:16-bookworm</code> image (plus wal-g) as one container per branch: <code>pg-main</code>, <code>pg-&lt;branch&gt;</code>.</div>
+      <span class="st ok">Used as is</span></div>
+    <div class="arrow">▼ each branch's data directory lives on ▼</div>
+    <div class="layer ours"><div class="t">Copy-on-write branch storage<small>C1 · internal/branch/storage.go</small></div>
+      <div class="d">One <code>storage</code> interface with two drivers. <b>ZFS</b> (macOS VM, Linux): pool on <code>/var/lib/dbpool-zpool.img</code>, a branch is a snapshot + clone of <code>dbpool/branches/main</code>. <b>btrfs</b> (Windows WSL): a branch is a subvolume snapshot. A branch of any size is created in seconds and only stores what changes.</div>
+      <span class="st ok">Built, tested</span></div>
+    <div class="layer ours"><div class="t">Space management<small>C6, C7</small></div>
+      <div class="d">Reservation for main and optional per-branch caps (ZFS only); used / available shown by <code>fox status</code> and the dashboard.</div>
+      <span class="st part">Partial</span></div>
+    <div class="arrow">▼ main's changes are also copied, off the commit path, to ▼</div>
+    <div class="layer ours"><div class="t">Durability to object storage<small>D1–D3 · wal-g + MinIO</small></div>
+      <div class="d">Continuous WAL archiving and base backups to a local S3-compatible store (MinIO), enabling point-in-time restore and "branch from just before a schema change" (H13). The commit never waits for this.</div>
+      <span class="st ok">Built, tested</span></div>
+    <div class="layer no"><div class="t">Own storage engine / networked storage<small>not built</small></div>
+      <div class="d">A custom engine or Neon-style storage service (page servers, WAL service) that Postgres reads from over the network. Listed in the README as "networked storage disaggregation" on the roadmap; nothing started.</div>
+      <span class="st no">Not started</span></div>
+  </div>
+
+  <h2>Why no custom engine</h2>
+  <div class="two">
+    <div class="box"><h3>The decision</h3>
+      <ul>
+        <li>Transaction speed must never be compromised — it was the project's first locked requirement.</li>
+        <li>Engines that separate compute from storage put a network hop under every page read and every commit.</li>
+        <li>Stock Postgres on local disk keeps native latency; branching, backups and time travel are handled <i>beside</i> the commit path (copy-on-write file system, asynchronous WAL archiving).</li>
+      </ul></div>
+    <div class="box"><h3>What it means in practice</h3>
+      <ul>
+        <li>Full PostgreSQL compatibility: drivers, ORMs and tools work unchanged, and extensions can be added to the image (pgvector isn't included yet).</li>
+        <li>Nothing to maintain below Postgres — upgrades follow upstream.</li>
+        <li>Limit: compute and storage run on one host. Scaling storage beyond a machine, or moving a branch between hosts, would need the networked storage that isn't built.</li>
+      </ul></div>
+  </div>
+
+  <h2>Where to find it</h2>
+  <table>
+    <tr><th style="width:28%">Piece</th><th>Code</th><th style="width:22%">Checklist / feature doc</th></tr>
+    <tr><td>Storage drivers (ZFS, btrfs)</td><td><code>internal/branch/storage.go</code>; driver chosen by <code>FOX_STORAGE</code></td><td>C1</td></tr>
+    <tr><td>Pool / filesystem provisioning</td><td><code>internal/branch/provision.go</code></td><td>C8</td></tr>
+    <tr><td>Branch lifecycle on top of it</td><td><code>internal/branch/branch.go</code></td><td>C2, C5</td></tr>
+    <tr><td>WAL archiving, backups, restore</td><td><code>docker/postgres/Dockerfile</code> (wal-g), <code>internal/branch/branch.go</code> (<code>Backup</code>, <code>Restore</code>)</td><td>D1–D3, M6</td></tr>
+  </table>
+  <div class="foot">FOX_Storage Engine · if the storage design changes, update this page, C1/D1 in both documents, and re-render with Chrome (see make feature-doc)</div>
+</body>
+</html>

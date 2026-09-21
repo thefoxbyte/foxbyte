@@ -7,7 +7,7 @@
 # empty data directory, replays archived WAL, stops just BEFORE the target
 # transaction (or time) commits, and promotes to a normal read/write server.
 #
-# The existing restore-entrypoint.sh (odb restore) is separate and unchanged.
+# The existing restore-entrypoint.sh (fox restore) is separate and unchanged.
 set -euo pipefail
 
 : "${PGDATA:=/var/lib/postgresql/data/pgdata}"

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package update finds newer OxynDB releases on GitHub, verifies downloads
-// against the release's SHA256SUMS, and installs them: the notice `odb start`
-// prints and the `odb update` command. Everything here is platform-independent;
+// Package update finds newer FoxByte releases on GitHub, verifies downloads
+// against the release's SHA256SUMS, and installs them: the notice `fox start`
+// prints and the `fox update` command. Everything here is platform-independent;
 // running commands inside the Lima VM or WSL distro lives in internal/host.
 package update
 

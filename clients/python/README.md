@@ -1,6 +1,6 @@
-# OxynDB — Python client
+# FoxByte — Python client
 
-A thin, dependency-free client for the OxynDB control-plane REST API. Apache-2.0.
+A thin, dependency-free client for the FoxByte control-plane REST API. Apache-2.0.
 
 ## Install
 
@@ -11,14 +11,14 @@ pip install ./clients/python        # from a checkout (until published to PyPI)
 ## Get a branch in three lines
 
 ```python
-from oxyndb import OxynDB
+from foxbyte import FoxByte
 
-db = OxynDB(api_key="odb_…", verify_tls=False)   # verify_tls=False for the local self-signed cert
+db = FoxByte(api_key="key_…", verify_tls=False)   # verify_tls=False for the local self-signed cert
 db.create_branch("qa")
 print(db.query("qa", "select 1"))
 ```
 
-Mint an API key with `odb apikey create <email>` (or the web *API keys* page); `odb setup`
+Mint an API key with `fox apikey create <email>` (or the web *API keys* page); `fox setup`
 also prints one you can use.
 
 ## Reference

@@ -10,10 +10,10 @@ import (
 	"os/exec"
 	"runtime"
 
-	"github.com/OxynDB/oxyndb/internal/update"
+	"github.com/thefoxbyte/foxbyte/internal/update"
 )
 
-// localEngine updates a Linux install, where `odb` is the engine itself.
+// localEngine updates a Linux install, where `fox` is the engine itself.
 type localEngine struct{}
 
 func newEngineHost() engineHost { return localEngine{} }

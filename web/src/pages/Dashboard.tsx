@@ -50,7 +50,7 @@ function when(ts?: string): string {
 
 // Base backups: a restore can only reach a point that a base backup precedes,
 // so the oldest one here is the earliest point in time this install can go
-// back to. Read-only on purpose -- a restore runs `odb restore --to`, which
+// back to. Read-only on purpose -- a restore runs `fox restore --to`, which
 // needs a host port and leaves a disposable container to query.
 function Backups() {
   const [backups, setBackups] = useState<Backup[] | null>(null)
@@ -81,7 +81,7 @@ function Backups() {
       {err && <div className="err">{err}</div>}
       {backups === null && !err && <p className="muted">Reading object storage…</p>}
       {backups && backups.length === 0 && (
-        <p className="muted">No base backups yet — take one with <code>odb backup create</code>.</p>
+        <p className="muted">No base backups yet — take one with <code>fox backup create</code>.</p>
       )}
       {backups && backups.length > 0 && (
         <div className="table-wrap">
@@ -89,11 +89,11 @@ function Backups() {
             <thead><tr><th>Finished</th><th>Size</th><th>Restore to any point after it</th></tr></thead>
             <tbody>
               {shown.map(b => {
-                const cmd = `odb restore --to '${(b.finished_at || '').replace('T', ' ').replace('Z', '+00')}'`
+                const cmd = `fox restore --to '${(b.finished_at || '').replace('T', ' ').replace('Z', '+00')}'`
                 return (
                   <tr key={b.name}>
                     <td>{when(b.finished_at)} {b.newest && <span className="badge primary">newest</span>}</td>
-                    <td className="mono muted" style={{ fontSize: 12 }}>{sizeLabel(b.size_bytes)}</td>
+                    <td className="cell-mono">{sizeLabel(b.size_bytes)}</td>
                     <td className="dsn-cell">
                       <div className="dsn-row">
                         <span className="dsn" title="Copy restore command">{cmd}</span>
@@ -157,7 +157,7 @@ export default function Dashboard() {
         <h1>Dashboard</h1>
         <div className="offline">
           Can’t reach the API at <code>{API}</code>. Start it with{' '}
-          <code>odb start</code>, or set <code>VITE_API_URL</code>.
+          <code>fox start</code>, or set <code>VITE_API_URL</code>.
         </div>
       </>
     )
@@ -208,7 +208,7 @@ export default function Dashboard() {
       <div className="table-wrap">
         <table>
           <thead>
-            <tr><th>Branch</th><th>Type</th><th>State</th><th>Size (CoW)</th><th>Conns</th><th>Connection string</th><th /></tr>
+            <tr><th>Branch</th><th>Type</th><th>State</th><th>Size (CoW)</th><th className="num">Conns</th><th>Connection string</th><th /></tr>
           </thead>
           <tbody>
             {branches
@@ -216,21 +216,21 @@ export default function Dashboard() {
               .sort((a, b) => (a.primary ? -1 : b.primary ? 1 : a.name.localeCompare(b.name)))
               .map(b => {
                 const running = b.state === 'running'
-                const dsn = `postgres://oxyndb:<API_KEY>@localhost:6432/${b.name}`
+                const dsn = `postgres://dbadmin:<API_KEY>@localhost:6432/${b.name}`
                 const type = b.primary ? 'primary' : b.agent ? 'agent' : 'branch'
                 const pct = Math.max(6, Math.round((toBytes(b.used) / maxUsed) * 100))
                 return (
                   <tr key={b.name}>
-                    <td><b>{b.name}</b></td>
+                    <td className="name-cell"><b>{b.name}</b></td>
                     <td><span className={'badge ' + type}>{type}</span></td>
                     <td><span className={'state ' + (running ? 'running' : 'suspended')}><Dot up={running} /> {running ? 'running' : 'suspended'}</span></td>
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                      <div className="meter-row">
                         <div className="cow"><span style={{ width: pct + '%' }} /></div>
-                        <span className="mono muted" style={{ fontSize: 12 }}>{b.used || '—'}</span>
+                        <span className="cell-mono">{b.used || '—'}</span>
                       </div>
                     </td>
-                    <td>{running ? b.connections : '—'}</td>
+                    <td className="num">{running ? b.connections : '—'}</td>
                     <td className="dsn-cell">
                       <div className="dsn-row">
                         <span className="dsn" title="Copy connection string" onClick={() => navigator.clipboard?.writeText(dsn)}>{dsn}</span>

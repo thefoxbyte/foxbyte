@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { login, register, providers, oauthUrl, type Providers } from '../api'
 import { useAuth } from '../auth-context'
+import { Mark, Wordmark } from '../components/brand'
 
 export default function Login() {
   const { user, setUser } = useAuth()
@@ -34,6 +35,7 @@ export default function Login() {
 
   return (
     <div className="authcard fade-up">
+      <div className="auth-brand"><Mark size={30} /><b><Wordmark /></b></div>
       {signupOpen ? (
         <div className="authtabs" role="tablist">
           <button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setErr('') }}>Log in</button>
@@ -44,8 +46,8 @@ export default function Login() {
       )}
       <p className="muted">
         {mode === 'register'
-          ? 'Create a OxynDB account to get a dashboard, SQL console, and API keys.'
-          : 'Access your OxynDB dashboard, SQL console, and API keys.'}
+          ? 'Create a FoxByte account to get a dashboard, SQL console, and API keys.'
+          : 'Access your FoxByte dashboard, SQL console, and API keys.'}
       </p>
 
       {prov && (prov.github || prov.google) && (
@@ -66,7 +68,7 @@ export default function Login() {
       {!signupOpen && (
         <p className="hint">
           Signups are closed on this instance. An admin can create your account with{' '}
-          <code>odb user create you@example.com</code>.
+          <code>fox user create you@example.com</code>.
         </p>
       )}
     </div>

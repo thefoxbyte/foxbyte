@@ -20,7 +20,7 @@ func hexSum(parts ...[]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// The same fixed row the integration test recomputes in SQL (odb._ledger_hash).
+// The same fixed row the integration test recomputes in SQL (bb._ledger_hash).
 func TestRowHashMatchesSQLFormula(t *testing.T) {
 	r := Row{
 		PrevHash: "abc", ID: 42, At: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
@@ -250,7 +250,7 @@ func TestQueries(t *testing.T) {
 	if q := RowsQuery(false, ""); strings.Contains(q, "ledger_ext") || !strings.Contains(q, "NULL::text AS ext_hash") {
 		t.Errorf("RowsQuery without capture table: %s", q)
 	}
-	if q := RowsQuery(true, "WHERE s.id > 5"); !strings.Contains(q, "LEFT JOIN odb.ledger_ext") || !strings.Contains(q, "WHERE s.id > 5 ORDER BY s.id") {
+	if q := RowsQuery(true, "WHERE s.id > 5"); !strings.Contains(q, "LEFT JOIN bb.ledger_ext") || !strings.Contains(q, "WHERE s.id > 5 ORDER BY s.id") {
 		t.Errorf("RowsQuery with capture table: %s", q)
 	}
 	if q := ExportQuery(true); !strings.Contains(q, "e.override_used") {

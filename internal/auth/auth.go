@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package auth gates OxynDB's surfaces. It stores users, API keys, sessions,
+// Package auth gates FoxByte's surfaces. It stores users, API keys, sessions,
 // and OAuth identities in a local SQLite file (pure-Go driver, no cgo) and
 // provides an HTTP middleware plus login/OAuth/API-key handlers. Scope is
-// single-tenant: authenticated users share one OxynDB instance.
+// single-tenant: authenticated users share one FoxByte instance.
 package auth
 
 import (
@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"log"
 	"os"
 	"path/filepath"
@@ -27,6 +28,10 @@ import (
 
 // OAuthApp holds a provider's client credentials.
 type OAuthApp struct{ ClientID, ClientSecret string }
+
+// KeyPrefix begins every API key. Brand-free on purpose: the product has been
+// renamed twice, and a key already issued must keep working.
+const KeyPrefix = "key_"
 
 func (a OAuthApp) enabled() bool { return a.ClientID != "" && a.ClientSecret != "" }
 
@@ -50,6 +55,13 @@ type User struct {
 type Store struct {
 	db  *sql.DB
 	cfg Config
+
+	// OnFirstUser runs when the first account on this install is created,
+	// however it was created: the web sign-up or `fox user create`. The engine
+	// sets it to give that account the admin grant, which nothing else hands
+	// out on a fresh install. This package cannot reach the database engine
+	// itself, so the hook belongs to whoever opens the store.
+	OnFirstUser func(User)
 }
 
 const schema = `
@@ -105,12 +117,12 @@ func Open(cfg Config) (*Store, error) {
 
 // initSchema creates and migrates the store.
 //
-// `odb start` launches the control plane, the Gateway and the Agent API
+// `fox start` launches the control plane, the Gateway and the Agent API
 // together, and on a new install all three create this file at the same
 // moment. SQLite answers SQLITE_BUSY immediately — without waiting out
 // busy_timeout — when two connections that began by reading both try to
 // write, and while one process switches the file to WAL. The losers exited,
-// so the first `odb start` of a new install left the control plane and the
+// so the first `fox start` of a new install left the control plane and the
 // Agent API down (found by running the integration suites on a fresh VM).
 //
 // So the work runs in BEGIN IMMEDIATE, which takes the write lock before
@@ -204,7 +216,7 @@ func (s *Store) Close() error {
 }
 
 func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
+	if v := brand.GetenvFull(k); v != "" {
 		return v
 	}
 	return def
@@ -220,42 +232,38 @@ const DefaultPublicURL = "https://localhost:8080"
 // old defaults — http://localhost:8080 and the retired Vite dev server on
 // http://localhost:5173 — sent an OAuth login back to a page that doesn't exist
 // and registered a callback over plain HTTP. A separately hosted UI sets
-// OXYNDB_WEB_ORIGIN.
+// FOX_WEB_ORIGIN.
 func urlDefaults(getenv func(string) string) (publicURL, webOrigin string) {
-	publicURL = strings.TrimRight(strings.TrimSpace(getenv("OXYNDB_PUBLIC_URL")), "/")
+	publicURL = strings.TrimRight(strings.TrimSpace(getenv("FOX_PUBLIC_URL")), "/")
 	if publicURL == "" {
 		publicURL = DefaultPublicURL
 	}
-	webOrigin = strings.TrimRight(strings.TrimSpace(getenv("OXYNDB_WEB_ORIGIN")), "/")
+	webOrigin = strings.TrimRight(strings.TrimSpace(getenv("FOX_WEB_ORIGIN")), "/")
 	if webOrigin == "" {
 		webOrigin = publicURL
 	}
 	return publicURL, webOrigin
 }
 
-// OpenFromEnv builds Config from OXYNDB_* env vars and opens the store.
+// OpenFromEnv builds Config from FOX_* env vars and opens the store.
 func OpenFromEnv() (*Store, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = "/tmp"
-	}
-	dir := filepath.Join(home, ".oxyndb")
+	dir := brand.StateDir()
 	_ = os.MkdirAll(dir, 0o755)
 	public, web := urlDefaults(os.Getenv)
 	return Open(Config{
-		DBPath:     envOr("OXYNDB_DB", filepath.Join(dir, "oxyndb.db")),
+		DBPath:     envOr("FOX_DB", filepath.Join(dir, "auth.db")),
 		WebOrigin:  web,
 		PublicURL:  public,
-		SignupOpen: os.Getenv("OXYNDB_SIGNUP") != "closed",
-		GitHub:     OAuthApp{os.Getenv("OXYNDB_GITHUB_CLIENT_ID"), os.Getenv("OXYNDB_GITHUB_CLIENT_SECRET")},
-		Google:     OAuthApp{os.Getenv("OXYNDB_GOOGLE_CLIENT_ID"), os.Getenv("OXYNDB_GOOGLE_CLIENT_SECRET")},
+		SignupOpen: brand.Getenv("SIGNUP") != "closed",
+		GitHub:     OAuthApp{brand.Getenv("GITHUB_CLIENT_ID"), brand.Getenv("GITHUB_CLIENT_SECRET")},
+		Google:     OAuthApp{brand.Getenv("GOOGLE_CLIENT_ID"), brand.Getenv("GOOGLE_CLIENT_SECRET")},
 	})
 }
 
 // WebOrigin is the configured UI origin (used for CORS).
 func (s *Store) WebOrigin() string { return s.cfg.WebOrigin }
 
-// HasAnyUser reports whether any account exists (for bootstrap hints).
+// HasAnyUser reports whether any account exists.
 func (s *Store) HasAnyUser() bool {
 	var n int
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
@@ -276,6 +284,7 @@ func (s *Store) CreateUser(email, password string) (User, error) {
 	if email == "" {
 		return User{}, errors.New("email required")
 	}
+	first := !s.HasAnyUser()
 	var hash string
 	if password != "" {
 		h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -289,7 +298,11 @@ func (s *Store) CreateUser(email, password string) (User, error) {
 		return User{}, fmt.Errorf("email already registered")
 	}
 	id, _ := res.LastInsertId()
-	return User{ID: id, Email: email}, nil
+	u := User{ID: id, Email: email}
+	if first && s.OnFirstUser != nil {
+		s.OnFirstUser(u)
+	}
+	return u, nil
 }
 
 // Login verifies email + password.
@@ -372,7 +385,7 @@ func (s *Store) CreateScopedAPIKey(userID int64, name, scope string) (string, Ke
 		name = "key"
 	}
 	scope = strings.TrimSpace(scope)
-	secret := "odb_" + randToken(24)
+	secret := KeyPrefix + randToken(24)
 	id := randToken(8)
 	prefix := secret[:12]
 	now := time.Now().Unix()

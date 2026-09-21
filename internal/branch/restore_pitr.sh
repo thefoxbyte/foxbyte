@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Point-in-time restore into the disposable "restore" container (odb restore).
+# Point-in-time restore into the disposable "restore" container (fox restore).
 # Restore runs this inside the stock postgres-walg image with `bash -c`, the way
 # BranchBeforeEntry runs restore_before.sh, so the fix reaches installs whose
 # image was built before it — nothing new has to be baked into the image.

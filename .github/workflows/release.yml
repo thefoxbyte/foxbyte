@@ -35,22 +35,22 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
 
       # install.ps1 fetches every one of these by name; a release missing any of
-      # them installs a odb.exe that cannot then set itself up.
+      # them installs a bb.exe that cannot then set itself up.
       - name: Assert the full asset set is present
         run: |
           set -eux
-          test -f dist/odb-windows-amd64.exe
-          test -f dist/odb-linux-amd64
-          test -f dist/odb-linux-arm64
-          test -f dist/odb-darwin-amd64
-          test -f dist/odb-darwin-arm64
+          test -f dist/fox-windows-amd64.exe
+          test -f dist/fox-linux-amd64
+          test -f dist/fox-linux-arm64
+          test -f dist/fox-darwin-amd64
+          test -f dist/fox-darwin-arm64
           # the independent Blackbox verifier (Blackbox 2.0)
-          test -f dist/odb-verify-linux-amd64
-          test -f dist/odb-verify-linux-arm64
-          test -f dist/odb-verify-darwin-amd64
-          test -f dist/odb-verify-darwin-arm64
-          test -f dist/odb-verify-windows-amd64.exe
-          test -f dist/oxyndb-docker-context.tar.gz
+          test -f dist/fox-verify-linux-amd64
+          test -f dist/fox-verify-linux-arm64
+          test -f dist/fox-verify-darwin-amd64
+          test -f dist/fox-verify-darwin-arm64
+          test -f dist/fox-verify-windows-amd64.exe
+          test -f dist/foxbyte-docker-context.tar.gz
 
       # Created as a prerelease and left as a draft-free placeholder so
       # wsl-zfs.yml can upload the ZFS bundle into it. Promote it by hand once
@@ -78,29 +78,29 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           cd dist
-          bash ../scripts/release-checksums.sh "$TAG" odb-* oxyndb-docker-context.tar.gz
+          bash ../scripts/release-checksums.sh "$TAG" fox-* foxbyte-docker-context.tar.gz
 
       - name: Attach binaries
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
-        run: gh release upload "$TAG" dist/odb-* dist/oxyndb-docker-context.tar.gz --clobber
+        run: gh release upload "$TAG" dist/fox-* dist/foxbyte-docker-context.tar.gz --clobber
 
-      # `odb update` only offers a release that has every file it needs for the
+      # `fox update` only offers a release that has every file it needs for the
       # user's platform, listed in SHA256SUMS. Fail here rather than publish a
       # release nobody can update to.
-      - name: Check the files odb update needs
+      - name: Check the files fox update needs
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: bash scripts/check-release-assets.sh "$TAG"
 
-  # Publish the Postgres+wal-g image so `odb setup` pulls it (~30-60s) instead of
+  # Publish the Postgres+wal-g image so `fox setup` pulls it (~30-60s) instead of
   # building it locally on every install (~2-5min, and dependent on the wal-g
   # release being reachable). ensureImage() falls back to building if the pull
   # fails, so this is an optimization, not a hard dependency.
   #
-  # NOTE: the first push creates the ghcr.io/oxyndb/postgres-walg package as
+  # NOTE: the first push creates the ghcr.io/thefoxbyte/postgres-walg package as
   # PRIVATE. Make it public once (org → Packages → package → visibility) so
   # `docker pull` works without auth.
   image:
@@ -126,5 +126,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/oxyndb/postgres-walg:16
-            ghcr.io/oxyndb/postgres-walg:${{ inputs.tag || github.ref_name }}
+            ghcr.io/thefoxbyte/postgres-walg:16
+            ghcr.io/thefoxbyte/postgres-walg:${{ inputs.tag || github.ref_name }}

@@ -17,11 +17,11 @@ func TestURLDefaults(t *testing.T) {
 	if pub != "https://localhost:8080" || web != pub {
 		t.Errorf("defaults = %q, %q; want https://localhost:8080 for both", pub, web)
 	}
-	pub, web = urlDefaults(env(map[string]string{"OXYNDB_PUBLIC_URL": "https://db.example.com/"}))
+	pub, web = urlDefaults(env(map[string]string{"FOX_PUBLIC_URL": "https://db.example.com/"}))
 	if pub != "https://db.example.com" || web != "https://db.example.com" {
 		t.Errorf("public URL set: %q, %q; the web origin should follow it, without a trailing slash", pub, web)
 	}
-	pub, web = urlDefaults(env(map[string]string{"OXYNDB_PUBLIC_URL": "https://api.example.com", "OXYNDB_WEB_ORIGIN": "https://app.example.com"}))
+	pub, web = urlDefaults(env(map[string]string{"FOX_PUBLIC_URL": "https://api.example.com", "FOX_WEB_ORIGIN": "https://app.example.com"}))
 	if pub != "https://api.example.com" || web != "https://app.example.com" {
 		t.Errorf("both set: %q, %q", pub, web)
 	}

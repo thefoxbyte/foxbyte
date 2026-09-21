@@ -6,13 +6,14 @@ package host
 
 import (
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/OxynDB/oxyndb/internal/update"
+	"github.com/thefoxbyte/foxbyte/internal/update"
 )
 
 // limaEngine updates the engine inside the Lima VM.
@@ -31,14 +32,14 @@ func (l *limaEngine) where() string { return "the VM" }
 
 func (l *limaEngine) prepare() error {
 	if _, err := exec.LookPath("limactl"); err != nil {
-		return fmt.Errorf("Lima is required on macOS. Install it with `brew install lima`, then run `odb setup`")
+		return fmt.Errorf("Lima is required on macOS. Install it with `brew install lima`, then run `fox setup`")
 	}
 	name := l.vm()
 	if !instanceExists(name) {
-		return fmt.Errorf("no OxynDB VM yet — run `odb setup` once to create it")
+		return fmt.Errorf("no FoxByte VM yet — run `fox setup` once to create it")
 	}
 	if !instanceRunning(name) {
-		fmt.Printf("Starting the OxynDB VM (%s)…\n", name)
+		fmt.Printf("Starting the FoxByte VM (%s)…\n", name)
 		if err := limactl("start", name).Run(); err != nil {
 			return fmt.Errorf("starting the VM: %w", err)
 		}
@@ -55,7 +56,7 @@ func (l *limaEngine) guestArch() string {
 }
 
 func (l *limaEngine) stage(local string) (string, error) {
-	const dest = "/tmp/odb-update"
+	const dest = "/tmp/fox-update"
 	if err := exec.Command("limactl", "copy", local, l.vm()+":"+dest+".new").Run(); err != nil {
 		return "", err
 	}
@@ -67,12 +68,12 @@ func (l *limaEngine) stage(local string) (string, error) {
 }
 
 func (l *limaEngine) installed() (string, error) {
-	if strings.TrimSpace(os.Getenv("OXYNDB_GUEST_BIN")) != "" {
-		return "", fmt.Errorf("OXYNDB_GUEST_BIN is set (a development setup) — unset it to update the installed engine")
+	if strings.TrimSpace(brand.Getenv("GUEST_BIN")) != "" {
+		return "", fmt.Errorf("FOX_GUEST_BIN is set (a development setup) — unset it to update the installed engine")
 	}
 	p := guestBin(l.vm())
-	if p == "/tmp/odb" {
-		return "", fmt.Errorf("the VM has no installed engine, only a development build at /tmp/odb — run `odb setup` first")
+	if p == "/tmp/fox" {
+		return "", fmt.Errorf("the VM has no installed engine, only a development build at /tmp/fox — run `fox setup` first")
 	}
 	return p, nil
 }
@@ -107,7 +108,7 @@ func platformUpdateHooks(eh engineHost) updateHooks {
 	}
 }
 
-// preflightHostBinary checks odb on the Mac can be replaced, before anything
+// preflightHostBinary checks fox on the Mac can be replaced, before anything
 // changes: not a Homebrew install, and sudo is asked for now if needed.
 func preflightHostBinary() error {
 	exe, err := hostExecutable()
@@ -115,7 +116,7 @@ func preflightHostBinary() error {
 		return err
 	}
 	if strings.Contains(exe, "/Cellar/") || strings.Contains(exe, "/homebrew/") {
-		return fmt.Errorf("odb at %s is managed by Homebrew — update it with Homebrew instead", exe)
+		return fmt.Errorf("fox at %s is managed by Homebrew — update it with Homebrew instead", exe)
 	}
 	if update.DirWritable(filepath.Dir(exe)) {
 		return nil
@@ -134,7 +135,7 @@ func replaceHostBinary(files map[string]string, t update.Target) error {
 	if err != nil {
 		return err
 	}
-	prev := filepath.Join(cacheDir(), "updates", "prev", "odb")
+	prev := filepath.Join(cacheDir(), "updates", "prev", "fox")
 	if err := update.InstallBinary(files[update.HostAsset(t)], exe, prev); err != nil {
 		return err
 	}

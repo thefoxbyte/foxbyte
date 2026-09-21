@@ -38,9 +38,9 @@ func TestDSN(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // isolate the generated secrets file from the dev's home
 	got := dsn("172.18.0.5", "5432")
 	// The password is a per-install secret, so assert the shape, not the value.
-	if !strings.HasPrefix(got, "postgresql://oxyndb:") ||
-		!strings.HasSuffix(got, "@172.18.0.5:5432/oxyndb") {
-		t.Errorf("dsn = %q, want postgresql://oxyndb:<pw>@172.18.0.5:5432/oxyndb", got)
+	if !strings.HasPrefix(got, "postgresql://dbadmin:") ||
+		!strings.HasSuffix(got, "@172.18.0.5:5432/appdb") {
+		t.Errorf("dsn = %q, want postgresql://dbadmin:<pw>@172.18.0.5:5432/appdb", got)
 	}
 }
 
@@ -51,7 +51,25 @@ func TestAgentBranchName(t *testing.T) {
 }
 
 func TestContainerName(t *testing.T) {
-	if got := container("main"); got != "oxyn-main" {
-		t.Errorf("container = %q, want oxyn-main", got)
+	if got := container("main"); got != "pg-main" {
+		t.Errorf("container = %q, want pg-main", got)
+	}
+}
+
+// Everything that reaches the object store must address it by the name the
+// container actually has. Renaming the container from "minio" to objstore while
+// the wal-g environment still said http://minio:9000 broke WAL archiving,
+// backups and point-in-time restore at once: the host simply did not resolve.
+func TestWalgEnvPointsAtTheObjectStore(t *testing.T) {
+	env := strings.Join(walgEnv(), " ")
+	if !strings.Contains(env, "AWS_ENDPOINT=http://"+objStore+":9000") {
+		t.Errorf("wal-g is not pointed at %q: %s", objStore, env)
+	}
+	if !strings.Contains(env, "WALG_S3_PREFIX=s3://"+walBucket) {
+		t.Errorf("wal-g is not pointed at the %q bucket: %s", walBucket, env)
+	}
+	// The endpoint is derived, not written out a second time.
+	if objStoreEndpoint != "http://"+objStore+":9000" {
+		t.Errorf("objStoreEndpoint = %q, which does not follow objStore = %q", objStoreEndpoint, objStore)
 	}
 }

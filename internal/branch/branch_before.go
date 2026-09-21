@@ -21,7 +21,7 @@ import (
 // main exactly as it was the moment before that change committed: it restores
 // the newest base backup that finished before the change and replays archived
 // WAL up to — but not including — the change's transaction (the xid recorded in
-// odb.ledger_ext). Entries from before the 2.0 capture existed have no xid, so
+// bb.ledger_ext). Entries from before the 2.0 capture existed have no xid, so
 // the entry's timestamp is used instead.
 //
 // The new branch is an ordinary branch afterwards (same container, gateway
@@ -115,13 +115,13 @@ func entryQuery(entryID int64, withExt bool) string {
 	xid, lsn, join := "NULL::bigint", "NULL::text", ""
 	if withExt {
 		xid, lsn = "e.xid", "(e.lsn - '0/0'::pg_lsn)::text"
-		join = " LEFT JOIN odb.ledger_ext e ON e.ledger_id = l.id"
+		join = " LEFT JOIN bb.ledger_ext e ON e.ledger_id = l.id"
 	}
 	return fmt.Sprintf(`SELECT json_build_object('id', l.id, 'status', l.status, 'command_tag', l.command_tag,
   'object_identity', l.object_identity, 'statement', l.statement,
   'at', to_char(l.at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
   'xid', %s, 'lsn', %s)
-FROM odb.schema_ledger l%s WHERE l.id = %d`, xid, lsn, join, entryID)
+FROM bb.schema_ledger l%s WHERE l.id = %d`, xid, lsn, join, entryID)
 }
 
 func parseEntryJSON(line string) (beforeEntry, error) {
@@ -217,7 +217,7 @@ func pickBaseBackup(bs []walgBackup, systemID string, e beforeEntry) (walgBackup
 	}
 	if !found {
 		return walgBackup{}, fmt.Errorf("%w: no base backup of this database finished before ledger entry %d (%s) — "+
-			"take one with `odb backup create`; only changes made after a base backup can be branched before",
+			"take one with `fox backup create`; only changes made after a base backup can be branched before",
 			ErrNoBaseBackup, e.ID, e.At.UTC().Format(time.RFC3339))
 	}
 	return best, nil
@@ -235,10 +235,10 @@ func walArchived(lastArchived, segment string) bool {
 
 func walgEnv() []string {
 	return []string{
-		"-e", "WALG_S3_PREFIX=s3://oxyndb-wal",
+		"-e", "WALG_S3_PREFIX=s3://" + walBucket,
 		"-e", "AWS_ACCESS_KEY_ID=" + minioUser(),
 		"-e", "AWS_SECRET_ACCESS_KEY=" + minioPass(),
-		"-e", "AWS_ENDPOINT=http://minio:9000",
+		"-e", "AWS_ENDPOINT=" + objStoreEndpoint,
 		"-e", "AWS_S3_FORCE_PATH_STYLE=true",
 		"-e", "AWS_REGION=us-east-1",
 	}
@@ -276,7 +276,7 @@ func flushWALArchive(primary string) error {
 	if _, err := ledgerLines(primary, "SELECT pg_switch_wal()"); err != nil {
 		return fmt.Errorf("switching WAL segment: %w", err)
 	}
-	deadline := time.Now().Add(envDurationOr("OXYNDB_WAL_ARCHIVE_WAIT", 2*time.Minute))
+	deadline := time.Now().Add(envDurationOr("FOX_WAL_ARCHIVE_WAIT", 2*time.Minute))
 	for {
 		lines, err := ledgerLines(primary, "SELECT coalesce(last_archived_wal, '') || '|' || coalesce(last_failed_wal, '') FROM pg_stat_archiver")
 		if err == nil && len(lines) > 0 {
@@ -317,7 +317,7 @@ func waitPromoted(name string, timeout time.Duration) error {
 			return fmt.Errorf("the restore stopped (%s) before reaching its target:\n%s", st, containerLogTail(name, 15))
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("the restore did not finish within %s (set OXYNDB_BRANCH_BEFORE_TIMEOUT to wait longer):\n%s",
+			return fmt.Errorf("the restore did not finish within %s (set FOX_BRANCH_BEFORE_TIMEOUT to wait longer):\n%s",
 				timeout, containerLogTail(name, 15))
 		}
 		time.Sleep(2 * time.Second)
@@ -356,7 +356,7 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 	if store.exists(newName) || ContainerState(newName) != "absent" {
 		return BeforeEntryResult{}, fmt.Errorf("%w: %q", ErrBranchExists, newName)
 	}
-	primary := strings.TrimPrefix(PrimaryContainer(), "oxyn-")
+	primary := strings.TrimPrefix(PrimaryContainer(), containerPrefix)
 
 	// 1. The entry, with its transaction id and WAL position when captured.
 	ext, _, err := ledgerV2Tables(primary)
@@ -433,12 +433,12 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 	if out, err := exec.Command("sudo", args...).CombinedOutput(); err != nil {
 		return fail(fmt.Errorf("starting the restore: %v: %s", err, strings.TrimSpace(string(out))))
 	}
-	if err := waitPromoted(newName, envDurationOr("OXYNDB_BRANCH_BEFORE_TIMEOUT", 15*time.Minute)); err != nil {
+	if err := waitPromoted(newName, envDurationOr("FOX_BRANCH_BEFORE_TIMEOUT", 15*time.Minute)); err != nil {
 		return fail(err)
 	}
 
 	// 4. The change must not be there.
-	present, err := ledgerLines(newName, fmt.Sprintf("SELECT count(*) FROM odb.schema_ledger WHERE id = %d", entryID))
+	present, err := ledgerLines(newName, fmt.Sprintf("SELECT count(*) FROM bb.schema_ledger WHERE id = %d", entryID))
 	if err != nil {
 		return fail(fmt.Errorf("checking the restored ledger: %w", err))
 	}
@@ -446,7 +446,7 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 		return fail(fmt.Errorf("the restored branch still contains ledger entry %d; not keeping it", entryID))
 	}
 	var last int64
-	if l, err := ledgerLines(newName, "SELECT coalesce(max(id), 0) FROM odb.schema_ledger"); err == nil && len(l) > 0 {
+	if l, err := ledgerLines(newName, "SELECT coalesce(max(id), 0) FROM bb.schema_ledger"); err == nil && len(l) > 0 {
 		last, _ = strconv.ParseInt(l[0], 10, 64)
 	}
 

@@ -16,7 +16,7 @@ func TestIsOriginSnapshotFor(t *testing.T) {
 		{"", "qa", false},
 		{snapFor("main", "qa2"), "qa", false},               // another branch's snapshot
 		{snapFor("main", "qa"), "a", false},                 // suffix of a longer name
-		{"otherpool/branches/main@for-qa", "qa", false},     // outside OxynDB's datasets
+		{"otherpool/branches/main@for-qa", "qa", false},     // outside FoxByte's datasets
 		{datasetBase + "/main@nightly@for-qa", "qa", false}, // malformed
 	} {
 		if got := isOriginSnapshotFor(c.snap, c.branch); got != c.want {

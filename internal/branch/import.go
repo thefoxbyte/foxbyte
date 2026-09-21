@@ -7,6 +7,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 	"io"
 	"net/url"
 	"os"
@@ -17,8 +18,8 @@ import (
 	"strings"
 )
 
-// Migration into OxynDB. Because OxynDB *is* PostgreSQL, "migrate to
-// OxynDB" always means "land the source in a fresh Postgres instance".
+// Migration into FoxByte. Because FoxByte *is* PostgreSQL, "migrate to
+// FoxByte" always means "land the source in a fresh Postgres instance".
 //
 //   - a Postgres (or Postgres-wire) source → pg_dump | psql, full fidelity
 //   - a .sql dump                          → psql
@@ -28,7 +29,7 @@ import (
 // The loaders are stream-based, so the same code serves a local file path
 // (CLI), stdin (a file streamed from the client machine), and a browser upload.
 
-const pgImportOptions = "PGOPTIONS=-c odb.allow_destructive=on"
+const pgImportOptions = "PGOPTIONS=-c bb.allow_destructive=on"
 
 type sourceKind int
 
@@ -153,7 +154,7 @@ func importInstance(p *Progress, target, defName, desc string, load func(string)
 		return target, fmt.Errorf("no tables were imported into %q — the source is empty or the wrong database was named (check the connection string or file)", target)
 	}
 	p.Logf("\n✓ Imported into instance %q — %d table(s) now present.\n", target, n)
-	p.Logf("  Connect: postgres://oxyndb:<API_KEY>@localhost:6432/%s\n", target)
+	p.Logf("  Connect: postgres://dbadmin:<API_KEY>@localhost:6432/%s\n", target)
 	p.Logf("  Browse:  the web console (Console / Ledger), branch = %q\n", target)
 	return target, nil
 }
@@ -200,23 +201,23 @@ func ImportContinuousTo(p *Progress, source, target string) (string, error) {
 		return target, fmt.Errorf("the source database has no tables to replicate (check the database name in the connection string)")
 	}
 	// Best-effort: create a publication covering all tables on the source. If the
-	// role lacks privilege or a publication named odb_pub already exists, continue —
+	// role lacks privilege or a publication named bb_pub already exists, continue —
 	// the subscription below surfaces any real problem.
 	p.Logf("Ensuring a publication on the source…\n")
 	_ = run("docker", "exec", container(target), "psql", source, "-v", "ON_ERROR_STOP=0",
-		"-c", "CREATE PUBLICATION odb_pub FOR ALL TABLES;")
+		"-c", "CREATE PUBLICATION bb_pub FOR ALL TABLES;")
 	// Subscribe on the target: initial copy + streaming changes.
 	p.Logf("Creating subscription (initial copy, then streaming)…\n")
-	sub := fmt.Sprintf("CREATE SUBSCRIPTION odb_sub CONNECTION %s PUBLICATION odb_pub;", sqlQuote(source))
+	sub := fmt.Sprintf("CREATE SUBSCRIPTION bb_sub CONNECTION %s PUBLICATION bb_pub;", sqlQuote(source))
 	if err := run("docker", "exec", "-e", pgImportOptions, container(target),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-v", "ON_ERROR_STOP=1", "-c", sub); err != nil {
 		return target, fmt.Errorf("could not start replication — the source must allow logical replication "+
-			"(wal_level=logical), expose a replication-capable role, and be reachable from OxynDB: %w", err)
+			"(wal_level=logical), expose a replication-capable role, and be reachable from FoxByte: %w", err)
 	}
 	p.Logf("\n✓ Continuous replication active into %q.\n", target)
 	p.Logf("  The initial copy runs now; subsequent changes stream continuously.\n")
 	p.Logf("  Progress:  SELECT * FROM pg_stat_subscription;\n")
-	p.Logf("  Cut over once caught up:  odb import-cutover %s\n", target)
+	p.Logf("  Cut over once caught up:  fox import-cutover %s\n", target)
 	return target, nil
 }
 
@@ -234,7 +235,7 @@ func ImportCutoverTo(p *Progress, target string) error {
 	}
 	p.Logf("Finalizing %q — stopping replication, keeping data…\n", target)
 	if err := run("docker", "exec", container(target), "psql", "-U", pgUser, "-d", pgDatabase,
-		"-c", "DROP SUBSCRIPTION IF EXISTS odb_sub;"); err != nil {
+		"-c", "DROP SUBSCRIPTION IF EXISTS bb_sub;"); err != nil {
 		return err
 	}
 	p.Logf("✓ %q is now a standalone instance (%d tables).\n", target, TableCount(target))
@@ -242,12 +243,12 @@ func ImportCutoverTo(p *Progress, target string) error {
 }
 
 // TableCount returns the number of user tables in an instance (excludes system
-// schemas and the odb ledger schema).
+// schemas and the fox ledger schema).
 func TableCount(name string) int {
 	out, _ := capture("docker", "exec", container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc",
 		`SELECT count(*) FROM information_schema.tables
-		 WHERE table_schema NOT IN ('pg_catalog','information_schema','odb')`)
+		 WHERE table_schema NOT IN ('pg_catalog','information_schema','`+ledger.SchemaName+`')`)
 	n, _ := strconv.Atoi(strings.TrimSpace(out))
 	return n
 }
@@ -305,7 +306,7 @@ func defaultTargetName(dsn string) string {
 // --- loaders (all stream-based) ---
 
 // prepareTarget gives the new instance a clean public schema, independent of
-// main's current contents (the odb ledger schema is left intact).
+// main's current contents (the fox ledger schema is left intact).
 func prepareTarget(target string) error {
 	return run("docker", "exec", "-e", pgImportOptions, container(target),
 		"psql", "-q", "-U", pgUser, "-d", pgDatabase, "-c",
@@ -352,7 +353,7 @@ func loadMySQL(p *Progress, target, dsn string) error {
 		if strings.Contains(string(out), "Failed to connect") || strings.Contains(string(out), "UNSUPPORTED-AUTHENTICATION") {
 			return fmt.Errorf("pgloader could not authenticate to the source (see log above); MySQL 8 needs the server started with mysql_native_password — its default caching_sha2_password handshake is unsupported")
 		}
-		return fmt.Errorf("pgloader loaded no tables (see log above); the source may be empty or unreadable — or export it to a .sql/.csv/.json file and run `odb import` on that")
+		return fmt.Errorf("pgloader loaded no tables (see log above); the source may be empty or unreadable — or export it to a .sql/.csv/.json file and run `fox import` on that")
 	}
 	return nil
 }
@@ -691,7 +692,7 @@ func setGuard(target string, enabled bool) {
 		verb = "ENABLE"
 	}
 	_ = run("docker", "exec", container(target), "psql", "-q", "-U", pgUser, "-d", pgDatabase,
-		"-c", fmt.Sprintf("ALTER EVENT TRIGGER odb_guard_start %s;", verb))
+		"-c", fmt.Sprintf("ALTER EVENT TRIGGER bb_guard_start %s;", verb))
 }
 
 func hasScheme(s string, schemes ...string) bool {
@@ -819,7 +820,7 @@ func loadCSV(p *Progress, target string, r io.Reader, table string) error {
 // objects/arrays kept as jsonb). Documents that aren't JSON objects fall back to
 // a single jsonb column.
 func loadJSON(p *Progress, target string, r io.Reader, table string) error {
-	stage := table + "__odb_stage"
+	stage := table + "__key_stage"
 	qstage, qtable := sqlIdent(stage), sqlIdent(table)
 	if err := psqlExec(target, fmt.Sprintf(
 		`DROP TABLE IF EXISTS %s; CREATE TABLE %s (id bigserial PRIMARY KEY, doc jsonb);`, qstage, qstage)); err != nil {

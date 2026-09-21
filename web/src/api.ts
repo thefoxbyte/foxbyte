@@ -1,4 +1,4 @@
-// Typed client for the OxynDB control-plane API (cookie/session auth).
+// Typed client for the FoxByte control-plane API (cookie/session auth).
 // When the UI is served by the control-plane itself (the embedded production
 // build sets VITE_API_URL=""), API is "" — i.e. same-origin, relative requests.
 // The dev server (`make web-dev`, VITE_API_URL unset) falls back to :8080.
@@ -72,10 +72,10 @@ export const createBranch = (name: string, from?: string) =>
 export const deleteBranch = (name: string) => req('DELETE', `${API}/api/branches/${name}`)
 export const suspendBranch = (name: string) => req('POST', `${API}/api/branches/${name}/suspend`)
 export const resumeBranch = (name: string) => req('POST', `${API}/api/branches/${name}/resume`)
-// allowDestructive applies SET odb.allow_destructive=on to this one run. The
+// allowDestructive applies SET bb.allow_destructive=on to this one run. The
 // query runs as the signed-in user, so it counts only for admins of the branch.
-// allowRules applies SET odb.policy_allow: the per-rule override for a Blackbox
-// policy block (ODB01), which allowDestructive does not cover.
+// allowRules applies SET bb.policy_allow: the per-rule override for a Blackbox
+// policy block (BBX01), which allowDestructive does not cover.
 export const runQuery = (name: string, sql: string, opts: { allowDestructive?: boolean; allowRules?: string[] } = {}) =>
   req('POST', `${API}/api/branches/${name}/query`, {
     sql,
@@ -167,8 +167,8 @@ export const checkPolicy = (branch: string, sql: string) =>
 export const getPolicyEvaluations = (branch: string, limit = 20) =>
   req('GET', `${policies(branch)}/evaluations?limit=${limit}`) as Promise<PolicyEvaluation[]>
 
-// Who may override blocking rules (odb_admin) on a branch. Anyone signed in may
-// read it; granting and revoking need odb_admin there.
+// Who may override blocking rules (db_admin) on a branch. Anyone signed in may
+// read it; granting and revoking need db_admin there.
 export type BranchAdmins = { admins: string[]; you: string; you_are_admin: boolean }
 const admins = (branch: string) => `${API}/api/branches/${branch}/admins`
 export const getAdmins = (branch: string) => req('GET', admins(branch)) as Promise<BranchAdmins>

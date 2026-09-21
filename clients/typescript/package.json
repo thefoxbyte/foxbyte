@@ -1,7 +1,7 @@
 {
-  "name": "@oxyndb/client",
+  "name": "@foxbyte/client",
   "version": "0.6.0",
-  "description": "TypeScript client for OxynDB — serverless Postgres with instant branching and Blackbox, a tamper-evident record of every schema change.",
+  "description": "TypeScript client for FoxByte — serverless Postgres with instant branching and Blackbox, a tamper-evident record of every schema change.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc"
   },
-  "repository": { "type": "git", "url": "https://github.com/OxynDB/oxyndb" },
+  "repository": { "type": "git", "url": "https://github.com/thefoxbyte/foxbyte" },
   "devDependencies": {
     "typescript": "^5.4.0"
   }

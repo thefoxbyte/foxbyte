@@ -4,7 +4,7 @@
 
 package proxy
 
-// insecureAllowed is false in release builds, so OXYNDB_GATEWAY_NOAUTH (a
+// insecureAllowed is false in release builds, so FOX_GATEWAY_NOAUTH (a
 // full authentication bypass) is compiled out and cannot be enabled by an
 // environment variable in production. Build with `-tags insecure` for
 // trusted/local use where the bypass is wanted.

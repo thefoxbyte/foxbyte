@@ -1,0 +1,48 @@
+<!doctype html>
+<!--
+  The README's logo, rendered to PNG with headless Chrome (see docs/brand/README.md).
+  The mark's geometry is the one in web/src/components/brand.tsx; the colours are
+  the brand's two literals, because a PNG cannot follow a theme. ?theme=dark gives
+  the variant GitHub serves to dark-mode readers.
+-->
+<html><head><meta charset="utf-8" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@500&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; background: transparent; }
+  body { width: 560px; height: 150px; display: flex; align-items: center; gap: 18px; padding: 0 8px; }
+  .wm { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 700; font-size: 62px;
+        letter-spacing: -.03em; line-height: 1; color: #15171d; }
+  .accent { background: linear-gradient(120deg, #ff7a2f, #ffc24a);
+            -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .tag { font-family: 'Inter', system-ui, sans-serif; font-weight: 500; font-size: 15px; color: #5b6273;
+         letter-spacing: .01em; margin-top: 10px; }
+  body.dark .wm { color: #edeef2; }
+  body.dark .tag { color: #a2a8b8; }
+  .stack { display: flex; flex-direction: column; }
+</style></head>
+<body>
+  <svg width="86" height="86" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <defs><linearGradient id="g" x1="4" y1="2" x2="28" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff7a2f"/><stop offset="1" stop-color="#ffc24a"/></linearGradient></defs>
+    <path d="M5.2 3.4 13 7.4 8.6 14.2 4.4 8.2Z" fill="url(#g)"/>
+    <path d="M26.8 3.4 19 7.4l4.4 6.8 4.2-6Z" fill="url(#g)"/>
+    <path d="M16 6.6c4.6 0 8.4 2.4 9.8 6.4 1 2.9.3 6.2-1.9 9.1-1.9 2.5-4.6 4.4-7.9 5.6-3.3-1.2-6-3.1-7.9-5.6-2.2-2.9-2.9-6.2-1.9-9.1 1.4-4 5.2-6.4 9.8-6.4Z" fill="url(#g)"/>
+    <path class="eye" d="M11.4 15.1c1.3 0 2.2.9 2.2 2s-.9 1.7-2.2 1.7-2.3-.6-2.3-1.7.9-2 2.3-2Z" fill="#fff"/>
+    <path class="eye" d="M20.6 15.1c1.4 0 2.3.9 2.3 2s-1 1.7-2.3 1.7-2.2-.6-2.2-1.7.9-2 2.2-2Z" fill="#fff"/>
+    <path class="eye" d="M16 21.4c1.6 0 2.7.7 2.7 1.6 0 1.1-1.2 2.3-2.7 3.1-1.5-.8-2.7-2-2.7-3.1 0-.9 1.1-1.6 2.7-1.6Z" fill="#fff" opacity=".92"/>
+  </svg>
+  <div class="stack">
+    <div class="wm">Fox<span class="accent">Byte</span></div>
+    <div class="tag">the database that branches like code</div>
+  </div>
+  <script>
+    if (new URLSearchParams(location.search).get('theme') === 'dark') {
+      document.body.classList.add('dark')
+      // The punched-out eyes and muzzle take the page behind them; on a dark
+      // page that is graphite, not white.
+      document.querySelectorAll('.eye').forEach(function (e) { e.setAttribute('fill', '#0b0c10') })
+    }
+  </script>
+</body></html>

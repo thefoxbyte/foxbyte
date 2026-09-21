@@ -3,14 +3,14 @@
 #
 # Build OpenZFS kernel modules + matching userland for the *stock* WSL2 kernel.
 #
-# OxynDB needs ZFS for copy-on-write branching and the WSL2 kernel ships no
+# FoxByte needs ZFS for copy-on-write branching and the WSL2 kernel ships no
 # zfs module. It does not, however, need a custom kernel: WSL mounts its module
 # tree as an overlay whose lower layer is the stock module set and whose upper
 # layer lives on the distro's own disk (see /proc/mounts inside any distro):
 #
 #   none /usr/lib/modules/<rel> overlay lowerdir=/modules,upperdir=/lib/modules/<rel>/rw/upper,...
 #
-# So `odb setup` just drops zfs.ko/spl.ko into the oxyndb distro's own module
+# So `fox setup` just drops zfs.ko/spl.ko into the foxbyte distro's own module
 # overlay and runs depmod. Nothing outside that distro is touched — no custom
 # kernel, no .wslconfig edit, no effect on Docker Desktop / Rancher Desktop.
 #
@@ -19,9 +19,9 @@
 # itself is not shipped.
 #
 # Output:
-#   dist/oxyndb-zfs-<kernelrelease>.tar.gz   modules under lib/modules/<rel>/extra
+#   dist/foxbyte-zfs-<kernelrelease>.tar.gz   modules under lib/modules/<rel>/extra
 #                                               + userland under usr/local
-#   dist/oxyndb-zfs.release                  the kernel release string
+#   dist/foxbyte-zfs.release                  the kernel release string
 #
 # Runs on a Linux builder or CI (including a WSL2 Ubuntu distro on the target
 # machine). It is NOT run on the user's machine — install.ps1 downloads the
@@ -122,7 +122,7 @@ find "$modules_dir" -mindepth 1 -delete 2>/dev/null || true
 mkdir -p "$modules_dir/lib/modules/$KREL"
 cp -a "$stage/lib/modules/$KREL/extra" "$modules_dir/lib/modules/$KREL/extra"
 
-modules_tar="$out/oxyndb-zfs-modules-$KREL.tar.gz"
+modules_tar="$out/foxbyte-zfs-modules-$KREL.tar.gz"
 tar -C "$modules_dir" -czf "$modules_tar" .
 
 # Userland is everything except the modules.
@@ -131,15 +131,15 @@ find "$userland_dir" -mindepth 1 -delete 2>/dev/null || true
 mkdir -p "$userland_dir"
 cp -a "$stage/." "$userland_dir/"
 rm -rf "$userland_dir/lib/modules"
-userland_tar="$out/oxyndb-zfs-userland.tar.gz"
+userland_tar="$out/foxbyte-zfs-userland.tar.gz"
 tar -C "$userland_dir" -czf "$userland_tar" .
 
-printf '%s\n' "$KREL" > "$out/oxyndb-zfs.release"
+printf '%s\n' "$KREL" > "$out/foxbyte-zfs.release"
 
 echo
 echo "zfs modules (per kernel): $modules_tar"
 echo "zfs userland (shared):    $userland_tar"
-echo "kernel release:           $out/oxyndb-zfs.release ($KREL)"
+echo "kernel release:           $out/foxbyte-zfs.release ($KREL)"
 echo
 echo "The userland is baked into the distro image by deploy/wsl-distro/build.sh."
 echo "Only the modules tarball is a per-kernel release asset."

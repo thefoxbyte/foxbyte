@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getAdmins, getBranches, runQuery, API, type Branch, type BranchAdmins, type QueryResult } from '../api'
+import { BRAND } from '../brand'
 
 type DbObject = { schema: string; name: string; type: 'table' | 'view' }
 type Tab = 'rows' | 'structure' | 'indexes'
@@ -17,19 +18,23 @@ FROM information_schema.tables
 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
 ORDER BY table_schema, table_type DESC, table_name`
 
-// OxynDB keeps its own bookkeeping (Blackbox, policies, agent sessions) in
-// the odb schema of every branch. It is not the user's data, so it is hidden
-// whenever the console opens and shown only on request.
-const isSystem = (o: DbObject) => o.schema === 'odb' || o.schema.startsWith('odb_')
+// FoxByte keeps its own bookkeeping (Blackbox, policies, agent sessions) in the
+// bb schema of every branch. It is not the user's data, so it is hidden
+// whenever the console opens and shown only on request. The name is frozen and
+// brand-free (see docs/branding.md), which is why it is not the product's.
+const isSystem = (o: DbObject) => o.schema === 'bb' || o.schema.startsWith('bb_')
 
 // Statements that can add, remove or rename tables, so the schema list is
 // refreshed after they run.
 const DDL = /\b(create|drop|alter|truncate|rename|import\s+foreign)\b/i
 // Two different refusals, overridden differently (docs/policy-errors.md): the
-// guardrail on DROP TABLE / DROP SCHEMA (odb.allow_destructive) and a Blackbox
-// policy rule, SQLSTATE ODB01 (odb.policy_allow, per rule).
-const GUARDRAIL = /OxynDB guardrail: .* is blocked by policy/
-const POLICY_RULE = /ODB01/
+// guardrail on DROP TABLE / DROP SCHEMA (bb.allow_destructive) and a Blackbox
+// policy rule, SQLSTATE BBX01 (bb.policy_allow, per rule).
+// Matched without the product's name in it: the database raises this text, the
+// product has been renamed twice, and a rename must not quietly stop the
+// console recognising a blocked change.
+const GUARDRAIL = /guardrail: .* is blocked by policy/
+const POLICY_RULE = /BBX01/
 const ruleOf = (err: string) => /\(rule ([a-z0-9][a-z0-9-]*)\)/.exec(err)?.[1]
 
 export default function Console() {
@@ -151,7 +156,7 @@ export default function Console() {
     return (
       <>
         <h1>SQL Console</h1>
-        <div className="offline">Can’t reach the API at <code>{API}</code>. Start it with <code>odb start</code>.</div>
+        <div className="offline">Can’t reach the API at <code>{API}</code>. Start it with <code>fox start</code>.</div>
       </>
     )
   }
@@ -176,14 +181,19 @@ export default function Console() {
 
   return (
     <div className="fade-up">
-      <h1>SQL Console</h1>
-      <p className="muted" style={{ marginTop: -2 }}>Browse a branch’s tables &amp; views, or run any SQL — through the control-plane API.</p>
-
-      <div className="row">
-        <span className="muted" style={{ fontSize: 13 }}>Branch</span>
-        <select value={branch} onChange={e => setBranch(e.target.value)}>
-          {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
-        </select>
+      <div className="page-head">
+        <div>
+          <h1>SQL Console</h1>
+          <p className="sub">Browse a branch’s tables and views, or run any SQL — through the control-plane API.</p>
+        </div>
+        <div className="tools">
+          <label className="field-inline">
+            <span>Branch</span>
+            <select value={branch} onChange={e => setBranch(e.target.value)}>
+              {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+            </select>
+          </label>
+        </div>
       </div>
 
       <div className="console-grid">
@@ -192,7 +202,7 @@ export default function Console() {
             <span>Schema</span>
             <button title={listing ? 'Reloading…' : 'Reload tables'} className={listing ? 'spinning' : ''} disabled={listing} onClick={reload}>↻</button>
           </div>
-          <div style={{ padding: 8 }}>
+          <div className="obj-filter-wrap">
             <input className="obj-filter" placeholder="Filter tables…" value={filter} onChange={e => setFilter(e.target.value)} />
           </div>
           <div className="obj-list">
@@ -212,41 +222,47 @@ export default function Console() {
             {views.map(item)}
             {showSystem && system.length > 0 && (
               <>
-                <div className="obj-group">OxynDB system</div>
+                <div className="obj-group">{BRAND.product} system</div>
                 {system.map(item)}
               </>
             )}
             {system.length > 0 && (
               <button className="obj-show-system" onClick={() => setShowSystem(v => !v)} aria-expanded={showSystem}
-                title="Blackbox, policies and agent sessions — kept by OxynDB, not your data">
+                title={`Blackbox, policies and agent sessions — kept by ${BRAND.product}, not your data`}>
                 {showSystem ? 'Hide system tables' : `Show system tables (${system.length})`}
               </button>
             )}
           </div>
         </aside>
 
-        <div>
+        <div className="console-main">
           {mode === 'query' ? (
             <>
-              <textarea
-                className="editor"
-                value={sql}
-                spellCheck={false}
-                onChange={e => setSql(e.target.value)}
-                onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql() }}
-              />
-              <div className="row" style={{ marginTop: 10, flexWrap: 'wrap', gap: 12 }}>
-                <button className={'primary' + (allowDestructive ? ' danger' : '')} onClick={() => runSql()} disabled={busy}>
-                  {busy ? 'Running…' : 'Run  ⌘/Ctrl+↵'}
-                </button>
-                <label className={'override-toggle' + (allowDestructive ? ' on' : '')}
-                  title={admins && !canOverride
-                    ? `Only admins of ${branch} can override the guardrail`
-                    : 'Lets DROP TABLE and other blocked changes through, for the next run only'}>
-                  <input type="checkbox" checked={allowDestructive} disabled={busy || (admins !== null && !canOverride)}
-                    onChange={e => setAllowDestructive(e.target.checked)} />
-                  Allow destructive changes <span className="muted">(next run only)</span>
-                </label>
+              <div className="sql-card">
+                <div className="sql-card-head">
+                  <span className="t">Query</span>
+                  <span className="kbd">⌘/Ctrl + ↵</span>
+                </div>
+                <textarea
+                  className="editor"
+                  value={sql}
+                  spellCheck={false}
+                  onChange={e => setSql(e.target.value)}
+                  onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql() }}
+                />
+                <div className="sql-toolbar">
+                  <label className={'override-toggle' + (allowDestructive ? ' on' : '')}
+                    title={admins && !canOverride
+                      ? `Only admins of ${branch} can override the guardrail`
+                      : 'Lets DROP TABLE and other blocked changes through, for the next run only'}>
+                    <input type="checkbox" checked={allowDestructive} disabled={busy || (admins !== null && !canOverride)}
+                      onChange={e => setAllowDestructive(e.target.checked)} />
+                    Allow destructive changes <span className="muted">(next run only)</span>
+                  </label>
+                  <button className={'primary' + (allowDestructive ? ' danger' : '')} onClick={() => runSql()} disabled={busy}>
+                    {busy ? 'Running…' : 'Run query'}
+                  </button>
+                </div>
               </div>
               {queryRes && <Grid res={queryRes} showCommand />}
               {blocked && (
@@ -269,7 +285,7 @@ export default function Console() {
                       <b>{blockedRule ? <>Blocked by policy rule <code>{blockedRule}</code>.</> : 'Blocked by the guardrail.'}</b> Only admins of <code>{branch}</code> can override it
                       {admins && <> — you’re signed in as <code>{admins.you}</code></>}. Ask an admin to grant you on
                       the <Link to="/policies">Policies</Link> page, or run{' '}
-                      <code>odb admin grant {admins?.you || '<email>'} --branch {branch}</code>.
+                      <code>fox admin grant {admins?.you || '<email>'} --branch {branch}</code>.
                     </div>
                   )}
                 </div>
@@ -291,11 +307,11 @@ export default function Console() {
               {busy && !browseRes ? <div className="muted">Loading…</div> : browseRes && <Grid res={browseRes} />}
               {tab === 'rows' && browseRes && !browseRes.error && (
                 <div className="pager">
-                  <button className="ghost" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>‹ Prev</button>
-                  <span>
+                  <span className="count">
                     rows {total === 0 ? 0 : page * PAGE + 1}–{page * PAGE + (browseRes.rows?.length || 0)}
                     {total != null && <> of {total}</>}
                   </span>
+                  <button className="ghost" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>‹ Prev</button>
                   <button className="ghost" onClick={() => setPage(p => p + 1)}
                     disabled={total == null ? (browseRes.rows?.length || 0) < PAGE : (page + 1) * PAGE >= total}>Next ›</button>
                 </div>
@@ -316,8 +332,14 @@ function Grid({ res, showCommand }: { res: QueryResult; showCommand?: boolean })
   const rows = res.rows || []
   const openRow = expanded != null ? rows[expanded] : null
   return (
-    <>
-      {showCommand && <div className="okmsg">✓ {res.command || 'ok'} · {rows.length} row{rows.length === 1 ? '' : 's'}</div>}
+    <div className="result">
+      {showCommand && (
+        <div className="result-bar">
+          <span className="ok">✓ Ran</span>
+          <span className="tag">{res.command || 'ok'}</span>
+          <span>{rows.length} row{rows.length === 1 ? '' : 's'}{cols.length > 0 && <> · {cols.length} column{cols.length === 1 ? '' : 's'}</>}</span>
+        </div>
+      )}
       {cols.length > 0 ? (
         <div className="grid-wrap table-wrap">
           <table>
@@ -340,7 +362,7 @@ function Grid({ res, showCommand }: { res: QueryResult; showCommand?: boolean })
         <div className="okmsg">✓ {res.command || 'ok'}</div>
       )}
       {openRow && <JsonModal cols={cols} row={openRow} onClose={() => setExpanded(null)} />}
-    </>
+    </div>
   )
 }
 

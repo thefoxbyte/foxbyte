@@ -73,10 +73,10 @@ func TestRequiredAssets(t *testing.T) {
 		t    Target
 		want string
 	}{
-		{Target{GOOS: "darwin", HostArch: "arm64", GuestArch: "arm64"}, "odb-darwin-arm64 odb-linux-arm64"},
-		{Target{GOOS: "darwin", HostArch: "amd64"}, "odb-darwin-amd64 odb-linux-amd64"},
-		{Target{GOOS: "windows", HostArch: "amd64"}, "odb-windows-amd64.exe odb-linux-amd64 oxyndb-docker-context.tar.gz"},
-		{Target{GOOS: "linux", HostArch: "arm64"}, "odb-linux-arm64"},
+		{Target{GOOS: "darwin", HostArch: "arm64", GuestArch: "arm64"}, "fox-darwin-arm64 fox-linux-arm64"},
+		{Target{GOOS: "darwin", HostArch: "amd64"}, "fox-darwin-amd64 fox-linux-amd64"},
+		{Target{GOOS: "windows", HostArch: "amd64"}, "fox-windows-amd64.exe fox-linux-amd64 foxbyte-docker-context.tar.gz"},
+		{Target{GOOS: "linux", HostArch: "arm64"}, "fox-linux-arm64"},
 	} {
 		if got := strings.Join(RequiredAssets(c.t), " "); got != c.want {
 			t.Errorf("RequiredAssets(%+v) = %q, want %q", c.t, got, c.want)
@@ -94,7 +94,7 @@ func rel(tag string, draft, pre bool, names ...string) Release {
 
 func TestCandidates(t *testing.T) {
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	full := []string{"SHA256SUMS", "odb-linux-amd64", "odb-darwin-arm64"}
+	full := []string{"SHA256SUMS", "fox-linux-amd64", "fox-darwin-arm64"}
 	rels := []Release{
 		rel("v1.0.0", false, false, "SHA256SUMS"), // still publishing: only checksums so far
 		rel("v0.9.5", false, true, full...),       // prerelease
@@ -116,7 +116,7 @@ func TestCandidates(t *testing.T) {
 	if strings.Join(tags, ",") != "v0.9.2,v0.9" {
 		t.Fatalf("candidates = %v", tags)
 	}
-	// darwin needs odb-linux-arm64, which none of these have.
+	// darwin needs fox-linux-arm64, which none of these have.
 	if got, _ := Candidates(rels, mustVersion(t, "0.8.2"), Target{GOOS: "darwin", HostArch: "arm64", GuestArch: "arm64"}, ""); len(got) != 0 {
 		t.Fatalf("incomplete releases offered to darwin: %v", got)
 	}
@@ -137,23 +137,23 @@ func TestCandidates(t *testing.T) {
 
 func TestChecksums(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "odb-linux-amd64")
+	path := filepath.Join(dir, "fox-linux-amd64")
 	os.WriteFile(path, []byte("binary"), 0o755)
 	sum := sha256.Sum256([]byte("binary"))
 	hexsum := hex.EncodeToString(sum[:])
-	text := strings.ToUpper(hexsum) + " *odb-linux-amd64\r\n\r\n# comment\n" + strings.Repeat("a", 64) + "  other file.tar.gz\n"
+	text := strings.ToUpper(hexsum) + " *fox-linux-amd64\r\n\r\n# comment\n" + strings.Repeat("a", 64) + "  other file.tar.gz\n"
 	sums, err := ParseChecksums(strings.NewReader(text))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sums["other file.tar.gz"] == "" || sums["odb-linux-amd64"] != hexsum {
+	if sums["other file.tar.gz"] == "" || sums["fox-linux-amd64"] != hexsum {
 		t.Fatalf("parsed %v", sums)
 	}
-	if err := sums.Verify("odb-linux-amd64", path); err != nil {
+	if err := sums.Verify("fox-linux-amd64", path); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 	os.WriteFile(path, []byte("tampered"), 0o755)
-	if err := sums.Verify("odb-linux-amd64", path); err == nil || !strings.Contains(err.Error(), "mismatch") {
+	if err := sums.Verify("fox-linux-amd64", path); err == nil || !strings.Contains(err.Error(), "mismatch") {
 		t.Fatalf("tampered file accepted: %v", err)
 	}
 	if err := sums.Verify("missing", path); err == nil {
@@ -182,7 +182,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		if f.delay > 0 {
 			time.Sleep(f.delay)
 		}
-		if r.URL.Path == "/repos/OxynDB/oxyndb/releases" {
+		if r.URL.Path == "/repos/thefoxbyte/foxbyte/releases" {
 			f.lists.Add(1)
 			// Like GitHub, the ETag changes when the list does; a fixed ETag
 			// would answer "not modified" right after a new release.
@@ -232,7 +232,7 @@ func (f *fakeGitHub) publish(tag string, files map[string]string, unlisted ...st
 
 func (f *fakeGitHub) client(cache string) *Client {
 	return NewClient(func(k string) string {
-		if k == "ODB_UPDATE_BASE_URL" {
+		if k == "FOX_UPDATE_BASE_URL" {
 			return f.srv.URL
 		}
 		return ""
@@ -242,9 +242,9 @@ func (f *fakeGitHub) client(cache string) *Client {
 func TestResolveAndDownload(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.98.0", map[string]string{"odb-linux-amd64": "old"})
-	f.publish("v0.99.0", map[string]string{"odb-linux-amd64": "new"})
-	f.publish("v0.99.1", map[string]string{"odb-linux-amd64": "unlisted"}, "odb-linux-amd64") // SHA256SUMS doesn't list it
+	f.publish("v0.98.0", map[string]string{"fox-linux-amd64": "old"})
+	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
+	f.publish("v0.99.1", map[string]string{"fox-linux-amd64": "unlisted"}, "fox-linux-amd64") // SHA256SUMS doesn't list it
 	c := f.client(filepath.Join(t.TempDir(), "cache.json"))
 	ctx := context.Background()
 
@@ -255,7 +255,7 @@ func TestResolveAndDownload(t *testing.T) {
 	if o.Release.Tag != "v0.99.0" {
 		t.Fatalf("offered %s, want v0.99.0 (v0.99.1's checksums are incomplete)", o.Release.Tag)
 	}
-	if n := Notice("0.98.0", o); n != "OxynDB v0.99.0 is available (you have 0.98.0). Run `odb update` to get the new capabilities." {
+	if n := Notice("0.98.0", o); n != "FoxByte v0.99.0 is available (you have 0.98.0). Run `fox update` to get the new capabilities." {
 		t.Fatalf("notice %q", n)
 	}
 	if o, err := c.Resolve(ctx, mustVersion(t, "0.99.0"), linux, ""); err != nil || o != nil {
@@ -270,8 +270,8 @@ func TestResolveAndDownload(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	a, _ := o.Release.Asset("odb-linux-amd64")
-	path, err := c.Download(ctx, a, o.Sums["odb-linux-amd64"], dir)
+	a, _ := o.Release.Asset("fox-linux-amd64")
+	path, err := c.Download(ctx, a, o.Sums["fox-linux-amd64"], dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +293,7 @@ func TestResolveAndDownload(t *testing.T) {
 
 func TestReleaseListCache(t *testing.T) {
 	f := newFakeGitHub(t)
-	f.publish("v0.99.0", map[string]string{"odb-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
 	cache := filepath.Join(t.TempDir(), "cache.json")
 	c := f.client(cache)
 	for i := 0; i < 2; i++ {
@@ -309,7 +309,7 @@ func TestReleaseListCache(t *testing.T) {
 
 func TestBackgroundCheck(t *testing.T) {
 	f := newFakeGitHub(t)
-	f.publish("v0.99.0", map[string]string{"odb-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
 
 	got := BackgroundCheck(f.client(""), "0.98.0", linux, 5*time.Second)()
@@ -327,7 +327,7 @@ func TestBackgroundCheck(t *testing.T) {
 	}
 	// Offline.
 	off := NewClient(func(k string) string {
-		if k == "ODB_UPDATE_BASE_URL" {
+		if k == "FOX_UPDATE_BASE_URL" {
 			return "http://127.0.0.1:1"
 		}
 		return ""
@@ -343,7 +343,7 @@ func TestBackgroundCheck(t *testing.T) {
 func TestAvailableMakesNoAssetRequests(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.99.0", map[string]string{"odb-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
 	c := f.client("")
 	ctx := context.Background()
 
@@ -371,7 +371,7 @@ func TestAvailableMakesNoAssetRequests(t *testing.T) {
 func TestNoticeIsRememberedBetweenStarts(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.99.0", map[string]string{"odb-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
 	c := f.client(filepath.Join(t.TempDir(), "update-check.json"))
 
 	first := BackgroundCheck(c, "0.98.0", linux, 5*time.Second)()
@@ -411,19 +411,19 @@ func TestNoticeIsRememberedBetweenStarts(t *testing.T) {
 }
 
 // A release published after a start found nothing must show on the very next
-// start. Remembering "up to date" hid v0.8.7 for hours while `odb update
+// start. Remembering "up to date" hid v0.8.7 for hours while `fox update
 // --check` reported it.
 func TestNewReleaseShowsOnNextStart(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.98.0", map[string]string{"odb-linux-amd64": "current"})
+	f.publish("v0.98.0", map[string]string{"fox-linux-amd64": "current"})
 	cache := filepath.Join(t.TempDir(), "update-check.json")
 	c := f.client(cache)
 
 	if got := BackgroundCheck(c, "0.98.0", linux, 5*time.Second)(); got != "" {
 		t.Fatalf("up to date, but notice = %q", got)
 	}
-	f.publish("v0.99.0", map[string]string{"odb-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
 	if got := BackgroundCheck(c, "0.98.0", linux, 5*time.Second)(); !strings.Contains(got, "v0.99.0 is available") {
 		t.Fatalf("release published after an up-to-date check: next start printed %q", got)
 	}
@@ -440,14 +440,14 @@ func TestNewReleaseShowsOnNextStart(t *testing.T) {
 	}
 }
 
-// Release is what `odb setup` installs from: any published release with this
+// Release is what `fox setup` installs from: any published release with this
 // platform's files, newest first, regardless of what is installed now.
 func TestReleaseForSetup(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
 	ctx := context.Background()
-	f.publish("v0.98.0", map[string]string{"odb-linux-amd64": "old"})
-	f.publish("v0.99.0", map[string]string{"odb-linux-amd64": "new"})
+	f.publish("v0.98.0", map[string]string{"fox-linux-amd64": "old"})
+	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
 	c := f.client("")
 
 	// Newest complete release, and its checksums come with it.
@@ -455,7 +455,7 @@ func TestReleaseForSetup(t *testing.T) {
 	if err != nil || o == nil || o.Release.Tag != "v0.99.0" {
 		t.Fatalf("latest = %v, %v", o, err)
 	}
-	if o.Sums["odb-linux-amd64"] == "" {
+	if o.Sums["fox-linux-amd64"] == "" {
 		t.Error("Release didn't bring the checksums setup needs")
 	}
 	// "" means the same as "latest".
@@ -470,7 +470,7 @@ func TestReleaseForSetup(t *testing.T) {
 		t.Error("an unknown tag was accepted")
 	}
 	// A release still being published (no engine yet) is skipped, not offered.
-	f.publish("v1.0.0", map[string]string{"odb-darwin-arm64": "wrong platform"})
+	f.publish("v1.0.0", map[string]string{"fox-darwin-arm64": "wrong platform"})
 	if o, err := c.Release(ctx, "latest", linux); err != nil || o.Release.Tag != "v0.99.0" {
 		t.Fatalf("incomplete release offered: %v, %v", o, err)
 	}
@@ -490,9 +490,9 @@ func TestShouldCheck(t *testing.T) {
 	}
 	env[EnvNoCheck] = "1"
 	if ShouldCheck(get, "0.8.2") {
-		t.Error("OXYNDB_NO_UPDATE_CHECK=1 must turn the check off")
+		t.Error("FOX_NO_UPDATE_CHECK=1 must turn the check off")
 	}
-	env["OXYNDB_UPDATE_CHECK_TIMEOUT"] = "3s"
+	env["FOX_UPDATE_CHECK_TIMEOUT"] = "3s"
 	if CheckTimeout(get) != 3*time.Second || CheckTimeout(func(string) string { return "" }) != 1500*time.Millisecond {
 		t.Error("CheckTimeout")
 	}
@@ -501,11 +501,11 @@ func TestShouldCheck(t *testing.T) {
 func TestInstallBinary(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "new")
-	dest := filepath.Join(dir, "bin", "odb")
+	dest := filepath.Join(dir, "bin", "fox")
 	os.MkdirAll(filepath.Dir(dest), 0o755)
 	os.WriteFile(src, []byte("v2"), 0o644)
 	os.WriteFile(dest, []byte("v1"), 0o755)
-	prev := filepath.Join(dir, "updates", "prev", "odb")
+	prev := filepath.Join(dir, "updates", "prev", "fox")
 	if err := InstallBinary(src, dest, prev); err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +515,7 @@ func TestInstallBinary(t *testing.T) {
 	if b, _ := os.ReadFile(prev); string(b) != "v1" {
 		t.Fatalf("prev = %q", b)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "bin", ".odb.new")); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, "bin", ".bb.new")); err == nil {
 		t.Fatal("temporary file left behind")
 	}
 	if err := InstallBinary(filepath.Join(dir, "missing"), dest, prev); err == nil {
@@ -529,8 +529,8 @@ func TestInstallBinary(t *testing.T) {
 func TestSwapExecutable(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "new.exe")
-	dest := filepath.Join(dir, "odb.exe")
-	prev := filepath.Join(dir, "prev", "odb.exe")
+	dest := filepath.Join(dir, "bb.exe")
+	prev := filepath.Join(dir, "prev", "bb.exe")
 	os.WriteFile(src, []byte("v2"), 0o644)
 	os.WriteFile(dest, []byte("v1"), 0o755)
 	if err := SwapExecutable(src, dest, prev); err != nil {
@@ -607,7 +607,7 @@ func TestReplaceDirFromTarGz(t *testing.T) {
 	}
 }
 
-// The release workflow must publish every file `odb update` needs, for every
+// The release workflow must publish every file `fox update` needs, for every
 // platform, or updates to that platform silently never happen.
 func TestReleaseWorkflowPublishesUpdateAssets(t *testing.T) {
 	wf, err := os.ReadFile("../../.github/workflows/release.yml")

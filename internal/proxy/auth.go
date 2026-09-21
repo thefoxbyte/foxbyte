@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/crypto/pbkdf2"
 
-	"github.com/OxynDB/oxyndb/internal/secrets"
+	"github.com/thefoxbyte/foxbyte/internal/secrets"
 )
 
 // backendPassword is the Postgres role password for every branch. It is the
@@ -246,11 +246,11 @@ func nonce() (string, error) {
 
 // ledgerOptions builds the Postgres startup `options` string that injects
 // attribution settings for the Blackbox (read in-DB via
-// current_setting('oxyndb.*')). It appends to any options the client sent.
+// current_setting('foxbyte.*')). It appends to any options the client sent.
 // The values here (email, branch name, alphanumeric session) contain no spaces,
 // so no escaping is required.
 //
-// ownSession adds a fresh odb.session for this connection. An agent's
+// ownSession adds a fresh bb.session for this connection. An agent's
 // branch-scoped key passes false: an agent branch created with provenance keeps
 // its session, task and parent as database defaults (branch.sessionDefaultsSQL),
 // and a session set here would override the database's, so the agent's changes
@@ -265,7 +265,7 @@ func ledgerOptions(existing, actor, branch string, ownSession bool) string {
 			parts = append(parts, "-c", k+"="+v)
 		}
 	}
-	add("odb.actor", actor)
+	add("bb.actor", actor)
 	// Attribute by the branch it routes to: an agent branch is an agent's, so its
 	// DDL is recorded as agent activity rather than hardcoded "human". (Agent
 	// branches are created by the Agent Branch API and named "agent-<id>".)
@@ -273,11 +273,11 @@ func ledgerOptions(existing, actor, branch string, ownSession bool) string {
 	if strings.HasPrefix(branch, "agent-") {
 		kind = "agent"
 	}
-	add("odb.actor_kind", kind)
-	add("odb.branch", branch)
+	add("bb.actor_kind", kind)
+	add("bb.branch", branch)
 	if ownSession {
 		sid, _ := nonce()
-		add("odb.session", strings.NewReplacer("+", "", "/", "", "=", "").Replace(sid))
+		add("bb.session", strings.NewReplacer("+", "", "/", "", "=", "").Replace(sid))
 	}
 	return strings.Join(parts, " ")
 }

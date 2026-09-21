@@ -6,9 +6,9 @@ import {
 } from '../api'
 
 // Blackbox policy gate: rules checked on every schema change before it runs.
-// A warn rule lets the change through with a notice (SQLSTATE ODB02); a block
-// rule refuses it (ODB01). Reading and previewing are open to everyone; changing
-// rules needs odb_admin on the branch.
+// A warn rule lets the change through with a notice (SQLSTATE BBX02); a block
+// rule refuses it (BBX01). Reading and previewing are open to everyone; changing
+// rules needs db_admin on the branch.
 const emptyDraft = { rule_id: '', command_tag: 'ALTER TABLE', pattern: '', action: 'warn' as PolicyAction, reason: '', hint: '' }
 
 export default function Policies() {
@@ -67,19 +67,24 @@ export default function Policies() {
 
   return (
     <div className="fade-up">
-      <h1>Policies</h1>
-      <p className="lead" style={{ marginTop: -2 }}>
-        Blackbox checks every schema change against these rules before it runs. <b>Warn</b> lets it through with a notice;{' '}
-        <b>block</b> refuses it with SQLSTATE <code>ODB01</code> and records the attempt. Changing rules, and overriding a
-        block, needs <code>odb_admin</code> — manage who has it under <a href="#who-can-override">Who can override</a>.
-      </p>
-
-      <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
-        <span className="muted" style={{ fontSize: 13 }}>Branch</span>
-        <select value={branch} onChange={e => setBranch(e.target.value)}>
-          {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
-        </select>
-        <button className="ghost" onClick={() => setAdding(a => !a)} disabled={busy}>{adding ? 'Cancel' : 'Add rule'}</button>
+      <div className="page-head">
+        <div>
+          <h1>Policies</h1>
+          <p className="sub">
+            Blackbox checks every schema change against these rules before it runs. <b>Warn</b> lets it through with a notice;{' '}
+            <b>block</b> refuses it with SQLSTATE <code>BBX01</code> and records the attempt. Changing rules, and overriding a
+            block, needs <code>db_admin</code> — manage who has it under <a href="#who-can-override">Who can override</a>.
+          </p>
+        </div>
+        <div className="tools">
+          <label className="field-inline">
+            <span>Branch</span>
+            <select value={branch} onChange={e => setBranch(e.target.value)}>
+              {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+            </select>
+          </label>
+          <button className="ghost" onClick={() => setAdding(a => !a)} disabled={busy}>{adding ? 'Cancel' : 'Add rule'}</button>
+        </div>
       </div>
 
       {err && <div className="err">{err}</div>}
@@ -149,7 +154,7 @@ export default function Policies() {
         {admins && !admins.you_are_admin && (
           <div className="muted" style={{ marginBottom: 10 }}>
             You (<code>{admins.you}</code>) aren’t an admin on <code>{branch}</code>, so you can’t change this list. An admin can
-            grant you here, or run <code>odb admin grant {admins.you} --branch {branch}</code>.
+            grant you here, or run <code>fox admin grant {admins.you} --branch {branch}</code>.
           </div>
         )}
         <div className="table-wrap">

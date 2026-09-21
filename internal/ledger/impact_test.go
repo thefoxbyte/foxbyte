@@ -11,13 +11,13 @@ import (
 func TestSchemaImpact(t *testing.T) {
 	s := lf(SchemaImpact)
 	for _, want := range []string{
-		"CREATE OR REPLACE FUNCTION odb.blast_radius(target text, target_column text DEFAULT NULL, max_depth integer DEFAULT 5)",
+		"CREATE OR REPLACE FUNCTION bb.blast_radius(target text, target_column text DEFAULT NULL, max_depth integer DEFAULT 5)",
 		"LANGUAGE plpgsql STABLE AS $$",                  // read-only; the caller's search_path resolves the target
 		"least(greatest(coalesce(max_depth, 5), 1), 10)", // depth is capped
 		"dep.deptype IN ('n', 'a')",
 		"'pg_rewrite'::regclass", "'pg_constraint'::regclass", "'pg_trigger'::regclass", "'pg_policy'::regclass",
 		"SELECT x.indrelid FROM pg_index x", // an index is reported against the table it indexes
-		"GRANT EXECUTE ON FUNCTION odb.blast_radius(text, text, integer) TO odbclient;",
+		"GRANT EXECUTE ON FUNCTION bb.blast_radius(text, text, integer) TO db_client;",
 		"SET session_replication_role = replica;", "SET session_replication_role = DEFAULT;",
 	} {
 		if !strings.Contains(s, want) {
@@ -38,7 +38,7 @@ func TestSchemaImpact(t *testing.T) {
 		t.Error("report schema-qualified identities, not regclass text")
 	}
 	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\b(insert|update|delete)\s+(into|from)?\s*odb\.`),
+		regexp.MustCompile(`(?i)\b(insert|update|delete)\s+(into|from)?\s*bb\.`),
 		regexp.MustCompile(`(?i)alter\s+table`),
 		regexp.MustCompile(`(?i)drop\s+(table|trigger|function|event\s+trigger|index)`),
 	} {

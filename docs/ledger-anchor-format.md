@@ -1,29 +1,29 @@
-# OxynDB Blackbox anchor format — version 1
+# FoxByte Blackbox anchor format — version 1
 
-This document specifies the checkpoint **anchor files** OxynDB writes for its
+This document specifies the checkpoint **anchor files** FoxByte writes for its
 Blackbox (formerly the Schema Ledger), so that anyone — including a security team that does not trust
-OxynDB — can verify a ledger independently. The reference verifier is
-`cmd/odb-verify` (open source, standard-library hashing in
+FoxByte — can verify a ledger independently. The reference verifier is
+`cmd/fox-verify` (open source, standard-library hashing in
 `internal/ledger/integrity.go`), but nothing here depends on it.
 
-Blackbox is stored in the database as `odb.schema_ledger`, and the identifiers
-below (`oxyndb-ledger-anchor/1`, `odb ledger export`) keep their original names so
+Blackbox is stored in the database as `bb.schema_ledger`, and the identifiers
+below (`ledger-anchor/1`, `fox ledger export`) keep their original names so
 existing anchors and tools keep working.
 
 ## Why anchors exist
 
-Every ledger row is hash-chained inside the database (`odb.schema_ledger`:
+Every ledger row is hash-chained inside the database (`bb.schema_ledger`:
 `prev_hash`, `row_hash`). A chain proves rows weren't changed *unless* someone
 with superuser access rewrites the rows **and** recomputes every hash after them.
 A checkpoint closes that gap: it records a Merkle root over a range of rows in a
 file **outside** the database. Changing, removing or wiping anchored rows makes
 the rows stop matching the anchor, however the chain was rewritten.
 
-Anchors are only as safe as where they are kept. By default OxynDB writes them
-read-only (mode `0444`) to `~/.oxyndb/anchors/<branch>/`. Point
-`OXYNDB_ANCHOR_DIR` at storage the database's operators cannot rewrite (a
+Anchors are only as safe as where they are kept. By default FoxByte writes them
+read-only (mode `0444`) to `~/.fox/anchors/<branch>/`. Point
+`FOX_ANCHOR_DIR` at storage the database's operators cannot rewrite (a
 write-once mount, a copy synced off the host) for stronger guarantees, and set
-`OXYNDB_ANCHOR_IMMUTABLE=1` to also mark files immutable (`chattr +i`) where
+`FOX_ANCHOR_IMMUTABLE=1` to also mark files immutable (`chattr +i`) where
 the filesystem supports it.
 
 Rows written after the most recent checkpoint are protected only by the hash
@@ -40,10 +40,10 @@ checkpoint order. A directory holds the anchors of exactly one branch.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `format` | string | Always `oxyndb-ledger-anchor/1`. Reject anything else. |
+| `format` | string | Always `ledger-anchor/1`. Reject anything else. |
 | `algorithm` | string | Always `sha256-merkle-v1` (defined below). |
 | `branch` | string | Branch the ledger belongs to. |
-| `checkpoint_id` | integer | Id of the checkpoint row in `odb.ledger_checkpoints`. Informational. |
+| `checkpoint_id` | integer | Id of the checkpoint row in `bb.ledger_checkpoints`. Informational. |
 | `from_id` | integer | First ledger id covered (inclusive). |
 | `to_id` | integer | Last ledger id covered (inclusive). |
 | `entry_count` | integer | Number of ledger rows that existed with `from_id ≤ id ≤ to_id`. |
@@ -70,7 +70,7 @@ command_tag | object_type | object_identity | statement | status | risk
 `id` is decimal. `at` is the row's timestamp converted to UTC and written as
 `YYYY-MM-DD HH:MM:SS`, followed by `.` and the microseconds with trailing zeros
 removed when the fractional part is non-zero (PostgreSQL's
-`(at AT TIME ZONE 'UTC')::text`). This is the same value as `odb._ledger_hash`.
+`(at AT TIME ZONE 'UTC')::text`). This is the same value as `bb._ledger_hash`.
 
 Anchors use the **recomputed** row hash, not the stored `row_hash` column, so they
 commit to the row contents themselves (legacy rows without a stored hash included).
@@ -80,7 +80,7 @@ commit to the row contents themselves (legacy rows without a stored hash include
 1. Order the covered rows by id.
 2. Leaf for each row: `SHA-256(0x00 ‖ row_hash ‖ "|" ‖ ext_hash)`, where
    `row_hash` is the recomputed row hash as ASCII hex and `ext_hash` is the row's
-   capture hash from `odb.ledger_ext.ext_hash` as ASCII hex (empty if the row has
+   capture hash from `bb.ledger_ext.ext_hash` as ASCII hex (empty if the row has
    no capture row).
 3. Combine each level pairwise: `SHA-256(0x01 ‖ left ‖ right)` over the raw
    32-byte digests. If a level has an odd number of nodes, duplicate the last one.
@@ -102,16 +102,16 @@ Given every ledger row and a branch's anchor files:
 Any failure means the ledger no longer matches what was recorded. Rows outside
 every anchor's range are reported as not yet anchored.
 
-## Using odb-verify
+## Using fox-verify
 
 ```bash
-# against a live branch, through the OxynDB gateway with an API key
-odb-verify --dsn 'postgresql://oxyndb:<api-key>@localhost:6432/main?sslmode=require' \
-           --anchors ~/.oxyndb/anchors/main
+# against a live branch, through the FoxByte gateway with an API key
+fox-verify --dsn 'postgresql://dbadmin:<api-key>@localhost:6432/main?sslmode=require' \
+           --anchors ~/.fox/anchors/main
 
 # offline, against an export
-odb ledger export main > main-ledger.jsonl
-odb-verify --export main-ledger.jsonl --anchors ./anchors/main
+fox ledger export main > main-ledger.jsonl
+fox-verify --export main-ledger.jsonl --anchors ./anchors/main
 ```
 
 Exit status is `0` when intact, `1` when tampering is detected, `2` on a usage or

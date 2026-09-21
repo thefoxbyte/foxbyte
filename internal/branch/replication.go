@@ -28,14 +28,14 @@ type Replication struct {
 func (r Replication) Ready() bool { return r.Replicating && r.Tables > 0 && r.TablesReady == r.Tables }
 
 const replicationSQL = `SELECT json_build_object(
-  'replicating', EXISTS (SELECT 1 FROM pg_subscription WHERE subname = 'odb_sub'),
+  'replicating', EXISTS (SELECT 1 FROM pg_subscription WHERE subname = 'bb_sub'),
   'tables', (SELECT count(*) FROM pg_subscription_rel sr JOIN pg_subscription s ON s.oid = sr.srsubid
-             WHERE s.subname = 'odb_sub'),
+             WHERE s.subname = 'bb_sub'),
   'tables_ready', (SELECT count(*) FROM pg_subscription_rel sr JOIN pg_subscription s ON s.oid = sr.srsubid
-                   WHERE s.subname = 'odb_sub' AND sr.srsubstate = 'r'),
+                   WHERE s.subname = 'bb_sub' AND sr.srsubstate = 'r'),
   'last_message_at', (SELECT to_char(max(last_msg_receipt_time) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-                      FROM pg_stat_subscription WHERE subname = 'odb_sub'),
-  'received_lsn', (SELECT max(received_lsn)::text FROM pg_stat_subscription WHERE subname = 'odb_sub'))`
+                      FROM pg_stat_subscription WHERE subname = 'bb_sub'),
+  'received_lsn', (SELECT max(received_lsn)::text FROM pg_stat_subscription WHERE subname = 'bb_sub'))`
 
 // ReplicationStatus reports a branch's continuous import, if it has one.
 func ReplicationStatus(name string) (Replication, error) {

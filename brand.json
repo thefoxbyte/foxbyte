@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "The product's name, in one place. Everything a user reads comes from here:",
+    "the product name, the command, environment variables, the state directory,",
+    "the repository, the documents, the web UI.",
+    "",
+    "Names written into a database or onto disk are deliberately NOT here. Those",
+    "are brand-free and frozen (schema bb, roles db_client/db_admin, pool dbpool,",
+    "containers pg-*, bucket wal-archive, key prefix key_, SQLSTATE BBX01/BBX02,",
+    "anchor format ledger-anchor/1), so renaming the product never touches an",
+    "existing install.",
+    "",
+    "To rename the product: edit this file, run `make brand`, then",
+    "`bash scripts/rebrand.sh` for the prose and file names. See docs/branding.md."
+  ],
+  "product": "FoxByte",
+  "tagline": "the database that branches like code",
+  "cli": "fox",
+  "slug": "foxbyte",
+  "env_prefix": "FOX_",
+  "state_dir": ".fox",
+  "docs_prefix": "FOX_",
+  "repo": "thefoxbyte/foxbyte",
+  "module": "github.com/thefoxbyte/foxbyte",
+  "image_repo": "ghcr.io/thefoxbyte",
+  "vm_instance": "fox",
+  "test_vm": "fox-test",
+  "previous": [
+    {
+      "product": "OxynDB",
+      "cli": "odb",
+      "slug": "oxyndb",
+      "env_prefix": "OXYNDB_",
+      "state_dir": ".oxyndb"
+    },
+    {
+      "product": "VectoraDB",
+      "cli": "vdb",
+      "slug": "vectoradb",
+      "env_prefix": "VECTORADB_",
+      "state_dir": ".vectoradb"
+    }
+  ]
+}

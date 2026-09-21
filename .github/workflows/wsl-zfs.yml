@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Build the OpenZFS bundle the Windows installer stages into the oxyndb WSL2
+# Build the OpenZFS bundle the Windows installer stages into the foxbyte WSL2
 # distro. The runner's own kernel is irrelevant: OpenZFS is compiled against the
 # Microsoft WSL2 kernel *source tree* pinned in deploy/wsl-zfs/build.sh, and the
 # build asserts the resulting kernel release matches EXPECT_RELEASE.
@@ -46,7 +46,7 @@ jobs:
 
       - name: Summarize
         run: |
-          echo "kernel release: $(cat dist/oxyndb-zfs.release)"
+          echo "kernel release: $(cat dist/foxbyte-zfs.release)"
           ls -la dist/
 
       # Only the modules: the userland ships inside the distro image, which this
@@ -57,12 +57,12 @@ jobs:
           TAG: ${{ inputs.release_tag }}
         run: |
           set -eux
-          gh release upload "$TAG" dist/oxyndb-zfs-modules-*.tar.gz --clobber
+          gh release upload "$TAG" dist/foxbyte-zfs-modules-*.tar.gz --clobber
 
           # Keep SHA256SUMS complete, or setup skips verifying this bundle.
           cd dist
           gh release download "$TAG" -p SHA256SUMS -O existing.txt 2>/dev/null || : > existing.txt
-          sha256sum oxyndb-zfs-modules-*.tar.gz > mine.txt
+          sha256sum foxbyte-zfs-modules-*.tar.gz > mine.txt
           awk '{print $2}' mine.txt > names.txt
           grep -vFf names.txt existing.txt > SHA256SUMS || : > SHA256SUMS
           cat mine.txt >> SHA256SUMS

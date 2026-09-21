@@ -1,4 +1,4 @@
-module github.com/OxynDB/oxyndb
+module github.com/thefoxbyte/foxbyte
 
 go 1.26
 

@@ -13,7 +13,7 @@ import (
 type ctxKey int
 
 const userKey ctxKey = 0
-const cookieName = "odb_session"
+const cookieName = "dbengine_session"
 
 // UserFrom returns the authenticated user attached by Authn.
 func UserFrom(ctx context.Context) (User, bool) {

@@ -37,11 +37,11 @@ func TestBundledLinuxBinaryPrefersCache(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)        // os.UserHomeDir on unix
 	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
-	cache := filepath.Join(home, ".oxyndb")
+	cache := filepath.Join(home, ".fox")
 	if err := os.MkdirAll(cache, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(cache, "odb-linux-testarch")
+	want := filepath.Join(cache, "fox-linux-testarch")
 	if err := os.WriteFile(want, elfMagic, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestBundledLinuxBinaryPrefersCache(t *testing.T) {
 }
 
 func TestRefreshEngineBinaryDisabled(t *testing.T) {
-	t.Setenv("OXYNDB_NO_REFRESH", "1")
+	t.Setenv("FOX_NO_REFRESH", "1")
 	if got := refreshEngineBinary("arm64"); got != "" {
 		t.Errorf("refreshEngineBinary should return \"\" when disabled, got %q", got)
 	}
@@ -63,7 +63,7 @@ func TestDownloadFile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	dest := filepath.Join(t.TempDir(), "odb-linux-x")
+	dest := filepath.Join(t.TempDir(), "fox-linux-x")
 	if err := downloadFile(srv.URL, dest); err != nil {
 		t.Fatalf("downloadFile: %v", err)
 	}

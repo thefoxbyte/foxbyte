@@ -14,6 +14,7 @@ package branch
 import (
 	"errors"
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,25 +23,55 @@ import (
 	"sync"
 	"time"
 
-	"github.com/OxynDB/oxyndb/internal/ledger"
-	"github.com/OxynDB/oxyndb/internal/secrets"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/secrets"
 )
 
 const (
-	datasetBase = "oxyndb/branches"
-	mountBase   = "/oxyndb/branches"
-	network     = "oxyndb"
-	image       = "ghcr.io/oxyndb/postgres-walg:16"
+	datasetBase = "dbpool/branches"
+	mountBase   = "/dbpool/branches"
+	network     = "dbnet"
+	image       = "ghcr.io/thefoxbyte/postgres-walg:16"
 	// Throwaway loader images used by the migration adapters, run on the shared
 	// network so they can reach both the source and the target instance.
 	// pgloaderImage is built locally on first use — Debian packages pgloader for
 	// both amd64 and arm64, unlike the amd64-only Docker Hub image.
-	pgloaderImage = "oxyndb/pgloader:local" // MariaDB / MySQL ≤5.7 → Postgres
-	mysqlImage    = "mysql:8"               // client + mysqldump; speaks the MySQL 8.x protocol pgloader can't
-	mongoImage    = "mongo:7"               // ships mongosh for enumerating/exporting collections
-	pgUser        = "oxyndb"
-	pgDatabase    = "oxyndb"
+	pgloaderImage = "dbengine/pgloader:local" // MariaDB / MySQL ≤5.7 → Postgres
+	mysqlImage    = "mysql:8"                 // client + mysqldump; speaks the MySQL 8.x protocol pgloader can't
+	mongoImage    = "mongo:7"                 // ships mongosh for enumerating/exporting collections
+	pgUser        = "dbadmin"
+	pgDatabase    = "appdb"
 	pgUID         = "999" // the postgres user's uid inside the official image
+
+	// Names written into Docker and object storage. They carry no product name
+	// on purpose: the product has been renamed twice, and each time anything
+	// branded in an existing install had to be migrated or thrown away. These
+	// are frozen (see brand.json and docs/branding.md).
+	containerPrefix = "pg-"
+	walBucket       = "wal-archive"
+	objStoreVolume  = "objstore-data"
+	// objStoreEndpoint is where wal-g and mc reach the object store. It follows
+	// objStore: when the container was renamed and this was not, WAL archiving,
+	// backups and restores all failed to resolve the host.
+	objStoreEndpoint = "http://" + objStore + ":9000"
+	objStoreWait     = 60 // seconds to wait for the object store before giving up
+)
+
+// The same names, exported: the uninstaller removes what the engine creates, and
+// both must mean the same thing. Frozen and brand-free (see docs/branding.md).
+const (
+	// Database and ClientRole are what the Gateway must log clients into; it
+	// used to spell them out again, and after a rename it connected to a
+	// database that no longer existed.
+	Database        = pgDatabase
+	Superuser       = pgUser
+	ClientRole      = "db_client"
+	ContainerPrefix = containerPrefix
+	ObjStore        = objStore
+	ObjStoreVolume  = objStoreVolume
+	Network         = network
+	WALBucket       = walBucket
+	ManagedLabel    = managedLabel
 )
 
 // Credentials are generated per install (internal/secrets), not hardcoded. The
@@ -52,7 +83,7 @@ func minioPass() string { return secrets.Load().MinioPassword }
 
 func dataset(name string) string    { return datasetBase + "/" + name }
 func mountpoint(name string) string { return mountBase + "/" + name }
-func container(name string) string  { return "oxyn-" + name }
+func container(name string) string  { return containerPrefix + name }
 func snapFor(parent, name string) string {
 	return dataset(parent) + "@for-" + name
 }
@@ -99,6 +130,7 @@ func startContainer(name string, primary bool) error {
 	args := []string{"run", "-d",
 		"--name", container(name),
 		"--network", network,
+		"--label", managedLabel,
 		"-e", "POSTGRES_USER=" + pgUser,
 		"-e", "POSTGRES_PASSWORD=" + pgPass(),
 		"-e", "POSTGRES_DB=" + pgDatabase,
@@ -109,8 +141,8 @@ func startContainer(name string, primary bool) error {
 	// (BackendAddr -> containerIP), so no host port is published by default. That
 	// keeps branch databases unreachable from outside the VM, where a direct
 	// connection would bypass the gateway, its API key, TLS, and ledger
-	// attribution. OXYNDB_DEBUG_PORTS publishes a host port for debugging.
-	if os.Getenv("OXYNDB_DEBUG_PORTS") != "" {
+	// attribution. FOX_DEBUG_PORTS publishes a host port for debugging.
+	if brand.Getenv("DEBUG_PORTS") != "" {
 		if primary {
 			args = append(args, "-p", "5432:5432")
 		} else {
@@ -118,15 +150,8 @@ func startContainer(name string, primary bool) error {
 		}
 	}
 	if primary {
-		args = append(args,
-			"-e", "WALG_S3_PREFIX=s3://oxyndb-wal",
-			"-e", "AWS_ACCESS_KEY_ID="+minioUser(),
-			"-e", "AWS_SECRET_ACCESS_KEY="+minioPass(),
-			"-e", "AWS_ENDPOINT=http://minio:9000",
-			"-e", "AWS_S3_FORCE_PATH_STYLE=true",
-			"-e", "AWS_REGION=us-east-1",
-			"-e", "WALG_COMPRESSION_METHOD=lz4",
-		)
+		args = append(args, walgEnv()...)
+		args = append(args, "-e", "WALG_COMPRESSION_METHOD=lz4")
 	}
 	args = append(args, image)
 	if primary {
@@ -149,7 +174,7 @@ func waitReady(name string) error {
 	// *temporary* server so it can create the database and run init scripts. That
 	// server listens on the Unix socket but is started with listen_addresses='',
 	// so a socket probe reports ready while the real cluster does not yet exist.
-	// The engine then connects and gets either `database "oxyndb" does not
+	// The engine then connects and gets either `database "foxbyte" does not
 	// exist` or, if it lands in the window where the entrypoint stops the
 	// temporary server, `the database system is shutting down` — which is exactly
 	// how setup failed on a fresh Windows machine.
@@ -178,7 +203,7 @@ func Init() error {
 	if err := ensureNetwork(); err != nil {
 		return err
 	}
-	// After `odb ha failover` the promoted standby is the primary; the old main
+	// After `fox ha failover` the promoted standby is the primary; the old main
 	// must stay stopped.
 	if PrimaryContainer() == container("standby") {
 		return ensurePromotedStandby()
@@ -230,7 +255,7 @@ func Init() error {
 // secret, so the gateway can log clients in as it. The role is created by the
 // ledger install (roles are cluster-global and travel with a branch's clone).
 func syncAppRole(name string) error {
-	return psqlStdin(name, fmt.Sprintf("ALTER ROLE odbclient WITH LOGIN PASSWORD %s;", quoteLiteral(pgPass())))
+	return psqlStdin(name, fmt.Sprintf("ALTER ROLE db_client WITH LOGIN PASSWORD %s;", quoteLiteral(pgPass())))
 }
 
 // ensuredRoles caches which (branch, email) per-user roles this process has
@@ -240,8 +265,8 @@ var ensuredRoles sync.Map
 // EnsureUserRole makes sure a per-user login role named for email exists on the
 // branch's Postgres, so the gateway can log a client in AS that role — and the
 // ledger can read session_user as the actor, an identity the client cannot forge
-// (SET ROLE does not change session_user). The role is a member of odbclient
-// (inherits its data access) and defaults its current role to odbclient, so
+// (SET ROLE does not change session_user). The role is a member of db_client
+// (inherits its data access) and defaults its current role to db_client, so
 // object ownership and RLS stay shared exactly as before.
 func EnsureUserRole(branchName, email string) error {
 	if branchName == "" {
@@ -255,10 +280,10 @@ func EnsureUserRole(branchName, email string) error {
 DECLARE r text := %s;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-    EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB INHERIT IN ROLE odbclient', r);
+    EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB INHERIT IN ROLE db_client', r);
   END IF;
   EXECUTE format('ALTER ROLE %%I WITH LOGIN PASSWORD %%L', r, %s);
-  EXECUTE format('ALTER ROLE %%I SET role = odbclient', r);
+  EXECUTE format('ALTER ROLE %%I SET role = db_client', r);
 END $do$;`, quoteLiteral(email), quoteLiteral(pgPass()))
 	if err := psqlStdin(branchName, sql); err != nil {
 		return err
@@ -311,7 +336,7 @@ func Ledger(name string, limit int) error {
 		coalesce(actor,'-') AS actor, actor_kind AS kind, coalesce(tool,'-') AS tool,
 		command_tag AS command, coalesce(object_identity,'') AS object,
 		status, coalesce(risk,'') AS risk
-		FROM odb.schema_ledger ORDER BY at DESC LIMIT %d`, limit)
+		FROM bb.schema_ledger ORDER BY at DESC LIMIT %d`, limit)
 	return run("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-P", "pager=off", "-c", q)
 }
@@ -323,10 +348,10 @@ func Ledger(name string, limit int) error {
 //
 // LedgerVerifySQL is exported so the control-plane can run the same check.
 const LedgerVerifySQL = `WITH v AS (
-  SELECT id, prev_hash, row_hash, odb._ledger_hash(s.*) AS recomputed,
+  SELECT id, prev_hash, row_hash, bb._ledger_hash(s.*) AS recomputed,
          lag(row_hash) OVER (ORDER BY id) AS prev_link
-  FROM odb.schema_ledger s WHERE row_hash IS NOT NULL)
-SELECT (SELECT count(*) FROM odb.schema_ledger WHERE row_hash IS NULL) AS legacy,
+  FROM bb.schema_ledger s WHERE row_hash IS NOT NULL)
+SELECT (SELECT count(*) FROM bb.schema_ledger WHERE row_hash IS NULL) AS legacy,
        count(*) AS chained,
        count(*) FILTER (WHERE row_hash <> recomputed OR prev_hash IS DISTINCT FROM coalesce(prev_link,'')) AS broken,
        coalesce(min(id) FILTER (WHERE row_hash <> recomputed OR prev_hash IS DISTINCT FROM coalesce(prev_link,''))::text,'') AS first_broken
@@ -395,7 +420,7 @@ func LedgerText(name string, limit int) (string, error) {
 	q := fmt.Sprintf(`SELECT to_char(at,'MM-DD HH24:MI:SS') AS time,
 		coalesce(actor,'-') AS actor, actor_kind AS kind, command_tag AS command,
 		coalesce(object_identity,'') AS object, status, coalesce(risk,'') AS risk
-		FROM odb.schema_ledger ORDER BY at DESC LIMIT %d`, limit)
+		FROM bb.schema_ledger ORDER BY at DESC LIMIT %d`, limit)
 	return QueryText(name, q)
 }
 
@@ -478,7 +503,7 @@ func List() error {
 		return err
 	}
 	fmt.Println("\n=== postgres containers ===")
-	return run("docker", "ps", "--filter", "name=oxyn-",
+	return run("docker", "ps", "--filter", "name=pg-",
 		"--format", "table {{.Names}}\t{{.Status}}")
 }
 
@@ -500,10 +525,22 @@ func Query(name, stmt string) (string, error) {
 
 // --- unified VM stack: MinIO + primary + backups + PITR ---
 
-func minioRunning() bool {
-	out, _ := capture("docker", "ps", "--filter", "name=^minio$", "--format", "{{.Names}}")
-	return out == "minio"
+// objStore is the object-storage container (MinIO), which holds archived WAL
+// and base backups. The name is ours, not the software's: a container called
+// plainly "minio" is common on a developer's machine, and the two would collide
+// -- `setup` would find that container, skip creating its own, and then look
+// for it on a network it was never attached to.
+const objStore = "objstore"
+
+func objStoreRunning() bool {
+	out, _ := capture("docker", "ps", "--filter", "name=^"+objStore+"$", "--format", "{{.Names}}")
+	return out == objStore
 }
+
+// managedLabel marks every container this engine creates, so cleanup finds them
+// by what they are rather than by what they are called. Naming conventions have
+// changed with the product's name; the label does not.
+const managedLabel = "dev.dbengine.managed=1"
 
 // Up brings up the full stack: docker network, MinIO (object storage) with its
 // WAL bucket, and the primary "main" branch (which archives WAL to MinIO).
@@ -514,44 +551,64 @@ func Up() error {
 	if err := ensureNetwork(); err != nil {
 		return err
 	}
-	if !minioRunning() {
-		quiet("docker", "rm", "-f", "minio")
+	if !objStoreRunning() {
+		quiet("docker", "rm", "-f", objStore)
 		if err := run("docker", "run", "-d",
-			"--name", "minio", "--network", network,
+			"--name", objStore, "--network", network,
+			"--label", managedLabel,
 			"-e", "MINIO_ROOT_USER="+minioUser(),
 			"-e", "MINIO_ROOT_PASSWORD="+minioPass(),
 			"-p", "9000:9000", "-p", "9001:9001",
-			"-v", "oxyndb-minio:/data",
+			"-v", objStoreVolume+":/data",
 			minioImage(), "server", "/data", "--console-address", ":9001",
 		); err != nil {
 			return err
 		}
 	}
-	// Create the WAL bucket (idempotent).
+	// Create the WAL bucket (idempotent). The wait is bounded: if the object
+	// store never answers, this used to retry for ever, printing one connection
+	// error per second and never saying what was wrong.
 	if err := run("docker", "run", "--rm", "--network", network,
 		"--entrypoint", "sh", mcImage(), "-c",
-		fmt.Sprintf("until mc alias set local http://minio:9000 %s %s; do sleep 1; done; mc mb -p local/oxyndb-wal", minioUser(), minioPass()),
+		fmt.Sprintf("for i in $(seq 1 %d); do mc alias set local http://%s:9000 %s %s >/dev/null 2>&1 && exec mc mb -p local/%s; sleep 1; done; "+
+			"echo \"could not reach the object store at %s:9000 after %ds\" >&2; exit 1",
+			objStoreWait, objStore, minioUser(), minioPass(), walBucket, objStore, objStoreWait),
 	); err != nil {
-		return err
+		return fmt.Errorf("preparing the %s bucket: %w", walBucket, err)
 	}
 	return Init()
 }
 
-// Down stops MinIO and all Postgres containers (branches + main). ZFS datasets
-// are preserved.
+// Down stops the object store and all Postgres containers (branches + main).
+// ZFS datasets and the object store's volume are preserved.
+//
+// Containers are found by the managed label rather than by name: a container
+// left behind by an earlier version (named for whatever the product was called
+// then) would otherwise survive, holding the ZFS mounts and the ports.
 func Down() error {
-	out, _ := capture("docker", "ps", "-a", "--format", "{{.Names}}")
-	for _, n := range strings.Fields(out) {
-		if n == "minio" || n == "oxyndb-console" || strings.HasPrefix(n, "oxyn-") {
-			quiet("docker", "rm", "-f", n)
+	out, _ := capture("docker", "ps", "-a", "--filter", "label="+managedLabel, "--format", "{{.Names}}")
+	names := strings.Fields(out)
+	// Containers created before the label existed, by name.
+	legacy, _ := capture("docker", "ps", "-a", "--format", "{{.Names}}") // legacy: pre-label naming
+	for _, n := range strings.Fields(legacy) {
+		if n == objStore || strings.HasPrefix(n, containerPrefix) {
+			names = append(names, n)
 		}
+	}
+	seen := map[string]bool{}
+	for _, n := range names {
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		quiet("docker", "rm", "-f", n)
 	}
 	return nil
 }
 
 // Backup takes a base backup of the current primary and pushes it to object
-// storage. It follows the primary pointer rather than always using oxyn-main:
-// after `odb ha failover` main is stopped and the promoted standby holds every
+// storage. It follows the primary pointer rather than always using pg-main:
+// after `fox ha failover` main is stopped and the promoted standby holds every
 // write, so a backup of main would be stale — or would simply fail.
 func Backup() error {
 	primary := PrimaryContainer()
@@ -586,16 +643,14 @@ func Restore(ts string) error {
 		fmt.Printf("starting from base backup %s (the newest one that precedes %s)\n", backup, ts)
 	}
 	quiet("docker", "rm", "-f", container(name))
-	if err := run("docker", "run", "-d",
+	args := []string{"run", "-d",
 		"--name", container(name), "--network", network,
-		"-e", "WALG_S3_PREFIX=s3://oxyndb-wal",
-		// The same per-install MinIO credentials the primary archives WAL with —
-		// the object store rejects anything else, so a hardcoded pair can't fetch.
-		"-e", "AWS_ACCESS_KEY_ID="+minioUser(),
-		"-e", "AWS_SECRET_ACCESS_KEY="+minioPass(),
-		"-e", "AWS_ENDPOINT=http://minio:9000",
-		"-e", "AWS_S3_FORCE_PATH_STYLE=true",
-		"-e", "AWS_REGION=us-east-1",
+		"--label", managedLabel,
+	}
+	// The same per-install object-store credentials the primary archives WAL
+	// with — the store rejects anything else, so a hardcoded pair cannot fetch.
+	args = append(args, walgEnv()...)
+	args = append(args,
 		"-e", "PGDATA=/var/lib/postgresql/data/pgdata",
 		"-e", "RECOVERY_TARGET_TIME="+ts,
 		"-e", "BACKUP_NAME="+backup,
@@ -605,14 +660,15 @@ func Restore(ts string) error {
 		// the chosen base backup instead of the image's LATEST-only entrypoint.
 		"--entrypoint", "bash",
 		image, "-c", restorePITRScript,
-	); err != nil {
+	)
+	if err := run("docker", args...); err != nil {
 		return err
 	}
 	if err := waitRecovered(name); err != nil {
 		return err
 	}
 	fmt.Printf("restored to %q, ready as container %s (port 5433). Query it with:\n"+
-		"  sudo docker exec %s psql -U oxyndb -d oxyndb -c 'SELECT ...'\n",
+		"  sudo docker exec %s psql -U dbadmin -d appdb -c 'SELECT ...'\n",
 		ts, container(name), container(name))
 	return nil
 }
@@ -640,7 +696,7 @@ func Status() error {
 	if primary == container("main") {
 		fmt.Println("=== main readiness ===")
 	} else {
-		// After a failover the promoted standby serves main, so probing oxyn-main
+		// After a failover the promoted standby serves main, so probing pg-main
 		// would report the stopped container and look like an outage.
 		fmt.Printf("=== main readiness (served by %s since the failover) ===\n", primary)
 	}
@@ -680,7 +736,7 @@ func dsn(host, port string) string {
 	return fmt.Sprintf("postgresql://%s:%s@%s:%s/%s", pgUser, pgPass(), host, port, pgDatabase)
 }
 
-// containerIP returns a container's IP on the oxyndb docker network. The
+// containerIP returns a container's IP on the foxbyte docker network. The
 // in-guest gateway routes to it directly, so branch Postgres needs no published
 // host port and stays unreachable from outside the VM.
 func containerIP(cont string) (string, error) {
@@ -697,7 +753,7 @@ func containerIP(cont string) (string, error) {
 }
 
 // parsePublishedPort extracts the host port from `docker port` output such as
-// "0.0.0.0:32781\n[::]:32781". Retained for OXYNDB_DEBUG_PORTS tooling.
+// "0.0.0.0:32781\n[::]:32781". Retained for FOX_DEBUG_PORTS tooling.
 func parsePublishedPort(out string) (string, error) {
 	line := out
 	if i := strings.IndexByte(out, '\n'); i >= 0 {
@@ -717,7 +773,7 @@ func CreateAgentBranch(agentID string) (Info, error) {
 	// (each branch is a full Postgres). 0 disables the cap.
 	if max := agentMax(); max > 0 {
 		if existing, err := ListAgentBranches(); err == nil && len(existing) >= max {
-			return Info{}, fmt.Errorf("agent branch limit reached (%d) — delete some or raise OXYNDB_AGENT_MAX", max)
+			return Info{}, fmt.Errorf("agent branch limit reached (%d) — delete some or raise FOX_AGENT_MAX", max)
 		}
 	}
 	name := agentBranch(agentID)
@@ -732,7 +788,7 @@ func CreateAgentBranch(agentID string) (Info, error) {
 	// direct connections as agent activity even without the Gateway in the path.
 	actor := "agent-" + strings.ReplaceAll(agentID, "'", "''")
 	_ = psqlStdin(name, fmt.Sprintf(
-		"ALTER DATABASE %s SET odb.actor = '%s'; ALTER DATABASE %s SET odb.actor_kind = 'agent';",
+		"ALTER DATABASE %s SET bb.actor = '%s'; ALTER DATABASE %s SET bb.actor_kind = 'agent';",
 		pgDatabase, actor, pgDatabase))
 	// The compatibility switch keeps the old superuser DSN over the docker
 	// network, which only resolves inside the VM.
@@ -791,13 +847,7 @@ func BackendAddr(name string) (string, error) {
 
 // primaryFile records which branch container currently serves as the "main"
 // primary ("main" normally, "standby" after a failover).
-func primaryFile() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		home = "/tmp"
-	}
-	return filepath.Join(home, ".oxyndb", "primary")
-}
+func primaryFile() string { return brand.StatePath("primary") }
 
 // PrimaryContainer is the container currently acting as the "main" primary.
 func PrimaryContainer() string { return container(primaryBranch()) }
@@ -903,15 +953,15 @@ func Suspend(name string) error {
 
 // suspendRefusal says why a branch must not be suspended: the gateway never wakes
 // the primary (that could revive a stepped-down one), and the HA standby is
-// managed by `odb ha` — after a failover it is the primary itself.
+// managed by `fox ha` — after a failover it is the primary itself.
 func suspendRefusal(name, primary string, haEnabled bool) error {
 	switch {
 	case name == "main":
-		return fmt.Errorf("refusing to suspend the primary branch 'main': the gateway won't wake it (stop everything with `odb stop`)")
+		return fmt.Errorf("refusing to suspend the primary branch 'main': the gateway won't wake it (stop everything with `fox stop`)")
 	case container(name) == primary:
-		return fmt.Errorf("refusing to suspend %q: it is serving 'main' since `odb ha failover`", name)
+		return fmt.Errorf("refusing to suspend %q: it is serving 'main' since `fox ha failover`", name)
 	case name == "standby" && haEnabled:
-		return fmt.Errorf("refusing to suspend the HA standby: manage it with `odb ha` (e.g. `odb ha disable`)")
+		return fmt.Errorf("refusing to suspend the HA standby: manage it with `fox ha` (e.g. `fox ha disable`)")
 	}
 	return nil
 }
@@ -977,15 +1027,15 @@ func ActiveConnections(name string) (int, error) {
 }
 
 // SuspendableBranches lists running branches eligible for auto-suspend (every
-// oxyn-* container except the primary "main" and the disposable "restore").
+// pg-* container except the primary "main" and the disposable "restore").
 func SuspendableBranches() ([]string, error) {
-	out, err := capture("docker", "ps", "--filter", "name=oxyn-", "--format", "{{.Names}}")
+	out, err := capture("docker", "ps", "--filter", "name=pg-", "--format", "{{.Names}}")
 	if err != nil {
 		return nil, err
 	}
 	var names []string
 	for _, n := range strings.Fields(out) {
-		bn := strings.TrimPrefix(n, "oxyn-")
+		bn := strings.TrimPrefix(n, containerPrefix)
 		if bn == "main" || bn == "restore" || bn == "standby" {
 			continue // primary, restore target, and HA standby never auto-suspend
 		}
@@ -995,9 +1045,9 @@ func SuspendableBranches() ([]string, error) {
 }
 
 // agentMax is the maximum number of concurrent agent branches (default 50; 0
-// disables the cap). Set OXYNDB_AGENT_MAX to override.
+// disables the cap). Set FOX_AGENT_MAX to override.
 func agentMax() int {
-	if v := os.Getenv("OXYNDB_AGENT_MAX"); v != "" {
+	if v := brand.Getenv("AGENT_MAX"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return n
 		}
@@ -1015,7 +1065,7 @@ func ReapAgentBranches(maxAge time.Duration) (int, error) {
 	// -a: a suspended agent branch still holds its storage, so it must be
 	// reaped like a running one (the Gateway suspends idle branches, so an
 	// abandoned sandbox is usually stopped, not running).
-	out, err := capture("docker", "ps", "-a", "--filter", "name=oxyn-agent-", "--format", "{{.Names}}")
+	out, err := capture("docker", "ps", "-a", "--filter", "name=pg-agent-", "--format", "{{.Names}}")
 	if err != nil {
 		return 0, err
 	}
@@ -1032,7 +1082,7 @@ func ReapAgentBranches(maxAge time.Duration) (int, error) {
 		if time.Since(created) <= maxAge {
 			continue
 		}
-		agentID := strings.TrimPrefix(strings.TrimPrefix(cont, "oxyn-"), "agent-")
+		agentID := strings.TrimPrefix(strings.TrimPrefix(cont, containerPrefix), "agent-")
 		if err := DeleteAgentBranch(agentID); err == nil {
 			reaped++
 		}
@@ -1045,13 +1095,13 @@ func ReapAgentBranches(maxAge time.Duration) (int, error) {
 // connect, so leaving it out would hide it from the cap, from the reaper and
 // from anyone asking what exists.
 func ListAgentBranches() ([]Info, error) {
-	out, err := capture("docker", "ps", "-a", "--filter", "name=oxyn-agent-", "--format", "{{.Names}}")
+	out, err := capture("docker", "ps", "-a", "--filter", "name=pg-agent-", "--format", "{{.Names}}")
 	if err != nil {
 		return nil, err
 	}
 	var infos []Info
 	for _, n := range strings.Fields(out) {
-		bn := strings.TrimPrefix(n, "oxyn-")
+		bn := strings.TrimPrefix(n, containerPrefix)
 		// The DSN carries no key: it is shown once, when the branch is created.
 		// The legacy switch keeps the old superuser DSN over the docker network.
 		d := agentGatewayDSN(bn, "")

@@ -55,7 +55,7 @@ export default function Import() {
     <div className="fade-up import-page">
       <h1>Migrate a database</h1>
       <p className="lead" style={{ marginTop: -2 }}>
-        Move an existing database into a fresh OxynDB instance. Because OxynDB <em>is</em> PostgreSQL,
+        Move an existing database into a fresh FoxByte instance. Because FoxByte <em>is</em> PostgreSQL,
         a Postgres source migrates with full fidelity.
       </p>
 
@@ -163,7 +163,7 @@ export default function Import() {
       </div>
 
       <p className="muted" style={{ marginTop: 16, fontSize: 13 }}>
-        Large or scripted migrations — and SQLite files — can also use the <code>odb import</code> CLI, which streams
+        Large or scripted migrations — and SQLite files — can also use the <code>fox import</code> CLI, which streams
         a file from anywhere on your machine into a new instance.
       </p>
       <ContinuousImports />

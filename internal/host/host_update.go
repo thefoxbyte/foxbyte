@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OxynDB/oxyndb/internal/update"
-	"github.com/OxynDB/oxyndb/internal/version"
+	"github.com/thefoxbyte/foxbyte/internal/update"
+	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
-// UpdateOptions are the flags of `odb update`.
+// UpdateOptions are the flags of `fox update`.
 type UpdateOptions struct {
 	Check   bool   // only report whether a newer release exists
 	Yes     bool   // don't ask for confirmation
@@ -54,12 +54,12 @@ type updater struct {
 	hooks       updateHooks
 	in          io.Reader
 	out         io.Writer
-	home        string // ~/.oxyndb on this computer
+	home        string // ~/.fox on this computer
 	interactive bool
 }
 
-// Update runs `odb update`: it installs the newest release — the engine where it
-// runs, restarted servers, Blackbox upgrades on running branches, and `odb` on
+// Update runs `fox update`: it installs the newest release — the engine where it
+// runs, restarted servers, Blackbox upgrades on running branches, and `fox` on
 // this computer. Databases, branches, backups and settings are never touched.
 func Update(opts UpdateOptions) error {
 	eh := newEngineHost()
@@ -82,10 +82,10 @@ func Update(opts UpdateOptions) error {
 func updateCheckCache() string { return filepath.Join(cacheDir(), "update-check.json") }
 
 // StartUpdateNotice starts looking for a newer release in the background and
-// returns a function that prints the one-line notice if one was found. `odb
+// returns a function that prints the one-line notice if one was found. `fox
 // start` calls the function after its own output. It never delays start by more
 // than the check timeout, and prints nothing when offline or on a development
-// build; OXYNDB_NO_UPDATE_CHECK=1 turns it off.
+// build; FOX_NO_UPDATE_CHECK=1 turns it off.
 func StartUpdateNotice() func() {
 	if !update.ShouldCheck(os.Getenv, version.Version) {
 		return func() {}
@@ -116,36 +116,36 @@ func reportedVersion(out string) (update.Version, error) {
 func (u *updater) run(ctx context.Context) error {
 	cur, err := update.ParseVersion(u.current)
 	if err != nil || cur.IsDev() {
-		return fmt.Errorf("this is a development build (%s) — `odb update` updates installed releases; install one with the installer first", u.current)
+		return fmt.Errorf("this is a development build (%s) — `fox update` updates installed releases; install one with the installer first", u.current)
 	}
 	t := u.hooks.target()
-	u.printf("Checking for a newer OxynDB release…\n")
+	u.printf("Checking for a newer FoxByte release…\n")
 	o, err := u.client.Resolve(ctx, cur, t, u.opts.Version)
 	if err != nil {
 		return fmt.Errorf("checking for updates: %w", err)
 	}
 	if o == nil {
-		u.printf("OxynDB %s is up to date.\n", u.current)
+		u.printf("FoxByte %s is up to date.\n", u.current)
 		return nil
 	}
-	u.printf("OxynDB %s is available (you have %s).\n", o.Release.Tag, u.current)
+	u.printf("FoxByte %s is available (you have %s).\n", o.Release.Tag, u.current)
 	if o.Release.HTMLURL != "" {
 		u.printf("  What's new: %s\n", o.Release.HTMLURL)
 	}
 	if u.opts.Check {
-		u.printf("Run `odb update` to install it.\n")
+		u.printf("Run `fox update` to install it.\n")
 		return nil
 	}
 	if !u.opts.Yes {
 		if !u.interactive {
-			return fmt.Errorf("not a terminal — run `odb update --yes` to update without the confirmation prompt")
+			return fmt.Errorf("not a terminal — run `fox update --yes` to update without the confirmation prompt")
 		}
 		u.printf("\nUpdate to %s now? The servers restart for a few seconds; your data is not touched. [y/N] ", o.Release.Tag)
 		line, rerr := bufio.NewReader(u.in).ReadString('\n')
 		a := strings.ToLower(strings.TrimSpace(line))
 		if rerr != nil && a == "" {
 			// No answer at all: stdin is closed (e.g. </dev/null, which looks like a terminal).
-			return fmt.Errorf("no answer — run `odb update --yes` to update without the confirmation prompt")
+			return fmt.Errorf("no answer — run `fox update --yes` to update without the confirmation prompt")
 		}
 		if a != "y" && a != "yes" {
 			u.printf("Not updated.\n")
@@ -225,7 +225,7 @@ func (u *updater) run(ctx context.Context) error {
 	if err := u.eh.run(staged, "_update-guest", "install-engine", "--src", staged, "--dest", installed); err != nil {
 		u.printf("  installing failed — restarting the servers on %s\n", u.current)
 		_ = u.eh.run(installed, "start")
-		return fmt.Errorf("installing the new engine: %w\nOxynDB is still on %s", err, u.current)
+		return fmt.Errorf("installing the new engine: %w\nFoxByte is still on %s", err, u.current)
 	}
 	if u.hooks.afterEngine != nil {
 		if err := u.hooks.afterEngine(files); err != nil {
@@ -237,21 +237,21 @@ func (u *updater) run(ctx context.Context) error {
 	// re-applies main's Blackbox; running branches get the new Blackbox too.
 	step("Restarting on the new engine and upgrading Blackbox on running branches")
 	if err := u.eh.run(installed, "up"); err != nil {
-		return fmt.Errorf("the new engine is installed but `odb up` failed: %w\nFix the problem above, then run `odb start`", err)
+		return fmt.Errorf("the new engine is installed but `fox up` failed: %w\nFix the problem above, then run `fox start`", err)
 	}
 	ledgerOK := u.eh.run(installed, "ledger", "upgrade", "--all") == nil
 	if !ledgerOK {
-		u.printf("  note: some branches weren't upgraded — run `odb blackbox upgrade --all` later\n")
+		u.printf("  note: some branches weren't upgraded — run `fox blackbox upgrade --all` later\n")
 	}
 	if err := u.eh.run(installed, "start"); err != nil {
-		return fmt.Errorf("the new engine is installed but `odb start` failed: %w\nFix the problem above, then run `odb start`", err)
+		return fmt.Errorf("the new engine is installed but `fox start` failed: %w\nFix the problem above, then run `fox start`", err)
 	}
 
-	// 6. `odb` on this computer.
+	// 6. `fox` on this computer.
 	if u.hooks.replaceHost != nil {
-		step("Updating odb on this computer")
+		step("Updating fox on this computer")
 		if err := u.hooks.replaceHost(files, t); err != nil {
-			return fmt.Errorf("the engine is on %s, but odb on this computer wasn't replaced: %w\nReinstall with the installer to finish (ODB_VERSION=%s)", o.Release.Tag, err, o.Release.Tag)
+			return fmt.Errorf("the engine is on %s, but fox on this computer wasn't replaced: %w\nReinstall with the installer to finish (FOX_VERSION=%s)", o.Release.Tag, err, o.Release.Tag)
 		}
 	}
 
@@ -262,18 +262,18 @@ func (u *updater) run(ctx context.Context) error {
 	}
 	if u.hooks.checkServers != nil {
 		if err := u.hooks.checkServers(); err != nil {
-			u.printf("\nnote: the control plane isn't answering yet (%v) — check `odb status`\n", err)
+			u.printf("\nnote: the control plane isn't answering yet (%v) — check `fox status`\n", err)
 		}
 	}
-	u.printf("\nDone — OxynDB is now %s. Your data was not touched.\n", o.Release.Tag)
+	u.printf("\nDone — FoxByte is now %s. Your data was not touched.\n", o.Release.Tag)
 	if o.Release.HTMLURL != "" {
 		u.printf("  What's new: %s\n", o.Release.HTMLURL)
 	}
-	u.printf("  To go back, reinstall %s with the installer (ODB_VERSION=v%s); the previous binaries are kept in ~/.oxyndb/updates/prev\n", u.current, u.current)
+	u.printf("  To go back, reinstall %s with the installer (FOX_VERSION=v%s); the previous binaries are kept in ~/.fox/updates/prev\n", u.current, u.current)
 	return nil
 }
 
-// hostExecutable is the running odb, with symlinks resolved.
+// hostExecutable is the running fox, with symlinks resolved.
 func hostExecutable() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -285,7 +285,7 @@ func hostExecutable() (string, error) {
 	return exe, nil
 }
 
-// refreshEngineCache replaces the engine `odb setup` would install from the
+// refreshEngineCache replaces the engine `fox setup` would install from the
 // cache with the new one, so a later setup doesn't bring the old engine back.
 func refreshEngineCache(files map[string]string, t update.Target) {
 	name := update.EngineAsset(t)

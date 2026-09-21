@@ -56,7 +56,7 @@ func TestAPIKeys(t *testing.T) {
 	if got, scope, ok := s.VerifyKey(secret); !ok || scope != "" || got.ID != u.ID {
 		t.Errorf("verify key failed: ok=%v", ok)
 	}
-	if _, _, ok := s.VerifyKey("odb_wrong"); ok {
+	if _, _, ok := s.VerifyKey("key_wrong"); ok {
 		t.Error("bad key should not verify")
 	}
 	if err := s.RevokeKey(u.ID, info.ID); err != nil {
@@ -231,7 +231,7 @@ CREATE TABLE api_keys (
 	}
 }
 
-// On a new install `odb start` launches three servers that all create the store
+// On a new install `fox start` launches three servers that all create the store
 // at once. Some used to lose with SQLITE_BUSY and exit, leaving the control
 // plane and the Agent API down after the first start.
 func TestConcurrentFirstOpen(t *testing.T) {

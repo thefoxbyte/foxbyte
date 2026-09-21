@@ -7,6 +7,7 @@ package host
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"io"
 	"os"
 	"os/exec"
@@ -14,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OxynDB/oxyndb/internal/version"
+	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
 // hostSetup is the Windows bootstrap: ensure a ZFS-capable WSL2 distro and bring
@@ -22,8 +23,8 @@ import (
 func hostSetup() error { return setupWindows() }
 
 // currentDistro resolves the WSL2 distro name: an explicit override, else the
-// dedicated "oxyndb" distro.
-func currentDistro() string { return resolveWSLDistro(os.Getenv("OXYNDB_WSL_DISTRO")) }
+// dedicated "foxbyte" distro.
+func currentDistro() string { return resolveWSLDistro(brand.Getenv("WSL_DISTRO")) }
 
 func wslInstalled() bool {
 	_, err := exec.LookPath("wsl.exe")
@@ -58,28 +59,28 @@ func distroRunning(name string) bool {
 
 // guestBin resolves the engine binary path inside the distro.
 func guestBin(name string) string {
-	if v := strings.TrimSpace(os.Getenv("OXYNDB_GUEST_BIN")); v != "" {
+	if v := strings.TrimSpace(brand.Getenv("GUEST_BIN")); v != "" {
 		return v
 	}
 	out, err := exec.Command("wsl.exe", "-d", name, "--",
-		"sh", "-c", "command -v odb || echo /tmp/odb").Output()
+		"sh", "-c", "command -v fox || echo /tmp/fox").Output()
 	if err == nil {
 		if p := strings.TrimSpace(decodeWSLOutput(out)); p != "" {
 			return p
 		}
 	}
-	return "/tmp/odb"
+	return "/tmp/fox"
 }
 
 func forward(args []string) error { return forwardStdin(args, os.Stdin) }
 
 func forwardStdin(args []string, stdin io.Reader) error {
 	if !wslInstalled() {
-		return fmt.Errorf("WSL is required on Windows. Install it with `wsl --install` (admin, then reboot), then run `odb setup`")
+		return fmt.Errorf("WSL is required on Windows. Install it with `wsl --install` (admin, then reboot), then run `fox setup`")
 	}
 	name := currentDistro()
 	if !distroExists(name) {
-		return fmt.Errorf("no OxynDB WSL distro yet — run `odb setup` once to create it")
+		return fmt.Errorf("no FoxByte WSL distro yet — run `fox setup` once to create it")
 	}
 	// `wsl.exe -d <name> -- …` starts a stopped distro on demand but returns as
 	// soon as the command can run — well before systemd has brought Docker up.
@@ -87,7 +88,7 @@ func forwardStdin(args []string, stdin io.Reader) error {
 	// idle timeout or a reboot fails with "cannot reach the Docker daemon".
 	// The macOS path has the same guard; there `limactl start` blocks for us.
 	if !distroRunning(name) {
-		fmt.Printf("Starting the OxynDB distro (%s)…\n", name)
+		fmt.Printf("Starting the FoxByte distro (%s)…\n", name)
 		if err := waitForSystemd(name); err != nil {
 			return err
 		}
@@ -107,7 +108,7 @@ func forwardStdin(args []string, stdin io.Reader) error {
 
 // forwardQuiet forwards a command with its output logged rather than printed.
 //
-// Only setup uses it. The engine's own `odb start` is worth watching when a user
+// Only setup uses it. The engine's own `fox start` is worth watching when a user
 // types it, but during an install the image build and registry pulls are several
 // hundred lines that bury the progress the user actually wants to see.
 func forwardQuiet(args []string) error {
@@ -115,7 +116,7 @@ func forwardQuiet(args []string) error {
 	guest := guestBin(name)
 	out, err := exec.Command("wsl.exe", wslArgs(name, guest, guestEnv(), args)...).CombinedOutput()
 	text := decodeWSLOutput(out)
-	logf("$ odb %s\n%s\n", strings.Join(args, " "), text)
+	logf("$ fox %s\n%s\n", strings.Join(args, " "), text)
 	if err != nil {
 		return fmt.Errorf("%w\n%s", err, lastLines(text, 20))
 	}
@@ -213,7 +214,7 @@ func setupWindows() error {
 	if !wslInstalled() {
 		return fmt.Errorf("WSL is not installed.\n" +
 			"Install it (Administrator PowerShell):\n  wsl --install\n" +
-			"reboot, then run `odb setup` again")
+			"reboot, then run `fox setup` again")
 	}
 	// A quick health probe; `--status` fails if the WSL platform isn't enabled.
 	if err := exec.Command("wsl.exe", "--status").Run(); err != nil {
@@ -221,8 +222,8 @@ func setupWindows() error {
 			"and the 'Virtual Machine Platform' feature on?). Run `wsl --install` / `wsl --update`, then retry")
 	}
 
-	fmt.Println("Setting up OxynDB…")
-	logf("\n---- odb setup %s ----\n", version.Version)
+	fmt.Println("Setting up FoxByte…")
+	logf("\n---- fox setup %s ----\n", version.Version)
 
 	// Fetch the latest engine build so re-running setup installs the newest one
 	// (provisionGuestWSL reinstalls the engine binary on every setup).
@@ -241,7 +242,7 @@ func setupWindows() error {
 		return err
 	}
 	// Provisioning runs on every setup, not only after a fresh import: a setup
-	// interrupted partway leaves the distro existing but incomplete, and `odb
+	// interrupted partway leaves the distro existing but incomplete, and `fox
 	// setup` is the command a user re-runs to repair that. Each step below
 	// checks its own work first, so a healthy distro costs a few probes.
 	if err := provisionGuestWSL(name); err != nil {
@@ -252,7 +253,7 @@ func setupWindows() error {
 	if err := verifyBtrfs(name); err != nil {
 		return err
 	}
-	step("Starting OxynDB")
+	step("Starting FoxByte")
 	err := forwardQuiet([]string{"start"})
 	if err == nil {
 		return finishSetup(name)
@@ -283,47 +284,27 @@ func finishSetup(name string) error {
 		return err
 	}
 	fmt.Println()
-	fmt.Println(green("OxynDB is running."))
-	fmt.Println("  Try:      odb status")
-	// The first start mints a local API key and caches it in the guest; the
-	// gateway needs it as the password, so print the string that actually works.
-	if key := guestAPIKey(name); key != "" {
-		fmt.Printf("  Connect:  postgresql://oxyndb:%s@localhost:6432/main?sslmode=require\n", key)
-	} else {
-		fmt.Println("  Connect:  postgresql://oxyndb:<API_KEY>@localhost:6432/main?sslmode=require")
-		fmt.Println("            (the key is in ~/.oxyndb/config inside the distro)")
-	}
+	fmt.Println(green("FoxByte is running."))
+	fmt.Println("  Open:     https://localhost:8080   — create your account there")
+	fmt.Println("  Try:      fox status")
+	// No key is printed because none is minted: a credential is made by the
+	// person who will use it, from the API keys page or `fox apikey create`.
+	fmt.Println("  Connect:  postgresql://dbadmin:<API_KEY>@localhost:6432/main?sslmode=require")
 	fmt.Println("  Log:      " + setupLogPath())
 	return nil
-}
-
-// guestAPIKey reads the local API key the engine's first start cached inside the
-// distro (~/.oxyndb/config). Returns "" when it isn't there yet — accounts may
-// already exist, in which case no key is cached and the summary says so.
-func guestAPIKey(name string) string {
-	out, err := wslRootOut(name, "cat ~/.oxyndb/config 2>/dev/null || true")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(decodeWSLOutput(out), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "api_key="); ok {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
 }
 
 // shareMountPropagation puts the pool's mounts under shared propagation, once
 // the pool exists.
 //
-// oxyndb-zpool.service does this on every boot, but on the very first run the
-// pool is created by `odb start` after that unit has already run. Without it the
+// dbpool-storage.service does this on every boot, but on the very first run the
+// pool is created by `fox start` after that unit has already run. Without it the
 // first session's mounts stay private, and any sandboxed systemd service that
 // starts afterwards pins them — see the note on finish() in zpoolUpScript.
 func shareMountPropagation(name string) error {
 	// Best-effort: a failure here costs a stale mount, not correctness, and the
 	// next boot fixes it.
-	_ = wslRoot(name, "mount --make-rshared /oxyndb 2>/dev/null || true")
+	_ = wslRoot(name, "mount --make-rshared /foxbyte 2>/dev/null || true")
 	return nil
 }
 
@@ -332,9 +313,9 @@ func shareMountPropagation(name string) error {
 func importDistro(name string) error {
 	rootfs := bundledRootfs()
 	if rootfs == "" {
-		return fmt.Errorf("the Ubuntu rootfs was not found next to odb.exe — reinstall with install.ps1")
+		return fmt.Errorf("the Ubuntu rootfs was not found next to bb.exe — reinstall with install.ps1")
 	}
-	installDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "oxyndb", "wsl")
+	installDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "foxbyte", "wsl")
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return err
 	}
@@ -381,7 +362,7 @@ func waitForSystemd(name string) error {
 		time.Sleep(time.Second)
 	}
 	return fmt.Errorf("systemd did not finish booting in the %q distro after 60s — "+
-		"try `wsl --terminate %s` and re-run `odb setup`", name, name)
+		"try `wsl --terminate %s` and re-run `fox setup`", name, name)
 }
 
 // provisionGuestWSL installs Docker + ZFS in the distro and installs the engine
@@ -417,20 +398,20 @@ func provisionGuestWSL(name string) error {
 // A plain Ubuntu rootfs has no tarball, in which case this is a no-op and the
 // engine builds and pulls as before.
 func loadPreloadedImages(name string) error {
-	const tar = "/usr/local/share/oxyndb/images/oxyndb-images.tar"
+	const tar = "/usr/local/share/dbengine/images/foxbyte-images.tar"
 	if wslRoot(name, fmt.Sprintf("test -f %q", tar)) != nil {
 		return nil
 	}
 	// Already loaded (a re-run): the engine's own check is `docker image
 	// inspect`, so match it rather than guessing from the tarball's presence.
-	if wslRoot(name, "docker image inspect oxyndb/postgres-walg:16 >/dev/null 2>&1") == nil {
+	if wslRoot(name, "docker image inspect foxbyte/postgres-walg:16 >/dev/null 2>&1") == nil {
 		return nil
 	}
 	step("Loading the preinstalled container images")
-	// Distro images built before 16 Sep 2026 tag Postgres `oxyndb/postgres-walg:16`,
+	// Distro images built before 16 Sep 2026 tag Postgres `foxbyte/postgres-walg:16`,
 	// which the engine never looks for — re-tag it so the preload is actually used.
-	retag := "; docker image inspect oxyndb/postgres-walg:16 >/dev/null 2>&1 && " +
-		"docker tag oxyndb/postgres-walg:16 ghcr.io/oxyndb/postgres-walg:16 || true"
+	retag := "; docker image inspect foxbyte/postgres-walg:16 >/dev/null 2>&1 && " +
+		"docker tag foxbyte/postgres-walg:16 ghcr.io/thefoxbyte/postgres-walg:16 || true"
 	if err := wslRoot(name, fmt.Sprintf("set -e; docker load -i %q", tar)+retag); err != nil {
 		// Not fatal: the engine can still build and pull. Losing the fast path
 		// is better than failing an install over it.
@@ -454,12 +435,12 @@ func loadPreloadedImages(name string) error {
 // whole job. The mount is also what makes the data durable across a WSL VM
 // shutdown, which is when the previous design lost its kernel modules.
 const storageUpScript = `#!/bin/sh
-# Managed by odb setup. Mounts the OxynDB btrfs filesystem before the engine
+# Managed by fox setup. Mounts the FoxByte btrfs filesystem before the engine
 # runs. Idempotent: a mounted filesystem is left alone.
 set -e
-IMG=/var/lib/oxyndb-btrfs.img
-MNT=/oxyndb/branches
-SIZE="${OXYNDB_ZPOOL_SIZE:-30G}"
+IMG=/var/lib/dbpool-btrfs.img
+MNT=/dbpool/branches
+SIZE="${FOX_ZPOOL_SIZE:-30G}"
 
 modprobe btrfs 2>/dev/null || true
 mkdir -p "$MNT"
@@ -478,14 +459,14 @@ mount -o loop "$IMG" "$MNT"
 `
 
 const storageUnit = `[Unit]
-Description=OxynDB storage (btrfs)
+Description=FoxByte storage (btrfs)
 After=local-fs.target
 Before=docker.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/lib/oxyndb/storage-up.sh
+ExecStart=/usr/local/lib/dbengine/storage-up.sh
 
 [Install]
 WantedBy=multi-user.target
@@ -494,11 +475,11 @@ WantedBy=multi-user.target
 // ensureStorage installs and enables the mount unit above.
 func ensureStorage(name string) error {
 	step("Preparing storage")
-	script := "set -e; mkdir -p /usr/local/lib/oxyndb; " +
-		writeFileB64("/usr/local/lib/oxyndb/storage-up.sh", storageUpScript) + "; " +
-		"chmod 0755 /usr/local/lib/oxyndb/storage-up.sh; " +
-		writeFileB64("/etc/systemd/system/oxyndb-storage.service", storageUnit) + "; " +
-		"systemctl daemon-reload; systemctl enable --now oxyndb-storage.service"
+	script := "set -e; mkdir -p /usr/local/lib/dbengine; " +
+		writeFileB64("/usr/local/lib/dbengine/storage-up.sh", storageUpScript) + "; " +
+		"chmod 0755 /usr/local/lib/dbengine/storage-up.sh; " +
+		writeFileB64("/etc/systemd/system/dbpool-storage.service", storageUnit) + "; " +
+		"systemctl daemon-reload; systemctl enable --now dbpool-storage.service"
 	if err := wslRoot(name, script); err != nil {
 		return fmt.Errorf("preparing storage: %w", err)
 	}
@@ -507,18 +488,18 @@ func ensureStorage(name string) error {
 	return checkStorageUnit(name)
 }
 
-// checkStorageUnit fails unless oxyndb-storage.service is active.
+// checkStorageUnit fails unless dbpool-storage.service is active.
 //
 // Running the engine without it would let Postgres write into the empty
 // directory the filesystem should have been mounted over, so the data would look
 // fine until the next boot mounted the real filesystem on top and hid it.
 func checkStorageUnit(name string) error {
-	out, _ := wslRootOut(name, "systemctl is-active oxyndb-storage.service 2>&1 || true")
+	out, _ := wslRootOut(name, "systemctl is-active dbpool-storage.service 2>&1 || true")
 	if strings.TrimSpace(decodeWSLOutput(out)) == "active" {
 		return nil
 	}
-	detail, _ := wslRootOut(name, "systemctl status oxyndb-storage.service --no-pager -l 2>&1 | tail -n 12 || true")
-	return fmt.Errorf("the OxynDB btrfs filesystem is not mounted in the %q distro.\n"+
+	detail, _ := wslRootOut(name, "systemctl status dbpool-storage.service --no-pager -l 2>&1 | tail -n 12 || true")
+	return fmt.Errorf("the FoxByte btrfs filesystem is not mounted in the %q distro.\n"+
 		"Refusing to continue: the engine would write into the empty mount point, and the next boot would hide that data.\n\n%s",
 		name, strings.TrimSpace(decodeWSLOutput(detail)))
 }
@@ -557,7 +538,7 @@ func installDocker(name string) error {
 		"systemctl enable --now docker"
 	if err := wslRoot(name, script); err != nil {
 		return fmt.Errorf("installing Docker in the distro: %w\n"+
-			"If this was a network timeout, re-run `odb setup` — it resumes where it stopped", err)
+			"If this was a network timeout, re-run `fox setup` — it resumes where it stopped", err)
 	}
 	return nil
 }
@@ -617,7 +598,7 @@ func stageImageContext(name string) error {
 	}
 	src := bundledDir("docker-context")
 	if src == "" {
-		logf("no bundled docker build context; odb start will look relative to the working directory\n")
+		logf("no bundled docker build context; fox start will look relative to the working directory\n")
 		return nil
 	}
 	step("Staging the Postgres image build context")
@@ -631,31 +612,31 @@ func stageImageContext(name string) error {
 
 // installGuestBinaryWSL copies the bundled linux engine binary into the distro.
 func installGuestBinaryWSL(name string) error {
-	bin := strings.TrimSpace(os.Getenv("OXYNDB_GUEST_BINARY"))
+	bin := strings.TrimSpace(brand.Getenv("GUEST_BINARY"))
 	if bin == "" {
 		bin = bundledLinuxBinary("amd64") // WSL2 is x86_64
 	}
 	if bin == "" {
-		fmt.Println("Note: no bundled Linux odb binary found — the guest will use /tmp/odb " +
-			"if you built it from source (OXYNDB_GUEST_BINARY overrides this).")
+		fmt.Println("Note: no bundled Linux fox binary found — the guest will use /tmp/fox " +
+			"if you built it from source (FOX_GUEST_BINARY overrides this).")
 		return nil
 	}
-	step("Installing the odb engine into the WSL distro")
+	step("Installing the fox engine into the WSL distro")
 	src := winPathToMnt(bin)
-	return wslRoot(name, fmt.Sprintf("install -m 0755 %q /usr/local/bin/odb", src))
+	return wslRoot(name, fmt.Sprintf("install -m 0755 %q /usr/local/bin/fox", src))
 }
 
-// installDir is the directory holding odb.exe — where the installer stages
+// installDir is the directory holding bb.exe — where the installer stages
 // assets and where setup caches anything it downloads.
 func installDir() string {
 	if exe, err := os.Executable(); err == nil {
 		return filepath.Dir(exe)
 	}
-	return filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "oxyndb")
+	return filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "foxbyte")
 }
 
 // assetDirs lists the places the installer (or a dev build) puts support files,
-// relative to odb.exe.
+// relative to bb.exe.
 func assetDirs() []string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -664,13 +645,13 @@ func assetDirs() []string {
 	dir := filepath.Dir(exe)
 	return []string{
 		dir,
-		filepath.Join(dir, "..", "share", "oxyndb"),
+		filepath.Join(dir, "..", "share", "foxbyte"),
 		filepath.Join(dir, "..", "dist"),
 		filepath.Join(dir, "dist"),
 	}
 }
 
-// bundledAsset finds a support file (ZFS bundle, rootfs) shipped next to odb.exe
+// bundledAsset finds a support file (ZFS bundle, rootfs) shipped next to bb.exe
 // by the installer, or in ./dist for a dev build.
 func bundledAsset(basename string) string {
 	for _, d := range assetDirs() {
@@ -700,7 +681,7 @@ func bundledDir(basename string) string {
 // docker build and three registry pulls. A plain Ubuntu rootfs still works, and
 // setup does that extra work itself.
 func bundledRootfs() string {
-	for _, n := range []string{distroImageName, "oxyndb-rootfs.tar.gz", "oxyndb-rootfs.tar"} {
+	for _, n := range []string{distroImageName, "foxbyte-rootfs.tar.gz", "foxbyte-rootfs.tar"} {
 		if p := bundledAsset(n); p != "" {
 			return p
 		}

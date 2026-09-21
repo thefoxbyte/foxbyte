@@ -28,13 +28,13 @@ jobs:
       # merges into it never drops another job's entries.
       - name: Release checksum merging
         run: bash scripts/test_release_checksums.sh
-      # The release job's check that every file `odb update` needs was published.
-      - name: Release assets for odb update
+      # The release job's check that every file `fox update` needs was published.
+      - name: Release assets for fox update
         run: bash scripts/test_check_release_assets.sh
       # The installer must refuse anything it cannot check against SHA256SUMS.
       - name: Installer verification
         run: bash scripts/test_install_sh.sh
-      # docs/ODB_Checklist.html must list exactly the features in ODB_Feature_Implemented.html.
+      # docs/FOX_Checklist.html must list exactly the features in FOX_Feature_Implemented.html.
       - name: Feature checklist in step
         run: bash scripts/test_feature_checklist.sh
       - name: gofmt

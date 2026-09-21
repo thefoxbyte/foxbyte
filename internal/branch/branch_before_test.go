@@ -101,7 +101,7 @@ func TestPickBaseBackup(t *testing.T) {
 	}
 	// Nothing finished before the change.
 	_, err = pickBaseBackup(bs, sys, beforeEntry{ID: 9, LSN: 100, At: time.Now()})
-	if !errors.Is(err, ErrNoBaseBackup) || !strings.Contains(err.Error(), "odb backup create") {
+	if !errors.Is(err, ErrNoBaseBackup) || !strings.Contains(err.Error(), "fox backup create") {
 		t.Fatalf("no backup error = %v", err)
 	}
 	_, err = pickBaseBackup(nil, sys, beforeEntry{ID: 9, At: time.Now()})
@@ -152,7 +152,7 @@ func TestValidateBeforeName(t *testing.T) {
 
 func TestEntryQuery(t *testing.T) {
 	q := entryQuery(5, true)
-	if !strings.Contains(q, "LEFT JOIN odb.ledger_ext e") || !strings.Contains(q, "WHERE l.id = 5") {
+	if !strings.Contains(q, "LEFT JOIN bb.ledger_ext e") || !strings.Contains(q, "WHERE l.id = 5") {
 		t.Fatalf("with ext: %s", q)
 	}
 	q = entryQuery(5, false)

@@ -16,16 +16,16 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/OxynDB/oxyndb/internal/ledger"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // Blackbox agent provenance: which agent session, task and parent session caused
-// a change. A session is recorded in odb.agent_sessions (internal/ledger/
+// a change. A session is recorded in bb.agent_sessions (internal/ledger/
 // provenance.sql); the changes it makes carry the session id in the Blackbox
 // entry and the task, parent session and tool-call hash in its capture row
-// (odb.ledger_ext), which checkpoints anchor.
+// (bb.ledger_ext), which checkpoints anchor.
 
 // Provenance is what a caller may say about an agent run.
 type Provenance struct {
@@ -48,7 +48,7 @@ func (p Provenance) validate() error {
 	return nil
 }
 
-// AgentSession is one row of odb.agent_sessions, with how many Blackbox entries
+// AgentSession is one row of bb.agent_sessions, with how many Blackbox entries
 // carry its id.
 type AgentSession struct {
 	SessionID       string  `json:"session_id"`
@@ -91,7 +91,7 @@ func strPtr(s string) *string {
 }
 
 // CallHash is the sha256 (hex) of a tool call's arguments, recorded as
-// odb.call_hash so a Blackbox entry can be tied to the exact call that caused it.
+// bb.call_hash so a Blackbox entry can be tied to the exact call that caused it.
 func CallHash(tool, branchName, sql, taskID, parentSessionID string) string {
 	b, _ := json.Marshal(struct {
 		Tool            string `json:"tool"`
@@ -105,14 +105,14 @@ func CallHash(tool, branchName, sql, taskID, parentSessionID string) string {
 }
 
 func startSessionSQL(s AgentSession) string {
-	return fmt.Sprintf(`INSERT INTO odb.agent_sessions (session_id, agent_id, parent_session_id, task_id, tool)
+	return fmt.Sprintf(`INSERT INTO bb.agent_sessions (session_id, agent_id, parent_session_id, task_id, tool)
 VALUES (%s, %s, %s, %s, %s) ON CONFLICT (session_id) DO NOTHING`,
 		quoteLiteral(s.SessionID), quoteLiteral(s.AgentID), sqlTextOrNull(s.ParentSessionID), sqlTextOrNull(s.TaskID), sqlTextOrNull(s.Tool))
 }
 
 func provenanceErr(name string, err error) error {
-	if strings.Contains(err.Error(), "odb.agent_sessions") && strings.Contains(err.Error(), "does not exist") {
-		return fmt.Errorf("Blackbox provenance isn't installed on %q — run: odb blackbox upgrade %s", name, name)
+	if strings.Contains(err.Error(), "bb.agent_sessions") && strings.Contains(err.Error(), "does not exist") {
+		return fmt.Errorf("Blackbox provenance isn't installed on %q — run: fox blackbox upgrade %s", name, name)
 	}
 	return err
 }
@@ -147,8 +147,8 @@ func AgentSessions(name string, limit int) ([]AgentSession, error) {
 	lines, err := ledgerLines(name, fmt.Sprintf(`SELECT row_to_json(x) FROM (
   SELECT a.session_id, a.agent_id, a.parent_session_id, a.task_id, a.tool,
          to_char(a.started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
-         (SELECT count(*) FROM odb.schema_ledger s WHERE s.session = a.session_id) AS entries
-  FROM odb.agent_sessions a ORDER BY a.started_at DESC LIMIT %d) x`, limit))
+         (SELECT count(*) FROM bb.schema_ledger s WHERE s.session = a.session_id) AS entries
+  FROM bb.agent_sessions a ORDER BY a.started_at DESC LIMIT %d) x`, limit))
 	if err != nil {
 		return nil, provenanceErr(name, err)
 	}
@@ -188,7 +188,7 @@ func sessionDefaultsSQL(p Provenance) string {
 		}
 		return fmt.Sprintf("ALTER DATABASE %s SET %s = %s;\n", pgDatabase, guc, quoteLiteral(v))
 	}
-	return set("odb.session", p.SessionID) + set("odb.task", p.TaskID) + set("odb.parent_session", p.ParentSessionID)
+	return set("bb.session", p.SessionID) + set("bb.task", p.TaskID) + set("bb.parent_session", p.ParentSessionID)
 }
 
 // CreateAgentBranchWithProvenance creates an agent branch like CreateAgentBranch
@@ -244,7 +244,7 @@ type ChangeNotice struct {
 	Message  string               `json:"message"`
 	Detail   string               `json:"detail,omitempty"`
 	Hint     string               `json:"hint,omitempty"`
-	Policy   *ledger.PolicyDetail `json:"policy,omitempty"` // for SQLSTATE ODB02
+	Policy   *ledger.PolicyDetail `json:"policy,omitempty"` // for SQLSTATE BBX02
 }
 
 // ChangeError is the database error that stopped the change.
@@ -266,7 +266,7 @@ type ExecuteChangeResult struct {
 	CallHash        string                `json:"call_hash"`
 	PolicyPreview   []ledger.PolicyDetail `json:"policy_preview"`
 	Notices         []ChangeNotice        `json:"notices"`
-	Policy          *ledger.PolicyDetail  `json:"policy,omitempty"` // the rule that blocked the change (ODB01)
+	Policy          *ledger.PolicyDetail  `json:"policy,omitempty"` // the rule that blocked the change (BBX01)
 	Error           *ChangeError          `json:"error,omitempty"`
 	Impact          *ImpactReport         `json:"impact,omitempty"` // what the change affects, when its target is recognised
 	BlackboxEntries []int64               `json:"blackbox_entries"`
@@ -359,13 +359,13 @@ func ExecuteChange(req ExecuteChangeRequest) (ExecuteChangeResult, error) {
 		return ExecuteChangeResult{}, err
 	}
 	marker := int64(0)
-	if l, err := ledgerLines(name, "SELECT coalesce(max(id), 0) FROM odb.schema_ledger"); err == nil && len(l) > 0 {
+	if l, err := ledgerLines(name, "SELECT coalesce(max(id), 0) FROM bb.schema_ledger"); err == nil && len(l) > 0 {
 		marker, _ = strconv.ParseInt(l[0], 10, 64)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), envDurationOr("OXYNDB_EXECUTE_CHANGE_TIMEOUT", 10*time.Minute))
+	ctx, cancel := context.WithTimeout(context.Background(), envDurationOr("FOX_EXECUTE_CHANGE_TIMEOUT", 10*time.Minute))
 	defer cancel()
-	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://odbclient:%s@%s/%s", pgPass(), addr, pgDatabase))
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://db_client:%s@%s/%s", pgPass(), addr, pgDatabase))
 	if err != nil {
 		return ExecuteChangeResult{}, err
 	}
@@ -375,9 +375,9 @@ func ExecuteChange(req ExecuteChangeRequest) (ExecuteChangeResult, error) {
 		return ExecuteChangeResult{}, fmt.Errorf("connecting to %q: %w", name, err)
 	}
 	defer conn.Close(context.Background())
-	if _, err := conn.Exec(ctx, `SELECT set_config('odb.actor', $1, false), set_config('odb.actor_kind', 'agent', false),
-  set_config('application_name', $2, false), set_config('odb.session', $3, false), set_config('odb.task', $4, false),
-  set_config('odb.parent_session', $5, false), set_config('odb.call_hash', $6, false)`,
+	if _, err := conn.Exec(ctx, `SELECT set_config('bb.actor', $1, false), set_config('bb.actor_kind', 'agent', false),
+  set_config('application_name', $2, false), set_config('bb.session', $3, false), set_config('bb.task', $4, false),
+  set_config('bb.parent_session', $5, false), set_config('bb.call_hash', $6, false)`,
 		req.AgentID, req.Tool, req.SessionID, req.TaskID, req.ParentSessionID, res.CallHash); err != nil {
 		return ExecuteChangeResult{}, fmt.Errorf("setting provenance: %w", err)
 	}
@@ -394,7 +394,7 @@ func ExecuteChange(req ExecuteChangeRequest) (ExecuteChangeResult, error) {
 		}
 	}
 
-	if lines, err := ledgerLines(name, fmt.Sprintf(`SELECT s.id FROM odb.schema_ledger s LEFT JOIN odb.ledger_ext e ON e.ledger_id = s.id
+	if lines, err := ledgerLines(name, fmt.Sprintf(`SELECT s.id FROM bb.schema_ledger s LEFT JOIN bb.ledger_ext e ON e.ledger_id = s.id
 WHERE s.id > %d AND s.session = %s AND (e.call_hash = %s OR s.status = 'BLOCKED') ORDER BY s.id`,
 		marker, quoteLiteral(req.SessionID), quoteLiteral(res.CallHash))); err == nil {
 		for _, l := range lines {

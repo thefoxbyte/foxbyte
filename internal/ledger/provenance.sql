@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
 --
--- OxynDB Blackbox agent provenance (Blackbox 2.0 Phase 6) — installed AFTER
+-- FoxByte Blackbox agent provenance (Blackbox 2.0 Phase 6) — installed AFTER
 -- ledger.sql, ledger_v2.sql and policy.sql.
 --
 -- An agent session is one run of an agent against a branch: an Agent API branch
@@ -14,7 +14,7 @@
 
 SET session_replication_role = replica;
 
-CREATE TABLE IF NOT EXISTS odb.agent_sessions (
+CREATE TABLE IF NOT EXISTS bb.agent_sessions (
   session_id        text PRIMARY KEY CHECK (length(session_id) BETWEEN 1 AND 200),
   agent_id          text NOT NULL,       -- the ledger actor, e.g. 'agent-alice' or an MCP client name
   parent_session_id text,                -- the session that spawned this one
@@ -22,19 +22,19 @@ CREATE TABLE IF NOT EXISTS odb.agent_sessions (
   tool              text,                -- 'agent-api' | 'mcp' | …
   started_at        timestamptz NOT NULL DEFAULT clock_timestamp()
 );
-CREATE INDEX IF NOT EXISTS agent_sessions_task_idx ON odb.agent_sessions (task_id);
-CREATE INDEX IF NOT EXISTS agent_sessions_parent_idx ON odb.agent_sessions (parent_session_id);
+CREATE INDEX IF NOT EXISTS agent_sessions_task_idx ON bb.agent_sessions (task_id);
+CREATE INDEX IF NOT EXISTS agent_sessions_parent_idx ON bb.agent_sessions (parent_session_id);
 
-CREATE OR REPLACE TRIGGER odb_agent_sessions_append_only BEFORE UPDATE OR DELETE ON odb.agent_sessions
-  FOR EACH ROW EXECUTE FUNCTION odb.deny_ext_change();
-CREATE OR REPLACE TRIGGER odb_agent_sessions_no_truncate BEFORE TRUNCATE ON odb.agent_sessions
-  FOR EACH STATEMENT EXECUTE FUNCTION odb.deny_ext_change();
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON odb.agent_sessions FROM PUBLIC;
-GRANT SELECT ON odb.agent_sessions TO odbclient;
+CREATE OR REPLACE TRIGGER key_agent_sessions_append_only BEFORE UPDATE OR DELETE ON bb.agent_sessions
+  FOR EACH ROW EXECUTE FUNCTION bb.deny_ext_change();
+CREATE OR REPLACE TRIGGER key_agent_sessions_no_truncate BEFORE TRUNCATE ON bb.agent_sessions
+  FOR EACH STATEMENT EXECUTE FUNCTION bb.deny_ext_change();
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON bb.agent_sessions FROM PUBLIC;
+GRANT SELECT ON bb.agent_sessions TO db_client;
 
 -- Which provenance definition is installed.
-CREATE OR REPLACE FUNCTION odb.blackbox_provenance_version() RETURNS text
+CREATE OR REPLACE FUNCTION bb.blackbox_provenance_version() RETURNS text
 LANGUAGE sql IMMUTABLE AS $$ SELECT '1' $$;
-GRANT EXECUTE ON FUNCTION odb.blackbox_provenance_version() TO odbclient;
+GRANT EXECUTE ON FUNCTION bb.blackbox_provenance_version() TO db_client;
 
 SET session_replication_role = DEFAULT;

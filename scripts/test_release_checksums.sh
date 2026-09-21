@@ -54,11 +54,11 @@ if command -v sha256sum >/dev/null 2>&1; then sum() { sha256sum "$1" | awk '{pri
 
 # Assets of the two jobs, in their own dist directories.
 mkdir -p "$tmp/rel" "$tmp/distro"
-for f in odb-linux-amd64 odb-verify-linux-amd64 oxyndb-docker-context.tar.gz; do echo "content of $f" > "$tmp/rel/$f"; done
-echo "content of the distro image" > "$tmp/distro/oxyndb-distro.tar.gz"
+for f in fox-linux-amd64 fox-verify-linux-amd64 foxbyte-docker-context.tar.gz; do echo "content of $f" > "$tmp/rel/$f"; done
+echo "content of the distro image" > "$tmp/distro/foxbyte-distro.tar.gz"
 
-publish_release() { (cd "$tmp/rel" && bash "$script" v9.9.9 odb-linux-amd64 odb-verify-linux-amd64 oxyndb-docker-context.tar.gz) >/dev/null; }
-publish_distro()  { (cd "$tmp/distro" && bash "$script" v9.9.9 oxyndb-distro.tar.gz) >/dev/null; }
+publish_release() { (cd "$tmp/rel" && bash "$script" v9.9.9 fox-linux-amd64 fox-verify-linux-amd64 foxbyte-docker-context.tar.gz) >/dev/null; }
+publish_distro()  { (cd "$tmp/distro" && bash "$script" v9.9.9 foxbyte-distro.tar.gz) >/dev/null; }
 names() { awk '{print $2}' "$STUB_RELEASE/SHA256SUMS" | tr '\n' ' ' | sed 's/ $//'; }
 new_release() { export STUB_RELEASE="$tmp/release-$1"; rm -rf "$STUB_RELEASE"; mkdir -p "$STUB_RELEASE"; unset STUB_OVERWRITE STUB_FAIL_UPLOAD; }
 
@@ -67,11 +67,11 @@ echo "### release-checksums.sh"
 new_release first
 publish_release
 assert_eq "a release without SHA256SUMS gets this job's entries" "$(names)" \
-  "odb-linux-amd64 odb-verify-linux-amd64 oxyndb-docker-context.tar.gz"
+  "fox-linux-amd64 fox-verify-linux-amd64 foxbyte-docker-context.tar.gz"
 
 publish_distro
 assert_eq "the second job adds its entry and keeps the first job's" "$(names)" \
-  "odb-linux-amd64 odb-verify-linux-amd64 oxyndb-distro.tar.gz oxyndb-docker-context.tar.gz"
+  "fox-linux-amd64 fox-verify-linux-amd64 foxbyte-distro.tar.gz foxbyte-docker-context.tar.gz"
 release_then_distro="$(cat "$STUB_RELEASE/SHA256SUMS")"
 
 new_release reversed
@@ -79,31 +79,31 @@ publish_distro
 publish_release
 assert_eq "the result doesn't depend on which job finishes first" "$(cat "$STUB_RELEASE/SHA256SUMS")" "$release_then_distro"
 
-echo "changed binary" > "$tmp/rel/odb-linux-amd64"
+echo "changed binary" > "$tmp/rel/fox-linux-amd64"
 publish_release
 assert_eq "a re-run replaces its own entry without duplicating it" \
-  "$(grep -c ' odb-linux-amd64$' "$STUB_RELEASE/SHA256SUMS")|$(grep ' odb-linux-amd64$' "$STUB_RELEASE/SHA256SUMS" | awk '{print $1}')|$(wc -l < "$STUB_RELEASE/SHA256SUMS" | tr -d ' ')" \
-  "1|$(sum "$tmp/rel/odb-linux-amd64")|4"
+  "$(grep -c ' fox-linux-amd64$' "$STUB_RELEASE/SHA256SUMS")|$(grep ' fox-linux-amd64$' "$STUB_RELEASE/SHA256SUMS" | awk '{print $1}')|$(wc -l < "$STUB_RELEASE/SHA256SUMS" | tr -d ' ')" \
+  "1|$(sum "$tmp/rel/fox-linux-amd64")|4"
 assert_eq "…and leaves the other job's entry untouched" \
-  "$(grep ' oxyndb-distro.tar.gz$' "$STUB_RELEASE/SHA256SUMS" | awk '{print $1}')" "$(sum "$tmp/distro/oxyndb-distro.tar.gz")"
+  "$(grep ' foxbyte-distro.tar.gz$' "$STUB_RELEASE/SHA256SUMS" | awk '{print $1}')" "$(sum "$tmp/distro/foxbyte-distro.tar.gz")"
 
 new_release exact
-printf '%s  %s\n' "$(printf 'a%.0s' $(seq 1 64))" "odb-linux-amd64.sig" > "$STUB_RELEASE/SHA256SUMS"
+printf '%s  %s\n' "$(printf 'a%.0s' $(seq 1 64))" "fox-linux-amd64.sig" > "$STUB_RELEASE/SHA256SUMS"
 publish_release
-assert_eq "entries are matched by exact name (odb-linux-amd64.sig survives)" "$(names)" \
-  "odb-linux-amd64 odb-linux-amd64.sig odb-verify-linux-amd64 oxyndb-docker-context.tar.gz"
+assert_eq "entries are matched by exact name (fox-linux-amd64.sig survives)" "$(names)" \
+  "fox-linux-amd64 fox-linux-amd64.sig fox-verify-linux-amd64 foxbyte-docker-context.tar.gz"
 
 new_release race
-printf '%s  %s\n' "$(printf 'b%.0s' $(seq 1 64))" "oxyndb-distro.tar.gz" > "$tmp/other-job.txt"
+printf '%s  %s\n' "$(printf 'b%.0s' $(seq 1 64))" "foxbyte-distro.tar.gz" > "$tmp/other-job.txt"
 export STUB_OVERWRITE="$tmp/other-job.txt"
-out="$( (cd "$tmp/rel" && bash "$script" v9.9.9 odb-linux-amd64 odb-verify-linux-amd64 oxyndb-docker-context.tar.gz) 2>&1 >/dev/null)"
+out="$( (cd "$tmp/rel" && bash "$script" v9.9.9 fox-linux-amd64 fox-verify-linux-amd64 foxbyte-docker-context.tar.gz) 2>&1 >/dev/null)"
 assert_eq "another job uploading at the same moment is detected and merged again" \
   "$(echo "$out" | grep -c 'merging again')|$(names)" \
-  "1|odb-linux-amd64 odb-verify-linux-amd64 oxyndb-distro.tar.gz oxyndb-docker-context.tar.gz"
+  "1|fox-linux-amd64 fox-verify-linux-amd64 foxbyte-distro.tar.gz foxbyte-docker-context.tar.gz"
 
 new_release failing
 export STUB_FAIL_UPLOAD=1
-(cd "$tmp/rel" && bash "$script" v9.9.9 odb-linux-amd64) >/dev/null 2>&1
+(cd "$tmp/rel" && bash "$script" v9.9.9 fox-linux-amd64) >/dev/null 2>&1
 assert_eq "a failed upload fails the job" "$?" "1"
 unset STUB_FAIL_UPLOAD
 

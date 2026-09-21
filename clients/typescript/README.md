@@ -1,12 +1,12 @@
-# OxynDB — TypeScript client
+# FoxByte — TypeScript client
 
-A thin, dependency-free client for the OxynDB control-plane REST API (uses the
+A thin, dependency-free client for the FoxByte control-plane REST API (uses the
 built-in `fetch`). Apache-2.0.
 
 ```ts
-import { OxynDB } from "@oxyndb/client"
+import { FoxByte } from "@foxbyte/client"
 
-const db = new OxynDB("odb_…")            // API key
+const db = new FoxByte("key_…")            // API key
 await db.createBranch("qa")
 console.log(await db.query("qa", "select 1"))
 console.log(await db.verifyBlackbox("qa"))   // tamper-evidence check (verifyLedger() still works)

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-/** A thin, dependency-free client for the OxynDB control-plane REST API.
+/** A thin, dependency-free client for the FoxByte control-plane REST API.
  * The full API is described by the OpenAPI spec at GET /api/openapi.yaml. */
 
 export interface QueryResult {
@@ -18,9 +18,9 @@ export interface Branch {
   connections?: number
 }
 
-export class OxynDBError extends Error {}
+export class FoxByteError extends Error {}
 
-export class OxynDB {
+export class FoxByte {
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl: string = "https://localhost:8080",
@@ -38,7 +38,7 @@ export class OxynDB {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     })
     if (!res.ok) {
-      throw new OxynDBError(`${res.status} ${res.statusText}: ${await res.text()}`)
+      throw new FoxByteError(`${res.status} ${res.statusText}: ${await res.text()}`)
     }
     const text = await res.text()
     return (text ? JSON.parse(text) : null) as T

@@ -50,8 +50,8 @@ func HAInfo() HAState {
 // deployment, automatic failure detection, and fencing to prevent split-brain.
 
 const (
-	standbyDataset = "oxyndb/standby"
-	standbyMount   = "/oxyndb/standby"
+	standbyDataset = "dbpool/standby"
+	standbyMount   = "/dbpool/standby"
 )
 
 // haDanger says what each HA action would do to a promoted standby.
@@ -61,7 +61,7 @@ var haDanger = map[string]string{
 	"failover": "stop the only primary",
 }
 
-// haGuard refuses HA actions that would destroy the live primary. After `odb ha
+// haGuard refuses HA actions that would destroy the live primary. After `fox ha
 // failover` the promoted standby serves "main": enable and disable delete its
 // storage, and another failover would stop it. Failback is the reverse — it only
 // makes sense after a failover.
@@ -74,8 +74,8 @@ func haGuard(action, primary string) error {
 		return nil
 	}
 	if failedOver {
-		return fmt.Errorf("refusing `odb ha %s`: 'main' is being served by the promoted standby since `odb ha failover`, and this would %s.\n"+
-			"Run `odb ha failback` first to move 'main' back to its own container", action, haDanger[action])
+		return fmt.Errorf("refusing `fox ha %s`: 'main' is being served by the promoted standby since `fox ha failover`, and this would %s.\n"+
+			"Run `fox ha failback` first to move 'main' back to its own container", action, haDanger[action])
 	}
 	return nil
 }
@@ -97,7 +97,7 @@ func allowReplication(primary string) error {
 // out of recovery, so nothing is pushed while it is a standby -- the primary is
 // already archiving those same segments -- and the moment it is promoted it
 // continues the WAL archive on its own timeline. Without this a promoted
-// standby ran with no archiving at all: `odb backup create` had nothing to
+// standby ran with no archiving at all: `fox backup create` had nothing to
 // anchor and a restore could not reach anything written after the failover.
 // archive_mode is a postmaster setting, so it has to be here rather than
 // reloaded at promotion time.
@@ -169,12 +169,12 @@ func HAEnable() error {
 func HAStatus() error {
 	switch ContainerState("standby") {
 	case "absent":
-		fmt.Println("HA not enabled (no standby). Run: oxyndb ha enable")
+		fmt.Println("HA not enabled (no standby). Run: foxbyte ha enable")
 		return nil
 	case "running":
 		// proceed
 	default:
-		fmt.Println("standby exists but is not running. Rebuild it with: oxyndb ha enable")
+		fmt.Println("standby exists but is not running. Rebuild it with: foxbyte ha enable")
 		return nil
 	}
 	fmt.Println("=== primary: connected standbys (pg_stat_replication) ===")
@@ -196,7 +196,7 @@ func HAFailover() error {
 		return err
 	}
 	if ContainerState("standby") != "running" {
-		return fmt.Errorf("no running standby to promote — run 'oxyndb ha enable' first")
+		return fmt.Errorf("no running standby to promote — run 'foxbyte ha enable' first")
 	}
 	if err := run("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container("standby"),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-c", "SELECT pg_promote();"); err != nil {
@@ -207,7 +207,7 @@ func HAFailover() error {
 		return err
 	}
 	fmt.Println("failover complete: standby promoted; 'main' now routes to it via the proxy")
-	fmt.Println("to move 'main' back to its own container later, keeping every write: odb ha failback")
+	fmt.Println("to move 'main' back to its own container later, keeping every write: fox ha failback")
 	return nil
 }
 
@@ -221,9 +221,9 @@ func HADisable() error {
 	return setPrimary("main")
 }
 
-// ensurePromotedStandby is what `odb up` does after a failover: the promoted
+// ensurePromotedStandby is what `fox up` does after a failover: the promoted
 // standby is the primary, so it is brought up (recreated from its storage if
-// `odb stop` removed its container) and the stale old main is left stopped —
+// `fox stop` removed its container) and the stale old main is left stopped —
 // starting it would make a second writable primary.
 func ensurePromotedStandby() error {
 	store := activeStorage()
@@ -232,7 +232,7 @@ func ensurePromotedStandby() error {
 	case "absent":
 		if exec.Command("sudo", "test", "-d", store.standbyPath()+"/pgdata").Run() != nil {
 			return fmt.Errorf("'main' is recorded as served by the promoted standby, but its data is missing (%s).\n"+
-				"If you mean to go back to the old main and discard the writes made since the failover, delete ~/.oxyndb/primary and run `odb up`", store.standbyPath())
+				"If you mean to go back to the old main and discard the writes made since the failover, delete ~/.fox/primary and run `fox up`", store.standbyPath())
 		}
 		if err := startStandbyContainer(store); err != nil {
 			return err
@@ -245,18 +245,18 @@ func ensurePromotedStandby() error {
 	if err := waitReady("standby"); err != nil {
 		return err
 	}
-	fmt.Println("note: 'main' is served by the promoted standby since `odb ha failover` — run `odb ha failback` to move it back to its own container")
+	fmt.Println("note: 'main' is served by the promoted standby since `fox ha failover` — run `fox ha failback` to move it back to its own container")
 	// A standby created before archiving was set up here runs without it, and
 	// `docker start` cannot add it (archive_mode needs a postmaster start), so
 	// say so rather than leaving the gap silent.
 	if haQuery(container("standby"), "SELECT current_setting('archive_mode')") == "off" {
 		fmt.Println("note: this standby is not archiving WAL (it predates that change), so backups and point-in-time restore\n" +
-			"      do not cover writes made since the failover — `odb ha failback` then `odb ha enable` rebuilds it with archiving")
+			"      do not cover writes made since the failover — `fox ha failback` then `fox ha enable` rebuilds it with archiving")
 	}
 	return nil
 }
 
-// HAFailback moves "main" back to its own container after `odb ha failover`,
+// HAFailback moves "main" back to its own container after `fox ha failover`,
 // keeping every write made on the promoted standby since. main is rebuilt as a
 // replica of the standby, allowed to catch up, and promoted once the standby has
 // stopped and main has replayed everything it wrote. Until that moment the
@@ -266,7 +266,7 @@ func HAFailback() error {
 		return err
 	}
 	if ContainerState("standby") != "running" {
-		return fmt.Errorf("the promoted standby isn't running — bring it up with `odb up`, then run `odb ha failback` again")
+		return fmt.Errorf("the promoted standby isn't running — bring it up with `fox up`, then run `fox ha failback` again")
 	}
 	standby := container("standby")
 	store := activeStorage()
@@ -274,7 +274,7 @@ func HAFailback() error {
 	// Before the standby is stopped: undo by removing the half-built main.
 	stopped := func(cause error) error {
 		quiet("docker", "rm", "-f", container("main"))
-		return fmt.Errorf("failback stopped: %w\n'main' is still served by the standby and nothing was lost; fix the problem and run `odb ha failback` again", cause)
+		return fmt.Errorf("failback stopped: %w\n'main' is still served by the standby and nothing was lost; fix the problem and run `fox ha failback` again", cause)
 	}
 	// After the standby is stopped, but before main is promoted: start it again.
 	restart := func(cause error) error {
@@ -353,7 +353,7 @@ func HAFailback() error {
 		return err
 	}
 	if err := waitRecovered("main"); err != nil {
-		return fmt.Errorf("main was promoted but isn't ready yet: %w — check `odb status`", err)
+		return fmt.Errorf("main was promoted but isn't ready yet: %w — check `fox status`", err)
 	}
 
 	fmt.Println("5/5 removing the old standby…")
@@ -361,9 +361,9 @@ func HAFailback() error {
 	store.destroyStandby()
 
 	fmt.Println("failback complete: 'main' is served by its own container again, with every write made during the failover.")
-	fmt.Println("  WAL archiving has resumed. Take a fresh base backup now: odb backup create")
+	fmt.Println("  WAL archiving has resumed. Take a fresh base backup now: fox backup create")
 	fmt.Println("  (point-in-time restore can't reach the time 'main' ran on the standby, which didn't archive WAL).")
-	fmt.Println("  Run `odb ha enable` for a new standby.")
+	fmt.Println("  Run `fox ha enable` for a new standby.")
 	return nil
 }
 

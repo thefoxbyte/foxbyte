@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 
-# OxynDB over MCP
+# FoxByte over MCP
 
-`odb mcp` speaks the [Model Context Protocol](https://modelcontextprotocol.io) on
+`fox mcp` speaks the [Model Context Protocol](https://modelcontextprotocol.io) on
 stdio, so an agent framework can get its own disposable Postgres database, run
 SQL, see exactly what it changed, and throw the database away — through one
 standard interface, with no HTTP client to write.
@@ -13,23 +13,23 @@ corrupt the session.
 
 ## Point a client at it
 
-Most clients take a command and arguments. The command is `odb`, the argument is
+Most clients take a command and arguments. The command is `fox`, the argument is
 `mcp`:
 
 ```json
 {
   "mcpServers": {
-    "oxyndb": {
-      "command": "odb",
+    "foxbyte": {
+      "command": "fox",
       "args": ["mcp"],
-      "env": { "OXYNDB_API_KEY": "odb_…" }
+      "env": { "FOX_API_KEY": "key_…" }
     }
   }
 }
 ```
 
-`odb` must be on the client's `PATH` (the installer puts it there) and
-OxynDB must be running — `odb start` — because the tools talk to the same
+`fox` must be on the client's `PATH` (the installer puts it there) and
+FoxByte must be running — `fox start` — because the tools talk to the same
 engine the CLI does.
 
 The key is required: these tools create databases, run SQL and branch `main`,
@@ -37,10 +37,10 @@ and every change is recorded against the account the key belongs to. Make one
 with
 
 ```
-odb apikey create you@example.com mcp
+fox apikey create you@example.com mcp
 ```
 
-and put it in the `env` block above (`--key <odb_…>` also works, but a key on
+and put it in the `env` block above (`--key <key_…>` also works, but a key on
 the command line is visible in the process list). Started without one, the
 server prints these instructions and exits rather than serving unauthenticated.
 
@@ -50,7 +50,7 @@ branch is refused, and `create_branch`, `delete_branch`, `list_branches`,
 `blackbox_diff` and `branch_before_change` are refused outright, since each
 reaches past a single branch. An account key behaves as it always did.
 
-On macOS and Windows the engine runs inside a VM or WSL distro, and `odb mcp`
+On macOS and Windows the engine runs inside a VM or WSL distro, and `fox mcp`
 forwards into it automatically, so the config above is identical on every
 platform.
 
@@ -59,7 +59,7 @@ Check it by hand before wiring up a client:
 ```sh
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | odb mcp
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | fox mcp
 ```
 
 You should get two JSON lines back: the server's capabilities, then the tools.
@@ -117,20 +117,20 @@ and it does not return the policy verdict.
   can read the key, and the process itself runs with the privileges of the user
   who started it.
 - **No superuser by default.** `run_sql` connects as the non-superuser
-  `odbclient` role, so an agent cannot disable triggers or override the
-  destructive-DDL guardrail. `OXYNDB_MCP_SUPERUSER=1` restores the old
-  superuser behaviour (and `OXYNDB_AGENT_SUPERUSER=1` does the same for agent
+  `db_client` role, so an agent cannot disable triggers or override the
+  destructive-DDL guardrail. `FOX_MCP_SUPERUSER=1` restores the old
+  superuser behaviour (and `FOX_AGENT_SUPERUSER=1` does the same for agent
   branches created over the HTTP API) — only for compatibility with setups that
   depended on it.
 - **`branch_before_change` takes minutes, not seconds.** It restores a base
   backup and replays WAL, and it needs a base backup taken before the change
-  (`odb backup create`).
+  (`fox backup create`).
 
 ## See also
 
 - `docs/policy-errors.md` — the machine-readable contract behind `policy_check`
-  and blocked changes (`ODB01`, `ODB02`).
+  and blocked changes (`BBX01`, `BBX02`).
 - `docs/ledger-anchor-format.md` — the anchor format `ledger_integrity` checks
-  against, and what `odb-verify` reads.
+  against, and what `fox-verify` reads.
 - The REST API (`GET /api/openapi.yaml` from a running engine) for the same
   operations over HTTP.

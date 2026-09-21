@@ -4,7 +4,9 @@ import { createBrowserRouter, RouterProvider, NavLink, Outlet, Link, Navigate } 
 import './styles.css'
 import { AuthProvider, useAuth } from './auth-context'
 import AppLayout from './components/AppLayout'
-import { Mark, ThemeToggle } from './components/brand'
+import { Mark, ThemeToggle, Wordmark } from './components/brand'
+import { BRAND } from './brand'
+
 import Landing from './pages/Landing'
 import Docs from './pages/Docs'
 import Guide from './pages/Guide'
@@ -20,6 +22,10 @@ import Console from './pages/Console'
 import Login from './pages/Login'
 import ApiKeys from './pages/ApiKeys'
 
+// The page title follows the brand, so a rename does not leave the old name
+// in the browser tab (index.html carries it too, for the first paint).
+document.title = `${BRAND.product} — ${BRAND.tagline}`
+
 function Loading() {
   return <div className="container muted">Loading…</div>
 }
@@ -31,14 +37,14 @@ function PublicLayout() {
   return (
     <>
       <header className="nav">
-        <Link to="/" className="brand"><Mark /> Oxyn<span>DB</span></Link>
+        <Link to="/" className="brand"><Mark /> <Wordmark /></Link>
         <div className="links">
           <NavLink to="/" end>Home</NavLink>
           <NavLink to="/guide">Guide</NavLink>
           <NavLink to="/docs">Docs</NavLink>
         </div>
         <div className="right">
-          <a href="https://github.com/OxynDB/oxyndb" target="_blank" rel="noreferrer" className="muted" style={{ fontSize: 13 }}>GitHub ↗</a>
+          <a href={BRAND.repoUrl} target="_blank" rel="noreferrer" className="muted" style={{ fontSize: 13 }}>GitHub ↗</a>
           {user
             ? <Link to="/dashboard" className="btn ghost" style={{ padding: '6px 12px' }}>Open dashboard →</Link>
             : <NavLink to="/login" className="btn ghost" style={{ padding: '6px 12px' }}>Log in</NavLink>}
@@ -48,7 +54,7 @@ function PublicLayout() {
       <main className="container"><Outlet /></main>
       <footer className="container" style={{ paddingTop: 0, paddingBottom: 0 }}>
         <div className="footer">
-          <Link to="/" className="brand"><Mark size={20} /> Oxyn<span>DB</span></Link>
+          <Link to="/" className="brand"><Mark size={20} /> <Wordmark /></Link>
           <span className="muted">Serverless Postgres · branches · time-travel · agent DBs</span>
           <span style={{ marginLeft: 'auto' }} className="muted">Open source — AGPL-3.0 core · Apache-2.0 clients</span>
         </div>

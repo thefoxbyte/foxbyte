@@ -13,34 +13,34 @@ fixes exactly what a client — a human in `psql`, an application driver, an age
 over MCP — receives in each case, so tools can react without parsing prose.
 
 It does **not** change the existing guardrail. `DROP TABLE` / `DROP SCHEMA`
-blocked through `odb.policy` keep today's error, byte for byte:
+blocked through `bb.policy` keep today's error, byte for byte:
 
 ```
-ERROR:  OxynDB guardrail: DROP TABLE is blocked by policy (set odb.allow_destructive=on to override)
-HINT:   Only superusers and members of odb_admin may override. Grant it with: odb admin grant <email>
+ERROR:  FoxByte guardrail: DROP TABLE is blocked by policy (set bb.allow_destructive=on to override)
+HINT:   Only superusers and members of db_admin may override. Grant it with: fox admin grant <email>
 SQLSTATE 42501 (insufficient_privilege)
 ```
 
-The gate runs after that guardrail (event trigger `odb_policy_start`, which sorts
-after `odb_guard_start`), so a statement the guardrail blocks never reaches it.
+The gate runs after that guardrail (event trigger `bb_policy_start`, which sorts
+after `bb_guard_start`), so a statement the guardrail blocks never reaches it.
 
-The guardrail is per command, in `odb.policy` (op → action):
+The guardrail is per command, in `bb.policy` (op → action):
 
 | action | effect |
 |---|---|
-| `block` | refused unless a superuser or `odb_admin` member sets `odb.allow_destructive=on` |
+| `block` | refused unless a superuser or `db_admin` member sets `bb.allow_destructive=on` |
 | `flag` | runs; its Blackbox entry is recorded `FLAGGED` |
 | `allow` | runs, recorded as usual (the same as not listing the command) |
 
-Any other action is refused. Every change to `odb.policy` is recorded, with who
-made it, in the append-only `odb.policy_history`.
+Any other action is refused. Every change to `bb.policy` is recorded, with who
+made it, in the append-only `bb.policy_history`.
 
-## Block: an ERROR with SQLSTATE `ODB01`
+## Block: an ERROR with SQLSTATE `BBX01`
 
 | Part | Value |
 |---|---|
 | Severity | `ERROR` — the statement and its transaction are rolled back |
-| SQLSTATE | **`ODB01`** (custom; never used by PostgreSQL) |
+| SQLSTATE | **`BBX01`** (custom; never used by PostgreSQL) |
 | MESSAGE | `Blackbox policy: <reason> (rule <rule_id>)` — human text, **not** stable |
 | DETAIL | one-line JSON object, defined below — **stable** |
 | HINT | the next step in plain words — human text, **not** stable |
@@ -49,28 +49,28 @@ Example in `psql`:
 
 ```
 ERROR:  Blackbox policy: changing a column type rewrites the table and can break readers (rule alter-column-type)
-DETAIL:  {"v":1,"rule_id":"alter-column-type","action":"block","command":"ALTER TABLE","matched":"\\malter\\M[^;]*\\mtype\\M","reason":"changing a column type rewrites the table and can break readers","hint":"Try it on a branch first: odb branch create try-it","override":"odb_admin","evaluation_id":42,"blackbox_id":918,"impact":null}
-HINT:  Try it on a branch first (odb branch create try-it), or ask a Blackbox admin to allow rule alter-column-type for this session.
+DETAIL:  {"v":1,"rule_id":"alter-column-type","action":"block","command":"ALTER TABLE","matched":"\\malter\\M[^;]*\\mtype\\M","reason":"changing a column type rewrites the table and can break readers","hint":"Try it on a branch first: fox branch create try-it","override":"db_admin","evaluation_id":42,"blackbox_id":918,"impact":null}
+HINT:  Try it on a branch first (fox branch create try-it), or ask a Blackbox admin to allow rule alter-column-type for this session.
 ```
 
 The blocked attempt is recorded in Blackbox as a `BLOCKED` entry with risk
 `policy` (written through a separate connection, so it survives the rollback —
 the same mechanism the guardrail uses), and as a row in
-`odb.ledger_policy_evaluations`.
+`bb.ledger_policy_evaluations`.
 
-## Warn: a NOTICE with SQLSTATE `ODB02`
+## Warn: a NOTICE with SQLSTATE `BBX02`
 
 The statement runs normally. The client receives, before the command completes:
 
 | Part | Value |
 |---|---|
 | Severity | `NOTICE` |
-| SQLSTATE | **`ODB02`** |
+| SQLSTATE | **`BBX02`** |
 | MESSAGE | `Blackbox policy warning: <reason> (rule <rule_id>)` |
 | DETAIL | the same JSON object with `"action":"warn"` |
 | HINT | as for block |
 
-A warned statement is recorded in `odb.ledger_policy_evaluations`; its Blackbox
+A warned statement is recorded in `bb.ledger_policy_evaluations`; its Blackbox
 entry is written as usual (`APPLIED` or `FLAGGED`). One statement matching several
 rules produces one NOTICE per warn rule; if any matching rule blocks, only that
 block ERROR is raised (the first blocking rule by `rule_id` order).
@@ -86,8 +86,8 @@ block ERROR is raised (the first blocking rule by `rule_id` order).
 | `matched` | string or null | The rule's statement pattern that matched, or null for a command-only rule. |
 | `reason` | string | Why the rule exists (the rule's own text). |
 | `hint` | string | Suggested next step (the rule's own text, or a default). |
-| `override` | string or null | Who may override a block: `"odb_admin"`, or null if the rule allows no override. Always null for warn. |
-| `evaluation_id` | integer or null | Row id in `odb.ledger_policy_evaluations`; null if recording failed. |
+| `override` | string or null | Who may override a block: `"db_admin"`, or null if the rule allows no override. Always null for warn. |
+| `evaluation_id` | integer or null | Row id in `bb.ledger_policy_evaluations`; null if recording failed. |
 | `blackbox_id` | integer or null | Id of the `BLOCKED` Blackbox entry (block only); null for warn, if recording failed, or when the same transaction had already written to Blackbox (see below). |
 | `impact` | object or null | Reserved for impact analysis (Phase 7). Always null in v1. |
 
@@ -103,23 +103,23 @@ Reading it from common drivers:
 ```python
 # psycopg 3
 except psycopg.Error as e:
-    if e.diag.sqlstate == "ODB01":
+    if e.diag.sqlstate == "BBX01":
         info = json.loads(e.diag.message_detail)
 ```
 
 ```js
 // node-postgres
-catch (err) { if (err.code === "ODB01") { const info = JSON.parse(err.detail) } }
+catch (err) { if (err.code === "BBX01") { const info = JSON.parse(err.detail) } }
 ```
 
 ```go
 // pgx
 var pgErr *pgconn.PgError
-if errors.As(err, &pgErr) && pgErr.Code == "ODB01" { json.Unmarshal([]byte(pgErr.Detail), &info) }
+if errors.As(err, &pgErr) && pgErr.Code == "BBX01" { json.Unmarshal([]byte(pgErr.Detail), &info) }
 ```
 
 Warnings arrive through each driver's notice handler (psycopg `add_notice_handler`,
-node-postgres `client.on('notice')`, pgx `OnNotice`) with `sqlstate`/`code` `ODB02`.
+node-postgres `client.on('notice')`, pgx `OnNotice`) with `sqlstate`/`code` `BBX02`.
 
 ## What a rule's pattern is matched against
 
@@ -147,12 +147,12 @@ matched before stops matching:
 - a query string over 256 KB, or a run whose statements can't be lined up with the
   commands that fire, falls back to the whole query.
 
-`odb policy check` / `…/policies/check` / MCP `policy_check` match the same way: a
+`fox policy check` / `…/policies/check` / MCP `policy_check` match the same way: a
 rule matches if it matches any statement in the text with the given command tag.
 
 These rules guard against mistakes. They are not a security boundary against a
 client determined to evade them: a pattern is text, and text can be written many
-ways. Use the command-level guardrail (`odb.policy`, below) or database privileges
+ways. Use the command-level guardrail (`bb.policy`, below) or database privileges
 where a change must be impossible.
 
 ### A block after a write in the same transaction
@@ -166,17 +166,17 @@ same applies to the guardrail below.
 
 ## Overriding a block
 
-A block can be overridden only by a superuser or a member of `odb_admin` (the same
+A block can be overridden only by a superuser or a member of `db_admin` (the same
 check as the guardrail, on `session_user`), for one rule at a time:
 
 ```sql
-SET odb.policy_allow = 'alter-column-type';        -- comma-separated rule ids
+SET bb.policy_allow = 'alter-column-type';        -- comma-separated rule ids
 ALTER TABLE orders ALTER COLUMN total TYPE numeric;
 ```
 
 The override is recorded: the evaluation row has `action = 'allowed'` and the
 statement's capture row has `override_used = true`. For anyone else the setting is
-ignored and the block stands. `odb.allow_destructive` does **not** override policy
+ignored and the block stands. `bb.allow_destructive` does **not** override policy
 rules (it stays specific to the guardrail).
 
 ## Rules shipped by default (all `warn`)
@@ -188,21 +188,21 @@ rules (it stays specific to the guardrail).
 | `drop-index` | `DROP INDEX` | any |
 | `grant-to-public` | `GRANT` | `… TO PUBLIC` |
 
-Blocking is opt-in per rule (`odb policy block <rule_id>`). TRUNCATE is out of
+Blocking is opt-in per rule (`fox policy block <rule_id>`). TRUNCATE is out of
 scope: it doesn't fire DDL event triggers.
 
 ## Where else the object appears
 
-- `odb policy check "<SQL>"` / REST `POST /api/branches/{name}/policies/check`:
+- `fox policy check "<SQL>"` / REST `POST /api/branches/{name}/policies/check`:
   the same JSON objects, as a list, without running the statement.
 - MCP `execute_change` (Phase 6): on a block the tool result carries this JSON
   object under `"policy"`.
 
 ## Decisions (review of 14 Sep 2026)
 
-1. **Codes:** `ODB01` for a block (ERROR), `ODB02` for a warning (NOTICE).
-2. **Override:** superusers and `odb_admin` members only, per rule, with
-   `SET odb.policy_allow = '<rule ids>'`; the override is recorded.
+1. **Codes:** `BBX01` for a block (ERROR), `BBX02` for a warning (NOTICE).
+2. **Override:** superusers and `db_admin` members only, per rule, with
+   `SET bb.policy_allow = '<rule ids>'`; the override is recorded.
 3. **Defaults:** all four shipped rules warn; blocking is opt-in per rule.
 4. **Recording:** blocked attempts become `BLOCKED` Blackbox entries with risk
    `policy`, as the guardrail's do.

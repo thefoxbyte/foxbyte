@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package host
+
+import (
+	"fmt"
+	"os/exec"
+	"strings"
+
+	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
+)
+
+// uninstallSteps on macOS: the engine lives in a Lima VM.
+//
+// A VM we created is deleted outright, which takes everything inside with it.
+// A VM we merely adopted -- a plain "default" VM, or one named for a retired
+// product -- is left alone and emptied instead: it may hold things that are
+// nothing to do with us.
+func uninstallSteps(o UninstallOptions) []removal {
+	var out []removal
+	name := instance()
+	ours := name == brand.VMInstance
+
+	switch {
+	case !instanceExists(name):
+		// Nothing in a VM to remove.
+	case ours && !o.KeepData:
+		out = append(out, removal{
+			what:    fmt.Sprintf("the engine VM %q, and everything in it", name),
+			data:    true,
+			present: func() bool { return instanceExists(name) },
+			run:     func() error { return limaDelete(name) },
+		})
+	default:
+		out = append(out, guestSteps(name, o)...)
+	}
+	return append(out, hostSteps(o)...)
+}
+
+// guestSteps empties a VM we did not create (or keeps its data, with
+// --keep-data), leaving the VM itself in place.
+func guestSteps(name string, o UninstallOptions) []removal {
+	// present runs its check inside the VM, so "already gone" is true rather
+	// than assumed.
+	guest := func(what, present, script string, data bool) removal {
+		return removal{
+			what: what,
+			data: data,
+			present: func() bool {
+				return instanceExists(name) && guestRun(name, present) == nil
+			},
+			run: func() error { return guestRun(name, script) },
+		}
+	}
+	steps := []removal{
+		stopStep(func() error {
+			// The guest binary knows what to stop; if it is gone, or its
+			// pidfiles are, take the servers by their command line instead.
+			_ = guestRun(name, guestBin(name)+" stop")
+			for _, bin := range binaryNames() {
+				_ = guestRun(name, "pkill -f '^[^ ]*"+bin+" (controlplane|gateway|serve)' || true")
+			}
+			return nil
+		}),
+		guest("the engine's containers and network in VM "+name,
+			`[ -n "$(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`)$(sudo docker ps -a --format '{{.Names}}' | grep -e '^`+branch.ContainerPrefix+`' -e '^`+branch.ObjStore+`$')" ] || `+
+				`sudo docker network inspect `+branch.Network+` >/dev/null 2>&1`,
+			// -v takes each container's anonymous volumes with it.
+			`sudo docker rm -f -v $(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`) 2>/dev/null || true; `+
+				`sudo docker rm -f -v `+branch.ObjStore+` $(sudo docker ps -a --format '{{.Names}}' | grep '^`+branch.ContainerPrefix+`' ) 2>/dev/null || true; `+
+				`sudo docker network rm `+branch.Network+` 2>/dev/null || true`, false),
+	}
+	if !o.KeepData {
+		steps = append(steps,
+			guest("the databases and their storage pool in VM "+name,
+				`sudo zpool list -H -o name `+branch.Pool+` >/dev/null 2>&1 || test -f /var/lib/`+branch.Pool+`-zpool.img`,
+				`sudo zpool destroy -f `+branch.Pool+` 2>/dev/null || true; `+
+					`sudo rm -f /var/lib/`+branch.Pool+`-zpool.img /var/lib/`+branch.Pool+`-btrfs.img`, true),
+			guest("archived WAL and base backups in VM "+name,
+				`[ -n "$(sudo docker volume ls -q --filter name=^`+branch.ObjStoreVolume+`$)" ]`,
+				`sudo docker volume rm -f `+branch.ObjStoreVolume+` 2>/dev/null || true`, true),
+			guest("the engine's state in VM "+name,
+				`ls -d ~/`+brand.StateDirName+stateDirGlob()+` >/dev/null 2>&1`,
+				`rm -rf ~/`+brand.StateDirName+stateDirGlob(), true),
+		)
+	}
+	steps = append(steps, guest("the engine binary in VM "+name,
+		`ls `+strings.Join(guestBinaryPaths(), " ")+` >/dev/null 2>&1`,
+		`sudo rm -f `+strings.Join(guestBinaryPaths(), " "), false))
+	return steps
+}
+
+// stateDirGlob also removes state directories left by retired names.
+func stateDirGlob() string {
+	var b strings.Builder
+	for _, p := range brand.Previous {
+		if p.StateDir != "" {
+			fmt.Fprintf(&b, " ~/%s", p.StateDir) // legacy: state from a retired name
+		}
+	}
+	return b.String()
+}
+
+func guestBinaryPaths() []string {
+	var out []string
+	for _, n := range binaryNames() {
+		out = append(out, "/usr/local/bin/"+n)
+	}
+	return out
+}
+
+// guestRun runs a shell line inside the VM.
+func guestRun(name, script string) error {
+	cmd := exec.Command("limactl", "shell", name, "--", "sh", "-c", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func limaDelete(name string) error {
+	_ = exec.Command("limactl", "stop", "-f", name).Run()
+	if out, err := exec.Command("limactl", "delete", "--force", name).CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}

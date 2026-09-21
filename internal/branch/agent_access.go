@@ -13,7 +13,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/OxynDB/oxyndb/internal/auth"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 )
 
 // How an agent reaches its branch.
@@ -35,9 +35,9 @@ import (
 //     recorded actor stays non-forgeable.
 const (
 	// EnvGatewayHostPort overrides where agents are told to reach the Gateway.
-	// Needed when `odb gateway --addr` is not the default, or when the Gateway
+	// Needed when `fox gateway --addr` is not the default, or when the Gateway
 	// is published somewhere other than localhost.
-	EnvGatewayHostPort = "OXYNDB_GATEWAY_HOSTPORT"
+	EnvGatewayHostPort = "FOX_GATEWAY_HOSTPORT"
 
 	defaultGatewayHostPort = "localhost:6432"
 )
@@ -48,7 +48,7 @@ const (
 // password for one branch is useless on another.
 func AgentRolePassword(branchName string) string {
 	m := hmac.New(sha256.New, []byte(pgPass()))
-	m.Write([]byte("odb-agent-role:" + branchName))
+	m.Write([]byte("fox-agent-role:" + branchName))
 	return hex.EncodeToString(m.Sum(nil))
 }
 
@@ -89,7 +89,7 @@ func agentGatewayDSN(branchName, key string) string {
 // mintAgentKey issues the branch-scoped key that goes in an agent's DSN.
 //
 // It opens the store itself because an agent branch is created from three
-// places — the Agent Branch API, `odb mcp` and the CLI — and only the first has
+// places — the Agent Branch API, `fox mcp` and the CLI — and only the first has
 // an authenticated caller to inherit a store from.
 func mintAgentKey(branchName string) (string, error) {
 	store, err := auth.OpenFromEnv()
@@ -99,7 +99,7 @@ func mintAgentKey(branchName string) (string, error) {
 	defer store.Close()
 	uid, ok := store.AnyUserID()
 	if !ok {
-		return "", fmt.Errorf("no account exists yet to own the key — run `odb start` first")
+		return "", fmt.Errorf("no account exists yet to own the key — run `fox start` first")
 	}
 	key, _, err := store.CreateScopedAPIKey(uid, "agent "+branchName, branchName)
 	if err != nil {
