@@ -92,7 +92,7 @@ fox setup`}</Code>
       <p className="muted">Seeing <code>irm : not recognized</code>? You're in Command Prompt — open <strong>PowerShell</strong>
         and retry. If scripts are blocked, run <code>Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass</code> first.
         After install, open a <strong>new</strong> terminal so <code>fox</code> is on your PATH.</p>
-      <p className="muted">The engine runs inside a dedicated <code>foxbyte</code> WSL2 distro (the analog of
+      <p className="muted">The engine runs inside a dedicated <code>fox</code> WSL2 distro (the analog of
         the macOS VM); your other WSL distros and Docker Desktop are left untouched. Full steps &amp; troubleshooting:{' '}
         <a href="https://github.com/thefoxbyte/foxbyte/blob/main/docs/windows-setup.md" target="_blank" rel="noreferrer">Windows setup guide</a>.</p>
       <p>Your app connects at <code>localhost:6432</code>; the web console &amp; dashboard are served by

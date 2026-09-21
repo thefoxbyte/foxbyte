@@ -155,7 +155,7 @@
       <li class="ok">Stages the Linux engine for the VM on macOS</li><li class="ok"><code>FOX_VERSION</code>, <code>FOX_REPO</code>, <code>FOX_DIST</code>, <code>FOX_PREFIX</code></li>
       <li class="ok">Verifies every download against <code>SHA256SUMS</code>; refuses what it can't check</li></ul></td><td class="tb">Unit (<code>test_install_sh.sh</code>, CI); manual</td></tr>
     <tr data-id="A2" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">A2</td><td><b>Windows installer (install.ps1)</b><ul class="subs">
-      <li class="ok">Installs WSL, elevates, resumes after reboot</li><li class="ok">Downloads bb.exe, engine, image build context</li>
+      <li class="ok">Installs WSL, elevates, resumes after reboot</li><li class="ok">Downloads fox.exe, engine, image build context</li>
       <li class="ok">Ubuntu rootfs verified against Ubuntu's checksums</li><li class="ok">Adds to PATH and runs <code>fox setup</code></li>
       <li class="ok">Prefers the prebuilt distro image, falls back to the rootfs</li><li class="ok">Verifies FoxByte's own downloads</li>
       <li class="ok">Run on a real Windows machine (distro image downloaded and verified)</li></ul></td><td class="tb">Pester (Windows CI); Windows run 16 Sep</td></tr>

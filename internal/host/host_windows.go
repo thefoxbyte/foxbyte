@@ -24,7 +24,7 @@ import (
 func hostSetup() error { return setupWindows() }
 
 // currentDistro resolves the WSL2 distro name: an explicit override, else the
-// dedicated "foxbyte" distro.
+// dedicated distro, brand.VMInstance ("fox").
 func currentDistro() string { return resolveWSLDistro(brand.Getenv("WSL_DISTRO")) }
 
 func wslInstalled() bool {
@@ -314,7 +314,7 @@ func shareMountPropagation(name string) error {
 func importDistro(name string) error {
 	rootfs := bundledRootfs()
 	if rootfs == "" {
-		return fmt.Errorf("the Ubuntu rootfs was not found next to bb.exe — reinstall with install.ps1")
+		return fmt.Errorf("the Ubuntu rootfs was not found next to fox.exe — reinstall with install.ps1")
 	}
 	installDir := filepath.Join(os.Getenv("LOCALAPPDATA"), "foxbyte", "wsl")
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
@@ -630,7 +630,7 @@ func installGuestBinaryWSL(name string) error {
 	return wslRoot(name, fmt.Sprintf("install -m 0755 %q /usr/local/bin/fox", src))
 }
 
-// installDir is the directory holding bb.exe — where the installer stages
+// installDir is the directory holding fox.exe — where the installer stages
 // assets and where setup caches anything it downloads.
 func installDir() string {
 	if exe, err := os.Executable(); err == nil {
@@ -640,7 +640,7 @@ func installDir() string {
 }
 
 // assetDirs lists the places the installer (or a dev build) puts support files,
-// relative to bb.exe.
+// relative to fox.exe.
 func assetDirs() []string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -655,7 +655,7 @@ func assetDirs() []string {
 	}
 }
 
-// bundledAsset finds a support file (ZFS bundle, rootfs) shipped next to bb.exe
+// bundledAsset finds a support file (ZFS bundle, rootfs) shipped next to fox.exe
 // by the installer, or in ./dist for a dev build.
 func bundledAsset(basename string) string {
 	for _, d := range assetDirs() {

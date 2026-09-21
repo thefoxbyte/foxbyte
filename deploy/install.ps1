@@ -315,8 +315,12 @@ function Invoke-Install {
     # 2. The launcher and the engine binary, each checked against the release's
     #    own SHA256SUMS before it is kept: both run as root inside the distro.
     Write-Step "Downloading FoxByte"
-    Get-File (Get-FoxAsset 'fox-windows-amd64.exe') "$Prefix\bb.exe" | Out-Null
-    Assert-FoxChecksum "$Prefix\bb.exe" 'fox-windows-amd64.exe'
+    Get-File (Get-FoxAsset 'fox-windows-amd64.exe') "$Prefix\$Cli.exe" | Out-Null
+    Assert-FoxChecksum "$Prefix\$Cli.exe" 'fox-windows-amd64.exe'
+    # Installers from 21 Sep 2026 until this fix saved the launcher as bb.exe
+    # (a rename rule for the SQL schema caught the file name), so `fox` was not a
+    # command. Remove that copy so only one launcher is on PATH.
+    Remove-Item -LiteralPath "$Prefix\bb.exe" -Force -ErrorAction SilentlyContinue
     Get-File (Get-FoxAsset 'fox-linux-amd64') "$Prefix\fox-linux-amd64" | Out-Null
     Assert-FoxChecksum "$Prefix\fox-linux-amd64" 'fox-linux-amd64'
 
@@ -391,7 +395,7 @@ function Invoke-Install {
     }
     Write-Step "Setting up FoxByte (first run sets up the database engine)"
     Write-Host ""
-    & "$Prefix\bb.exe" setup
+    & "$Prefix\$Cli.exe" setup
     if ($LASTEXITCODE -ne 0) {
         throw "fox setup failed. See $Prefix\install.log, then re-run:  fox setup"
     }

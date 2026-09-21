@@ -35,7 +35,7 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
 
       # install.ps1 fetches every one of these by name; a release missing any of
-      # them installs a bb.exe that cannot then set itself up.
+      # them installs a fox.exe that cannot then set itself up.
       - name: Assert the full asset set is present
         run: |
           set -eux

@@ -63,7 +63,7 @@ func instanceRunning(name string) bool {
 }
 
 // guestBin resolves the fox binary path inside the VM: an explicit override, or
-// `fox` on the guest PATH, else the dev build at /tmp/bb.
+// `fox` on the guest PATH, else the dev build at /tmp/fox.
 func guestBin(name string) string {
 	if v := strings.TrimSpace(brand.Getenv("GUEST_BIN")); v != "" {
 		return v
@@ -157,6 +157,10 @@ func provisionGuest(name string) error {
 // installGuestBinary copies the bundled Linux fox binary into the VM and puts it
 // on PATH, so `fox` inside the guest is the real engine. Skipped (with a note) if
 // no bundled binary is found — e.g. a source checkout that builds its own.
+// guestStaging is where the engine binary lands in the VM before it is installed
+// on PATH.
+var guestStaging = "/tmp/" + brand.CLI + ".new"
+
 func installGuestBinary(name string) error {
 	bin := strings.TrimSpace(brand.Getenv("GUEST_BINARY"))
 	if bin == "" {
@@ -168,11 +172,11 @@ func installGuestBinary(name string) error {
 		return nil
 	}
 	fmt.Println("Installing the fox engine into the VM…")
-	if err := limactl("copy", bin, name+":/tmp/bb.new").Run(); err != nil {
+	if err := limactl("copy", bin, name+":"+guestStaging).Run(); err != nil {
 		return fmt.Errorf("copying the engine binary into the VM: %w", err)
 	}
 	return limactl("shell", name, "--",
-		"sudo", "install", "-m", "0755", "/tmp/bb.new", "/usr/local/bin/fox").Run()
+		"sudo", "install", "-m", "0755", guestStaging, "/usr/local/bin/"+brand.CLI).Run()
 }
 
 // guestArch reports the Go arch string for the VM ("arm64"/"amd64").

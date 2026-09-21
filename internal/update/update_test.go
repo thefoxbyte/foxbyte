@@ -515,7 +515,7 @@ func TestInstallBinary(t *testing.T) {
 	if b, _ := os.ReadFile(prev); string(b) != "v1" {
 		t.Fatalf("prev = %q", b)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "bin", ".bb.new")); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, "bin", ".update.new")); err == nil {
 		t.Fatal("temporary file left behind")
 	}
 	if err := InstallBinary(filepath.Join(dir, "missing"), dest, prev); err == nil {
@@ -529,8 +529,8 @@ func TestInstallBinary(t *testing.T) {
 func TestSwapExecutable(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "new.exe")
-	dest := filepath.Join(dir, "bb.exe")
-	prev := filepath.Join(dir, "prev", "bb.exe")
+	dest := filepath.Join(dir, "fox.exe")
+	prev := filepath.Join(dir, "prev", "fox.exe")
 	os.WriteFile(src, []byte("v2"), 0o644)
 	os.WriteFile(dest, []byte("v1"), 0o755)
 	if err := SwapExecutable(src, dest, prev); err != nil {

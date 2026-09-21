@@ -10,7 +10,7 @@
 </p>
 
 FoxByte is a **serverless PostgreSQL** platform. It keeps the hot transaction
-path on stock Postgres on local NVMe (native commit latency) and moves
+path on stock **PostgreSQL 18** on local NVMe (native commit latency) and moves
 durability, branching, and time-travel *off* the commit path — **ZFS
 copy-on-write** clones for instant branches and **asynchronous WAL archival**
 (`wal-g`) for point-in-time recovery. It speaks the native Postgres wire
@@ -343,14 +343,30 @@ fox import-cutover live                                         # finish the cut
 
 ---
 
+## PostgreSQL versions
+
+A fresh install runs **PostgreSQL 18** (stock, plus `wal-g`). An install created
+on an older major keeps running that major: FoxByte reads the version from your
+data directory and runs the matching image, so `fox update` never moves your data
+between majors behind your back. That is a migration, and it stays your call.
+
+| | |
+|---|---|
+| Fresh install | PostgreSQL 18 |
+| Still supported for existing installs | PostgreSQL 16 |
+| Moving an install to a newer major | not automated yet — take a portable dump, reinstall, import it ([how](docs/postgres-versions.md#moving-an-install-to-a-newer-major)) |
+
+A base backup (`fox backup create`) belongs to one major and cannot be restored
+into another; a `pg_dump` can. [docs/postgres-versions.md](docs/postgres-versions.md)
+has the details, and the checklist for moving FoxByte itself to the next major.
+
 ## What FoxByte is not
 
 - **Not distributed / not multi-host (yet).** Compute and storage are separated
   *logically* (stateless containers over persistent storage, scale-to-zero) but
   still run on one host. Networked storage disaggregation is on the roadmap.
 - **HA is a single-VM demonstration**, not a production multi-host deployment.
-- **Not a vector database**, despite the name — it is PostgreSQL (use `pgvector`
-  on it if you like).
+- **Not a vector database** — it is PostgreSQL (use `pgvector` on it if you like).
 - **Single-tenant** — authenticated users share one instance; there is no project
   isolation yet.
 

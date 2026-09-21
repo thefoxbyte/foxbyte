@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Build the OpenZFS bundle the Windows installer stages into the foxbyte WSL2
+# Build the OpenZFS bundle the Windows installer stages into the fox WSL2
 # distro. The runner's own kernel is irrelevant: OpenZFS is compiled against the
 # Microsoft WSL2 kernel *source tree* pinned in deploy/wsl-zfs/build.sh, and the
 # build asserts the resulting kernel release matches EXPECT_RELEASE.
