@@ -14,7 +14,7 @@
 # network round trip that can fail halfway and leave a half-built distro. It also
 # removes them from every user's machine and does them once, here.
 #
-# Output: dist/foxbyte-distro.tar.gz
+# Output: dist/foxbyte-distro.tar.zst
 #
 # Runs on a Linux builder with Docker (CI: ubuntu-latest). Needs
 # dist/fox-linux-amd64 to exist first --
@@ -141,22 +141,32 @@ sudo mv "$work/foxbyte-images.tar" "$images_dir/foxbyte-images.tar"
 sudo chmod 0644 "$images_dir/foxbyte-images.tar"
 
 echo "==> repackage"
-# pigz, not gzip: this compresses ~1.7 GB and gzip is single-threaded, which made
-# it one of the slowest steps for no reason. Output is ordinary gzip, byte-for-
-# byte loadable by `wsl --import`, and measured at the same size. Falls back to
-# gzip where pigz is unavailable.
+# zstd, not gzip. This is the one large download of a Windows install (~1.7 GB
+# of rootfs and container images), and zstd at -19 with a long window makes it
+# markedly smaller than gzip ever did while unpacking fast enough that the time
+# saved downloading is not spent again waiting. --long=27 is a 128 MiB window:
+# it finds the libraries the rootfs and the Postgres image both carry, which a
+# short window cannot see. fox unpacks it (internal/host/distro_image.go),
+# because `wsl --import` and Windows' tar.exe are only dependable with gzip; a
+# test keeps this window within what that decoder accepts.
+#
+# The gzip size is measured on the same bytes and printed beside it, so the
+# saving is a number in every build log, not a claim.
 t=$(date +%s)
 sudo rm -f "$root/etc/resolv.conf"
-if command -v pigz >/dev/null 2>&1; then
-	sudo tar -C "$root" -cpf - . | pigz -6 -p "$(nproc)" > "$out/foxbyte-distro.tar.gz"
-else
-	echo "    note: pigz not found, falling back to single-threaded gzip"
-	sudo tar -C "$root" -czpf "$out/foxbyte-distro.tar.gz" .
-fi
-sudo chown "$(id -u):$(id -g)" "$out/foxbyte-distro.tar.gz"
+command -v zstd >/dev/null 2>&1 || sudo apt-get install -y -qq zstd >/dev/null
+sudo tar -C "$root" -cpf - . | zstd -19 --long=27 -T0 -q -o "$out/foxbyte-distro.tar.zst"
+sudo chown "$(id -u):$(id -g)" "$out/foxbyte-distro.tar.zst"
 timer "repackage" "$t"
 
+if command -v pigz >/dev/null 2>&1; then gz="pigz -6 -p $(nproc)"; else gz="gzip -6"; fi
+gz_bytes=$(sudo tar -C "$root" -cpf - . | $gz | wc -c)
+zst_bytes=$(stat -c %s "$out/foxbyte-distro.tar.zst")
+
 echo
-ls -la "$out/foxbyte-distro.tar.gz" | awk '{printf "distro image: %s (%.0f MB)\n", $NF, $5/1048576}'
+awk -v z="$zst_bytes" -v g="$gz_bytes" -v f="$out/foxbyte-distro.tar.zst" 'BEGIN {
+	printf "distro image: %s (%.0f MB)\n", f, z/1048576
+	printf "  as gzip -6 it would be %.0f MB: zstd saves %.0f MB (%.0f%%)\n", g/1048576, (g-z)/1048576, 100*(g-z)/g
+}'
 timer "total" "$started"
 echo "fox setup imports this, mounts its btrfs storage, and starts."

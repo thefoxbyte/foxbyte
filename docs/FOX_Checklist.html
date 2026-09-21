@@ -511,7 +511,7 @@
       <li class="ok">Fails unless <code>fox update</code>'s files are published</li><li class="ok">Multi-arch Postgres image on GHCR</li></ul></td><td class="tb">Script tests in CI</td></tr>
     <tr data-id="M5" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">M5</td><td><b>WSL distro &amp; ZFS builds</b><ul class="subs">
       <li class="ok">Prebuilt distro image</li><li class="ok">Downloaded and verified by the installer (seen on Windows)</li><li class="ok">Preloaded image tagged as the engine runs it</li>
-      <li class="ok">Imported on a fresh Windows install; preloaded images loaded</li><li class="part">685 MB download (rootfs fallback covers failures)</li></ul></td><td class="tb">Actions artifacts; Pester; Windows run 16 Sep</td></tr>
+      <li class="ok">Imported on a fresh Windows install; preloaded images loaded</li><li class="ok">Published zstd-compressed, with the gzip size measured beside it in every build log</li><li class="part">zstd unpack on a real Windows install (unit-tested only); the gzip image was 685 MB</li></ul></td><td class="tb">Actions artifacts; Pester; Windows run 16 Sep</td></tr>
     <tr data-id="M6" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">M6</td><td><b>Postgres image</b><ul class="subs">
       <li class="ok">PostgreSQL 18 + wal-g for a fresh install; one image per supported major (16, 18)</li>
       <li class="ok">The image follows the data: an install on 16 keeps running 16 after an update</li>

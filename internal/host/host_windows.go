@@ -320,8 +320,19 @@ func importDistro(name string) error {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return err
 	}
+	if strings.HasSuffix(rootfs, ".zst") {
+		step("Unpacking the FoxByte distro image")
+	}
+	// Unpacked next to the download, which is in the user's own writable
+	// install folder; the tar is removed once imported and the .zst is kept, so
+	// a re-run of setup does not download it again.
+	file, done, err := importableDistro(rootfs, filepath.Dir(rootfs))
+	if err != nil {
+		return fmt.Errorf("unpacking the distro image (it needs about 2 GB free while it imports): %w", err)
+	}
+	defer done()
 	step(fmt.Sprintf("Creating the %q WSL distro", name))
-	if err := wslQuiet("--import", name, installDir, rootfs); err != nil {
+	if err := wslQuiet("--import", name, installDir, file); err != nil {
 		return fmt.Errorf("importing the WSL distro: %w", err)
 	}
 	// systemd for `systemctl enable --now docker` and the ZFS import units;
@@ -685,7 +696,7 @@ func bundledDir(basename string) string {
 // docker build and three registry pulls. A plain Ubuntu rootfs still works, and
 // setup does that extra work itself.
 func bundledRootfs() string {
-	for _, n := range []string{distroImageName, "foxbyte-rootfs.tar.gz", "foxbyte-rootfs.tar"} {
+	for _, n := range append(append([]string{}, distroImageNames...), "foxbyte-rootfs.tar.gz", "foxbyte-rootfs.tar") {
 		if p := bundledAsset(n); p != "" {
 			return p
 		}

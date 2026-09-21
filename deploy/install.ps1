@@ -252,6 +252,13 @@ function Test-FoxChecksum([string]$Path, [string]$Name) {
     return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLower() -eq $want
 }
 
+# Test-FoxAssetListed reports whether this release lists $Name in SHA256SUMS,
+# so an asset the release does not publish is skipped rather than downloaded
+# into a 404. With verification off nothing is known, so it answers yes.
+function Test-FoxAssetListed([string]$Name) {
+    try { $null = Get-FoxChecksum $Name; return $true } catch { return $false }
+}
+
 # Assert-FoxChecksum verifies a download and deletes it if it does not match.
 function Assert-FoxChecksum([string]$Path, [string]$Name) {
     $want = Get-FoxChecksum $Name
@@ -338,31 +345,40 @@ function Invoke-Install {
     # 3. The distro. Preferred: our prebuilt image, which already contains
     #    Docker, the btrfs tools, the engine and the container images, so `fox
     #    setup` skips an apt install, a docker build and three registry pulls.
-    #    It is bigger (~685 MB vs ~340 MB) but turns setup from many minutes of
-    #    network-dependent work into an import. Releases that don't publish it,
-    #    or a copy that cannot be verified, fall back to the Ubuntu rootfs.
-    $distro = "$Prefix\foxbyte-distro.tar.gz"
+    #    It turns setup from many minutes of network-dependent work into an
+    #    import. Releases publish it zstd-compressed (fox unpacks it: Windows'
+    #    own tar.exe only reads gzip); releases before that published gzip, so
+    #    that is tried next. One that cannot be verified, or a release with
+    #    neither, falls back to the Ubuntu rootfs.
     $haveDistro = $false
-    if (Test-Path $distro) {
-        if (Test-FoxChecksum $distro 'foxbyte-distro.tar.gz') {
-            Write-Step "FoxByte distro image already downloaded"
-            $haveDistro = $true
-        } else {
+    foreach ($name in 'foxbyte-distro.tar.zst', 'foxbyte-distro.tar.gz') {
+        $distro = "$Prefix\$name"
+        if (Test-Path $distro) {
+            if (Test-FoxChecksum $distro $name) {
+                Write-Step "FoxByte distro image already downloaded"
+                $haveDistro = $true
+                break
+            }
             Remove-Item $distro -Force -ErrorAction SilentlyContinue
         }
-    }
-    if (-not $haveDistro) {
-        Write-Step "Downloading the FoxByte distro image (~685 MB, one time)"
-        if (Get-File (Get-FoxAsset 'foxbyte-distro.tar.gz') $distro -Required:$false) {
+        if (-not (Test-FoxAssetListed $name)) { continue }
+        Write-Step "Downloading the FoxByte distro image (one time)"
+        if (Get-File (Get-FoxAsset $name) $distro -Required:$false) {
             try {
-                Assert-FoxChecksum $distro 'foxbyte-distro.tar.gz'
+                Assert-FoxChecksum $distro $name
                 $haveDistro = $true
+                break
             } catch {
                 Remove-Item $distro -Force -ErrorAction SilentlyContinue
                 Write-Warning "$($_.Exception.Message)"
-                Write-Warning "falling back to the Ubuntu rootfs"
             }
         }
+    }
+    if (-not $haveDistro) { Write-Warning "no verified distro image; falling back to the Ubuntu rootfs" }
+    # A gzip image left from an older install would be preferred by nothing now
+    # but would sit in the folder; drop it once a zstd one is in place.
+    if ($haveDistro -and $name -eq 'foxbyte-distro.tar.zst') {
+        Remove-Item "$Prefix\foxbyte-distro.tar.gz" -Force -ErrorAction SilentlyContinue
     }
 
     if (-not $haveDistro) {
