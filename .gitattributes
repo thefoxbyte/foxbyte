@@ -22,3 +22,10 @@ go.sum          text eol=lf
 # Workflow `run:` blocks execute on Linux runners; CRLF there breaks the shell.
 *.yml text eol=lf
 *.yaml text eol=lf
+
+# web/src/brand.ts is generated from brand.json and compared byte for byte by
+# TestGeneratedFilesAreInStep. Windows checks out text files with CRLF by
+# default, so the generated LF file looked like drift and failed CI there; the
+# rest of the web sources are pinned with it, since Vite builds them on Linux.
+*.ts  text eol=lf
+*.tsx text eol=lf
