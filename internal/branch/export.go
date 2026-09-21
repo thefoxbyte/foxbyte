@@ -202,31 +202,47 @@ func dumpBranch(name, image, dir string) (ExportedBranch, error) {
 		"pg_dumpall", "-h", container(name), "-U", pgUser, "--roles-only"); err != nil {
 		return eb, fmt.Errorf("dumping roles: %w", err)
 	}
-	// The manifest records the Blackbox the dump holds, and a restore insists on
-	// exactly that. pg_dump reads its own snapshot, so the head is read on both
-	// sides of it: if a schema change landed in between, the two disagree and
-	// the dump is taken again rather than recorded against the wrong head.
-	for attempt := 1; ; attempt++ {
-		rows, head, err := ledgerHead(name)
+	rows, head, err := dumpAtStableHead(
+		func() (int64, string, error) { return ledgerHead(name) },
+		func() error {
+			return dumpTo(filepath.Join(dir, filepath.FromSlash(eb.Dump)), image,
+				"pg_dump", "-h", container(name), "-U", pgUser, "-d", pgDatabase, "-Fc")
+		})
+	if err != nil {
+		return eb, err
+	}
+	eb.LedgerRows, eb.LedgerHead = rows, head
+	return eb, nil
+}
+
+// dumpAttempts bounds how often a dump is retaken while the schema changes.
+const dumpAttempts = 3
+
+// dumpAtStableHead dumps, and returns the Blackbox head the dump holds.
+//
+// The manifest records that head and a restore insists on it. pg_dump reads
+// its own snapshot, so the head is read on both sides of the dump: if a schema
+// change landed in between, the two disagree, and the dump is taken again
+// rather than recorded against a head it does not hold — which would make a
+// good export fail its own restore check.
+func dumpAtStableHead(read func() (int64, string, error), dump func() error) (int64, string, error) {
+	for attempt := 1; attempt <= dumpAttempts; attempt++ {
+		rows, head, err := read()
 		if err != nil {
-			return eb, fmt.Errorf("reading the Blackbox: %w", err)
+			return 0, "", fmt.Errorf("reading the Blackbox: %w", err)
 		}
-		if err := dumpTo(filepath.Join(dir, filepath.FromSlash(eb.Dump)), image,
-			"pg_dump", "-h", container(name), "-U", pgUser, "-d", pgDatabase, "-Fc"); err != nil {
-			return eb, fmt.Errorf("dumping the database: %w", err)
+		if err := dump(); err != nil {
+			return 0, "", fmt.Errorf("dumping the database: %w", err)
 		}
-		rows2, head2, err := ledgerHead(name)
+		rows2, head2, err := read()
 		if err != nil {
-			return eb, fmt.Errorf("reading the Blackbox: %w", err)
+			return 0, "", fmt.Errorf("reading the Blackbox: %w", err)
 		}
 		if rows == rows2 && head == head2 {
-			eb.LedgerRows, eb.LedgerHead = rows, head
-			return eb, nil
-		}
-		if attempt == 3 {
-			return eb, fmt.Errorf("the schema kept changing while it was being dumped; try again when it is quiet")
+			return rows, head, nil
 		}
 	}
+	return 0, "", fmt.Errorf("the schema kept changing while it was being dumped (%d attempts); try again when it is quiet", dumpAttempts)
 }
 
 // dumpTo runs a dump tool from image against the docker network and writes

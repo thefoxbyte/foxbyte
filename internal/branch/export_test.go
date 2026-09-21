@@ -181,3 +181,52 @@ func TestValidName(t *testing.T) {
 		}
 	}
 }
+
+// A schema change landing while pg_dump runs must not leave the manifest
+// describing a Blackbox the dump does not hold: that would make a good export
+// fail its own restore check. The head is read on both sides and the dump
+// retaken until they agree.
+func TestDumpAtStableHead(t *testing.T) {
+	// heads is what successive reads of the Blackbox return.
+	fake := func(heads ...string) func() (int64, string, error) {
+		i := 0
+		return func() (int64, string, error) {
+			h := heads[min(i, len(heads)-1)]
+			i++
+			return int64(len(h)), h, nil
+		}
+	}
+
+	read := fake("a", "a")
+	dumps := 0
+	rows, head, err := dumpAtStableHead(read, func() error { dumps++; return nil })
+	if err != nil || head != "a" || rows != 1 || dumps != 1 {
+		t.Errorf("a quiet schema: one dump at head a, got %d dumps, %q, %v", dumps, head, err)
+	}
+
+	// A change lands during the first dump: before "a", after "ab". The second
+	// attempt sees "ab" on both sides, and that is the head recorded.
+	read = fake("a", "ab", "ab", "ab")
+	dumps = 0
+	_, head, err = dumpAtStableHead(read, func() error { dumps++; return nil })
+	if err != nil || head != "ab" || dumps != 2 {
+		t.Errorf("a change mid-dump: want a second dump recorded at ab, got %d dumps, %q, %v", dumps, head, err)
+	}
+
+	// A schema that never settles fails, rather than recording a guess.
+	n := 0
+	always := func() (int64, string, error) { n++; return int64(n), strings.Repeat("x", n), nil }
+	dumps = 0
+	if _, _, err := dumpAtStableHead(always, func() error { dumps++; return nil }); err == nil || dumps != dumpAttempts {
+		t.Errorf("a schema that keeps changing should fail after %d dumps, got %d, %v", dumpAttempts, dumps, err)
+	}
+
+	// Errors from either side stop it.
+	if _, _, err := dumpAtStableHead(func() (int64, string, error) { return 0, "", os.ErrPermission }, func() error { return nil }); err == nil {
+		t.Error("a failed read should fail the dump")
+	}
+	read = fake("a", "a")
+	if _, _, err := dumpAtStableHead(read, func() error { return os.ErrClosed }); err == nil {
+		t.Error("a failed dump should fail")
+	}
+}

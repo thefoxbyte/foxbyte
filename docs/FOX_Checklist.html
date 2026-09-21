@@ -267,7 +267,7 @@
       <li class="ok">Old databases held outside the branch namespace; rollback and finalize</li>
       <li class="ok">Each upgraded cluster archives WAL under its own prefix</li>
       <li class="part">btrfs (Windows) holding area not yet run</li>
-      <li class="todo">Carry agent branches; upgrade with HA on</li></ul></td><td class="tb">Unit; VM pg-upgrade (69 / 69)</td></tr>
+      <li class="todo">Carry agent branches; upgrade with HA on</li></ul></td><td class="tb">Unit; VM pg-upgrade (72 / 72)</td></tr>
   </table>
 </section>
 
@@ -336,7 +336,8 @@
     <tr><th></th><th>ID</th><th>Feature · sub-features</th><th>Tested by</th></tr>
     <tr data-id="H1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H1</td><td><b>DDL recording</b><ul class="subs">
       <li class="ok">Who, tool, branch, statement, status, risk</li><li class="ok">Inherited by every branch</li>
-      <li class="todo">Role / database changes, some dropped object types</li></ul></td><td class="tb">VM §8</td></tr>
+      <li class="ok">A restart records nothing: the install script's own statements are not captured</li>
+      <li class="todo">Role / database changes, some dropped object types</li></ul></td><td class="tb">VM §8; v2 §9</td></tr>
     <tr data-id="H2" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">H2</td><td><b>Hash chain, append-only &amp; verify</b><ul class="subs">
       <li class="ok">Rows can't be edited or deleted normally</li><li class="ok"><code>fox ledger verify</code></li>
       <li class="part">Superuser rewrite caught only via anchors (H10–H12)</li><li class="ok"><code>bb.policy</code> changes recorded (append-only, not chained)</li></ul></td><td class="tb">VM §8; v2 §0, §6b</td></tr>

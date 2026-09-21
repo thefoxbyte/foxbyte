@@ -49,6 +49,9 @@ $S stop >/dev/null 2>&1; sleep 1
 # E3: start creates no account and mints no key. A credential is made by the
 # person who will use it, not by a background service and left in a file.
 rm -rf "$HOME/$BRAND_STATE_DIR/config"
+# "The first account" needs an empty account store. A run cut short leaves its
+# accounts behind, and then this account is not the first and gets no grant.
+rm -f "$HOME/$BRAND_STATE_DIR"/auth.db "$HOME/$BRAND_STATE_DIR"/auth.db-wal "$HOME/$BRAND_STATE_DIR"/auth.db-shm
 BANNER="$($S start 2>&1)"; sleep 5
 assert_eq "start prints no API key" "$(echo "$BANNER" | grep -c "$DB_KEY_PREFIX[A-Za-z0-9]")" "0"
 assert_eq "…and caches none on disk" "$([ -f "$HOME/$BRAND_STATE_DIR/config" ] && echo present || echo none)" "none"

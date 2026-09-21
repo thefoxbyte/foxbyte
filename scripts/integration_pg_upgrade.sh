@@ -34,10 +34,9 @@ lacks()    { if grep -qF -- "$2" <<<"$3"; then bad "$1 ('$2' in output)"; else o
 pg() { local c="$1"; shift; sudo docker exec "$c" psql -U "$DB_SUPERUSER" -d "$DB_DATABASE" -tAc "$*" 2>/dev/null; }
 major() { pg "$1" "SHOW server_version_num" | cut -c1-2; }
 state() { local v; v="$(sudo docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null | tr -d '[:space:]')"; echo "${v:-absent}"; }
-# Every start re-runs the Blackbox install, which appends its own GRANT/REVOKE
-# entries, so "the Blackbox came across" means: every entry up to a known id is
-# still there, unchanged, and the chain still verifies -- as the update suite
-# checks it. ledger_digest <container> <max id> -> count:md5 of those entries.
+# ledger_digest <container> <max id> -> count:md5 of the entries up to that id.
+# With maxid it states "every entry that was there is still there, unchanged";
+# the checks below also require that nothing was added.
 ledger_digest() { pg "$1" "SELECT count(*) || ':' || coalesce(md5(string_agg(row_hash, ',' ORDER BY id)), '') FROM bb.schema_ledger WHERE id <= ${2:-0}"; }
 maxid() { pg "$1" 'SELECT coalesce(max(id), 0) FROM bb.schema_ledger'; }
 gw() { PGPASSWORD="$KEY" psql "$GATEWAY/$1" -tAc "$2" 2>&1; }
@@ -104,6 +103,7 @@ OUT="$($S backup restore "$T/e16.tar" --branch qa --as qacopy 2>&1)"
 contains "restore into a new branch succeeds" "Restored qa" "$OUT"
 assert_eq "…with qa's data" "$(pg pg-qacopy 'SELECT count(*) FROM qa_only')" "5"
 assert_eq "…its Blackbox, every entry unchanged" "$(ledger_digest pg-qacopy "$QA_MAX")" "$QA_DIGEST"
+assert_eq "…and nothing added by the restore" "$(maxid pg-qacopy)" "$QA_MAX"
 assert_eq "…which verifies" "$($S blackbox verify qacopy >/dev/null 2>&1; echo $?)" "0"
 assert_eq "…and its roles: the account can log in there" "$(gw qacopy 'SELECT count(*) FROM qa_only')" "5"
 $S branch delete qacopy >/dev/null 2>&1
@@ -137,6 +137,7 @@ assert_eq "main runs PostgreSQL 18" "$(major pg-main)" "18"
 assert_eq "…with its data" "$(pg pg-main 'SELECT count(*) FROM people')" "100"
 assert_eq "…and its expression index" "$(pg pg-main "SELECT count(*) FROM pg_indexes WHERE indexname = 'people_lower'")" "1"
 assert_eq "the Blackbox came across: every entry, unchanged" "$(ledger_digest pg-main "$MAIN_MAX")" "$MAIN_DIGEST"
+assert_eq "…and nothing added by the upgrade" "$(maxid pg-main)" "$MAIN_MAX"
 assert_eq "…and it verifies" "$($S blackbox verify >/dev/null 2>&1; echo $?)" "0"
 assert_eq "the account's API key still works through the Gateway" "$(gw main 'SELECT count(*) FROM people')" "100"
 assert_eq "qa is suspended, as it was" "$(state pg-qa)" "exited"
@@ -161,6 +162,7 @@ contains "…after saying what it deletes" "Deletes after" "$OUT"
 assert_eq "main is back on 16" "$(major pg-main)" "16"
 assert_eq "…with its data" "$(pg pg-main 'SELECT count(*) FROM people')" "100"
 assert_eq "…and its Blackbox, unchanged" "$(ledger_digest pg-main "$MAIN_MAX")" "$MAIN_DIGEST"
+assert_eq "…with nothing added" "$(maxid pg-main)" "$MAIN_MAX"
 assert_eq "…which verifies" "$($S blackbox verify >/dev/null 2>&1; echo $?)" "0"
 assert_eq "the branch made after the upgrade is gone" "$(state pg-after)|$($S branch list 2>&1 | grep -cw after)" "absent|0"
 $S branch resume qa >/dev/null 2>&1

@@ -946,6 +946,25 @@ assert_eq "MCP blackbox_diff" \
 for b in v2imp-br v2diff-a; do $S branch delete "$b" >/dev/null 2>&1; done
 drop_imp
 
+echo "### 9. a restart records nothing in the Blackbox (H1)"
+# The Blackbox's install script re-runs on every start. It used to create the
+# event triggers before its own GRANT/REVOKE/ALTER DEFAULT PRIVILEGES block, so
+# every start appended those nine statements as unattributed schema changes.
+$S branch create v2restart >/dev/null 2>&1
+M0="$(pg pg-main 'SELECT count(*) FROM bb.schema_ledger')"
+B0="$(pg pg-v2restart 'SELECT count(*) FROM bb.schema_ledger')"
+$S stop >/dev/null 2>&1; $S start >/dev/null 2>&1
+$S branch resume v2restart >/dev/null 2>&1
+assert_eq "a stop and start adds nothing to main's Blackbox" "$(pg pg-main 'SELECT count(*) FROM bb.schema_ledger')" "$M0"
+assert_eq "…nor to a branch's" "$(pg pg-v2restart 'SELECT count(*) FROM bb.schema_ledger')" "$B0"
+assert_eq "…and none of its entries is the install's own GRANT with no actor" \
+  "$(pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE id > $M0 AND command_tag IN ('GRANT','REVOKE','ALTER DEFAULT PRIVILEGES')")" "0"
+gw "$KEY" main "CREATE TABLE v2restart_t (x int)" >/dev/null
+assert_eq "a user's change is still recorded, as that user" \
+  "$(pg pg-main "SELECT count(*) || '|' || max(actor) FROM bb.schema_ledger WHERE id > $M0 AND object_identity = 'public.v2restart_t'")" "1|$USER_EMAIL"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE v2restart_t" >/dev/null
+$S branch delete v2restart >/dev/null 2>&1
+
 echo
 echo "==== ${PASS} passed, ${FAIL} failed ===="
 [ "$FAIL" -eq 0 ]
