@@ -114,21 +114,34 @@ func setupDarwin() error {
 	refreshEngineBinary(runtime.GOARCH)
 
 	name := instance()
-	if instanceExists(name) {
+	existed := instanceExists(name)
+	if existed {
 		if !instanceRunning(name) {
 			fmt.Printf("Starting existing VM %q…\n", name)
 			if err := limactl("start", name).Run(); err != nil {
 				return err
 			}
 		}
-		fmt.Printf("VM %q is ready.\n", name)
+		fmt.Printf("VM %q is running.\n", name)
 	} else {
 		fmt.Printf("Creating the FoxByte VM %q (first run downloads Ubuntu; a few minutes)…\n", name)
 		if err := limactl("start", "--name", name, "--tty=false", "template://ubuntu").Run(); err != nil {
 			return fmt.Errorf("creating the VM: %w", err)
 		}
+	}
+	// Checked on every run, not only when the VM is created: an install cut
+	// short while apt was working — a closed laptop, a lost network — left a VM
+	// that every later `fox setup` called ready and never looked at again.
+	if !guestProvisioned(name) {
+		if existed {
+			fmt.Println("The VM's setup was not finished; finishing it now.")
+		}
 		if err := provisionGuest(name); err != nil {
 			return err
+		}
+		if !guestProvisioned(name) {
+			return fmt.Errorf("Docker and ZFS are still not usable in the VM after installing them — "+
+				"`limactl shell %s` and `sudo systemctl status docker` show why", name)
 		}
 	}
 	// Always (re)install the engine binary, so re-running `fox setup` picks up a
@@ -140,18 +153,21 @@ func setupDarwin() error {
 	return forward([]string{"start"})
 }
 
-// provisionGuest installs Docker + ZFS inside a freshly created VM. The engine
-// binary is installed separately (installGuestBinary), on every setup. The engine
-// itself auto-creates the ZFS pool and builds the image on first `up`.
+// provisionGuest installs Docker + ZFS in the VM. The engine binary is installed
+// separately (installGuestBinary), on every setup. The engine itself
+// auto-creates the ZFS pool and builds the image on first `up`.
 func provisionGuest(name string) error {
 	fmt.Println("Installing Docker and ZFS in the VM…")
-	script := "set -e; sudo apt-get update -y; " +
-		"sudo apt-get install -y zfsutils-linux docker.io; " +
-		"sudo systemctl enable --now docker"
-	if err := limactl("shell", name, "--", "sh", "-c", script).Run(); err != nil {
+	if err := limactl("shell", name, "--", "sh", "-c", provisionScript).Run(); err != nil {
 		return fmt.Errorf("installing guest dependencies: %w", err)
 	}
 	return nil
+}
+
+// guestProvisioned reports whether the VM has what the engine needs: the ZFS
+// tools, and a Docker that is installed and running.
+func guestProvisioned(name string) bool {
+	return exec.Command("limactl", "shell", name, "--", "sh", "-c", provisionedCheck).Run() == nil
 }
 
 // installGuestBinary copies the bundled Linux fox binary into the VM and puts it

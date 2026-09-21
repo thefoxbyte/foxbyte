@@ -349,6 +349,22 @@ $S branch delete jsonok >/dev/null 2>&1
 $S import --from /tmp/imp_ok.json --as jsonok >/dev/null 2>&1
 assert_eq "a valid JSON array still imports (exit 0)" "$?" "0"
 
+echo "### 11b. an image that cannot be pulled is built from the copy inside fox (A3)"
+# The published image is an optimisation. An unreachable registry or a private
+# package used to end a first install with "unauthorized" and advice to set a
+# variable the Mac cannot pass into its VM. fox carries the build context. The
+# start runs from /tmp, away from the checkout, so it is the built-in copy that
+# is used; the .invalid registry can never be pulled from.
+IMG_TEST="registry.invalid/$BRAND_SLUG/postgres-walg:18"
+sudo docker rmi -f "$IMG_TEST" >/dev/null 2>&1
+$S stop >/dev/null 2>&1
+OUT="$(cd /tmp && FOX_PG_IMAGE="$IMG_TEST" $S start 2>&1)"
+assert_eq "start succeeds with an image no registry has" "$?" "0"
+assert_eq "…having built it from the Dockerfile built into fox" "$(grep -c 'from the Dockerfile built into' <<<"$OUT")" "1"
+assert_eq "…and main runs on it" "$(sudo docker inspect -f '{{.Config.Image}}' pg-main 2>/dev/null)" "$IMG_TEST"
+$S stop >/dev/null 2>&1; $S start >/dev/null 2>&1
+sudo docker rmi -f "$IMG_TEST" >/dev/null 2>&1
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

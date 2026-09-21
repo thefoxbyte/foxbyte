@@ -4,6 +4,7 @@ package branch
 
 import (
 	"fmt"
+	pgcontext "github.com/thefoxbyte/foxbyte/docker/postgres"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
@@ -97,13 +98,44 @@ func ensureImageRef(image string) error {
 	if run("docker", "pull", image) == nil {
 		return nil
 	}
-	ctx := envOr(envImageContext, findImageContext())
+	ctx, where := chooseImageContext(envOr(envImageContext, ""), findImageContext())
 	if ctx == "" {
-		return fmt.Errorf("image %s could not be pulled and no build context was found — "+
-			"set %s to the docker/postgres directory, or pre-build the image", image, envImageContext)
+		dir, err := os.MkdirTemp("", "fox-image-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		if err := pgcontext.WriteContext(dir); err != nil {
+			return fmt.Errorf("writing the image's build context: %w", err)
+		}
+		ctx = dir
 	}
-	fmt.Printf("Building image %s from %s (this can take a minute)…\n", image, ctx)
-	return run("docker", buildImageArgs(image, ctx)...)
+	fmt.Printf("Could not pull %s; building it here from %s instead (a few minutes, once)…\n", image, where)
+	if err := run("docker", buildImageArgs(image, ctx)...); err != nil {
+		return fmt.Errorf("image %s could not be pulled, and building it here failed too (%v).\n%s", image, err, pullHint)
+	}
+	return nil
+}
+
+// pullHint is what to check when neither the pull nor the local build worked.
+// Both need the network: the build fetches the stock postgres image from Docker
+// Hub and wal-g from GitHub.
+const pullHint = "Check this machine can reach Docker Hub (docker.io) and github.com. If the pull said \"unauthorized\", " +
+	"the image's package is private or not yet published for this release; the local build does not need it, " +
+	"but it does need those two sites."
+
+// chooseImageContext picks where a local build of the engine image comes from:
+// FOX_IMAGE_CONTEXT, then a docker/postgres beside the working directory (a
+// checkout of the repository), then the copy built into fox, which is always
+// there — the empty dir says to write that one out. where names the choice.
+func chooseImageContext(env, found string) (dir, where string) {
+	switch {
+	case env != "":
+		return env, env + " (" + envImageContext + ")"
+	case found != "":
+		return found, found
+	}
+	return "", "the Dockerfile built into " + brand.CLI
 }
 
 // buildImageArgs builds the engine image for the major its tag names: one

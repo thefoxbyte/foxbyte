@@ -1,0 +1,3 @@
+# The Go file here embeds this directory into fox (context.go); it is not
+# part of the image.
+*.go
