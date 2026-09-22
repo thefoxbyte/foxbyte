@@ -122,6 +122,69 @@ assert_eq "…and that branch keeps its data" "$(pg pg-itowned 'SELECT x FROM mi
 curl -sk -o /dev/null -H "$AUTH" -X DELETE "https://localhost:8080/api/pipelines/$PL_ID"
 $S branch delete itowned >/dev/null 2>&1
 
+echo "### 1d. accounts own their branches (audit v2: G02, G10, G12, G16)"
+# test@ is the first account (an admin). alice and bob are ordinary accounts.
+for who in alice bob; do $S user delete "$who@foxbyte.dev" >/dev/null 2>&1; printf 'password123\n' | $S user create "$who@foxbyte.dev" >/dev/null 2>&1; done
+KA="$($S apikey create alice@foxbyte.dev it 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+KB="$($S apikey create bob@foxbyte.dev it 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+as() { local k="$1"; shift; curl -sk -H "Authorization: Bearer $k" "$@"; }
+code() { local k="$1"; shift; curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $k" "$@"; }
+$S branch delete alice-dev >/dev/null 2>&1
+assert_eq "alice makes a branch" \
+  "$(code "$KA" -H 'Content-Type: application/json' -X POST -d '{"name":"alice-dev"}' https://localhost:8080/api/branches)" "201"
+pg pg-alice-dev "CREATE TABLE secret(x int); INSERT INTO secret VALUES (42);" >/dev/null
+assert_eq "bob's branch list does not show it" "$(as "$KB" https://localhost:8080/api/branches | grep -c 'alice-dev')" "0"
+assert_eq "…alice's does, and the admin's" \
+  "$(as "$KA" https://localhost:8080/api/branches | grep -c 'alice-dev')|$(as "$KEY" https://localhost:8080/api/branches | grep -c 'alice-dev')" "1|1"
+assert_eq "bob cannot read, query, suspend or delete it (404 each)" \
+  "$(code "$KB" https://localhost:8080/api/branches/alice-dev/ledger)|$(code "$KB" -H 'Content-Type: application/json' -X POST -d '{"sql":"select * from secret"}' https://localhost:8080/api/branches/alice-dev/query)|$(code "$KB" -X POST https://localhost:8080/api/branches/alice-dev/suspend)|$(code "$KB" -X DELETE https://localhost:8080/api/branches/alice-dev)" "404|404|404|404"
+assert_eq "…nor copy it" \
+  "$(code "$KB" -H 'Content-Type: application/json' -X POST -d '{"name":"bob-copy","from":"alice-dev"}' https://localhost:8080/api/branches)" "404"
+assert_eq "…nor open it through the Gateway" \
+  "$(PGPASSWORD="$KB" psql "$GATEWAY/alice-dev?sslmode=require" -tAc 'select x from secret' 2>&1 | grep -c 'no branch')" "1"
+assert_eq "alice opens it through the Gateway" "$(PGPASSWORD="$KA" psql "$GATEWAY/alice-dev?sslmode=require" -tAc 'select x from secret' 2>/dev/null)" "42"
+assert_eq "bob uses main, but may not manage it" \
+  "$(PGPASSWORD="$KB" psql "$GATEWAY/main?sslmode=require" -tAc 'select 1' 2>/dev/null)|$(code "$KB" -X POST https://localhost:8080/api/branches/main/ledger/checkpoint)" "1|403"
+# A branch made at the CLI is an admin's until it is handed to someone.
+$S branch delete itcli >/dev/null 2>&1; $S branch create itcli >/dev/null 2>&1
+assert_eq "a CLI branch has no owner, and bob cannot reach it" \
+  "$($S branch owner itcli | grep -c 'no owner')|$(code "$KB" https://localhost:8080/api/branches/itcli/ledger)" "1|404"
+$S branch owner itcli bob@foxbyte.dev >/dev/null
+assert_eq "fox branch owner hands it to bob" \
+  "$($S branch owner itcli | grep -c 'bob@foxbyte.dev')|$(code "$KB" https://localhost:8080/api/branches/itcli/ledger)" "1|200"
+$S branch delete itcli >/dev/null 2>&1
+# Agents belong to the account that asked for them.
+curl -sk -o /dev/null -H "Authorization: Bearer $KA" -X DELETE https://localhost:8088/agents/itown/branch
+assert_eq "alice starts an agent" "$(code "$KA" -X POST https://localhost:8088/agents/itown/branch)" "201"
+assert_eq "bob does not see it, and cannot delete it" \
+  "$(as "$KB" https://localhost:8088/agents | grep -c 'agent-itown')|$(code "$KB" -X DELETE https://localhost:8088/agents/itown/branch)" "0|404"
+assert_eq "…its key is alice's, not the first account's" "$($S apikey list alice@foxbyte.dev 2>/dev/null | grep -c 'agent agent-itown')" "1"
+assert_eq "alice deletes her agent" "$(code "$KA" -X DELETE https://localhost:8088/agents/itown/branch)" "200"
+# Imports reach public databases; this machine, private networks and metadata are not for bob.
+imp() { as "$1" -N -H 'Content-Type: application/json' -X POST -d "{\"source\":\"$2\"}" https://localhost:8080/api/import; }
+assert_eq "bob cannot import from this machine" "$(imp "$KB" 'postgres://x@127.0.0.1:5432/x' | grep -c 'only an admin')" "1"
+assert_eq "…nor from a container name" "$(imp "$KB" "postgres://x@$DB_OBJECT_STORE:9000/x" | grep -c 'only an admin')" "1"
+assert_eq "nobody imports from a metadata address" "$(imp "$KEY" 'postgres://x@169.254.169.254/x' | grep -c 'metadata addresses are refused')" "1"
+# Every role has its own password: the install secret no longer opens db_client.
+SECRET="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["pg_password"])' "$HOME/$BRAND_STATE_DIR/secrets.json")"
+assert_eq "the install secret does not log in as db_client" \
+  "$(sudo docker exec -e PGPASSWORD="$SECRET" pg-alice-dev psql -h pg-main -U "$DB_CLIENT_ROLE" -d "$DB_DATABASE" -tAc 'select 1' 2>&1 | grep -c 'password authentication failed')" "1"
+assert_eq "…and the engine's password file is its owner's only" "$(stat -c %a "$HOME/$BRAND_STATE_DIR/pg.env")" "600"
+# Accounts: admins list and delete; everyone changes their own password.
+assert_eq "bob may not list accounts; the admin may" \
+  "$(code "$KB" https://localhost:8080/api/users)|$(as "$KEY" https://localhost:8080/api/users | grep -c 'bob@foxbyte.dev')" "403|1"
+BCOOKIE="$(mktemp)"
+curl -sk -c "$BCOOKIE" -o /dev/null -H 'Content-Type: application/json' -d '{"email":"bob@foxbyte.dev","password":"password123"}' https://localhost:8080/auth/login
+assert_eq "bob changes his password" \
+  "$(curl -sk -b "$BCOOKIE" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST -d '{"current":"password123","new":"password456"}' https://localhost:8080/api/account/password)" "200"
+assert_eq "…the old one no longer signs in" \
+  "$(curl -sk -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d '{"email":"bob@foxbyte.dev","password":"password123"}' https://localhost:8080/auth/login)" "401"
+BOB_ID="$(as "$KEY" https://localhost:8080/api/users | python3 -c 'import sys,json;print([u["id"] for u in json.load(sys.stdin)["users"] if u["email"]=="bob@foxbyte.dev"][0])')"
+assert_eq "the admin deletes bob, and his key stops working" \
+  "$(code "$KEY" -X DELETE "https://localhost:8080/api/users/$BOB_ID")|$(code "$KB" https://localhost:8080/api/status)" "200|401"
+rm -f "$BCOOKIE"
+curl -sk -o /dev/null -H "Authorization: Bearer $KA" -X DELETE https://localhost:8080/api/branches/alice-dev
+
 echo "### 2. branch isolation"
 $S branch delete itb >/dev/null 2>&1
 $S branch create itb >/dev/null 2>&1

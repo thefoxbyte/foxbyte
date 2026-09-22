@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 )
 
@@ -25,9 +26,15 @@ import (
 
 // identity is who this server acts as for the life of the process.
 type identity struct {
-	Actor string // the key's account, recorded as the Blackbox actor
-	Scope string // "" for an account key; a branch name for a scoped one
+	Actor string    // the key's account, recorded as the Blackbox actor
+	Scope string    // "" for an account key; a branch name for a scoped one
+	User  auth.User // the key's account
 }
+
+// acl applies the access rule (internal/access) to an account key's calls:
+// main and the account's own branches, or every branch for an admin — the
+// same as the REST API and the Gateway. Set by authenticate.
+var acl *access.Checker
 
 // me is set once, by authenticate, before any request is served.
 var me identity
@@ -65,7 +72,53 @@ func authenticate(key string) (identity, error) {
 	if u.Email == "" {
 		return identity{}, errors.New("that API key has no account")
 	}
-	return identity{Actor: u.Email, Scope: scope}, nil
+	acl = access.New(store)
+	return identity{Actor: u.Email, Scope: scope, User: u}, nil
+}
+
+// branchArgs lists the branches a tool call names, with what it needs of each.
+// A missing branch argument is main.
+func branchArgs(tool string, args []byte) map[string]access.Level {
+	var m map[string]any
+	_ = json.Unmarshal(args, &m)
+	str := func(k string) string { v, _ := m[k].(string); return v }
+	out := map[string]access.Level{}
+	switch tool {
+	case "create_branch", "list_branches":
+		// Nothing named: a new branch, or a list filtered to what is reachable.
+	case "delete_branch":
+		out["agent-"+str("agent_id")] = access.Manage
+	case "blackbox_diff":
+		out[str("a")], out[str("b")] = access.Use, access.Use
+	default:
+		b := str("branch")
+		if b == "" {
+			b = "main"
+		}
+		out[b] = access.Use
+	}
+	return out
+}
+
+// checkAccess refuses a call that names a branch the key's account may not
+// reach, in the words the REST API uses. A scoped key is held to its branch by
+// applyScope instead.
+func checkAccess(tool string, args []byte) error {
+	if me.Scope != "" {
+		return nil
+	}
+	if acl == nil {
+		return errors.New("not authenticated")
+	}
+	for name, need := range branchArgs(tool, args) {
+		switch lvl := acl.Level(me.User, name); {
+		case lvl == access.None:
+			return fmt.Errorf("no branch %q", name)
+		case lvl < need:
+			return fmt.Errorf("only the owner of %q or an admin may do that", name)
+		}
+	}
+	return nil
 }
 
 // Tools a branch-scoped key may not use at all: they either reach beyond one

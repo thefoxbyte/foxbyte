@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/httpx"
@@ -30,6 +31,10 @@ import (
 // (FOX_GATEWAY_NOAUTH), the Gateway accepts any client and still mediates
 // the backend login — convenient for trusted/local use.
 var authStore *auth.Store
+
+// gatewayACL applies the access rule (internal/access) to an account key: it
+// opens main, the account's own branches, and — for an admin — any branch.
+var gatewayACL *access.Checker
 
 // tlsConfig, when non-nil, lets the Gateway answer SSLRequest with 'S' and wrap
 // the client connection in TLS — so clients with sslmode=require connect and the
@@ -177,6 +182,7 @@ func Serve(addr string, idle time.Duration) error {
 			return fmt.Errorf("open auth store: %w", err)
 		}
 		authStore = store
+		gatewayACL = access.New(store)
 		log.Printf("gateway authentication ENABLED — connect with an API key (key_…) as the password")
 	}
 	if cfg, err := tlsutil.ServerConfig(); err != nil {
@@ -272,6 +278,7 @@ func handle(client net.Conn) {
 	// Gateway authentication: the client's password must be a valid API key.
 	// The authenticated identity becomes the ledger "actor" for this session.
 	var actor, keyScope string
+	var account auth.User
 	if authStore != nil {
 		key, err := requestClientPassword(client)
 		if err != nil {
@@ -283,7 +290,7 @@ func handle(client net.Conn) {
 			sendError(client, "28P01", "invalid API key — use a key_ key as the password")
 			return
 		}
-		actor, keyScope = u.Email, scope
+		actor, keyScope, account = u.Email, scope, u
 	}
 	// Authenticated: the startup deadline has done its job. Waking a
 	// suspended branch can take longer, and a session may idle for hours.
@@ -302,6 +309,12 @@ func handle(client net.Conn) {
 			return
 		}
 		actor = keyScope
+	} else if gatewayACL != nil && !gatewayACL.Can(account, target, access.Use) {
+		// Answered like a branch that does not exist, so a name is not
+		// confirmed to someone who may not open it — and checked before the
+		// branch is woken.
+		sendError(client, "3D000", fmt.Sprintf("no branch %q", target))
+		return
 	}
 	touch(target)
 	if st := branch.ContainerState(target); st != "running" && st != "absent" {
@@ -330,7 +343,7 @@ func handle(client net.Conn) {
 	// actor — attribution becomes non-forgeable. Fall back to the shared role if
 	// the per-user role can't be provisioned.
 	loginUser := realUser
-	backendPass := backendPassword()
+	backendPass := branch.ClientRolePassword()
 	switch {
 	case keyScope != "":
 		// The branch's own agent role. Its password is derived from the install
@@ -343,7 +356,12 @@ func handle(client net.Conn) {
 		if err := branch.EnsureUserRole(target, actor); err != nil {
 			log.Printf("per-user role %q on %s: %v (using %s)", actor, target, err, realUser)
 		} else {
-			loginUser = actor
+			loginUser, backendPass = actor, branch.UserRolePassword(actor)
+		}
+	}
+	if loginUser == realUser {
+		if err := branch.EnsureAppRole(target); err != nil {
+			log.Printf("client role on %s: %v", target, err)
 		}
 	}
 	params["user"] = loginUser

@@ -135,7 +135,7 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-      <li><b>Security hardening from the 22 Sep audit</b> — safe defaults are done; next, in order: per-user authorization of branches, agents and imports, with a password per role (G02, G10, G12, G16); Blackbox coverage of <code>TRUNCATE</code>/DML and signed off-host anchors (G04, G17, G28); backups to a remote target on a schedule, with one taken at install (G18, G19); signed releases, digest-pinned images and the VM suites in CI (G22–G24).</li>
+      <li><b>Security hardening from the 22 Sep audit</b> — safe defaults and per-user access are done; next, in order: Blackbox coverage of <code>TRUNCATE</code>/DML and signed off-host anchors (G04, G17, G28); backups to a remote target on a schedule, with one taken at install (G18, G19); signed releases, digest-pinned images and the VM suites in CI (G22–G24).</li>
       <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
       <li>Make the <code>postgres-walg</code> image package public, so installs pull it instead of building it for a few minutes (C8).</li>
       <li>Run the VM integration suites in CI on every pull request (M2).</li>
@@ -280,7 +280,7 @@
   <table>
     <tr><th></th><th>ID</th><th>Feature · sub-features</th><th>Tested by</th></tr>
     <tr data-id="E1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E1</td><td><b>Per-install generated secrets</b><ul class="subs">
-      <li class="ok">Generated Postgres and MinIO passwords</li><li class="ok">Used by restore too</li></ul></td><td class="tb">Unit (indirect); v2 §1a</td></tr>
+      <li class="ok">Generated Postgres and MinIO passwords</li><li class="ok">Used by restore too</li><li class="ok">Each login role has its own derived password</li><li class="ok">Never on a command line (docker <code>--env-file</code>)</li></ul></td><td class="tb">Unit (indirect); v2 §1a; VM §1d</td></tr>
     <tr data-id="E2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E2</td><td><b>TLS everywhere</b><ul class="subs">
       <li class="ok">Self-signed TLS on all three services, zero setup</li><li class="ok">TLS required from other machines (loopback clients may skip it)</li><li class="ok">No plain-HTTP fallback except on loopback</li></ul></td><td class="tb">Unit (<code>TestReadStartupUpgradesTLS</code>)</td></tr>
     <tr data-id="E3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E3</td><td><b>Keys are made by a person, not by start</b><ul class="subs">
@@ -297,12 +297,12 @@
     <tr data-id="F1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F1</td><td><b>Routing by database name</b><ul class="subs">
       <li class="ok">One endpoint :6432, database name = branch</li><li class="todo">Connection pooling, rate limiting</li></ul></td><td class="tb">Unit; VM §1, §6</td></tr>
     <tr data-id="F2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F2</td><td><b>API-key authentication</b><ul class="subs">
-      <li class="ok"><code>key_</code> key as the Postgres password</li><li class="ok">Bad key rejected with a Postgres error</li><li class="ok">Startup deadline and connection cap</li></ul></td><td class="tb">VM §1</td></tr>
+      <li class="ok"><code>key_</code> key as the Postgres password</li><li class="ok">Bad key rejected with a Postgres error</li><li class="ok">Startup deadline and connection cap</li><li class="ok">An account key opens main, its own branches, or any for an admin</li></ul></td><td class="tb">VM §1</td></tr>
     <tr data-id="F3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F3</td><td><b>Backend login (SCRAM)</b><ul class="subs">
       <li class="ok">Cleartext, md5, SCRAM-SHA-256</li><li class="ok">Clients never see the database password</li>
       <li class="todo">Unit test for SCRAM</li></ul></td><td class="tb">VM §1, §6, §8 (exercised)</td></tr>
     <tr data-id="F4" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">F4</td><td><b>Per-user Postgres login roles</b><ul class="subs">
-      <li class="ok">Role per user, actor can't be forged</li><li class="ok">Permissions of non-superuser <code>db_client</code></li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">Role per user, actor can't be forged</li><li class="ok">Permissions of non-superuser <code>db_client</code></li><li class="ok">Own password per role</li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="F5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F5</td><td><b>Attribution session settings</b><ul class="subs">
       <li class="ok">Actor kind, branch, session id per connection</li><li class="part">Kind / branch / session client-settable</li></ul></td><td class="tb">VM §8</td></tr>
     <tr data-id="F6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F6</td><td><b>Ctrl-C (CancelRequest) forwarding</b><ul class="subs">
@@ -321,7 +321,7 @@
       <li class="ok">Users, keys, sessions, OAuth ids, pipelines</li><li class="ok">Safe under concurrent use (WAL, busy timeout), including a new store created by three services at once</li>
       <li class="todo">Roles / permissions, multi-tenant projects</li></ul></td><td class="tb">Unit (<code>TestVerifyKeyConcurrent</code>, <code>TestConcurrentFirstOpen</code>); VM §1</td></tr>
     <tr data-id="G2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">G2</td><td><b>Email &amp; password users</b><ul class="subs">
-      <li class="ok">Create account, log in</li><li class="todo">Password change / reset</li><li class="todo">List and delete users</li></ul></td><td class="tb">Unit; VM §1</td></tr>
+      <li class="ok">Create account, log in</li><li class="ok">Password change (signs out other sessions); admin reset at the CLI</li><li class="todo">Self-service reset by email</li><li class="ok">List and delete users (admins)</li><li class="ok">Emails validated; at most 63 bytes (a role name)</li></ul></td><td class="tb">Unit; VM §1; VM §1d</td></tr>
     <tr data-id="G3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">G3</td><td><b>API keys</b><ul class="subs">
       <li class="ok">Create (shown once), list, revoke</li><li class="ok">Bearer / X-API-Key and gateway password</li>
       <li class="part">Revoking an unknown id reports success</li></ul></td><td class="tb">Unit; VM §1</td></tr>
@@ -424,7 +424,7 @@
     <tr data-id="I10" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">I10</td><td><b>Live progress (CLI &amp; SSE)</b><ul class="subs">
       <li class="ok">Live log and progress bar</li><li class="part">psql subprocess output not streamed</li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="I11" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">I11</td><td><b>Import REST endpoints</b><ul class="subs">
-      <li class="ok">From a connection string or an uploaded file</li><li class="todo">Target name validation</li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">From a connection string or an uploaded file</li><li class="todo">Target name validation</li><li class="ok">Private, local and container sources for admins only; metadata refused</li></ul></td><td class="tb">Manual; unit; VM §1d</td></tr>
     <tr data-id="I12" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">I12</td><td><b>Web Import page</b><ul class="subs">
       <li class="ok">Database and file panels with live console</li><li class="ok">No longer claims a SQLite loader that doesn't exist</li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="I13" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">I13</td><td><b>Exact identifier fidelity</b><ul class="subs">
@@ -455,7 +455,7 @@
   <table>
     <tr><th></th><th>ID</th><th>Feature · sub-features</th><th>Tested by</th></tr>
     <tr data-id="K1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K1</td><td><b>Control-plane REST API</b><ul class="subs">
-      <li class="ok">Branches, query, Blackbox, policy, impact, import, pipelines, keys</li><li class="todo">Versioned paths (<code>/api/v1</code>)</li><li class="ok">Exact-origin CORS, branch-name check, body limits, timeouts</li></ul></td><td class="tb">Unit; VM §1; v2 §0–§8</td></tr>
+      <li class="ok">Branches, query, Blackbox, policy, impact, import, pipelines, keys</li><li class="todo">Versioned paths (<code>/api/v1</code>)</li><li class="ok">Exact-origin CORS, branch-name check, body limits, timeouts</li><li class="ok">Branches owned by their maker; others 404 (owner, admin, or main)</li></ul></td><td class="tb">Unit; VM §1; v2 §0–§8; VM §1d</td></tr>
     <tr data-id="K2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K2</td><td><b>OpenAPI spec</b><ul class="subs">
       <li class="ok">Served, Blackbox 2.0 endpoints documented</li><li class="ok">Matches the code (import fields, status codes, auth routes, /blackbox aliases)</li><li class="ok">Drift check in CI</li></ul></td><td class="tb">Unit (drift check)</td></tr>
     <tr data-id="K3" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">K3</td><td><b>Python SDK</b><ul class="subs">
@@ -464,11 +464,11 @@
       <li class="ok">Same client for Node and browsers</li><li class="todo">Tests</li><li class="todo">Publish to npm</li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="K5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K5</td><td><b>Agent Branch API</b><ul class="subs">
       <li class="ok">A branch per agent, own non-superuser role</li><li class="ok">Provenance (task, parent, session)</li>
-      <li class="ok">DSN reachable from the host (gateway-routed, branch-scoped key)</li><li class="ok">Cap, listing and TTL count suspended branches</li><li class="ok">Superuser switch only in <code>-tags insecure</code> builds</li></ul></td><td class="tb">Unit; VM §5; v2 §1c, §7</td></tr>
+      <li class="ok">DSN reachable from the host (gateway-routed, branch-scoped key)</li><li class="ok">Cap, listing and TTL count suspended branches</li><li class="ok">Superuser switch only in <code>-tags insecure</code> builds</li><li class="ok">Agents and their keys belong to the caller</li></ul></td><td class="tb">Unit; VM §5; v2 §1c, §7</td></tr>
     <tr data-id="K6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K6</td><td><b>MCP server</b><ul class="subs">
       <li class="ok">Branches, run_sql, Blackbox tools</li><li class="ok">policy_check, execute_change, impact, diff</li>
       <li class="ok">Requires an API key and acts as that account; a scoped key is held to its branch</li>
-      <li class="ok">Client config &amp; 16-tool reference (docs/mcp.md)</li></ul></td><td class="tb">Unit; v2 §1c–§8</td></tr>
+      <li class="ok">Client config &amp; 16-tool reference (docs/mcp.md)</li><li class="ok">Same ownership rule as the REST API</li></ul></td><td class="tb">Unit; v2 §1c–§8</td></tr>
   </table>
 </section>
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listKeys, createKey, revokeKey, type ApiKey } from '../api'
+import { listKeys, createKey, revokeKey, changePassword, type ApiKey } from '../api'
 import { useConfirm } from '../confirm'
 
 // The gateway listens beside the control plane, so the host the console was
@@ -90,6 +90,41 @@ export default function ApiKeys() {
           </tbody>
         </table>
       </div>
+
+      <PasswordPanel />
+    </div>
+  )
+}
+
+// Changing the password signs out every other session of the account: whoever
+// else was signed in with the old one is out.
+function PasswordPanel() {
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setErr(''); setMsg(''); setBusy(true)
+    try {
+      await changePassword(current, next)
+      setCurrent(''); setNext('')
+      setMsg('Password changed. Every other session of this account was signed out.')
+    } catch (e) { setErr((e as Error).message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 24 }}>
+      <h2 style={{ marginTop: 0 }}>Your password</h2>
+      <form onSubmit={submit} className="form" style={{ maxWidth: 360 }}>
+        <input type="password" placeholder="current password" autoComplete="current-password"
+          value={current} onChange={e => setCurrent(e.target.value)} />
+        <input type="password" placeholder="new password (8+ characters)" autoComplete="new-password"
+          value={next} onChange={e => setNext(e.target.value)} required minLength={8} />
+        {err && <div className="err">{err}</div>}
+        {msg && <p className="muted">{msg}</p>}
+        <button className="primary" disabled={busy || next.length < 8}>{busy ? '…' : 'Change password'}</button>
+      </form>
     </div>
   )
 }

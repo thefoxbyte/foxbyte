@@ -240,7 +240,7 @@ func PlanUpgrade() (UpgradePlan, error) {
 // probeMatches reports whether a note's probe returns a row on a branch. A probe
 // that cannot run says nothing, rather than stopping the plan.
 func probeMatches(branch, sql string) bool {
-	out, err := capture("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(branch),
+	out, err := capture("docker", "exec", "--env-file", pgEnvFile(), container(branch),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc", sql)
 	return err == nil && strings.TrimSpace(out) != ""
 }

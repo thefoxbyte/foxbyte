@@ -252,7 +252,7 @@ func dumpTo(file, image string, tool ...string) error {
 	if err != nil {
 		return err
 	}
-	args := append([]string{"docker", "run", "--rm", "--network", network, "-e", "PGPASSWORD=" + pgPass(), image}, tool...)
+	args := append([]string{"docker", "run", "--rm", "--network", network, "--env-file", pgEnvFile(), image}, tool...)
 	cmd := exec.Command("sudo", args...)
 	cmd.Stdout = f
 	var stderr bytes.Buffer
@@ -269,7 +269,7 @@ func dumpTo(file, image string, tool ...string) error {
 const ledgerHeadSQL = `SELECT count(*) || '|' || coalesce((SELECT row_hash FROM bb.schema_ledger ORDER BY id DESC LIMIT 1), '') FROM bb.schema_ledger`
 
 func ledgerHead(name string) (int64, string, error) {
-	out, err := capture("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(name),
+	out, err := capture("docker", "exec", "--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tA", "-c", ledgerHeadSQL)
 	if err != nil {
 		return 0, "", err
@@ -533,7 +533,7 @@ func restoreInto(branch, dir string, eb ExportedBranch) error {
 		return err
 	}
 	defer dump.Close()
-	cmd := exec.Command("sudo", "docker", "exec", "-i", "-e", "PGPASSWORD="+pgPass(), container(branch),
+	cmd := exec.Command("sudo", "docker", "exec", "-i", "--env-file", pgEnvFile(), container(branch),
 		"pg_restore", "-U", pgUser, "-d", pgDatabase, "--exit-on-error", "--single-transaction")
 	cmd.Stdin = dump
 	var stderr bytes.Buffer
@@ -572,7 +572,7 @@ func psqlScript(branch, db, sql string, stopOnError bool) error {
 	if stopOnError {
 		stop = "1"
 	}
-	cmd := exec.Command("sudo", "docker", "exec", "-i", "-e", "PGPASSWORD="+pgPass(), container(branch),
+	cmd := exec.Command("sudo", "docker", "exec", "-i", "--env-file", pgEnvFile(), container(branch),
 		"psql", "-U", pgUser, "-d", db, "-v", "ON_ERROR_STOP="+stop, "-q")
 	cmd.Stdin = strings.NewReader(sql)
 	var stderr bytes.Buffer

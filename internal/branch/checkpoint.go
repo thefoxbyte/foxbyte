@@ -46,7 +46,7 @@ func ledgerBranchName(name string) (string, error) {
 // ledgerLines runs a query as the superuser and returns its non-empty output
 // lines (one JSON document per row for the ledger queries).
 func ledgerLines(name, sql string) ([]string, error) {
-	out, err := exec.Command("sudo", "docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(name),
+	out, err := exec.Command("sudo", "docker", "exec", "--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-X", "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-c", sql).Output()
 	if err != nil {
 		var ee *exec.ExitError

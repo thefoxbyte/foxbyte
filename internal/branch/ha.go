@@ -30,7 +30,7 @@ func HAInfo() HAState {
 	}
 	st.Enabled = true
 	st.Standby = cs
-	out, _ := capture("docker", "exec", "-e", "PGPASSWORD="+pgPass(), PrimaryContainer(),
+	out, _ := capture("docker", "exec", "--env-file", pgEnvFile(), PrimaryContainer(),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc",
 		"SELECT count(*) FROM pg_stat_replication WHERE state='streaming';")
 	if n := strings.TrimSpace(out); n != "" && n != "0" {
@@ -84,7 +84,7 @@ func haGuard(action, primary string) error {
 func allowReplication(primary string) error {
 	quiet("docker", "exec", "-u", "postgres", primary, "bash", "-c",
 		`grep -q '^host replication' "$PGDATA/pg_hba.conf" || echo 'host replication all all scram-sha-256' >> "$PGDATA/pg_hba.conf"`)
-	return run("docker", "exec", "-e", "PGPASSWORD="+pgPass(), primary,
+	return run("docker", "exec", "--env-file", pgEnvFile(), primary,
 		"psql", "-U", pgUser, "-d", pgDatabase, "-c", "SELECT pg_reload_conf();")
 }
 
@@ -113,7 +113,7 @@ func standbyRunArgs(dataPath string) []string {
 	// port only offered a way around the Gateway, with the superuser password.
 	args := []string{"run", "-d",
 		"--name", container("standby"), "--network", network,
-		"-e", "PGPASSWORD=" + pgPass(), // used by the WAL receiver to authenticate
+		"--env-file", pgEnvFile(), // used by the WAL receiver to authenticate
 		"-e", "PGDATA=/var/lib/postgresql/data/pgdata",
 		"-v", dataPath + ":/var/lib/postgresql/data",
 	}
@@ -151,7 +151,7 @@ func HAEnable() error {
 
 	// 3. Base backup from the primary, with recovery config (-R) and streaming WAL.
 	if err := run("docker", "run", "--rm", "--user", pgUID, "--network", network,
-		"-e", "PGPASSWORD="+pgPass(),
+		"--env-file", pgEnvFile(),
 		"-v", store.standbyPath()+":/data",
 		pgImage(),
 		"pg_basebackup", "-h", primary, "-U", pgUser, "-D", "/data/pgdata",
@@ -179,11 +179,11 @@ func HAStatus() error {
 		return nil
 	}
 	fmt.Println("=== primary: connected standbys (pg_stat_replication) ===")
-	_ = run("docker", "exec", "-e", "PGPASSWORD="+pgPass(), PrimaryContainer(),
+	_ = run("docker", "exec", "--env-file", pgEnvFile(), PrimaryContainer(),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-x", "-c",
 		"SELECT application_name, client_addr, state, sync_state, replay_lag FROM pg_stat_replication;")
 	fmt.Println("=== standby: recovery position ===")
-	_ = run("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container("standby"),
+	_ = run("docker", "exec", "--env-file", pgEnvFile(), container("standby"),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-c",
 		"SELECT pg_is_in_recovery() AS in_recovery, pg_last_wal_receive_lsn() AS received, pg_last_wal_replay_lsn() AS replayed;")
 	return nil
@@ -199,7 +199,7 @@ func HAFailover() error {
 	if ContainerState("standby") != "running" {
 		return fmt.Errorf("no running standby to promote — run 'foxbyte ha enable' first")
 	}
-	if err := run("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container("standby"),
+	if err := run("docker", "exec", "--env-file", pgEnvFile(), container("standby"),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-c", "SELECT pg_promote();"); err != nil {
 		return err
 	}
@@ -300,7 +300,7 @@ func HAFailback() error {
 		return stopped(err)
 	}
 	if err := run("docker", "run", "--rm", "--user", pgUID, "--network", network,
-		"-e", "PGPASSWORD="+pgPass(),
+		"--env-file", pgEnvFile(),
 		"-v", mountpoint("main")+":/data",
 		pgImage(),
 		"pg_basebackup", "-h", standby, "-U", pgUser, "-D", "/data/pgdata",
@@ -345,7 +345,7 @@ func HAFailback() error {
 	}
 
 	fmt.Println("4/5 promoting main…")
-	if err := run("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container("main"),
+	if err := run("docker", "exec", "--env-file", pgEnvFile(), container("main"),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-c", "SELECT pg_promote();"); err != nil {
 		return restart(err)
 	}
@@ -370,7 +370,7 @@ func HAFailback() error {
 
 // haQuery runs a single-value query on a container, returning "" on any error.
 func haQuery(c, sql string) string {
-	out, _ := capture("docker", "exec", "-e", "PGPASSWORD="+pgPass(), c,
+	out, _ := capture("docker", "exec", "--env-file", pgEnvFile(), c,
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc", sql)
 	return strings.TrimSpace(out)
 }

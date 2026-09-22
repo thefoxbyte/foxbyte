@@ -38,6 +38,11 @@ tags:
   - name: backups
     description: Base backups in object storage — what a point-in-time restore (`fox restore --to`) can start from.
   - name: keys
+  - name: accounts
+    description: >-
+      Your own account, and — for admins — every account. Branches are owned: the account that
+      made a branch may use and manage it, every account may use main, and an admin may do
+      anything. A branch you may not reach answers 404 on every route below.
   - name: agents
   - name: auth
     description: Browser sign-in and sessions (cookie-based; no API key needed).
@@ -784,6 +789,58 @@ paths:
       summary: Revoke an API key.
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses: { "200": { description: Revoked }, "401": { $ref: "#/components/responses/Unauthorized" } }
+
+  /api/account:
+    get:
+      tags: [accounts]
+      summary: The signed-in account, and whether it is an admin.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { user: { type: object }, admin: { type: boolean } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/account/password:
+    post:
+      tags: [accounts]
+      summary: Change your password. Every other session of the account is signed out.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current, new]
+              properties:
+                current: { type: string, description: The current password (empty for an account that only signs in with GitHub or Google). }
+                new: { type: string, minLength: 8 }
+      responses:
+        "200": { description: Changed. }
+        "400": { description: The current password is wrong, or the new one is too short. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/users:
+    get:
+      tags: [accounts]
+      summary: Every account, with how many keys and branches each has (admins only).
+      responses:
+        "200": { description: OK }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin. }
+
+  /api/users/{id}:
+    delete:
+      tags: [accounts]
+      summary: Delete an account (admins only) — its sessions, API keys, pipelines and admin grant. Its branches stay, reachable by admins only.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200": { description: Deleted. }
+        "400": { description: Your own account. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin. }
+        "404": { description: No such account. }
 
   /auth/register:
     post:

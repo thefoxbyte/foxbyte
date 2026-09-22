@@ -98,6 +98,9 @@ func registerLedgerV2(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		res, err := branch.BranchBeforeEntry(r.PathValue("name"), id, body.Name, nil)
+		if err == nil {
+			err = own(r, res.Branch)
+		}
 		switch {
 		case err == nil:
 			writeJSON(w, 201, res)
