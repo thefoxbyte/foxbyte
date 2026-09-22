@@ -12,7 +12,7 @@ coverage.*
 /data/
 *.log
 
-# Personal env overrides (walg.env holds only local dev defaults and is committed)
+# Personal env overrides
 .env.local
 
 # OS / editor
@@ -26,3 +26,9 @@ web/dist/
 /dist/
 __pycache__/
 *.pyc
+
+# SSH keys never belong in the repository
+id_ed*
+id_rsa*
+id_ecdsa*
+*.pem
