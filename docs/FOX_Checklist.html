@@ -103,7 +103,7 @@
   <div class="meta">
     <b>What this is:</b> every FoxByte feature and its sub-features — built or not, and how it was tested — so it's clear where we are and what's next.
     How each feature works is in <code>FOX_Feature_Implemented.pdf</code> (same ids).<br>
-    <b>Last updated:</b> 21 September 2026 &nbsp;·&nbsp; <b>Reflects:</b> <code>main</code> @ <code>2778762</code> (v1.0.1, exact repository path PR #1) + the FoxByte rename and brand indirection (<code>chore/foxbyte</code>)<br>
+    <b>Last updated:</b> 22 September 2026 &nbsp;·&nbsp; <b>Reflects:</b> <code>main</code> @ <code>2778762</code> (v1.0.1, exact repository path PR #1) + the FoxByte rename and brand indirection (<code>chore/foxbyte</code>)<br>
     <b>Source:</b> <code>docs/FOX_Checklist.html</code> → <code>make feature-doc</code> → this PDF
   </div>
 
@@ -135,6 +135,7 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
+      <li><b>Security hardening from the 22 Sep audit</b>, in order: safe defaults (sign-up closed with a bootstrap token, services and backup store on loopback, TLS required, superuser switches out of release builds, request limits, pipeline sources and names checked); per-user authorization of branches, agents and imports; Blackbox coverage of <code>TRUNCATE</code>/DML and signed off-host anchors; backups to a remote target on a schedule, with one taken at install; signed releases and CI scanners.</li>
       <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
       <li>Make the <code>postgres-walg</code> image package public, so installs pull it instead of building it for a few minutes (C8).</li>
       <li>Run the VM integration suites in CI on every pull request (M2).</li>
