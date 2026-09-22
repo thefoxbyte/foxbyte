@@ -27,9 +27,10 @@ rel="$tmp/release"
 mkdir -p "$rel"
 printf '#!/bin/sh\necho "fox 9.9.9"\n' > "$rel/$asset"
 chmod +x "$rel/$asset"
-cp "$rel/$asset" "$rel/$linux_asset"
+# On Linux amd64 the host asset and the VM's engine are the same file.
+[ "$asset" = "$linux_asset" ] || cp "$rel/$asset" "$rel/$linux_asset"
 { printf '%s  %s\n' "$(sha "$rel/$asset")" "$asset"
-  printf '%s  %s\n' "$(sha "$rel/$linux_asset")" "$linux_asset"; } > "$rel/SHA256SUMS"
+  printf '%s  %s\n' "$(sha "$rel/$linux_asset")" "$linux_asset"; } | sort -u > "$rel/SHA256SUMS"
 
 # Signatures (audit v2 G22). A test release key, and a copy of the installer
 # that trusts it instead of the real one. Where openssl cannot do Ed25519
@@ -96,7 +97,9 @@ fi
 
 # 4. An asset missing from the listing must not install.
 gap="$tmp/gap"; cp -r "$rel" "$gap"
-grep -v "  $asset\$" "$rel/SHA256SUMS" > "$gap/SHA256SUMS"
+# Without the host asset — but not empty: openssl cannot sign an empty file,
+# and on Linux amd64 the two assets are one name, so removing it removes all.
+{ grep -v "  $asset\$" "$rel/SHA256SUMS"; printf '%s  %s\n' "$(sha "$rel/SHA256SUMS")" other-file; } > "$gap/SHA256SUMS"
 sign "$gap"   # a properly signed listing that simply leaves the file out
 p="$tmp/p4"; out="$(env FOX_BASE_URL="file://$gap" FOX_PREFIX="$p" sh "$installer" 2>&1)"; code=$?
 if [ "$code" != 0 ] && [ ! -e "$p/bin/fox" ] && grep -q "not listed in SHA256SUMS" <<<"$out"; then
