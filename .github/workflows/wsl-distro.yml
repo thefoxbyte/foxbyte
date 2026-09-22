@@ -28,15 +28,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.26'
       # `make release-linux` runs `npm ci`, which re-downloads the whole
       # dependency tree on a cold runner. Cache it on the lockfile.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
           cache: npm
@@ -66,6 +66,17 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 ||
             gh release create "$TAG" --prerelease --generate-notes --title "$TAG"
 
+      # SHA256SUMS is signed with the release key (audit v2 G22): fox update and
+      # install.sh refuse a release whose signature does not check. A missing
+      # secret fails the release here, rather than publishing one nobody can
+      # install. (cmd/releasesign also refuses a key fox would not accept.)
+      - name: Build the release signer
+        env:
+          FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
+        run: |
+          test -n "$FOX_RELEASE_SIGNING_KEY" || { echo "::error::the FOX_RELEASE_SIGNING_KEY secret is not set (see cmd/releasesign)"; exit 1; }
+          go build -o "$RUNNER_TEMP/releasesign" ./cmd/releasesign
+
       # Merged, not replaced: release.yml publishes sums for the binaries into
       # the same SHA256SUMS. Every asset the installer or setup downloads must be
       # listed, or verification silently skips it. The shared script matches
@@ -75,6 +86,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_SIGN: ${{ runner.temp }}/releasesign
+          FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
         run: |
           cd dist
           bash ../scripts/release-checksums.sh "$TAG" foxbyte-distro.tar.zst

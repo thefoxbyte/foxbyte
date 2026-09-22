@@ -135,7 +135,8 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-      <li><b>Security hardening from the 22 Sep audit</b> — safe defaults, per-user access, the Blackbox's data changes and security log, and remote, scheduled backups are done; last: signed releases with an SBOM, digest-pinned images and a checked wal-g download, and the VM suites in CI (G22–G24).</li>
+      <li><b>Security hardening from the 22 Sep audit</b> — done but for the last part: the VM suites nightly in CI, and UI (Playwright) and SDK contract tests (G24, G26).</li>
+      <li><b>Cut the first signed release</b> and check <code>gh attestation verify</code> and <code>fox update</code> against it (M4, A9).</li>
       <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
       <li>Make the <code>postgres-walg</code> image package public, so installs pull it instead of building it for a few minutes (C8).</li>
       <li>Run the VM integration suites in CI on every pull request (M2).</li>
@@ -153,7 +154,7 @@
     <tr data-id="A1" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">A1</td><td><b>One-line installer (macOS / Linux)</b><ul class="subs">
       <li class="ok">Detects OS / CPU, downloads the release binary</li><li class="ok">Installs to the prefix (sudo only if needed)</li>
       <li class="ok">Stages the Linux engine for the VM on macOS</li><li class="ok"><code>FOX_VERSION</code>, <code>FOX_REPO</code>, <code>FOX_DIST</code>, <code>FOX_PREFIX</code></li>
-      <li class="ok">Verifies every download against <code>SHA256SUMS</code>; refuses what it can't check</li></ul></td><td class="tb">Unit (<code>test_install_sh.sh</code>, CI); manual</td></tr>
+      <li class="ok">Verifies every download against <code>SHA256SUMS</code>; refuses what it can't check</li><li class="ok">Release signature checked (OpenSSL 3; warns with LibreSSL)</li></ul></td><td class="tb">Unit (<code>test_install_sh.sh</code>, CI); manual</td></tr>
     <tr data-id="A2" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">A2</td><td><b>Windows installer (install.ps1)</b><ul class="subs">
       <li class="ok">Installs WSL, elevates, resumes after reboot</li><li class="ok">Downloads fox.exe, engine, image build context</li>
       <li class="ok">Ubuntu rootfs verified against Ubuntu's checksums</li><li class="ok">Adds to PATH and runs <code>fox setup</code></li>
@@ -185,7 +186,7 @@
       <li class="ok"><code>up</code>, Blackbox upgrade, <code>start</code> on the new engine</li><li class="ok">Replaces host <code>fox</code>, keeps previous binaries</li>
       <li class="ok"><code>--check</code>, <code>--yes</code>, <code>--version</code></li><li class="ok">Linux path verified end to end</li>
       <li class="ok">macOS path run against real releases (v0.8.3 → v0.8.4 → v0.8.5)</li><li class="todo">Windows path run against a real release (deferred)</li>
-      <li class="todo">Release signatures</li></ul></td><td class="tb">Unit; update §4–§7; a real Mac run</td></tr>
+      <li class="ok">Release signatures (Ed25519 over SHA256SUMS)</li></ul></td><td class="tb">Unit; update §4–§7; a real Mac run</td></tr>
   </table>
 </section>
 
@@ -528,7 +529,7 @@
       <li class="todo">End-to-end WSL install test</li></ul></td><td class="tb">CI</td></tr>
     <tr data-id="M4" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M4</td><td><b>Releases &amp; GHCR image</b><ul class="subs">
       <li class="ok">Binaries for 5 platforms + fox-verify</li><li class="ok">SHA256SUMS merged safely between jobs</li>
-      <li class="ok">Fails unless <code>fox update</code>'s files are published</li><li class="ok">Multi-arch Postgres image on GHCR</li></ul></td><td class="tb">Script tests in CI</td></tr>
+      <li class="ok">Fails unless <code>fox update</code>'s files are published</li><li class="ok">Multi-arch Postgres image on GHCR</li><li class="ok">Actions pinned by SHA; signed SHA256SUMS; build attestations; SBOM</li><li class="todo">First signed release run on GitHub</li></ul></td><td class="tb">Script tests in CI</td></tr>
     <tr data-id="M5" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">M5</td><td><b>WSL distro &amp; ZFS builds</b><ul class="subs">
       <li class="ok">Prebuilt distro image</li><li class="ok">Downloaded and verified by the installer (seen on Windows)</li><li class="ok">Preloaded image tagged as the engine runs it</li>
       <li class="ok">Imported on a fresh Windows install; preloaded images loaded</li><li class="ok">Published zstd-compressed, with the gzip size measured beside it in every build log</li><li class="part">zstd unpack on a real Windows install (unit-tested only); the gzip image was 685 MB</li></ul></td><td class="tb">Actions artifacts; Pester; Windows run 16 Sep</td></tr>
@@ -539,7 +540,7 @@
       <li class="ok">The major lives in one place, and a test holds the Dockerfile, release matrix and Windows preload to it</li>
       <li class="ok">All three suites pass on PostgreSQL 18.6: 108 + 277 + 51 checks (21 Sep)</li>
       <li class="ok">A command that moves an install from 16 to 18 (D6), and a portable backup to take first (D5)</li>
-      <li class="todo">pgvector</li></ul></td><td class="tb">Unit; all three suites on 18</td></tr>
+      <li class="todo">pgvector</li><li class="ok">Base image pinned by digest; wal-g checked by SHA-256</li></ul></td><td class="tb">Unit; all three suites on 18</td></tr>
     <tr data-id="M7" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M7</td><td><b>Product name in one file</b><ul class="subs">
       <li class="ok">brand.json → Go, shell, web and installer blocks, regenerated by <code>make brand</code></li>
       <li class="ok">Stored names brand-free and frozen: a rename never migrates an install</li>
@@ -563,7 +564,7 @@
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>More import sources: Cassandra, DynamoDB</b></td><td class="tb">I1–I8</td></tr>
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>pgvector in the Postgres image</b></td><td class="tb">M6</td></tr>
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Cloud write-once anchors</b> (S3 Object Lock etc.)</td><td class="tb">H10</td></tr>
-    <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Release signatures</b></td><td class="tb">A9, M4</td></tr>
+    <tr data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">—</td><td><b>Release signatures</b> — done 22 Sep 2026</td><td class="tb">A9, M4</td></tr>
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Hosted cloud tier</b></td><td class="tb">—</td></tr>
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Networked storage disaggregation</b> (README roadmap; see the storage engine note on page 1)</td><td class="tb">C1, D1</td></tr>
   </table>

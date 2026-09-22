@@ -32,3 +32,6 @@ id_ed*
 id_rsa*
 id_ecdsa*
 *.pem
+
+# The release signing key (cmd/releasesign) belongs in the Actions secret and a password manager
+release-signing.key

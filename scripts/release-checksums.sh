@@ -22,6 +22,13 @@
 #   4. waits a moment, downloads again and checks its entries are still there —
 #      if the other job uploaded in between, it merges again (up to 3 times).
 #
+# Signing (audit v2 G22): with RELEASE_SIGN set to the releasesign tool
+# (cmd/releasesign, which reads FOX_RELEASE_SIGNING_KEY), each upload of the
+# merged SHA256SUMS goes with its signature, SHA256SUMS.sig, and step 4 also
+# checks the published signature matches the published file. The two jobs can
+# interleave (A's file, B's file, B's signature, A's signature), so a mismatch
+# there is merged and signed again like any other race.
+#
 # Needs gh (GH_TOKEN set) and sha256sum or shasum. Files may be given with a
 # directory; entries use the base name, as the installers expect.
 set -euo pipefail
@@ -42,6 +49,7 @@ trap 'rm -rf "$work"' EXIT
 # Our entries: "<hash>  <basename>".
 checksum "$@" | awk '{ name = $2; sub(/.*\//, "", name); print $1 "  " name }' > "$work/mine"
 
+sign="${RELEASE_SIGN:-}"
 attempts="${CHECKSUM_ATTEMPTS:-3}"
 settle="${CHECKSUM_SETTLE_SECONDS:-10}"
 
@@ -55,11 +63,24 @@ for attempt in $(seq 1 "$attempts"); do
 	cat "$work/mine" >> "$work/SHA256SUMS"
 	sort -k2 -o "$work/SHA256SUMS" "$work/SHA256SUMS"
 
-	gh release upload "$tag" "$work/SHA256SUMS" --clobber
+	if [ -n "$sign" ]; then
+		"$sign" sign "$work/SHA256SUMS" "$work/SHA256SUMS.sig"
+		gh release upload "$tag" "$work/SHA256SUMS" "$work/SHA256SUMS.sig" --clobber
+	else
+		gh release upload "$tag" "$work/SHA256SUMS" --clobber
+	fi
 
 	sleep "$settle"
 	gh release download "$tag" -p SHA256SUMS -O "$work/published" --clobber
-	if awk 'NR == FNR { want[$1 "  " $2] = 1; total++; next }
+	signed_ok=1
+	if [ -n "$sign" ]; then
+		signed_ok=0
+		if gh release download "$tag" -p SHA256SUMS.sig -O "$work/published.sig" --clobber >/dev/null 2>&1 &&
+			"$sign" verify "$work/published" "$work/published.sig" >/dev/null 2>&1; then
+			signed_ok=1
+		fi
+	fi
+	if [ "$signed_ok" = 1 ] && awk 'NR == FNR { want[$1 "  " $2] = 1; total++; next }
 	        (($1 "  " $2) in want) && !seen[$1 "  " $2]++ { found++ }
 	        END { exit (found == total) ? 0 : 1 }' "$work/mine" "$work/published"; then
 		cat "$work/published"

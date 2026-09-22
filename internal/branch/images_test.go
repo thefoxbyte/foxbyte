@@ -25,13 +25,14 @@ func TestPickImage(t *testing.T) {
 		present  func(string) bool
 		want     string
 	}{
-		{"fresh install pulls the pinned image", "", have(), MinioImage},
-		{"pinned image already loaded (e.g. the Windows distro)", "", have(MinioImage, legacyMinioImage), MinioImage},
-		{"existing install keeps its cached image, no pull", "", have(legacyMinioImage), legacyMinioImage},
+		{"fresh install pulls the pinned tag@digest", "", have(), MinioImage},
+		{"pulled by digest before", "", have(MinioImage), MinioImage},
+		{"the tag preloaded without a digest (the Windows distro)", "", have(MinioTag), MinioTag},
+		{"the old unpinned image is not used", "", have("minio/minio:latest"), MinioImage},
 		{"an override always wins", " mirror.local/minio:1 ", have(MinioImage), "mirror.local/minio:1"},
 	}
 	for _, c := range cases {
-		if got := pickImage(c.override, MinioImage, legacyMinioImage, c.present); got != c.want {
+		if got := pickImage(c.override, MinioImage, MinioTag, c.present); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -44,6 +45,9 @@ func TestMinioImagesArePinnedOffDockerHub(t *testing.T) {
 		}
 		if strings.HasSuffix(ref, ":latest") || !strings.Contains(ref, ":RELEASE.") {
 			t.Errorf("%s: pin a tested RELEASE tag, not latest", ref)
+		}
+		if !strings.Contains(ref, "@sha256:") {
+			t.Errorf("%s: pin the digest too, so a moved tag cannot change what runs", ref)
 		}
 	}
 }
@@ -110,5 +114,31 @@ func TestPostgresMajorIsInStepEverywhere(t *testing.T) {
 	}
 	if !strings.Contains(workflow, "PG_MAJOR=${{ matrix.pg }}") {
 		t.Error(".github/workflows/release.yml should pass the matrix major to the build as PG_MAJOR")
+	}
+
+	// The base image is pinned by digest per major, the same everywhere.
+	if !strings.Contains(docker, "ARG PG_DIGEST="+PostgresBaseDigests[PGMajor]+"\n") ||
+		!strings.Contains(docker, "FROM postgres:${PG_MAJOR}-bookworm@${PG_DIGEST}") {
+		t.Errorf("docker/postgres/Dockerfile should build FROM the digest-pinned base, defaulting to %s", PostgresBaseDigests[PGMajor])
+	}
+	if !strings.Contains(distro, "local pg_digest="+PostgresBaseDigests[PGMajor]+"\n") {
+		t.Error("deploy/wsl-distro/build.sh should build on the same pinned base")
+	}
+	for _, m := range SupportedPGMajors {
+		d := PostgresBaseDigests[m]
+		if d == "" {
+			t.Errorf("no base digest pinned for PostgreSQL %s", m)
+			continue
+		}
+		if want := "- pg: \"" + m + "\"\n            base: " + d; !strings.Contains(workflow, want) {
+			t.Errorf(".github/workflows/release.yml should build %s on %s", m, d)
+		}
+	}
+	if !strings.Contains(workflow, "PG_DIGEST=${{ matrix.base }}") {
+		t.Error(".github/workflows/release.yml should pass the matrix base digest as PG_DIGEST")
+	}
+	// wal-g is checked against its published SHA-256 before it is unpacked.
+	if !strings.Contains(docker, "sha256sum -c -") || !strings.Contains(docker, "WALG_SHA256_AMD64=") || !strings.Contains(docker, "WALG_SHA256_ARM64=") {
+		t.Error("docker/postgres/Dockerfile should verify the wal-g download for both architectures")
 	}
 }

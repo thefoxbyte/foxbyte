@@ -145,6 +145,9 @@ func buildImageArgs(image, ctx string) []string {
 	args := []string{"build", "-t", image}
 	if m := imageMajor(image); m != "" {
 		args = append(args, "--build-arg", "PG_MAJOR="+m)
+		if d := PostgresBaseDigests[m]; d != "" {
+			args = append(args, "--build-arg", "PG_DIGEST="+d)
+		}
 	}
 	return append(args, ctx)
 }

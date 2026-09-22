@@ -211,6 +211,11 @@ function Assert-UpstreamChecksum([string]$Path, [string]$SumsUrl, [string]$Name)
 }
 
 # --- FoxByte's own releases ----------------------------------------------
+# Authorship: releases also publish SHA256SUMS.sig, an Ed25519 signature by the
+# FoxByte release key (audit v2 G22). PowerShell and .NET have no Ed25519, so
+# this installer checks checksums only; fox.exe checks the signature on every
+# `fox update`, and `gh attestation verify fox-windows-amd64.exe --repo
+# thefoxbyte/foxbyte` proves where a download came from.
 # Every release publishes SHA256SUMS beside its assets. It travels over the same
 # TLS connection as the files, so it proves integrity (a complete, unaltered
 # download), not authorship -- signatures would be needed for that. The files
