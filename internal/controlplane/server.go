@@ -55,6 +55,7 @@ func Serve(addr string) error {
 	store.OnFirstUser = func(u auth.User) { branch.AdminForFirstAccount(u.Email) }
 
 	acl = access.New(store)
+	secLog = store
 
 	mux := http.NewServeMux()
 	store.MountPublic(mux) // /auth/* (register, login, logout, me, providers, oauth)

@@ -3,6 +3,7 @@
 package branch
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
@@ -31,6 +33,27 @@ func AnchorDir(name string) string {
 		base = brand.StatePath("anchors")
 	}
 	return filepath.Join(base, name)
+}
+
+// AnchorKeyPath is the Ed25519 key that signs anchors: FOX_ANCHOR_KEY, or
+// ~/.fox/anchor-signing.key. Its public key is beside it, with ".pub" added.
+// The databases cannot read either; point FOX_ANCHOR_KEY at a mounted secret
+// to keep the key off the machine's own disk.
+func AnchorKeyPath() string {
+	if p := strings.TrimSpace(brand.Getenv("ANCHOR_KEY")); p != "" {
+		return p
+	}
+	return brand.StatePath("anchor-signing.key")
+}
+
+// AnchorPublicKey returns the public key anchors are signed with, creating the
+// key pair if there is none yet.
+func AnchorPublicKey() (ed25519.PublicKey, string, error) {
+	key, err := ledger.LoadOrCreateSigningKey(AnchorKeyPath())
+	if err != nil {
+		return nil, "", err
+	}
+	return key.Public().(ed25519.PublicKey), AnchorKeyPath() + ".pub", nil
 }
 
 func ledgerBranchName(name string) (string, error) {
@@ -182,6 +205,14 @@ func Checkpoint(name string) (*ledger.Anchor, string, error) {
 	if a.CheckpointID, err = strconv.ParseInt(lines[0], 10, 64); err != nil {
 		return nil, "", fmt.Errorf("recording the checkpoint: unexpected id %q", lines[0])
 	}
+	// Signed, so a copy of the anchor proves itself wherever it goes. A key
+	// that cannot be read is an error: an unsigned anchor after signed ones
+	// is exactly what a verifier refuses.
+	key, err := ledger.LoadOrCreateSigningKey(AnchorKeyPath())
+	if err != nil {
+		return &a, "", fmt.Errorf("checkpoint %d was recorded but its anchor could not be signed: %w", a.CheckpointID, err)
+	}
+	ledger.SignAnchor(&a, key)
 	if _, err := ledger.WriteAnchor(dir, a); err != nil {
 		return &a, "", fmt.Errorf("checkpoint %d was recorded but its anchor could not be written: %w", a.CheckpointID, err)
 	}
@@ -214,6 +245,9 @@ func Integrity(name string) (ledger.Report, error) {
 		return ledger.Report{}, err
 	}
 	rep := ledger.Verify(rows, anchors)
+	if pub, err := ledger.ReadPublicKey(AnchorKeyPath() + ".pub"); err == nil {
+		ledger.VerifySignatures(&rep, anchors, pub)
+	}
 	if hasCheckpoints {
 		if lines, err := ledgerLines(name, "SELECT count(*) FROM bb.ledger_checkpoints"); err == nil && len(lines) > 0 {
 			if n, _ := strconv.Atoi(lines[0]); n != len(anchors) {
@@ -304,7 +338,20 @@ func StartCheckpointer() {
 		last := map[string]time.Time{}
 		t := time.NewTicker(tick)
 		defer t.Stop()
+		store, serr := auth.OpenFromEnv()
+		if serr != nil {
+			log.Printf("security log checkpoints: %v", serr)
+		}
 		for range t.C {
+			// The security log, on the same schedule as the branches.
+			if store != nil && time.Since(last[secLogAnchorDir]) >= interval {
+				last[secLogAnchorDir] = time.Now()
+				if a, err := CheckpointSecurityLog(store); err != nil {
+					log.Printf("security log checkpoint: %v", err)
+				} else if a != nil {
+					log.Printf("security log checkpoint: events %d–%d", a.FromID, a.ToID)
+				}
+			}
 			names, err := RunningBranches()
 			if err != nil {
 				continue

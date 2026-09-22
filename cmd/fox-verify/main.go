@@ -36,9 +36,10 @@ func main() {
 	export := flag.String("export", "", "check a `fox ledger export` JSON-lines file instead of a live database")
 	anchorDir := flag.String("anchors", "", "directory holding the branch's anchor files (required)")
 	asJSON := flag.Bool("json", false, "print the report as JSON")
+	pubKey := flag.String("pubkey", "", "the anchors' public key (fox blackbox anchor-key): every anchor after the first signed one must be signed by it")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: fox-verify (--dsn <postgres-url> | --export <file.jsonl>) --anchors <dir> [--json]")
+		fmt.Fprintln(os.Stderr, "usage: fox-verify (--dsn <postgres-url> | --export <file.jsonl>) --anchors <dir> [--pubkey <file>] [--json]")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -72,6 +73,16 @@ func main() {
 	}
 
 	rep := ledger.Verify(rows, anchors)
+	if *pubKey != "" {
+		pub, err := ledger.ReadPublicKey(*pubKey)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fox-verify:", err)
+			os.Exit(2)
+		}
+		ledger.VerifySignatures(&rep, anchors, pub)
+	} else if len(anchors) > 0 {
+		rep.Notes = append(rep.Notes, "anchor signatures were not checked: pass --pubkey to prove the anchors are genuine")
+	}
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

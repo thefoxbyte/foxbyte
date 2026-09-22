@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // ledgerV2Cmd handles the Blackbox 2.0 subcommands of `fox ledger`:
@@ -20,6 +21,7 @@ import (
 //	fox ledger sessions [branch]     agent sessions: agent, task, parent session (--limit N)
 //	fox ledger diff <a> <b>          schema changes on each branch since they split (--json)
 //	fox ledger branch-before <id>    a new branch of main as it was just before entry <id>
+//	fox ledger anchor-key            the public key anchors are signed with
 //
 // It returns false for anything else, leaving the existing subcommands untouched.
 func ledgerV2Cmd(args []string) bool {
@@ -41,6 +43,17 @@ func ledgerV2Cmd(args []string) bool {
 		fmt.Printf("checkpoint #%d on %s: ledger ids %d–%d (%d entries)\n", a.CheckpointID, name, a.FromID, a.ToID, a.EntryCount)
 		fmt.Printf("  root   %s\n", a.MerkleRoot)
 		fmt.Printf("  anchor %s\n", path)
+		if a.KeyID != "" {
+			fmt.Printf("  signed by key %s\n", a.KeyID)
+		}
+	case "anchor-key":
+		// The public key a verifier needs to prove anchors are genuine. Give it
+		// to whoever audits; keep the private key where the databases cannot
+		// reach it (FOX_ANCHOR_KEY).
+		pub, path, err := branch.AnchorPublicKey()
+		must(err)
+		fmt.Print(string(ledger.EncodePublicKey(pub)))
+		fmt.Fprintf(os.Stderr, "saved at %s — verify with: fox-verify … --pubkey %s\n", path, path)
 	case "integrity":
 		rep, err := branch.Integrity(name)
 		must(err)

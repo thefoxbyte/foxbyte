@@ -88,12 +88,14 @@ func (s *Store) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	u, err := s.upsertOAuth(provider, subject, email, verified)
 	switch {
 	case errors.Is(err, errOAuthUnverified), errors.Is(err, errOAuthNoAccount):
+		s.Audit(EvOAuthRefused, "", email, clientIP(r), provider+": "+err.Error())
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	case err != nil:
 		http.Error(w, "login failed", http.StatusInternalServerError)
 		return
 	}
+	s.Audit(EvLoginOK, u.Email, u.Email, clientIP(r), provider)
 	sess, _ := s.createSession(u.ID)
 	s.setCookie(w, sess)
 	http.Redirect(w, r, s.cfg.WebOrigin+"/dashboard", http.StatusFound)

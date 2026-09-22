@@ -142,6 +142,11 @@ type Anchor struct {
 	MerkleRoot   string    `json:"merkle_root"`
 	PrevRoot     string    `json:"prev_root"`
 	CreatedAt    time.Time `json:"created_at"`
+	// KeyID and Signature are present on anchors written since 22 Sep 2026:
+	// an Ed25519 signature over SigningPayload, by the key KeyID names (see
+	// sign.go). Older anchors have neither.
+	KeyID     string `json:"key_id,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 // BuildAnchor checkpoints rows — every ledger row with an id from fromID up to

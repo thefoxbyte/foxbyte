@@ -240,6 +240,18 @@ func maxConns() int {
 	return 1000
 }
 
+// remoteHost is the address a client connected from.
+func remoteHost(c net.Conn) string {
+	if c == nil || c.RemoteAddr() == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		return c.RemoteAddr().String()
+	}
+	return host
+}
+
 func refuseBusy(c net.Conn) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
@@ -287,6 +299,7 @@ func handle(client net.Conn) {
 		}
 		u, scope, ok := authStore.VerifyKey(key)
 		if !ok {
+			authStore.Audit(auth.EvGatewayRefused, "", params["database"], remoteHost(client), "invalid API key")
 			sendError(client, "28P01", "invalid API key — use a key_ key as the password")
 			return
 		}
@@ -310,6 +323,7 @@ func handle(client net.Conn) {
 		}
 		actor = keyScope
 	} else if gatewayACL != nil && !gatewayACL.Can(account, target, access.Use) {
+		authStore.Audit(auth.EvDenied, account.Email, target, remoteHost(client), "gateway")
 		// Answered like a branch that does not exist, so a name is not
 		// confirmed to someone who may not open it — and checked before the
 		// branch is woken.

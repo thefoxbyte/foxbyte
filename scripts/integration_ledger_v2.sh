@@ -295,6 +295,25 @@ assert_eq "REST integrity agrees" "$(curl -sk -H "$AUTH" "$API/api/branches/v2in
 assert_eq "MCP ledger_integrity agrees" "$(mcp_call ledger_integrity '{"branch":"v2int"}' | grep -c 'INTACT')" "1"
 "$VERIFY" --dsn "$V2DSN" --anchors "$ANCH/v2int" >/dev/null 2>&1
 assert_eq "fox-verify on the live database agrees (exit 0)" "$?" "0"
+# Audit v2 G17: anchors are signed, and a verifier with the public key can tell.
+$S blackbox anchor-key > /tmp/v2-anchor.pub 2>/dev/null
+LASTANCHOR="$(ls "$ANCH/v2int" | tail -1)"
+assert_eq "anchors are signed by the install's key" \
+  "$(python3 -c 'import json,sys;a=json.load(open(sys.argv[1]));print(bool(a.get("signature")) and a.get("key_id",""))' "$ANCH/v2int/$LASTANCHOR")" \
+  "$(grep -o 'Key-ID: [0-9a-f]*' /tmp/v2-anchor.pub | cut -d' ' -f2)"
+"$VERIFY" --dsn "$V2DSN" --anchors "$ANCH/v2int" --pubkey /tmp/v2-anchor.pub >/dev/null 2>&1
+assert_eq "fox-verify --pubkey accepts them (exit 0)" "$?" "0"
+rm -rf /tmp/v2-forged; cp -r "$ANCH/v2int" /tmp/v2-forged; chmod -R u+w /tmp/v2-forged
+python3 - "/tmp/v2-forged/$LASTANCHOR" <<'PY'
+import json,sys,base64
+p=sys.argv[1]; a=json.load(open(p))
+sig=bytearray(base64.b64decode(a["signature"])); sig[0]^=1
+a["signature"]=base64.b64encode(bytes(sig)).decode(); json.dump(a,open(p,"w"))
+PY
+"$VERIFY" --dsn "$V2DSN" --anchors /tmp/v2-forged --pubkey /tmp/v2-anchor.pub >/dev/null 2>&1
+assert_eq "…and refuses one whose signature does not match (exit 1)" "$?" "1"
+assert_eq "fox blackbox integrity checks signatures too" "$($S blackbox integrity v2int 2>&1 | grep -c 'signed by key')" "1"
+rm -rf /tmp/v2-forged
 $S ledger export v2int > /tmp/v2int.jsonl 2>/dev/null
 assert_eq "export has one line per ledger entry" "$(wc -l < /tmp/v2int.jsonl | tr -d ' ')" "$(pg pg-v2int "SELECT count(*) FROM bb.schema_ledger")"
 "$VERIFY" --export /tmp/v2int.jsonl --anchors "$ANCH/v2int" >/dev/null 2>&1
@@ -972,6 +991,60 @@ assert_eq "a user's change is still recorded, as that user" \
   "$(pg pg-main "SELECT count(*) || '|' || max(actor) FROM bb.schema_ledger WHERE id > $M0 AND object_identity = 'public.v2restart_t'")" "1|$USER_EMAIL"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE v2restart_t" >/dev/null
 $S branch delete v2restart >/dev/null 2>&1
+
+echo "### 10. data changes: TRUNCATE, and agents' UPDATE and DELETE (audit v2 G04)"
+$S admin revoke "$USER_EMAIL" >/dev/null 2>&1
+$S branch delete v2dc >/dev/null 2>&1; $S branch create v2dc >/dev/null 2>&1
+$S branch owner v2dc "$USER_EMAIL" >/dev/null 2>&1
+pg pg-v2dc "CREATE TABLE dc(x int); INSERT INTO dc SELECT generate_series(1,5)" >/dev/null
+L0="$(pg pg-v2dc 'SELECT coalesce(max(id),0) FROM bb.schema_ledger')"
+assert_eq "every user table carries both Blackbox triggers" \
+  "$(pg pg-v2dc "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'public.dc'::regclass AND tgname IN ('bb_guard_truncate','bb_record_dml')")" "2"
+assert_eq "…and creating them recorded nothing" \
+  "$(pg pg-v2dc "SELECT count(*) FROM bb.schema_ledger WHERE command_tag = 'CREATE TRIGGER'")" "0"
+assert_eq "TRUNCATE is blocked like DROP TABLE" "$(gw "$KEY" v2dc 'TRUNCATE dc' | grep -c 'guardrail: TRUNCATE is blocked by policy')" "1"
+assert_eq "…the rows are still there" "$(pg pg-v2dc 'SELECT count(*) FROM dc')" "5"
+assert_eq "…and the attempt is recorded BLOCKED, naming the table and the user" \
+  "$(pg pg-v2dc "SELECT status||'|'||object_identity||'|'||actor FROM bb.schema_ledger WHERE id > $L0 AND command_tag='TRUNCATE'")" "BLOCKED|public.dc|$USER_EMAIL"
+assert_eq "a non-admin's override is refused" \
+  "$(gw "$KEY" v2dc 'SET bb.allow_destructive=on; TRUNCATE dc' | grep -c 'guardrail')" "1"
+$S admin grant "$USER_EMAIL" --branch v2dc >/dev/null 2>&1
+gw "$KEY" v2dc 'SET bb.allow_destructive=on; TRUNCATE dc' >/dev/null
+assert_eq "an admin's override truncates, and it is recorded" \
+  "$(pg pg-v2dc 'SELECT count(*) FROM dc')|$(pg pg-v2dc "SELECT status||'|'||risk FROM bb.schema_ledger WHERE id > $L0 AND command_tag='TRUNCATE' ORDER BY id DESC LIMIT 1")" "0|APPLIED|truncate"
+$S admin revoke "$USER_EMAIL" --branch v2dc >/dev/null 2>&1
+L1="$(pg pg-v2dc 'SELECT max(id) FROM bb.schema_ledger')"
+gw "$KEY" v2dc "INSERT INTO dc VALUES (1),(2); UPDATE dc SET x = x + 1; DELETE FROM dc WHERE x = 3" >/dev/null
+assert_eq "a person's UPDATE and DELETE are not recorded" \
+  "$(pg pg-v2dc "SELECT count(*) FROM bb.schema_ledger WHERE id > $L1")" "0"
+assert_eq "the Blackbox still verifies" "$($S ledger verify v2dc 2>&1 | grep -c 'ledger intact')" "1"
+# An agent: its own branch, through its own DSN.
+curl -sk -o /dev/null -H "$AUTH" -X DELETE "$AGENTS/agents/v2dc/branch"
+ADSN="$(curl -sk -H "$AUTH" -X POST "$AGENTS/agents/v2dc/branch" | jget dsn)"
+apsql() { psql "$ADSN" -tAc "$1" 2>&1; }
+apsql "CREATE TABLE ad(x int); INSERT INTO ad SELECT generate_series(1,10)" >/dev/null
+A0="$(pg pg-agent-v2dc 'SELECT max(id) FROM bb.schema_ledger')"
+apsql "DELETE FROM ad WHERE x > 7" >/dev/null
+apsql "UPDATE ad SET x = 0" >/dev/null
+assert_eq "an agent's DELETE and UPDATE are recorded, as the agent" \
+  "$(pg pg-agent-v2dc "SELECT string_agg(command_tag||'|'||object_identity||'|'||actor||'/'||actor_kind, ',' ORDER BY id) FROM bb.schema_ledger WHERE id > $A0")" \
+  "DELETE|public.ad|agent-v2dc/agent,UPDATE|public.ad|agent-v2dc/agent"
+assert_eq "…with the statement that ran" \
+  "$(pg pg-agent-v2dc "SELECT count(*) FROM bb.schema_ledger WHERE id > $A0 AND statement LIKE 'DELETE FROM ad WHERE x > 7%'")" "1"
+A1="$(pg pg-agent-v2dc 'SELECT max(id) FROM bb.schema_ledger')"
+apsql "BEGIN; DELETE FROM ad; ROLLBACK" >/dev/null
+assert_eq "a change rolled back leaves no entry" "$(pg pg-agent-v2dc "SELECT count(*) FROM bb.schema_ledger WHERE id > $A1")" "0"
+assert_eq "an agent's TRUNCATE is blocked" "$(apsql 'TRUNCATE ad' | grep -c 'guardrail: TRUNCATE')|$(pg pg-agent-v2dc 'SELECT count(*) FROM ad')" "1|7"
+assert_eq "the agent cannot drop the Blackbox trigger on its own table" \
+  "$(apsql 'DROP TRIGGER bb_record_dml ON ad' | grep -c 'cannot be dropped')" "1"
+assert_eq "…nor disable it" "$(apsql 'ALTER TABLE ad DISABLE TRIGGER ALL' | grep -c 'cannot be disabled or renamed')" "1"
+assert_eq "…nor rename it out of the way" "$(apsql 'ALTER TRIGGER bb_record_dml ON ad RENAME TO x' | grep -c 'cannot be disabled or renamed')" "1"
+assert_eq "…and both are still there, enabled" \
+  "$(pg pg-agent-v2dc "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'public.ad'::regclass AND tgname IN ('bb_guard_truncate','bb_record_dml') AND tgenabled <> 'D'")" "2"
+assert_eq "a table made by CREATE TABLE AS gets them too" \
+  "$(apsql 'CREATE TABLE ad2 AS SELECT * FROM ad' >/dev/null; pg pg-agent-v2dc "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'public.ad2'::regclass AND tgname LIKE 'bb_%'")" "2"
+curl -sk -o /dev/null -H "$AUTH" -X DELETE "$AGENTS/agents/v2dc/branch"
+$S branch delete v2dc >/dev/null 2>&1
 
 echo
 echo "==== ${PASS} passed, ${FAIL} failed ===="

@@ -30,6 +30,10 @@ func EnsureLedgerV2(name string) error {
 	if err := psqlStdin(name, ledger.SchemaImpact); err != nil {
 		return fmt.Errorf("installing Blackbox impact analysis on %q: %w", name, err)
 	}
+	// TRUNCATE and agents' data changes (datachanges.sql).
+	if err := psqlStdin(name, ledger.SchemaData); err != nil {
+		return fmt.Errorf("installing Blackbox data-change capture on %q: %w", name, err)
+	}
 	return nil
 }
 
