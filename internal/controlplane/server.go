@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -79,6 +80,8 @@ func Serve(addr string) error {
 
 	// Blackbox 2.0: anchor new ledger entries outside the database on a schedule.
 	branch.StartCheckpointer()
+	// Base backups on a schedule, pruned to a retention (audit v2 G19).
+	branch.StartBackupScheduler()
 
 	handler := httpx.CORS(store.WebOrigin())(logging(httpx.LimitBodies(httpx.MaxBody, isUpload)(mux)))
 
@@ -129,6 +132,23 @@ func checkBranchName(next http.Handler) http.Handler {
 	})
 }
 
+// backupHealth caches branch.CurrentBackupHealth for a minute: reading it lists
+// the backups from a container, and the dashboard polls /api/status.
+var backupHealth struct {
+	sync.Mutex
+	at time.Time
+	h  branch.BackupHealth
+}
+
+func cachedBackupHealth() branch.BackupHealth {
+	backupHealth.Lock()
+	defer backupHealth.Unlock()
+	if time.Since(backupHealth.at) > time.Minute {
+		backupHealth.h, backupHealth.at = branch.CurrentBackupHealth(), time.Now()
+	}
+	return backupHealth.h
+}
+
 // isUpload is the one route whose body is a file rather than JSON; it has its
 // own, larger cap (maxUpload).
 func isUpload(r *http.Request) bool { return r.URL.Path == "/api/import/file" }
@@ -167,6 +187,7 @@ func registerAPI(mux *http.ServeMux) {
 			"branches":  nBranch,
 			"agents":    nAgent,
 			"ha":        branch.HAInfo(),
+			"backup":    cachedBackupHealth(),
 			"storage":   branch.StorageInfo(),
 			"servers": map[string]bool{
 				"gateway": daemon.Alive("gateway"),

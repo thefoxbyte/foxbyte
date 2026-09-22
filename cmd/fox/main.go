@@ -77,6 +77,8 @@ Stack:
 Durability / time-travel:
   backup create        Base backup of 'main' -> object storage
   backup list          List base backups in object storage
+  backup prune [--keep N]  Delete all but the newest N full backups (the schedule keeps FOX_BACKUP_RETAIN, 7)
+  backup target        Where backups go; set s3://bucket[/prefix] --endpoint <url> --access-key <key> [--region r] [--path-style] [--allow-http]; local
   restore --to <ts>    PITR into a disposable container on port 5433 (ts or 'latest')
   backup export [--out <file>] [--branch <name>]...
                        Portable copy of every non-agent branch (pg_dump + roles + Blackbox),
@@ -269,7 +271,7 @@ func main() {
 		must(branch.PsqlShell("main"))
 	case "backup":
 		if len(os.Args) < 3 {
-			fmt.Println("usage: fox backup <create|list|export|restore>")
+			fmt.Println("usage: fox backup <create|list|prune|target|export|restore>")
 			os.Exit(2)
 		}
 		switch os.Args[2] {
@@ -277,6 +279,18 @@ func main() {
 			must(branch.Backup())
 		case "list":
 			must(branch.BackupList())
+		case "prune":
+			keep := 7
+			if v := optValue(os.Args[3:], "--keep"); v != "" {
+				n, err := strconv.Atoi(v)
+				if err != nil || n < 1 {
+					must(fmt.Errorf("--keep needs a number of at least 1"))
+				}
+				keep = n
+			}
+			must(branch.Prune(keep))
+		case "target":
+			backupTargetCmd(os.Args[3:])
 		case "export":
 			must(exportCmd(os.Args[3:], true))
 		case "restore":
@@ -728,6 +742,71 @@ func mustAccounts(s *auth.Store) []auth.Account {
 	list, err := s.ListAccounts()
 	must(err)
 	return list
+}
+
+// backupTargetCmd is `fox backup target`: show, set a remote S3 target, or go
+// back to the local object store (audit v2 G18). The secret key is read from
+// FOX_BACKUP_S3_SECRET_KEY or asked for, never taken as an argument: the
+// process list and the shell history would keep it.
+func backupTargetCmd(args []string) {
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	switch sub {
+	case "", "show":
+		t, err := branch.CurrentTarget()
+		must(err)
+		fmt.Printf("backups go to %s\n", t.Describe())
+		if t.Remote() {
+			lock, err := branch.CheckTarget(t)
+			switch {
+			case err != nil:
+				fmt.Println("  not reachable now:", err)
+			case lock == "":
+				fmt.Println("  reachable; no Object Lock retention on the bucket")
+			default:
+				fmt.Println("  reachable;", strings.SplitN(lock, "\n", 2)[0])
+			}
+		}
+	case "set":
+		if len(args) < 2 {
+			fmt.Printf("usage: %s backup target set s3://bucket[/prefix] --endpoint <https-url> --access-key <key> [--region <r>] [--path-style] [--allow-http]\n", brand.CLI)
+			os.Exit(2)
+		}
+		bucket, prefix, err := branch.ParseTargetURL(args[1])
+		must(err)
+		t := branch.Target{Kind: "s3", Bucket: bucket, Prefix: prefix,
+			Endpoint:  optValue(args, "--endpoint"),
+			AccessKey: optValue(args, "--access-key"),
+			Region:    optValue(args, "--region"),
+			PathStyle: hasFlag(args, "--path-style")}
+		if t.Region == "" {
+			t.Region = "us-east-1"
+		}
+		t.SecretKey = strings.TrimSpace(brand.Getenv("BACKUP_S3_SECRET_KEY"))
+		if t.SecretKey == "" {
+			fmt.Print("secret key: ")
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			t.SecretKey = strings.TrimSpace(line)
+		}
+		must(branch.SetBackupTarget(t, hasFlag(args, "--allow-http")))
+	case "local":
+		must(branch.SetBackupTarget(branch.Target{Kind: "local"}, false))
+	default:
+		fmt.Printf("usage: %[1]s backup target [show] | %[1]s backup target set s3://… | %[1]s backup target local\n", brand.CLI)
+		os.Exit(2)
+	}
+}
+
+// hasFlag reports whether a bare flag appears in args.
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
 }
 
 // auditCmd is `fox audit`: the security log (audit v2 G28).

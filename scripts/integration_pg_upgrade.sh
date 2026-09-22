@@ -75,7 +75,8 @@ assert_eq "qa is left suspended" "$(state pg-qa)" "exited"
 $S backup create >/dev/null 2>&1
 $S backup create >/dev/null 2>&1
 BK16="$(backups)"
-assert_eq "two base backups on 16" "$BK16" "2"
+# Three: the one `fox start` takes on a new install (audit v2 G19), and two more.
+assert_eq "three base backups on 16 (the first taken at install)" "$BK16" "3"
 MAIN_MAX="$(maxid pg-main)"; MAIN_DIGEST="$(ledger_digest pg-main "$MAIN_MAX")"
 
 echo "### 1. export and restore"

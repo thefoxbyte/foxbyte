@@ -624,8 +624,7 @@ func Up() error {
 		if err := run("docker", "run", "-d",
 			"--name", objStore, "--network", network,
 			"--label", managedLabel,
-			"-e", "MINIO_ROOT_USER="+minioUser(),
-			"-e", "MINIO_ROOT_PASSWORD="+minioPass(),
+			"--env-file", minioEnvFile(),
 			// Loopback only: the bucket holds every WAL segment and base
 			// backup, a full copy of main. wal-g reaches it over the docker
 			// network; the host port is for the console. Docker's published
@@ -640,15 +639,19 @@ func Up() error {
 	// Create the WAL bucket (idempotent). The wait is bounded: if the object
 	// store never answers, this used to retry for ever, printing one connection
 	// error per second and never saying what was wrong.
-	if err := run("docker", "run", "--rm", "--network", network,
+	if err := run("docker", "run", "--rm", "--network", network, "--env-file", localMCEnvFile(),
 		"--entrypoint", "sh", mcImage(), "-c",
-		fmt.Sprintf("for i in $(seq 1 %d); do mc alias set local http://%s:9000 %s %s >/dev/null 2>&1 && exec mc mb -p local/%s; sleep 1; done; "+
+		fmt.Sprintf("for i in $(seq 1 %d); do mc ls t >/dev/null 2>&1 && exec mc mb -p t/%s; sleep 1; done; "+
 			"echo \"could not reach the object store at %s:9000 after %ds\" >&2; exit 1",
-			objStoreWait, objStore, minioUser(), minioPass(), walBucket, objStore, objStoreWait),
+			objStoreWait, walBucket, objStore, objStoreWait),
 	); err != nil {
 		return fmt.Errorf("preparing the %s bucket: %w", walBucket, err)
 	}
-	return Init()
+	if err := Init(); err != nil {
+		return err
+	}
+	ensureFirstBackup()
+	return nil
 }
 
 // Down stops the object store and all Postgres containers (branches + main).
@@ -774,6 +777,19 @@ func Status() error {
 	}
 	_ = run("docker", "exec", primary, "pg_isready", "-U", pgUser, "-d", pgDatabase)
 	fmt.Println("\n=== base backups ===")
+	h := CurrentBackupHealth()
+	fmt.Printf("target:   %s\nschedule: %s, keeping %d\n", h.Target, h.Schedule, backupRetain())
+	switch {
+	case h.Newest == "":
+		fmt.Printf("WARNING: no base backup — point-in-time restore has nothing to start from; run `%s backup create`\n", brand.CLI)
+	case h.Stale:
+		fmt.Printf("WARNING: the newest base backup is %d hours old\n", h.AgeHours)
+	default:
+		fmt.Printf("newest:   %s (%d hours ago)\n", h.Newest, h.AgeHours)
+	}
+	if !h.Remote {
+		fmt.Printf("note:     backups are on this machine; a disk failure takes them with main — `%s backup target set` moves them\n", brand.CLI)
+	}
 	_ = BackupList()
 	fmt.Println("\n=== branches ===")
 	return List()

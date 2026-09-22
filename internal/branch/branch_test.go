@@ -61,12 +61,12 @@ func TestContainerName(t *testing.T) {
 // the wal-g environment still said http://minio:9000 broke WAL archiving,
 // backups and point-in-time restore at once: the host simply did not resolve.
 func TestWalgEnvPointsAtTheObjectStore(t *testing.T) {
-	env := strings.Join(walgEnvFor(walgPrefixFor("")), " ")
+	env := s3EnvContent(localTarget())
 	if !strings.Contains(env, "AWS_ENDPOINT=http://"+objStore+":9000") {
 		t.Errorf("wal-g is not pointed at %q: %s", objStore, env)
 	}
-	if !strings.Contains(env, "WALG_S3_PREFIX=s3://"+walBucket) {
-		t.Errorf("wal-g is not pointed at the %q bucket: %s", walBucket, env)
+	if got := localTarget().Root(); got != "s3://"+walBucket {
+		t.Errorf("wal-g is not pointed at the %q bucket: %s", walBucket, got)
 	}
 	// The endpoint is derived, not written out a second time.
 	if objStoreEndpoint != "http://"+objStore+":9000" {

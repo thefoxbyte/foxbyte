@@ -482,6 +482,50 @@ assert_eq "…and main runs on it" "$(sudo docker inspect -f '{{.Config.Image}}'
 $S stop >/dev/null 2>&1; $S start >/dev/null 2>&1
 sudo docker rmi -f "$IMG_TEST" >/dev/null 2>&1
 
+echo "### 11c. backups to a remote target (audit v2: G18, G19, G17)"
+# A second MinIO on the engine's network stands in for a remote bucket, created
+# with Object Lock and a default retention as the docs recommend.
+RS=it-remote-s3; RAK=itremotekey; RSK=itremotesecret123
+MINIO_IMG="$(sudo docker inspect -f '{{.Config.Image}}' "$DB_OBJECT_STORE")"
+MC_IMG="$(sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep -m1 '/mc:')"
+sudo docker rm -f "$RS" >/dev/null 2>&1
+sudo docker run -d --name "$RS" --network "$DB_NETWORK" -e MINIO_ROOT_USER="$RAK" -e MINIO_ROOT_PASSWORD="$RSK" "$MINIO_IMG" server /data >/dev/null
+rmc() { sudo docker run --rm --network "$DB_NETWORK" -e MC_HOST_r="http://$RAK:$RSK@$RS:9000" "$MC_IMG" "$@" 2>&1; }
+for i in $(seq 1 20); do rmc ls r >/dev/null 2>&1 && break; sleep 1; done
+rmc mb --with-lock r/itremote >/dev/null; rmc retention set --default GOVERNANCE 1d r/itremote >/dev/null
+assert_eq "a plain-HTTP target is refused without --allow-http" \
+  "$(FOX_BACKUP_S3_SECRET_KEY="$RSK" $S backup target set s3://itremote/fox --endpoint "http://$RS:9000" --access-key "$RAK" --path-style 2>&1 | grep -c 'allow-http')" "1"
+OUT="$(FOX_BACKUP_S3_SECRET_KEY="$RSK" $S backup target set s3://itremote/fox --endpoint "http://$RS:9000" --access-key "$RAK" --path-style --allow-http 2>&1)"
+assert_eq "setting a remote target reports its Object Lock and moves backups there" \
+  "$(echo "$OUT" | grep -c 'with Object Lock')|$(echo "$OUT" | grep -c 'Backups now go to s3://itremote/fox')" "1|1"
+assert_eq "…the first base backup is taken there" "$(rmc ls --recursive r/itremote/fox/basebackups_005/ | grep -c 'backup_stop_sentinel.json' | awk '{print ($1>0)}')" "1"
+assert_eq "…and the key is in a 0600 file, not on a command line" \
+  "$(stat -c %a "$HOME/$BRAND_STATE_DIR/backup-target.json")|$(stat -c %a "$HOME/$BRAND_STATE_DIR/s3.env")|$(sudo docker inspect -f '{{join .Args " "}}' pg-main | grep -c "$RSK")" "600|600|0"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS remote_t; CREATE TABLE remote_t(x int); INSERT INTO remote_t SELECT generate_series(1,4);" >/dev/null
+# Its own statement: one psql -c runs as one transaction, so a switch in the same
+# string comes before the commit, and the commit would wait for archive_timeout.
+pg pg-main "SELECT pg_switch_wal()" >/dev/null
+sleep 8
+assert_eq "WAL archives to the remote bucket" "$(rmc ls --recursive r/itremote/fox/wal_005/ | grep -c . | awk '{print ($1>0)}')" "1"
+$S restore --to latest >/dev/null 2>&1; sleep 1
+assert_eq "point-in-time restore reads from the remote target" "$(pg pg-restore 'SELECT count(*) FROM remote_t')" "4"
+sudo docker rm -f pg-restore >/dev/null 2>&1
+$S blackbox checkpoint main >/dev/null 2>&1; $S audit checkpoint >/dev/null 2>&1
+assert_eq "anchors are copied to the target, under Object Lock" \
+  "$(rmc ls --recursive r/itremote/fox/anchors/main/ | grep -c '.json' | awk '{print ($1>0)}')|$(rmc retention info --recursive r/itremote/fox/anchors/main/ | grep -c GOVERNANCE | awk '{print ($1>0)}')" "1|1"
+assert_eq "…the security log's too" "$(rmc ls --recursive r/itremote/fox/anchors/_security-log/ | grep -c '.json' | awk '{print ($1>0)}')" "1"
+read -r AKEYNAME AVID <<<"$(rmc ls --versions --json r/itremote/fox/anchors/main/ | python3 -c 'import sys,json
+j=json.loads(sys.stdin.readline()); print(j["key"], j["versionId"])')"
+assert_eq "an anchor copied there cannot be removed" \
+  "$(rmc rm --version-id "$AVID" "r/itremote/fox/anchors/main/$AKEYNAME" | grep -ci 'retention\|locked\|denied\|worm' | awk '{print ($1>0)}')|$(rmc ls "r/itremote/fox/anchors/main/$AKEYNAME" | grep -c .)" "1|1"
+STATUS="$($S status 2>&1)"
+assert_eq "fox status names the target and the newest backup" \
+  "$(echo "$STATUS" | grep -c 'target:   s3://itremote/fox')|$(echo "$STATUS" | grep -c 'newest:')" "1|1"
+assert_eq "the status API reports it too" "$(curl -sk -H "$AUTH" https://localhost:8080/api/status | python3 -c 'import sys,json;b=json.load(sys.stdin)["backup"];print(b["remote"],b["stale"])')" "True False"
+assert_eq "going back to the local store works" "$($S backup target local 2>&1 | grep -c 'local object store')" "1"
+assert_eq "…and main archives there again" "$($S backup target | grep -c 'local object store')" "1"
+sudo docker rm -f "$RS" >/dev/null 2>&1
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.
