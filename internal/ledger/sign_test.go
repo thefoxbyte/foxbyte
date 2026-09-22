@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,9 @@ func TestAnchorSignatures(t *testing.T) {
 	if again, _ := LoadOrCreateSigningKey(filepath.Join(dir, "k")); !again.Equal(key) {
 		t.Fatal("the key changed between loads")
 	}
-	if fi, _ := os.Stat(filepath.Join(dir, "k")); fi.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits: a file written 0600 reads back as
+	// 0666. The key only ever lives on Linux (the engine's VM or host).
+	if fi, _ := os.Stat(filepath.Join(dir, "k")); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("private key mode %v, want 0600", fi.Mode().Perm())
 	}
 	pub, err := ReadPublicKey(filepath.Join(dir, "k.pub"))
