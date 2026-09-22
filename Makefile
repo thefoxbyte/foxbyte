@@ -3,7 +3,7 @@
 # FoxByte runs inside the Linux dev VM (ZFS + Docker); day-to-day operation is
 # via `lima /tmp/fox <command>`. This Makefile just builds/checks the CLI.
 
-.PHONY: release-key build vet fmt vm-build test integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade test-vm test-vm-stop test-vm-delete
+.PHONY: integration-sdks integration-ui release-key build vet fmt vm-build test integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade test-vm test-vm-stop test-vm-delete
 
 VERSION ?= 0.1.0
 LDFLAGS := -s -w -X github.com/thefoxbyte/foxbyte/internal/version.Version=$(VERSION)
@@ -80,6 +80,14 @@ integration-update: test-vm ## Run the `fox update` / new-release notice checks 
 # Builds a PostgreSQL 16 install, exports and restores it, upgrades it to the
 # major this fox ships, rolls back, upgrades again and finalizes. It uninstalls
 # the stack at both ends, so it runs on its own.
+integration-sdks: test-vm ## Run the Python and TypeScript client contract tests in the test VM
+	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_sdks.sh"
+
+# The console is only in a binary built with `embedui`, from web/dist — which
+# npm builds here on the host, since the repository is read-only in the VM.
+integration-ui: web-build test-vm ## Run the web console's Playwright tests in the test VM (first run downloads Chromium)
+	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -tags embedui -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_ui.sh"
+
 integration-pg-upgrade: test-vm ## Run the export/restore and `fox pg upgrade` checks (16 -> the shipped major) in the test VM
 	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_pg_upgrade.sh"
 

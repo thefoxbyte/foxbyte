@@ -59,7 +59,9 @@ set -euo pipefail
 go_version="$1" marker="$2"
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -qq
-sudo apt-get install -y -qq zfsutils-linux docker.io postgresql-client python3 curl jq openssl git >/dev/null
+# nodejs and npm: the SDK contract tests run the TypeScript client, and the web
+# UI's Playwright tests run here too (scripts/integration_sdks.sh, web/tests).
+sudo apt-get install -y -qq zfsutils-linux docker.io postgresql-client python3 curl jq openssl git nodejs npm >/dev/null
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"
 

@@ -275,6 +275,23 @@ func syncAppRole(name string) error {
 // calls EnsureAppRole first.
 var appRoleSynced sync.Map
 
+// forgetBranchRoles drops what this process remembers about a branch's login
+// roles. A branch made, deleted and made again under the same name is a fresh
+// clone: it carries only the roles main had when it was cloned. Without this,
+// the caches still said "already provisioned" and the Gateway or the console
+// tried to log in as a role the new branch does not have — which Postgres
+// reports as "password authentication failed", not as a missing role.
+func forgetBranchRoles(name string) {
+	appRoleSynced.Delete(name)
+	prefix := name + "\x00"
+	ensuredRoles.Range(func(k, _ any) bool {
+		if s, ok := k.(string); ok && strings.HasPrefix(s, prefix) {
+			ensuredRoles.Delete(k)
+		}
+		return true
+	})
+}
+
 // EnsureAppRole sets a branch's client-role password once per process.
 func EnsureAppRole(name string) error {
 	if name == "" {
@@ -471,6 +488,7 @@ func Create(name, parent string) error {
 	if err := checkName(parent); err != nil {
 		return err
 	}
+	forgetBranchRoles(name)
 	// Cloning a branch that doesn't exist fails deep in the storage layer with a
 	// message about datasets or snapshots; say what's actually wrong.
 	if !activeStorage().exists(parent) {
@@ -508,6 +526,7 @@ func Delete(name string) error {
 	if name == "main" {
 		return fmt.Errorf("refusing to delete the primary branch 'main'")
 	}
+	forgetBranchRoles(name)
 	quiet("docker", "rm", "-f", container(name))
 	return activeStorage().destroy(name)
 }

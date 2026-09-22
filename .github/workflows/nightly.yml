@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# The integration suites, nightly (audit v2 G24). Until now they ran only by
+# hand in a throwaway VM, so the features FoxByte is for — branching, wake on
+# connect, point-in-time restore, HA failover, the Blackbox's triggers, the
+# clients and the console — were the ones CI never touched, and a regression in
+# them could ship.
+#
+# They are destructive by design (they wipe Blackbox history, restore main to an
+# earlier point, fail HA over and uninstall the stack), so each runs on a runner
+# of its own, which is thrown away afterwards: that is what
+# FOX_TEST_ALLOW_REAL_INSTALL is for (scripts/lib/test_guard.sh).
+name: nightly
+
+on:
+  schedule:
+    - cron: '17 2 * * *' # 02:17 UTC, every day
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'One suite to run (default: all)'
+        required: false
+        type: choice
+        options: ['', integration, ledger-v2, update, pg-upgrade, sdks, ui]
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [integration, ledger-v2, update, pg-upgrade, sdks, ui]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26'
+      - if: ${{ (inputs.suite == '' || inputs.suite == matrix.suite) && (matrix.suite == 'ui' || matrix.suite == 'sdks') }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # ZFS is the storage engine branches are clones on. The runner's kernel
+      # needs its module; without it there is nothing to test, so say so plainly
+      # rather than failing later inside the engine.
+      - name: Install ZFS, psql and the rest
+        if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zfsutils-linux postgresql-client jq python3 curl openssl
+          sudo modprobe zfs || {
+            echo "::error::this runner's kernel has no ZFS module, so the suites cannot run here"
+            exit 1
+          }
+          zfs version
+          docker --version
+
+      - name: Build the engine
+        if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
+        run: |
+          set -eux
+          if [ "${{ matrix.suite }}" = "ui" ]; then
+            npm --prefix web ci --no-audit --no-fund
+            npm --prefix web run build
+            go build -tags embedui -o /tmp/fox ./cmd/fox   # the console's tests need the UI embedded
+          else
+            go build -o /tmp/fox ./cmd/fox
+          fi
+          go build -o /tmp/fox-verify ./cmd/fox-verify
+          sudo install -m 0755 /tmp/fox /usr/local/bin/fox  # `fox update` hands the stack back to this path
+
+      - name: Run the ${{ matrix.suite }} suite
+        if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
+        env:
+          # This runner is disposable, which is the one case the guard allows.
+          FOX_TEST_ALLOW_REAL_INSTALL: yes-destroy-my-data
+        run: |
+          set -o pipefail
+          case "${{ matrix.suite }}" in
+            integration) script=scripts/integration_test.sh ;;
+            ledger-v2)   script=scripts/integration_ledger_v2.sh ;;
+            update)      script=scripts/integration_update.sh ;;
+            pg-upgrade)  script=scripts/integration_pg_upgrade.sh ;;
+            sdks)        script=scripts/integration_sdks.sh ;;
+            ui)          script=scripts/integration_ui.sh ;;
+          esac
+          bash "$script" 2>&1 | tee "/tmp/${{ matrix.suite }}.log"
+
+      # The log is the whole story of a failure; the Playwright artefacts carry
+      # the screenshot and trace of a failed console test.
+      - name: Keep the log
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.suite }}-log
+          path: |
+            /tmp/${{ matrix.suite }}.log
+            /tmp/fox-ui-e2e/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14

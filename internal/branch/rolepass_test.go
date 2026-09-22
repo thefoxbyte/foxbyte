@@ -56,3 +56,23 @@ func TestNoPasswordOnCommandLines(t *testing.T) {
 		}
 	}
 }
+
+// A branch deleted and made again is a fresh clone with only the roles main had
+// when it was cloned, so what this process remembers about its roles must go
+// with it. Otherwise the engine skips creating an account's role there and
+// Postgres reports the login as a wrong password.
+func TestRecreatingABranchForgetsItsRoles(t *testing.T) {
+	ensuredRoles.Store("dev\x00a@x.com", struct{}{})
+	ensuredRoles.Store("dev2\x00a@x.com", struct{}{})
+	appRoleSynced.Store("dev", struct{}{})
+	forgetBranchRoles("dev")
+	if _, ok := ensuredRoles.Load("dev\x00a@x.com"); ok {
+		t.Error("the re-made branch still remembers its per-user role")
+	}
+	if _, ok := appRoleSynced.Load("dev"); ok {
+		t.Error("the re-made branch still remembers its client role")
+	}
+	if _, ok := ensuredRoles.Load("dev2\x00a@x.com"); !ok {
+		t.Error("another branch's roles were forgotten too")
+	}
+}
