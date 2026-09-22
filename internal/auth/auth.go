@@ -53,8 +53,9 @@ type User struct {
 
 // Store is the auth data layer.
 type Store struct {
-	db  *sql.DB
-	cfg Config
+	db       *sql.DB
+	cfg      Config
+	throttle *throttle
 
 	// OnFirstUser runs when the first account on this install is created,
 	// however it was created: the web sign-up or `fox user create`. The engine
@@ -93,6 +94,10 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   user_id INTEGER NOT NULL, status TEXT NOT NULL,
   started INTEGER NOT NULL, finished INTEGER, tables INTEGER NOT NULL DEFAULT 0,
   tests TEXT NOT NULL DEFAULT '[]', log TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS pipeline_targets (
+  branch TEXT PRIMARY KEY,
+  pipeline_id TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE
 );`
 
 // Open opens (and migrates) the SQLite store.
@@ -112,7 +117,7 @@ func Open(cfg Config) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, cfg: cfg}, nil
+	return &Store{db: db, cfg: cfg, throttle: newThrottle(loginMaxFails, loginWindow)}, nil
 }
 
 // initSchema creates and migrates the store.
@@ -254,7 +259,7 @@ func OpenFromEnv() (*Store, error) {
 		DBPath:     envOr("FOX_DB", filepath.Join(dir, "auth.db")),
 		WebOrigin:  web,
 		PublicURL:  public,
-		SignupOpen: brand.Getenv("SIGNUP") != "closed",
+		SignupOpen: SignupOpenFromEnv(),
 		GitHub:     OAuthApp{brand.Getenv("GITHUB_CLIENT_ID"), brand.Getenv("GITHUB_CLIENT_SECRET")},
 		Google:     OAuthApp{brand.Getenv("GOOGLE_CLIENT_ID"), brand.Getenv("GOOGLE_CLIENT_SECRET")},
 	})
@@ -270,10 +275,26 @@ func (s *Store) HasAnyUser() bool {
 	return n > 0
 }
 
-func randToken(n int) string {
+// newToken returns n random bytes, URL-safe base64. Every session, API key and
+// OAuth state comes from here.
+func newToken(n int) (string, error) {
 	b := make([]byte, n)
-	_, _ = crand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	if _, err := crand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// randToken is newToken for callers that cannot return an error. A failing
+// system random source must never produce a guessable credential, so it stops
+// the process rather than return anything. (Since Go 1.24 crypto/rand already
+// does this itself; the check keeps that true whatever the toolchain.)
+func randToken(n int) string {
+	t, err := newToken(n)
+	if err != nil {
+		panic("crypto/rand: " + err.Error())
+	}
+	return t
 }
 
 // ---- users ----
@@ -284,7 +305,6 @@ func (s *Store) CreateUser(email, password string) (User, error) {
 	if email == "" {
 		return User{}, errors.New("email required")
 	}
-	first := !s.HasAnyUser()
 	var hash string
 	if password != "" {
 		h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -299,10 +319,31 @@ func (s *Store) CreateUser(email, password string) (User, error) {
 	}
 	id, _ := res.LastInsertId()
 	u := User{ID: id, Email: email}
-	if first && s.OnFirstUser != nil {
-		s.OnFirstUser(u)
+	// The first account is the one with the lowest id. Counting before the
+	// insert let two sign-ups at the same moment both see an empty store and
+	// both become the admin; the lowest id is one account, whatever the timing.
+	var firstID int64
+	if err := s.db.QueryRow(`SELECT MIN(id) FROM users`).Scan(&firstID); err == nil && firstID == id {
+		removeSetupToken()
+		if s.OnFirstUser != nil {
+			s.OnFirstUser(u)
+		}
 	}
 	return u, nil
+}
+
+// Register creates an account from the sign-up form. The first account on an
+// install needs the setup token (see setup.go); later ones need sign-up to be
+// open. `fox user create` calls CreateUser directly and needs neither.
+func (s *Store) Register(email, password, setupToken string) (User, error) {
+	if !s.HasAnyUser() {
+		if !checkSetupToken(setupToken) {
+			return User{}, ErrSetupToken
+		}
+	} else if !s.cfg.SignupOpen {
+		return User{}, ErrSignupClosed
+	}
+	return s.CreateUser(email, password)
 }
 
 // Login verifies email + password.
@@ -484,21 +525,39 @@ func (s *Store) RevokeKey(userID int64, id string) error  { return s.revokeAPIKe
 
 // ---- oauth upsert ----
 
-func (s *Store) upsertOAuth(provider, subject, email string) (User, error) {
+// errOAuthNoAccount is what a sign-in with a provider gets when it would have to
+// create an account and may not.
+var errOAuthNoAccount = errors.New("no account for this sign-in, and sign-up is closed")
+
+// errOAuthUnverified refuses an unverified provider email: anyone can put any
+// address on a provider account, so an unverified one proves nothing.
+var errOAuthUnverified = errors.New("the email on that account is not verified with the provider")
+
+// upsertOAuth signs in with a provider identity. A known identity signs in its
+// account. Otherwise the provider's email must be verified: it then joins the
+// account with that email, or — only when sign-up is open and the install
+// already has its first account — becomes a new account. The first account is
+// made with the setup token, which a provider sign-in cannot carry.
+func (s *Store) upsertOAuth(provider, subject, email string, verified bool) (User, error) {
 	var uid int64
 	if err := s.db.QueryRow(`SELECT user_id FROM oauth_identities WHERE provider=? AND subject=?`, provider, subject).Scan(&uid); err == nil {
 		return s.userByID(uid)
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
-	if email != "" {
+	if email == "" || !verified {
+		return User{}, errOAuthUnverified
+	}
+	if !s.cfg.SignupOpen || !s.HasAnyUser() {
+		if _, ok := s.UserByEmail(email); !ok {
+			return User{}, errOAuthNoAccount
+		}
+	}
+	{
 		var u User
 		if e := s.db.QueryRow(`SELECT id,email FROM users WHERE email=?`, email).Scan(&u.ID, &u.Email); e == nil {
 			_, _ = s.db.Exec(`INSERT INTO oauth_identities(provider,subject,user_id) VALUES(?,?,?)`, provider, subject, u.ID)
 			return u, nil
 		}
-	}
-	if email == "" {
-		email = provider + "-" + subject + "@oauth.local"
 	}
 	nu, err := s.CreateUser(email, "")
 	if err != nil {

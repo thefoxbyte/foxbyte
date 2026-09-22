@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -31,9 +32,23 @@ import (
 
 // background services managed by `start`/`stop` (name -> subcommand + flags).
 var services = map[string][]string{
-	"controlplane": {"controlplane", "--addr", ":8080"},
-	"gateway":      {"gateway", "--addr", ":6432", "--idle", "2m"},
-	"api":          {"serve", "--addr", ":8088"},
+	"controlplane": {"controlplane", "--addr", listenAddr("8080")},
+	"gateway":      {"gateway", "--addr", listenAddr("6432"), "--idle", "2m"},
+	"api":          {"serve", "--addr", listenAddr("8088")},
+}
+
+// listenAddr is where a service listens: on this machine only, unless
+// FOX_LISTEN names another address (0.0.0.0 for every interface). On macOS and
+// Windows the services run in a VM whose loopback ports are forwarded to the
+// host's own loopback, so the default reaches them from the host and from
+// nowhere else. On a Linux server, exposing them is a decision to make with
+// FOX_LISTEN, behind TLS and a firewall — not something a fresh install does.
+func listenAddr(port string) string {
+	host := strings.TrimSpace(brand.Getenv("LISTEN"))
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 const usage = `FoxByte — serverless Postgres control CLI
@@ -145,6 +160,7 @@ Agent Branch API:
 
 Auth (admin):
   user create <email>            Create an account (prompts for a password)
+  setup-token                    Show the token the web sign-up needs for the first account
   apikey create <email> [name]   Mint an API key (shown once)
   apikey list <email>            List a user's API keys
   apikey revoke <email> <id>     Revoke an API key
@@ -202,10 +218,7 @@ func main() {
 		// No account and no key are created here. A key is a credential: it
 		// should be made by the person who will use it, once they have signed
 		// in, not minted by a background service and left in a file.
-		if accounts, ok := anyAccount(); ok && !accounts {
-			fmt.Println("\nFirst run: create your account at https://localhost:8080 (or `fox user create <email>`).")
-			fmt.Println("That first account can override the destructive-change guardrail.")
-		}
+		firstRunNotice()
 		fmt.Println("\nFor the connection string above, make an API key: the API keys page in the")
 		fmt.Println("web UI, or `fox apikey create <email> <name>`. It is shown once.")
 		fmt.Println("Stop everything with: fox stop")
@@ -315,6 +328,10 @@ func main() {
 			os.Exit(2)
 		}
 		must(userCreate(os.Args[3]))
+	case "setup-token":
+		setupTokenCmd()
+	case "_first-run": // Windows setup captures `start`'s output, so it asks for this part again
+		firstRunNotice()
 	case "apikey":
 		apikeyCmd(os.Args[2:])
 	case "admin":
@@ -322,12 +339,12 @@ func main() {
 	case "policy":
 		policyCmd(os.Args[2:])
 	case "serve":
-		must(agentapi.Serve(addrFlag(os.Args[2:], ":8088")))
+		must(agentapi.Serve(addrFlag(os.Args[2:], listenAddr("8088"))))
 	case "controlplane":
-		must(controlplane.Serve(addrFlag(os.Args[2:], ":8080")))
+		must(controlplane.Serve(addrFlag(os.Args[2:], listenAddr("8080"))))
 	case "gateway":
 		// The internal package is still named "proxy"; the user-facing command is "gateway".
-		must(proxy.Serve(addrFlag(os.Args[2:], ":6432"), durFlag(os.Args[2:], "--idle", 2*time.Minute)))
+		must(proxy.Serve(addrFlag(os.Args[2:], listenAddr("6432")), durFlag(os.Args[2:], "--idle", 2*time.Minute)))
 	case "mcp":
 		// MCP server on stdio: an agent framework drives branches + the ledger.
 		// It acts as an API key's account, so the key comes first.
@@ -614,6 +631,42 @@ func configPath() string { return filepath.Join(foxbyteDir(), "config") }
 // anyAccount reports whether this install has any account yet, so the banner
 // can tell a first-time user what to do. ok is false if the store cannot be
 // opened, in which case the banner simply says less.
+// firstRunNotice tells the person who started a fresh install how to make its
+// first account, with the setup token the sign-up page asks for. Nothing is
+// printed once an account exists.
+func firstRunNotice() {
+	accounts, ok := anyAccount()
+	if !ok || accounts {
+		return
+	}
+	tok, err := auth.EnsureSetupToken()
+	if err != nil {
+		fmt.Printf("\nFirst run: create your account with `%s user create <email>` (no setup token: %v).\n", brand.CLI, err)
+		return
+	}
+	fmt.Println("\nFirst run: create your account at https://localhost:8080 with this setup token:")
+	fmt.Println("  " + tok)
+	fmt.Printf("(or `%s user create <email>` here). That first account can override the\n", brand.CLI)
+	fmt.Printf("destructive-change guardrail. `%s setup-token` shows the token again.\n", brand.CLI)
+}
+
+// setupTokenCmd prints the first-run setup token, while the install has no
+// account; afterwards there is none.
+func setupTokenCmd() {
+	accounts, ok := anyAccount()
+	if !ok {
+		must(fmt.Errorf("cannot open the account store"))
+	}
+	if accounts {
+		fmt.Printf("This install already has its first account, so there is no setup token.\n"+
+			"An admin adds accounts with `%s user create <email>`.\n", brand.CLI)
+		return
+	}
+	tok, err := auth.EnsureSetupToken()
+	must(err)
+	fmt.Println(tok)
+}
+
 func anyAccount() (accounts bool, ok bool) {
 	store, err := auth.OpenFromEnv()
 	if err != nil {

@@ -163,8 +163,10 @@ assert_eq "MCP list_branches does not expose a password" \
 assert_eq "MCP run_sql runs as the client role" "$(mcp_call run_sql '{"sql":"SELECT session_user"}' | grep -c 'db_client')" "1"
 assert_eq "MCP run_sql cannot disable triggers" \
   "$(mcp_call run_sql '{"sql":"SET session_replication_role=replica"}' | grep -c 'permission denied')" "1"
-assert_eq "FOX_MCP_SUPERUSER=1 restores the old role" \
-  "$(mcp_call run_sql '{"sql":"SELECT session_user"}' FOX_MCP_SUPERUSER=1 | grep -c "$DB_SUPERUSER")" "1"
+# Audit v2 G05: the switch is compiled out of release builds (this suite runs
+# one), so setting it changes nothing.
+assert_eq "FOX_MCP_SUPERUSER=1 is ignored by a release build" \
+  "$(mcp_call run_sql '{"sql":"SELECT session_user"}' FOX_MCP_SUPERUSER=1 | grep -c 'db_client')" "1"
 # K6: the MCP server acts as an API key's account, and refuses to run without one.
 assert_eq "fox mcp without a key exits non-zero" \
   "$(printf '' | $S mcp >/dev/null 2>/tmp/mcpnokey.log; echo $?)" "1"

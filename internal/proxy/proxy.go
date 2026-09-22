@@ -15,11 +15,14 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/httpx"
 	"github.com/thefoxbyte/foxbyte/internal/tlsutil"
 )
 
@@ -177,32 +180,80 @@ func Serve(addr string, idle time.Duration) error {
 		log.Printf("gateway authentication ENABLED — connect with an API key (key_…) as the password")
 	}
 	if cfg, err := tlsutil.ServerConfig(); err != nil {
-		log.Printf("TLS disabled (could not load certificate): %v — clients must use sslmode=disable", err)
+		// Without TLS every API key crosses the wire in the clear, so only a
+		// listener no other machine can reach may run without it.
+		if !httpx.IsLoopback(addr) {
+			return fmt.Errorf("refusing to serve %s without TLS (%v) — fix the certificate (FOX_TLS_CERT/FOX_TLS_KEY) or listen on 127.0.0.1", addr, err)
+		}
+		log.Printf("TLS disabled (could not load certificate): %v — loopback clients only, with sslmode=disable", err)
 	} else {
 		tlsConfig = cfg
-		log.Printf("TLS enabled — clients can connect with sslmode=require")
+		log.Printf("TLS enabled — clients connect with sslmode=require (required from other machines)")
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
+	slots := make(chan struct{}, maxConns())
 	if idle > 0 {
 		go reaper(idle)
 		log.Printf("auto-suspend enabled: idle branches stop after %s", idle)
 	}
-	log.Printf("wire-protocol proxy listening on %s — connect with dbname=<branch> (e.g. dbname=main)", addr)
+	log.Printf("wire-protocol proxy listening on %s — connect with dbname=<branch> (e.g. dbname=main); at most %d connections", addr, cap(slots))
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			log.Printf("accept: %v", err)
 			continue
 		}
-		go handle(c)
+		select {
+		case slots <- struct{}{}:
+			go func() {
+				defer func() { <-slots }()
+				handle(c)
+			}()
+		default:
+			// Full: say so in Postgres's own words and close, rather than
+			// holding a goroutine and a socket for every extra client.
+			go refuseBusy(c)
+		}
 	}
+}
+
+// startupTimeout bounds the startup phase — TLS, the startup message and the
+// password. A client that connects and then sends nothing, or one byte at a
+// time, would otherwise hold its slot for ever.
+const startupTimeout = 30 * time.Second
+
+// maxConns is FOX_GATEWAY_MAX_CONNS, 1000 by default: how many client
+// connections the Gateway serves at once.
+func maxConns() int {
+	if n, err := strconv.Atoi(strings.TrimSpace(brand.Getenv("GATEWAY_MAX_CONNS"))); err == nil && n > 0 {
+		return n
+	}
+	return 1000
+}
+
+func refuseBusy(c net.Conn) {
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	sendError(c, "53300", "too many connections to the gateway — try again shortly") // too_many_connections
+}
+
+// needsTLS reports whether a client must have upgraded to TLS before it may
+// send its password. A client on this machine may skip TLS (psql in the VM,
+// the test suites); one on another machine may not, because its password is
+// an API key and the Gateway asks for it in cleartext.
+func needsTLS(client net.Conn) bool {
+	if _, ok := client.(*tls.Conn); ok {
+		return false
+	}
+	return !httpx.IsLoopbackConn(client.RemoteAddr())
 }
 
 func handle(client net.Conn) {
 	defer client.Close()
+	_ = client.SetDeadline(time.Now().Add(startupTimeout))
 
 	// readStartup may upgrade the connection to TLS, so it returns the conn to
 	// use for the rest of the session (Go passes net.Conn by value).
@@ -211,6 +262,10 @@ func handle(client net.Conn) {
 		if !errors.Is(err, errHandledCancel) {
 			log.Printf("startup: %v", err)
 		}
+		return
+	}
+	if needsTLS(client) {
+		sendError(client, "28000", "this gateway requires TLS from other machines — connect with sslmode=require") // invalid_authorization_specification
 		return
 	}
 
@@ -230,6 +285,9 @@ func handle(client net.Conn) {
 		}
 		actor, keyScope = u.Email, scope
 	}
+	// Authenticated: the startup deadline has done its job. Waking a
+	// suspended branch can take longer, and a session may idle for hours.
+	_ = client.SetDeadline(time.Time{})
 
 	target := params["database"]
 	if target == "" {

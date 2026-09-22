@@ -56,7 +56,20 @@ BANNER="$($S start 2>&1)"; sleep 5
 assert_eq "start prints no API key" "$(echo "$BANNER" | grep -c "$DB_KEY_PREFIX[A-Za-z0-9]")" "0"
 assert_eq "…and caches none on disk" "$([ -f "$HOME/$BRAND_STATE_DIR/config" ] && echo present || echo none)" "none"
 assert_eq "…and says how to make one" "$(echo "$BANNER" | grep -c 'apikey create')" "1"
+# Audit v2 G03: the first account is the admin, so the web sign-up needs the
+# setup token start printed, and sign-up is closed after it by default.
+SETUP_TOKEN="$($S setup-token 2>/dev/null)"
+assert_eq "start prints the setup token, and setup-token shows the same one"   "$([ -n "$SETUP_TOKEN" ] && echo "$BANNER" | grep -c -- "$SETUP_TOKEN")" "1"
+assert_eq "…kept readable by its owner only" "$(stat -c %a "$HOME/$BRAND_STATE_DIR/setup-token")" "600"
+reg() { curl -sk -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -X POST -d "$1" https://localhost:8080/auth/register; }
+assert_eq "providers says this is the first account" "$(curl -sk https://localhost:8080/auth/providers | jget setup)" "True"
+assert_eq "the first account without the token is refused" "$(reg '{"email":"x@foxbyte.dev","password":"password123"}')" "403"
+assert_eq "…and with a wrong one" "$(reg '{"email":"x@foxbyte.dev","password":"password123","setup_token":"nope"}')" "403"
 printf 'password123\n' | $S user create test@foxbyte.dev >/dev/null 2>&1 || true
+assert_eq "the token is gone once the first account exists" \
+  "$([ -e "$HOME/$BRAND_STATE_DIR/setup-token" ] && echo present || echo gone)|$($S setup-token 2>&1 | grep -c 'already has its first account')" "gone|1"
+assert_eq "sign-up is closed by default, even with the old token" \
+  "$(reg "{\"email\":\"y@foxbyte.dev\",\"password\":\"password123\",\"setup_token\":\"$SETUP_TOKEN\"}")|$(curl -sk https://localhost:8080/auth/providers | jget signup)" "403|False"
 assert_eq "the first account may override the guardrail" \
   "$(pg pg-main "SELECT pg_has_role('test@foxbyte.dev','$DB_ADMIN_ROLE','member')")" "t"
 KEY="$($S apikey create test@foxbyte.dev ci 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
@@ -82,6 +95,32 @@ assert_eq "OAuth calls back to https://localhost:8080 by default" \
   "$(curl -sk -o /dev/null -w '%{redirect_url}' https://localhost:8080/auth/oauth/github | grep -c 'redirect_uri=https%3A%2F%2Flocalhost%3A8080%2Fauth%2Foauth%2Fgithub%2Fcallback')" "1"
 $S stop >/dev/null 2>&1; sleep 1
 $S start >/dev/null 2>&1; sleep 5
+
+echo "### 1c. safe defaults (audit v2: G07, G08, G09, N1, N2, N4)"
+listening() { sudo ss -ltnH "sport = :$1" | awk '{print $4}' | sort -u | tr '\n' ' ' | sed 's/ $//'; }
+assert_eq "the control plane listens on loopback only" "$(listening 8080)" "127.0.0.1:8080"
+assert_eq "the Gateway listens on loopback only" "$(listening 6432)" "127.0.0.1:6432"
+assert_eq "the Agent API listens on loopback only" "$(listening 8088)" "127.0.0.1:8088"
+assert_eq "the object store is published on loopback only" \
+  "$(sudo docker port "$DB_OBJECT_STORE" | grep -vc -- '-> 127.0.0.1:')" "0"
+assert_eq "a branch name that decodes to a path is refused (400)" \
+  "$(curl -sk -o /dev/null -w '%{http_code}' -H "$AUTH" -X DELETE 'https://localhost:8080/api/branches/x%2F..%2Fmain')" "400"
+assert_eq "…and main is still there" "$(pg pg-main 'SELECT 1')" "1"
+assert_eq "an agent id that decodes to a path is refused (400)" \
+  "$(curl -sk -o /dev/null -w '%{http_code}' -H "$AUTH" -X DELETE 'https://localhost:8088/agents/..%2Fmain/branch')" "400"
+assert_eq "a pipeline whose source is a file on the server is refused" \
+  "$(curl -sk -o /dev/null -w '%{http_code}' -H "$AUTH" -H 'Content-Type: application/json' -X POST \
+     -d "{\"name\":\"steal\",\"spec\":{\"source\":\"$HOME/$BRAND_STATE_DIR/secrets.json\"}}" https://localhost:8080/api/pipelines)" "400"
+$S branch delete itowned >/dev/null 2>&1
+$S branch create itowned >/dev/null 2>&1
+pg pg-itowned "CREATE TABLE mine(x int); INSERT INTO mine VALUES (7);" >/dev/null
+PL_ID="$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST \
+  -d '{"name":"itowned","spec":{"source":"postgres://nobody@127.0.0.1:1/none"}}' https://localhost:8080/api/pipelines | jget id)"
+assert_eq "a pipeline named after a branch it did not make refuses to run" \
+  "$(curl -sk -N -H "$AUTH" -X POST "https://localhost:8080/api/pipelines/$PL_ID/run" | grep -c 'was not made by this pipeline')" "1"
+assert_eq "…and that branch keeps its data" "$(pg pg-itowned 'SELECT x FROM mine')" "7"
+curl -sk -o /dev/null -H "$AUTH" -X DELETE "https://localhost:8080/api/pipelines/$PL_ID"
+$S branch delete itowned >/dev/null 2>&1
 
 echo "### 2. branch isolation"
 $S branch delete itb >/dev/null 2>&1

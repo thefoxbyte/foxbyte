@@ -135,7 +135,7 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-      <li><b>Security hardening from the 22 Sep audit</b>, in order: safe defaults (sign-up closed with a bootstrap token, services and backup store on loopback, TLS required, superuser switches out of release builds, request limits, pipeline sources and names checked); per-user authorization of branches, agents and imports; Blackbox coverage of <code>TRUNCATE</code>/DML and signed off-host anchors; backups to a remote target on a schedule, with one taken at install; signed releases and CI scanners.</li>
+      <li><b>Security hardening from the 22 Sep audit</b> — safe defaults are done; next, in order: per-user authorization of branches, agents and imports, with a password per role (G02, G10, G12, G16); Blackbox coverage of <code>TRUNCATE</code>/DML and signed off-host anchors (G04, G17, G28); backups to a remote target on a schedule, with one taken at install (G18, G19); signed releases, digest-pinned images and the VM suites in CI (G22–G24).</li>
       <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
       <li>Make the <code>postgres-walg</code> image package public, so installs pull it instead of building it for a few minutes (C8).</li>
       <li>Run the VM integration suites in CI on every pull request (M2).</li>
@@ -169,7 +169,7 @@
       <li class="ok">Preloaded images tagged as the engine runs them</li><li class="ok">Summary with API key and <code>sslmode</code></li>
       <li class="ok">Fresh install from v0.8.6 on Windows: preload used, no apt, key in the summary</li></ul></td><td class="tb">Unit (<code>host_wsl_test.go</code>); Windows run 16 Sep</td></tr>
     <tr data-id="A5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">A5</td><td><b>Linux native</b><ul class="subs">
-      <li class="ok">Engine runs in-process, no VM</li><li class="ok"><code>fox setup</code> explains nothing is needed</li></ul></td><td class="tb">VM integration (all suites run on Linux)</td></tr>
+      <li class="ok">Engine runs in-process, no VM</li><li class="ok"><code>fox setup</code> explains nothing is needed</li><li class="ok">Services listen on loopback by default (<code>FOX_LISTEN</code> to expose)</li></ul></td><td class="tb">VM integration (all suites run on Linux)</td></tr>
     <tr data-id="A6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">A6</td><td><b>Command forwarding &amp; host file streaming</b><ul class="subs">
       <li class="ok">macOS → Lima VM, starts the VM if stopped</li><li class="ok">Windows → WSL distro</li>
       <li class="ok"><code>fox import</code> streams a host file over stdin</li><li class="todo">Stream <code>pipeline run</code> spec files too</li></ul></td><td class="tb">Unit (<code>TestImportLocalFile</code>, <code>TestWSLArgs</code>)</td></tr>
@@ -221,7 +221,7 @@
     <tr data-id="C3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">C3</td><td><b>Protection of <code>main</code></b><ul class="subs">
       <li class="ok">Delete and reset refused</li><li class="ok">Suspend refused for main, the HA standby and whichever container serves main</li></ul></td><td class="tb">Unit; VM §4, §6</td></tr>
     <tr data-id="C4" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">C4</td><td><b>Private networking (no host ports)</b><ul class="subs">
-      <li class="ok">Branch databases reachable only through the gateway</li><li class="part">Exceptions: restore :5433, standby, MinIO</li></ul></td><td class="tb">Unit (<code>TestParsePublishedPort</code>, <code>TestDSN</code>)</td></tr>
+      <li class="ok">Branch databases reachable only through the gateway</li><li class="ok">Published ports (object store, restore, debug) on loopback only; standby unpublished</li><li class="ok">An older install's public object store is re-created on start</li></ul></td><td class="tb">Unit (<code>TestParsePublishedPort</code>, <code>TestDSN</code>); VM §1c</td></tr>
     <tr data-id="C5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">C5</td><td><b>Scale-to-zero &amp; wake on connect</b><ul class="subs">
       <li class="ok">Idle branches suspended automatically</li><li class="ok">Next connection wakes the branch (~0.3–0.7 s)</li>
       <li class="ok">HA standby never suspended</li><li class="todo">Idle clocks survive a gateway restart</li></ul></td><td class="tb">VM §7</td></tr>
@@ -282,10 +282,10 @@
     <tr data-id="E1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E1</td><td><b>Per-install generated secrets</b><ul class="subs">
       <li class="ok">Generated Postgres and MinIO passwords</li><li class="ok">Used by restore too</li></ul></td><td class="tb">Unit (indirect); v2 §1a</td></tr>
     <tr data-id="E2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E2</td><td><b>TLS everywhere</b><ul class="subs">
-      <li class="ok">Self-signed TLS on all three services, zero setup</li><li class="part">TLS optional at the gateway (<code>sslmode=disable</code> still connects)</li></ul></td><td class="tb">Unit (<code>TestReadStartupUpgradesTLS</code>)</td></tr>
+      <li class="ok">Self-signed TLS on all three services, zero setup</li><li class="ok">TLS required from other machines (loopback clients may skip it)</li><li class="ok">No plain-HTTP fallback except on loopback</li></ul></td><td class="tb">Unit (<code>TestReadStartupUpgradesTLS</code>)</td></tr>
     <tr data-id="E3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E3</td><td><b>Keys are made by a person, not by start</b><ul class="subs">
       <li class="ok">Start creates no account and no key, and caches none on disk</li><li class="ok">The banner shows the connection string and how to make a key</li>
-      <li class="ok">The first account created gets the admin grant on main</li></ul></td><td class="tb">Integration §1</td></tr>
+      <li class="ok">The first account created gets the admin grant on main</li><li class="ok">First account over HTTP needs the setup token (<code>fox setup-token</code>)</li><li class="ok">Exactly one first account, however many sign up at once</li></ul></td><td class="tb">Integration §1</td></tr>
   </table>
 </section>
 
@@ -297,7 +297,7 @@
     <tr data-id="F1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F1</td><td><b>Routing by database name</b><ul class="subs">
       <li class="ok">One endpoint :6432, database name = branch</li><li class="todo">Connection pooling, rate limiting</li></ul></td><td class="tb">Unit; VM §1, §6</td></tr>
     <tr data-id="F2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F2</td><td><b>API-key authentication</b><ul class="subs">
-      <li class="ok"><code>key_</code> key as the Postgres password</li><li class="ok">Bad key rejected with a Postgres error</li></ul></td><td class="tb">VM §1</td></tr>
+      <li class="ok"><code>key_</code> key as the Postgres password</li><li class="ok">Bad key rejected with a Postgres error</li><li class="ok">Startup deadline and connection cap</li></ul></td><td class="tb">VM §1</td></tr>
     <tr data-id="F3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">F3</td><td><b>Backend login (SCRAM)</b><ul class="subs">
       <li class="ok">Cleartext, md5, SCRAM-SHA-256</li><li class="ok">Clients never see the database password</li>
       <li class="todo">Unit test for SCRAM</li></ul></td><td class="tb">VM §1, §6, §8 (exercised)</td></tr>
@@ -326,9 +326,9 @@
       <li class="ok">Create (shown once), list, revoke</li><li class="ok">Bearer / X-API-Key and gateway password</li>
       <li class="part">Revoking an unknown id reports success</li></ul></td><td class="tb">Unit; VM §1</td></tr>
     <tr data-id="G4" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">G4</td><td><b>Web sessions &amp; signup control</b><ul class="subs">
-      <li class="ok">httpOnly session cookie</li><li class="ok">Signup can be closed</li></ul></td><td class="tb">Unit (<code>TestSessions</code>)</td></tr>
+      <li class="ok">httpOnly session cookie</li><li class="ok">Sign-up closed by default (<code>FOX_SIGNUP=open</code>)</li><li class="ok">Failed sign-ins throttled</li></ul></td><td class="tb">Unit (<code>TestSessions</code>)</td></tr>
     <tr data-id="G5" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">G5</td><td><b>OAuth (GitHub / Google)</b><ul class="subs">
-      <li class="ok">Sign-in flows built</li><li class="ok">Defaults match what the engine serves (<code>https://localhost:8080</code>; web origin = public URL)</li><li class="ok">Session cookie <code>Secure</code> / <code>SameSite</code> follow the origin</li><li class="todo">Tested with a real OAuth app</li></ul></td><td class="tb">Unit; VM §1b</td></tr>
+      <li class="ok">Sign-in flows built</li><li class="ok">Defaults match what the engine serves (<code>https://localhost:8080</code>; web origin = public URL)</li><li class="ok">Session cookie <code>Secure</code> / <code>SameSite</code> follow the origin</li><li class="todo">Tested with a real OAuth app</li><li class="ok">Only a provider-verified email joins or creates an account; closed sign-up respected</li><li class="ok">State cookie one-use, <code>Secure</code>, <code>SameSite=Lax</code></li></ul></td><td class="tb">Unit; VM §1b</td></tr>
   </table>
 </section>
 
@@ -439,7 +439,7 @@
     <tr><th></th><th>ID</th><th>Feature · sub-features</th><th>Tested by</th></tr>
     <tr data-id="J1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">J1</td><td><b>Pipeline engine</b><ul class="subs">
       <li class="ok">Extract → raw schema → SQL models → tests, in a fresh branch</li><li class="ok"><code>ref()</code> / <code>source()</code> templating</li>
-      <li class="todo">Dependency graph</li><li class="todo">Incremental models</li><li class="todo">Scheduling</li></ul></td><td class="tb">Unit; VM §9</td></tr>
+      <li class="todo">Dependency graph</li><li class="todo">Incremental models</li><li class="todo">Scheduling</li><li class="ok">A run replaces only a branch the pipeline made</li><li class="ok">API sources are connection strings, never server paths</li></ul></td><td class="tb">Unit; VM §9</td></tr>
     <tr data-id="J2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">J2</td><td><b>Data-quality tests</b><ul class="subs">
       <li class="ok">not_null, unique, accepted_values, row_count_min, custom</li><li class="ok">Failure → exit 1, data kept</li></ul></td><td class="tb">Unit; VM §9</td></tr>
     <tr data-id="J3" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">J3</td><td><b>Stored pipelines &amp; run history</b><ul class="subs">
@@ -455,7 +455,7 @@
   <table>
     <tr><th></th><th>ID</th><th>Feature · sub-features</th><th>Tested by</th></tr>
     <tr data-id="K1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K1</td><td><b>Control-plane REST API</b><ul class="subs">
-      <li class="ok">Branches, query, Blackbox, policy, impact, import, pipelines, keys</li><li class="todo">Versioned paths (<code>/api/v1</code>)</li></ul></td><td class="tb">Unit; VM §1; v2 §0–§8</td></tr>
+      <li class="ok">Branches, query, Blackbox, policy, impact, import, pipelines, keys</li><li class="todo">Versioned paths (<code>/api/v1</code>)</li><li class="ok">Exact-origin CORS, branch-name check, body limits, timeouts</li></ul></td><td class="tb">Unit; VM §1; v2 §0–§8</td></tr>
     <tr data-id="K2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K2</td><td><b>OpenAPI spec</b><ul class="subs">
       <li class="ok">Served, Blackbox 2.0 endpoints documented</li><li class="ok">Matches the code (import fields, status codes, auth routes, /blackbox aliases)</li><li class="ok">Drift check in CI</li></ul></td><td class="tb">Unit (drift check)</td></tr>
     <tr data-id="K3" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">K3</td><td><b>Python SDK</b><ul class="subs">
@@ -464,7 +464,7 @@
       <li class="ok">Same client for Node and browsers</li><li class="todo">Tests</li><li class="todo">Publish to npm</li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="K5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K5</td><td><b>Agent Branch API</b><ul class="subs">
       <li class="ok">A branch per agent, own non-superuser role</li><li class="ok">Provenance (task, parent, session)</li>
-      <li class="ok">DSN reachable from the host (gateway-routed, branch-scoped key)</li><li class="ok">Cap, listing and TTL count suspended branches</li></ul></td><td class="tb">Unit; VM §5; v2 §1c, §7</td></tr>
+      <li class="ok">DSN reachable from the host (gateway-routed, branch-scoped key)</li><li class="ok">Cap, listing and TTL count suspended branches</li><li class="ok">Superuser switch only in <code>-tags insecure</code> builds</li></ul></td><td class="tb">Unit; VM §5; v2 §1c, §7</td></tr>
     <tr data-id="K6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K6</td><td><b>MCP server</b><ul class="subs">
       <li class="ok">Branches, run_sql, Blackbox tools</li><li class="ok">policy_check, execute_change, impact, diff</li>
       <li class="ok">Requires an API key and acts as that account; a scoped key is held to its branch</li>
@@ -519,7 +519,7 @@
       <li class="ok">build, vet, test, integration suites</li><li class="ok">Suites run only in a throwaway test VM (guarded)</li><li class="ok">release, web, WSL builds, feature-doc (both PDFs)</li></ul></td><td class="tb">CI</td></tr>
     <tr data-id="M2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M2</td><td><b>Linux CI</b><ul class="subs">
       <li class="ok">Build, vet, test, gofmt</li><li class="ok">Release script tests, checklist sync check</li>
-      <li class="todo">VM integration suites in CI</li></ul></td><td class="tb">CI</td></tr>
+      <li class="todo">VM integration suites in CI</li><li class="ok">Secret scanning, govulncheck, npm audit, UI type-check</li></ul></td><td class="tb">CI</td></tr>
     <tr data-id="M3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M3</td><td><b>Windows CI</b><ul class="subs">
       <li class="ok">Build, vet, test, Pester, installer encoding</li>
       <li class="ok">Guard tests read backslash paths, and generated files are pinned to LF (21 Sep)</li>

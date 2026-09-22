@@ -15,14 +15,17 @@ package agentapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/httpx"
 	"github.com/thefoxbyte/foxbyte/internal/tlsutil"
 )
 
@@ -123,56 +126,40 @@ func Serve(addr string) error {
 		writeJSON(w, http.StatusOK, map[string]string{"agent": id, "status": "deleted"})
 	})
 
-	protected := store.Authn(agents)
+	protected := store.Authn(checkAgentID(agents))
 	mux.Handle("/agents", protected)
 	mux.Handle("/agents/", protected)
 
-	handler := cors(store.WebOrigin())(logging(mux))
+	handler := httpx.CORS(store.WebOrigin())(logging(httpx.LimitBodies(httpx.MaxBody, nil)(mux)))
+	srv := httpx.Server(addr, handler)
 	cert, key, tlsErr := tlsutil.EnsureCert()
 	if tlsErr != nil {
-		log.Printf("agent branch API on %s (auth on; TLS disabled: %v)", addr, tlsErr)
-		return http.ListenAndServe(addr, handler)
+		// Plain HTTP would send API keys in the clear, so only a listener no
+		// other machine can reach may fall back to it.
+		if !httpx.IsLoopback(addr) {
+			return fmt.Errorf("refusing to serve %s without TLS (%v) — fix the certificate (FOX_TLS_CERT/FOX_TLS_KEY) or listen on 127.0.0.1", addr, tlsErr)
+		}
+		log.Printf("agent branch API on %s (auth on; TLS disabled, loopback only: %v)", addr, tlsErr)
+		return srv.ListenAndServe()
 	}
 	log.Printf("agent branch API on %s (auth on; TLS)", addr)
-	return http.ListenAndServeTLS(addr, cert, key, handler)
+	return srv.ListenAndServeTLS(cert, key)
 }
 
-func cors(origin string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", allowOrigin(origin, r.Header.Get("Origin")))
-			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
-			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusNoContent)
+// checkAgentID refuses an /agents/{id}/… request whose id would not make a
+// branch name the engine accepts. The engine checks again; this answers 400.
+func checkAgentID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rest, ok := strings.CutPrefix(r.URL.EscapedPath(), "/agents/"); ok {
+			seg, _, _ := strings.Cut(rest, "/")
+			id, err := url.PathUnescape(seg)
+			if seg != "" && (err != nil || !branch.ValidName("agent-"+id)) {
+				writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid agent id %q", id))
 				return
 			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// allowOrigin echoes the request Origin when it is the configured UI origin or a
-// localhost origin; otherwise falls back to the configured one.
-func allowOrigin(configured, reqOrigin string) string {
-	if reqOrigin != "" && (reqOrigin == configured || isLocalhostOrigin(reqOrigin)) {
-		return reqOrigin
-	}
-	return configured
-}
-
-func isLocalhostOrigin(o string) bool {
-	u, err := url.Parse(o)
-	if err != nil {
-		return false
-	}
-	switch u.Hostname() {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

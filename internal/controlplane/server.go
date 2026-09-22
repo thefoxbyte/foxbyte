@@ -25,7 +25,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
+	"github.com/thefoxbyte/foxbyte/internal/httpx"
 	"github.com/thefoxbyte/foxbyte/internal/secrets"
 	"github.com/thefoxbyte/foxbyte/internal/tlsutil"
 	"github.com/thefoxbyte/foxbyte/web"
@@ -64,26 +66,31 @@ func Serve(addr string) error {
 
 	api := http.NewServeMux()
 	registerAPI(api)
-	registerPipelines(api, store)                        // /api/pipelines* (ETL)
-	registerImpact(api)                                  // /api/branches/{name}/impact, /api/{ledger,blackbox}/diff
-	registerPolicy(api, store)                           // /api/branches/{name}/policies* and /admins (Blackbox policy gate)
-	registerLedgerV2(api)                                // /api/branches/{name}/ledger/{integrity,checkpoint,export,entries,{id}/branch}
-	store.MountKeys(api)                                 // /api/keys (protected via Authn below)
-	mux.Handle("/api/", store.Authn(blackboxAlias(api))) // …/blackbox… also reaches …/ledger… routes
+	registerPipelines(api, store)                                         // /api/pipelines* (ETL)
+	registerImpact(api)                                                   // /api/branches/{name}/impact, /api/{ledger,blackbox}/diff
+	registerPolicy(api, store)                                            // /api/branches/{name}/policies* and /admins (Blackbox policy gate)
+	registerLedgerV2(api)                                                 // /api/branches/{name}/ledger/{integrity,checkpoint,export,entries,{id}/branch}
+	store.MountKeys(api)                                                  // /api/keys (protected via Authn below)
+	mux.Handle("/api/", store.Authn(checkBranchName(blackboxAlias(api)))) // …/blackbox… also reaches …/ledger… routes
 
 	// Blackbox 2.0: anchor new ledger entries outside the database on a schedule.
 	branch.StartCheckpointer()
 
-	handler := cors(store.WebOrigin())(logging(mux))
+	handler := httpx.CORS(store.WebOrigin())(logging(httpx.LimitBodies(httpx.MaxBody, isUpload)(mux)))
 
 	// TLS when a certificate is available (self-signed on first run, or a real
 	// one via FOX_TLS_CERT/KEY), so API keys and session tokens are never
-	// sent in cleartext. Falls back to HTTP only if the cert can't be loaded.
+	// sent in cleartext. Without one, only a loopback listener may fall back to
+	// plain HTTP: on any other address that would put passwords, session
+	// cookies and API keys on the network in the clear.
 	scheme := "https"
 	cert, key, tlsErr := tlsutil.EnsureCert()
 	if tlsErr != nil {
+		if !httpx.IsLoopback(addr) {
+			return fmt.Errorf("refusing to serve %s without TLS (%v) — fix the certificate (FOX_TLS_CERT/FOX_TLS_KEY) or listen on 127.0.0.1", addr, tlsErr)
+		}
 		scheme = "http"
-		log.Printf("control-plane TLS disabled (%v) — serving plain HTTP", tlsErr)
+		log.Printf("control-plane TLS disabled (%v) — serving plain HTTP on loopback only", tlsErr)
 	}
 
 	if ui := web.FS(); ui != nil {
@@ -92,10 +99,44 @@ func Serve(addr string) error {
 	}
 
 	log.Printf("control-plane API on %s://localhost%s (auth on; UI origin %s)", scheme, addr, store.WebOrigin())
+	srv := httpx.Server(addr, handler)
 	if tlsErr != nil {
-		return http.ListenAndServe(addr, handler)
+		return srv.ListenAndServe()
 	}
-	return http.ListenAndServeTLS(addr, cert, key, handler)
+	return srv.ListenAndServeTLS(cert, key)
+}
+
+// checkBranchName refuses a request whose /api/branches/{name} segment is not a
+// name the engine accepts, before any handler sees it. The segment is read
+// escaped and then decoded, so "x%2F..%2Fmain" is one segment that decodes to
+// a path, and is refused as one. The engine checks again (branch.ValidName);
+// this makes the answer a 400 that says why.
+func checkBranchName(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rest, ok := strings.CutPrefix(r.URL.EscapedPath(), "/api/branches/"); ok {
+			seg, _, _ := strings.Cut(rest, "/")
+			name, err := url.PathUnescape(seg)
+			if seg != "" && (err != nil || !branch.ValidName(name)) {
+				writeErr(w, 400, fmt.Errorf("invalid branch name %q", name))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isUpload is the one route whose body is a file rather than JSON; it has its
+// own, larger cap (maxUpload).
+func isUpload(r *http.Request) bool { return r.URL.Path == "/api/import/file" }
+
+// maxUpload caps a file import's upload: FOX_MAX_UPLOAD_MB, 4096 MiB by
+// default. The part of an upload that does not fit in memory is written to a
+// temporary file, so without a cap one request could fill the disk.
+func maxUpload() int64 {
+	if n, err := strconv.ParseInt(strings.TrimSpace(brand.Getenv("MAX_UPLOAD_MB")), 10, 64); err == nil && n > 0 {
+		return n << 20
+	}
+	return 4096 << 20
 }
 
 func registerAPI(mux *http.ServeMux) {
@@ -323,6 +364,7 @@ func registerAPI(mux *http.ServeMux) {
 	// Migration via file upload: a .sql/.csv/.json file streamed from the browser
 	// into a new instance (kind inferred from the filename). Progress streams as SSE.
 	mux.HandleFunc("POST /api/import/file", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxUpload())
 		file, hdr, ferr := r.FormFile("file")
 		send, p, ok := newSSE(w)
 		if !ok {
@@ -619,47 +661,6 @@ func jsonText(v any) any {
 	return fmt.Sprintf("%v", v)
 }
 
-// cors echoes the specific UI origin and allows credentials (cookies), which
-// forbids the "*" wildcard.
-func cors(origin string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", allowOrigin(origin, r.Header.Get("Origin")))
-			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
-			if r.Method == http.MethodOptions {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// allowOrigin echoes the request Origin when it is the configured UI origin or
-// any localhost origin (so localhost vs 127.0.0.1 and alternate dev ports all
-// work with credentialed CORS); otherwise it falls back to the configured one.
-func allowOrigin(configured, reqOrigin string) string {
-	if reqOrigin != "" && (reqOrigin == configured || isLocalhostOrigin(reqOrigin)) {
-		return reqOrigin
-	}
-	return configured
-}
-
-func isLocalhostOrigin(o string) bool {
-	u, err := url.Parse(o)
-	if err != nil {
-		return false
-	}
-	switch u.Hostname() {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
-}
-
 // registerPipelines mounts the ETL pipeline CRUD + run endpoints. All are behind
 // Authn and scoped to the calling user.
 func registerPipelines(mux *http.ServeMux, store *auth.Store) {
@@ -744,6 +745,22 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 			return
 		}
 		target := pipelineBranch(pl)
+		// A spec saved before sources were checked may still name a file.
+		if err := checkPipelineSource(spec.Source); err != nil {
+			send("error", map[string]string{"message": err.Error()})
+			return
+		}
+		// A run deletes and re-creates its target, so it may only do that to
+		// a branch this pipeline made.
+		if branch.Exists(target) && !store.PipelineOwnsTarget(pl.ID, target) {
+			send("error", map[string]string{"message": fmt.Sprintf(
+				"a branch named %q already exists and was not made by this pipeline — rename the pipeline, or delete that branch first", target)})
+			return
+		}
+		if err := store.ClaimPipelineTarget(pl.ID, target); err != nil {
+			send("error", map[string]string{"message": fmt.Sprintf("branch %q: %v", target, err)})
+			return
+		}
 		// Stream the log to the client AND capture it for the run record.
 		var logBuf strings.Builder
 		p := &branch.Progress{
@@ -798,10 +815,25 @@ func decodePipelineBody(r *http.Request) (name, spec string, err error) {
 	if err := json.Unmarshal(body.Spec, &ps); err != nil {
 		return "", "", fmt.Errorf("invalid spec: %w", err)
 	}
-	if strings.TrimSpace(ps.Source) == "" {
-		return "", "", fmt.Errorf("the pipeline spec needs a source connection string")
+	if err := checkPipelineSource(ps.Source); err != nil {
+		return "", "", err
 	}
 	return name, string(body.Spec), nil
+}
+
+// checkPipelineSource accepts a database connection string and nothing else.
+// The import engine also reads files, but a path in a pipeline would be read on
+// the server, with the engine's permissions — its secrets file included — and
+// loaded into a branch the caller can query.
+func checkPipelineSource(src string) error {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return fmt.Errorf("the pipeline spec needs a source connection string")
+	}
+	if !isConnString(src) {
+		return fmt.Errorf("a pipeline source must be a connection string (postgres://, mysql://, mongodb://…); files are imported with the Import page")
+	}
+	return nil
 }
 
 // pipelineBranch derives a stable, connectable instance name for a pipeline's runs.

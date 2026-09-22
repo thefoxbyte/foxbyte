@@ -33,10 +33,13 @@ func truthyEnv(key string) bool {
 }
 
 // AgentSuperuser reports whether agent branches get the legacy superuser DSN.
-func AgentSuperuser() bool { return truthyEnv("FOX_AGENT_SUPERUSER") }
+// Only a build made with `-tags insecure` honours FOX_AGENT_SUPERUSER, like
+// FOX_GATEWAY_NOAUTH: the DSN it returns carries the install's master password.
+func AgentSuperuser() bool { return insecureAllowed && truthyEnv("FOX_AGENT_SUPERUSER") }
 
-// MCPSuperuser reports whether MCP run_sql runs as the legacy superuser.
-func MCPSuperuser() bool { return truthyEnv("FOX_MCP_SUPERUSER") }
+// MCPSuperuser reports whether MCP run_sql runs as the legacy superuser. Only a
+// build made with `-tags insecure` honours FOX_MCP_SUPERUSER.
+func MCPSuperuser() bool { return insecureAllowed && truthyEnv("FOX_MCP_SUPERUSER") }
 
 // ensureLoginRole creates (or updates) a non-superuser login role on a branch with
 // its own password. It has the same shape as the gateway's per-user roles

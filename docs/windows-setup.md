@@ -46,7 +46,8 @@ To install without running setup, or without the admin prompt, set `FOX_NO_SETUP
 
 After that, use FoxByte exactly as on macOS/Linux — `fox branch create`, `fox import`, `fox status`,
 etc. Services are reachable from Windows on `localhost` (gateway `:6432`, control API `:8080`, agent
-API `:8088`, MinIO console `:9001`) via WSL2 localhost-forwarding.
+API `:8088`, MinIO console `:9001`) via WSL2 localhost-forwarding. Inside WSL they listen on
+`127.0.0.1` only, so nothing else on your network can reach them.
 
 ## Your other WSL distros are not touched
 

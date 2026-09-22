@@ -130,6 +130,11 @@ curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/inst
 sudo fox start
 ```
 
+The services listen on `127.0.0.1` only. To reach them from other machines, set
+`FOX_LISTEN=0.0.0.0` — TLS is then required, so give it a real certificate with
+`FOX_TLS_CERT`/`FOX_TLS_KEY` — and put a firewall in front (see
+[Security defaults](#security-defaults)).
+
 ### Windows
 
 Run **in PowerShell** (not Command Prompt — `irm`/`iex` are PowerShell commands).
@@ -163,8 +168,10 @@ keeps your locally-built engine instead of downloading a release.
 ## Quickstart
 
 After `fox setup` (macOS/Windows) or `fox start` (Linux), open
-<https://localhost:8080> and create your account — the first one on an install
-can override the destructive-change guardrail. Then make an API key on the API
+<https://localhost:8080> and create your account with the **setup token** the
+command printed (`fox setup-token` shows it again; `fox user create <email>`
+works too). The first account on an install can override the
+destructive-change guardrail, which is why it needs the token. Then make an API key on the API
 keys page (or `fox apikey create <email> <name>`; it is shown once) and use it
 as the password in the connection string below. Then:
 
@@ -365,6 +372,36 @@ between majors behind your back. That is a migration, and it stays your call.
 A base backup (`fox backup create`) belongs to one major and cannot be restored
 into another; an export (`fox backup export`) can. [docs/postgres-versions.md](docs/postgres-versions.md)
 has the details, and the checklist for moving FoxByte itself to the next major.
+
+## Security defaults
+
+A fresh install exposes nothing it does not have to:
+
+- **Loopback only.** The control plane (`:8080`), Gateway (`:6432`) and Agent API
+  (`:8088`) listen on `127.0.0.1`; the backup store's ports and a point-in-time
+  restore's `:5433` are published on `127.0.0.1` too. On macOS and Windows the
+  VM forwards them to your machine's loopback. `FOX_LISTEN=0.0.0.0` exposes the
+  three services.
+- **TLS, and no silent fallback.** All three serve TLS (self-signed unless you
+  give a certificate). A service that cannot load its certificate refuses to
+  start rather than serve plain HTTP, unless it listens on loopback, and the
+  Gateway refuses a client on another machine that has not switched to TLS
+  (`sslmode=require`).
+- **The first account needs the setup token**, and sign-up is closed after it:
+  an admin adds people with `fox user create`, or `FOX_SIGNUP=open` lets them
+  register. Signing in with GitHub or Google needs a verified email, and makes
+  no account while sign-up is closed.
+- **Brakes on guessing and flooding.** Ten failed sign-ins for one address or
+  one email in 15 minutes hold further attempts; request bodies are capped; the
+  Gateway serves at most `FOX_GATEWAY_MAX_CONNS` (1000) connections and gives a
+  client 30 seconds to authenticate.
+- **No superuser switches in release builds.** `FOX_AGENT_SUPERUSER` and
+  `FOX_MCP_SUPERUSER`, like `FOX_GATEWAY_NOAUTH`, only work in a build made with
+  `-tags insecure`.
+
+Still open, and planned: per-user ownership of branches and agents (every
+account can act on every branch today), Blackbox coverage of `TRUNCATE` and
+data changes, and backups to a remote target.
 
 ## What FoxByte is not
 

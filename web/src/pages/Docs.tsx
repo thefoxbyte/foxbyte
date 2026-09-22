@@ -95,7 +95,8 @@ export default function Docs() {
       <table>
         <thead><tr><th>Variable</th><th>Purpose</th></tr></thead>
         <tbody>
-          <tr><td><code>FOX_SIGNUP</code></td><td><code>open</code> (default) or <code>closed</code> — allow browser self-signup</td></tr>
+          <tr><td><code>FOX_SIGNUP</code></td><td><code>closed</code> (default) or <code>open</code> — allow browser self-signup after the first account (which always needs the setup token)</td></tr>
+          <tr><td><code>FOX_LISTEN</code></td><td>Address the services listen on: <code>127.0.0.1</code> (default); <code>0.0.0.0</code> to expose them (TLS is then required)</td></tr>
           <tr><td><code>FOX_PUBLIC_URL</code></td><td>Public base URL, for OAuth callbacks and links (default <code>https://localhost:8080</code>)</td></tr>
           <tr><td><code>FOX_WEB_ORIGIN</code></td><td>Where the web console is served, for CORS and the return from an OAuth login (default: the public URL — set it only for a separately hosted UI)</td></tr>
           <tr><td><code>FOX_GITHUB_CLIENT_ID</code> · <code>_SECRET</code></td><td>Enable “Continue with GitHub” (optional)</td></tr>

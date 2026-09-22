@@ -120,8 +120,8 @@ and it does not return the policy verdict.
   `db_client` role, so an agent cannot disable triggers or override the
   destructive-DDL guardrail. `FOX_MCP_SUPERUSER=1` restores the old
   superuser behaviour (and `FOX_AGENT_SUPERUSER=1` does the same for agent
-  branches created over the HTTP API) — only for compatibility with setups that
-  depended on it.
+  branches created over the HTTP API) — only in a build made with
+  `-tags insecure`. Release builds ignore both.
 - **`branch_before_change` takes minutes, not seconds.** It restores a base
   backup and replays WAL, and it needs a base backup taken before the change
   (`fox backup create`).
