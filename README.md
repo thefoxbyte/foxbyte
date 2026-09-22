@@ -80,21 +80,38 @@ inherited by every branch, capture **every** schema change and attribute it:
 - **what** — the command, the object, and the full statement;
 - **context** — the tool (`application_name`, e.g. `cursor/opus`), the branch,
   and the session;
-- **a guardrail** — destructive DDL (e.g. `DROP TABLE`) is blocked by policy
-  unless explicitly overridden, and blocked attempts are recorded too.
+- **a guardrail** — destructive commands (`DROP TABLE`, `DROP SCHEMA`,
+  `TRUNCATE`) are blocked by policy unless an admin overrides them, and blocked
+  attempts are recorded too;
+- **data changes by agents** — every `UPDATE` and `DELETE` an agent runs is
+  recorded with its table and statement (people's are not, to keep ordinary
+  writes fast), and every `TRUNCATE` from anyone.
 
 ```bash
 fox blackbox            # every schema change on this branch, most recent first
 fox blackbox verify     # prove the record has not been tampered with
 ```
 
-**It cannot be quietly rewritten.** Each row is hash-chained to the one before
-it, so a deleted or edited entry breaks the chain and `fox blackbox verify` catches
-it — even if a superuser disabled the triggers. The table is append-only. And
+**It cannot be quietly rewritten.** The table is append-only, and each row is
+hash-chained to the one before it, so a deleted or edited entry breaks the chain
+and `fox blackbox verify` catches it. A database superuser could rewrite rows
+*and* recompute every hash after them; that is what **anchors** are for. Every
+few minutes the engine writes a checkpoint of the chain to a file outside the
+database, signed with a key the database cannot read, and
+`fox blackbox integrity` (or the standalone `fox-verify --pubkey`) checks the
+rows against them. Keep anchors off the machine (`FOX_ANCHOR_DIR`) and give the
+public key (`fox blackbox anchor-key`) to whoever audits; someone with root on
+the machine itself holds the key too, so for them anchors held elsewhere are
+the proof. And
 because the gateway logs each client in as a **per-user Postgres role**, the
 recorded actor is the login identity: a client cannot forge who made a change,
 even by `SET`-ting a session variable. There is a **Blackbox** page in the web
 console too.
+
+Beside it, a **security log** records what happens at the doors — sign-ins and
+failed ones, sign-ups, API keys made and revoked, password changes, deleted
+accounts, admin grants and every refused request — chained and anchored the
+same way: `fox audit`, `fox audit verify`, and `GET /api/audit` for admins.
 
 ---
 
@@ -413,8 +430,8 @@ A fresh install exposes nothing it does not have to:
   `FOX_MCP_SUPERUSER`, like `FOX_GATEWAY_NOAUTH`, only work in a build made with
   `-tags insecure`.
 
-Still open, and planned: Blackbox coverage of `TRUNCATE` and data changes, and
-backups to a remote target.
+Still open, and planned: backups and anchors to a remote target (S3 with Object
+Lock).
 
 ## What FoxByte is not
 

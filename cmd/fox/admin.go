@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
@@ -49,6 +50,11 @@ func adminCmd(args []string) {
 				continue
 			}
 			fmt.Printf("  %s: %s %s\n", b, done, u.Email)
+			kind := auth.EvAdminGranted
+			if sub == "revoke" {
+				kind = auth.EvAdminRevoked
+			}
+			openStore().Audit(kind, cliActor(), u.Email, "", "branch "+b)
 		}
 	case "list":
 		for _, b := range branches {

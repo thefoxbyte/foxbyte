@@ -24,6 +24,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/controlplane"
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
 	"github.com/thefoxbyte/foxbyte/internal/host"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 	"github.com/thefoxbyte/foxbyte/internal/mcp"
 	"github.com/thefoxbyte/foxbyte/internal/proxy"
 	"github.com/thefoxbyte/foxbyte/internal/version"
@@ -106,6 +107,7 @@ Blackbox — the database's record of every schema change (RECORD layer; fox led
   blackbox verify [branch]        Verify the tamper-evident hash chain is intact
   blackbox upgrade [branch|--all] Apply the current Blackbox definition to existing branches
   blackbox checkpoint [branch]    Anchor new entries outside the database (Merkle checkpoint)
+  blackbox anchor-key             Print the public key anchors are signed with (for fox-verify --pubkey)
   blackbox integrity [branch]     Check the record against its anchors (detects rewritten history)
   blackbox export [branch]        Write every entry as JSON lines (for fox-verify / audits)
   blackbox entries [branch]       Newest entries with their ids (--limit N)
@@ -163,6 +165,9 @@ Auth (admin):
   user create <email>            Create an account (prompts for a password)
   user list | passwd <email> | delete <email>   List accounts, reset a password, delete an account
   setup-token                    Show the token the web sign-up needs for the first account
+  audit [--limit N]              The security log: sign-ins, keys, passwords, accounts, admins, refusals
+  audit verify [--pubkey <file>] Check the security log's hash chain, its anchors and their signatures
+  audit checkpoint               Anchor the security log's new events now (the control plane does it on a schedule)
   apikey create <email> [name]   Mint an API key (shown once)
   apikey list <email>            List a user's API keys
   apikey revoke <email> <id>     Revoke an API key
@@ -328,6 +333,8 @@ func main() {
 		userCmd(os.Args[2:])
 	case "setup-token":
 		setupTokenCmd()
+	case "audit":
+		auditCmd(os.Args[2:])
 	case "_first-run": // Windows setup captures `start`'s output, so it asks for this part again
 		firstRunNotice()
 	case "apikey":
@@ -713,6 +720,7 @@ func branchOwnerCmd(args []string) {
 		must(fmt.Errorf("no such user: %s", args[1]))
 	}
 	must(s.SetBranchOwner(name, u.ID))
+	s.Audit(auth.EvOwnerChanged, cliActor(), name, "", "now owned by "+u.Email)
 	fmt.Printf("%s is now owned by %s\n", name, u.Email)
 }
 
@@ -720,6 +728,93 @@ func mustAccounts(s *auth.Store) []auth.Account {
 	list, err := s.ListAccounts()
 	must(err)
 	return list
+}
+
+// auditCmd is `fox audit`: the security log (audit v2 G28).
+func auditCmd(args []string) {
+	s := openStore()
+	defer s.Close()
+	sub := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+	}
+	switch sub {
+	case "", "log":
+		limit := 50
+		if v := optValue(args, "--limit"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				limit = n
+			}
+		}
+		evs, err := s.RecentSecurityEvents(limit)
+		must(err)
+		if len(evs) == 0 {
+			fmt.Println("the security log is empty")
+			return
+		}
+		for _, e := range evs {
+			at := e.At
+			if t, err := time.Parse(time.RFC3339Nano, e.At); err == nil {
+				at = t.Local().Format("2006-01-02 15:04:05")
+			}
+			fmt.Printf("%6d  %s  %-28s %-26s %-28s %-15s %s\n", e.ID, at, e.Kind, e.Actor, e.Subject, e.IP, e.Detail)
+		}
+	case "verify":
+		evs, err := s.SecurityEvents(0, 0)
+		must(err)
+		anchors, err := ledger.LoadAnchors(branch.SecurityLogAnchorDir())
+		must(err)
+		keyFile := optValue(args, "--pubkey")
+		if keyFile == "" {
+			keyFile = branch.AnchorKeyPath() + ".pub"
+		}
+		pub, perr := ledger.ReadPublicKey(keyFile)
+		if perr != nil {
+			pub = nil
+		}
+		rep := branch.VerifySecurityLog(evs, anchors, pub)
+		if pub == nil {
+			rep.Notes = append(rep.Notes, "signatures not checked: no public key at "+keyFile)
+		}
+		if rep.Intact {
+			fmt.Printf("security log intact: %d events, %d anchored in %d anchor(s), %d not yet anchored\n",
+				rep.Rows, rep.AnchoredRows, rep.Checkpoints, rep.UnanchoredRows)
+		} else {
+			fmt.Printf("security log TAMPERED: %d events\n", rep.Rows)
+		}
+		for _, p := range rep.Problems {
+			fmt.Println("  problem:", p)
+		}
+		for _, n := range rep.Notes {
+			fmt.Println("  note:", n)
+		}
+		if !rep.Intact {
+			os.Exit(1)
+		}
+	case "checkpoint":
+		a, err := branch.CheckpointSecurityLog(s)
+		must(err)
+		if a == nil {
+			fmt.Println("security log: nothing new to anchor")
+			return
+		}
+		fmt.Printf("security log anchored: events %d–%d, signed by key %s\n", a.FromID, a.ToID, a.KeyID)
+	default:
+		fmt.Printf("usage: %[1]s audit [--limit N] | %[1]s audit verify [--pubkey <file>] | %[1]s audit checkpoint\n", brand.CLI)
+		os.Exit(2)
+	}
+}
+
+// cliActor names whoever ran a command, for the security log: the local user.
+func cliActor() string {
+	name := os.Getenv("SUDO_USER")
+	if name == "" {
+		name = os.Getenv("USER")
+	}
+	if name == "" {
+		name = "unknown"
+	}
+	return "cli:" + name
 }
 
 // forgetOwner drops a branch's owner record, for a branch made or deleted at
@@ -759,7 +854,9 @@ func userCmd(args []string) {
 		}
 		fmt.Print("new password (min 8 chars): ")
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		must(openStore().ResetPassword(args[1], strings.TrimSpace(line)))
+		st := openStore()
+		must(st.ResetPassword(args[1], strings.TrimSpace(line)))
+		st.Audit(auth.EvPasswordReset, cliActor(), args[1], "", "fox user passwd")
 		fmt.Printf("password changed for %s; its sessions were signed out\n", args[1])
 	case "delete":
 		if len(args) < 2 {
@@ -771,6 +868,7 @@ func userCmd(args []string) {
 			must(fmt.Errorf("no such user: %s", args[1]))
 		}
 		must(s.DeleteAccount(u.ID))
+		s.Audit(auth.EvAccountDeleted, cliActor(), u.Email, "", "fox user delete")
 		if err := branch.RevokeAdmin("main", u.Email); err != nil {
 			fmt.Fprintf(os.Stderr, "note: could not revoke %s's admin grant on main: %v\n", u.Email, err)
 		}
@@ -787,10 +885,12 @@ func userCreate(email string) error {
 	if len(pw) < 8 {
 		return fmt.Errorf("password must be at least 8 characters")
 	}
-	u, err := openStore().CreateUser(email, pw)
+	st := openStore()
+	u, err := st.CreateUser(email, pw)
 	if err != nil {
 		return err
 	}
+	st.Audit(auth.EvRegister, cliActor(), u.Email, "", "fox user create")
 	fmt.Printf("created user %s (id %d)\n", u.Email, u.ID)
 	return nil
 }
@@ -813,6 +913,7 @@ func apikeyCmd(args []string) {
 		}
 		secret, info, err := s.CreateAPIKey(u.ID, name)
 		must(err)
+		s.Audit(auth.EvKeyCreated, cliActor(), info.Prefix+"… ("+info.Name+") for "+u.Email, "", "fox apikey create")
 		fmt.Printf("API key %q created — copy it now, it won't be shown again:\n\n  %s\n", info.Name, secret)
 	case "list":
 		keys, err := s.ListKeys(u.ID)
@@ -830,6 +931,7 @@ func apikeyCmd(args []string) {
 			os.Exit(2)
 		}
 		must(s.RevokeKey(u.ID, args[2]))
+		s.Audit(auth.EvKeyRevoked, cliActor(), "key "+args[2]+" of "+u.Email, "", "fox apikey revoke")
 		fmt.Println("revoked")
 	default:
 		fmt.Printf("unknown apikey subcommand: %s\n", args[0])

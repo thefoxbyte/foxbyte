@@ -10,3 +10,10 @@ import _ "embed"
 //
 //go:embed ledger_v2.sql
 var SchemaV2 string
+
+// SchemaData guards and records data changes the event triggers cannot see:
+// TRUNCATE, and agents' UPDATE and DELETE (audit v2 G04). Apply it after the
+// other schemas; it adds triggers to every user table, and to each new one.
+//
+//go:embed datachanges.sql
+var SchemaData string

@@ -44,6 +44,7 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 			return "", false
 		}
 		if !ok {
+			store.Audit(auth.EvDenied, u.Email, name, remoteIP(r), what)
 			writeErr(w, 403, fmt.Errorf("%s needs db_admin on %q — ask an admin to grant it on the Policies page, or run: fox admin grant %s --branch %s", what, name, u.Email, name))
 			return "", false
 		}
@@ -229,6 +230,8 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 			writeErr(w, 500, err)
 			return
 		}
+		by, _ := auth.UserFrom(r.Context())
+		store.Audit(auth.EvAdminGranted, by.Email, u.Email, remoteIP(r), "branch "+name)
 		writeJSON(w, 200, map[string]string{"email": u.Email, "branch": name, "status": "granted"})
 	})
 
@@ -264,6 +267,8 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 			writeErr(w, 500, err)
 			return
 		}
+		by, _ := auth.UserFrom(r.Context())
+		store.Audit(auth.EvAdminRevoked, by.Email, email, remoteIP(r), "branch "+name)
 		writeJSON(w, 200, map[string]string{"email": email, "branch": name, "status": "revoked"})
 	})
 }

@@ -130,7 +130,11 @@ func Serve(addr string) error {
 	agents.HandleFunc("DELETE /agents/{id}/branch", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		u, _ := auth.UserFrom(r.Context())
-		switch lvl := acl.Level(u, "agent-"+id); {
+		lvl := acl.Level(u, "agent-"+id)
+		if lvl < access.Manage {
+			store.Audit(auth.EvDenied, u.Email, "agent-"+id, r.RemoteAddr, "DELETE agent branch")
+		}
+		switch {
 		case lvl == access.None:
 			writeErr(w, http.StatusNotFound, fmt.Errorf("no branch for agent %q", id))
 			return

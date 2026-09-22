@@ -102,12 +102,53 @@ Given every ledger row and a branch's anchor files:
 Any failure means the ledger no longer matches what was recorded. Rows outside
 every anchor's range are reported as not yet anchored.
 
+## Signatures
+
+Anchors written since 22 Sep 2026 carry two more fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `key_id` | hex string | First 16 bytes of SHA-256 of the Ed25519 public key that signed it. |
+| `signature` | base64 | Ed25519 signature over the signing payload below. |
+
+The **signing payload** is these values, each followed by a newline (`\n`):
+
+```
+ledger-anchor-signature/1
+format
+algorithm
+branch
+checkpoint_id        (decimal)
+from_id              (decimal)
+to_id                (decimal)
+entry_count          (decimal)
+last_row_hash
+merkle_root
+prev_root
+created_at           (UTC, RFC 3339 with nanoseconds, trailing zeros removed)
+key_id
+```
+
+The private key is `~/.fox/anchor-signing.key` (or `FOX_ANCHOR_KEY`), which no
+database can read; its public key is beside it with `.pub` added, and
+`fox blackbox anchor-key` prints it. Verifying with a public key, anchors written
+before signing existed (unsigned) are accepted only **before** the first signed
+one: an unsigned anchor after a signed one fails, as does any signature that
+does not match or was made by another key.
+
+A signature proves an anchor was written by whoever holds the private key. It
+does not help against someone who holds that key too — on one machine, its
+administrator — so keep a copy of the anchors, or the key, where they are not.
+
 ## Using fox-verify
 
 ```bash
+# with the public key, so a forged anchor is caught too
+fox blackbox anchor-key > anchor.pub
+
 # against a live branch, through the FoxByte gateway with an API key
 fox-verify --dsn 'postgresql://dbadmin:<api-key>@localhost:6432/main?sslmode=require' \
-           --anchors ~/.fox/anchors/main
+           --anchors ~/.fox/anchors/main --pubkey anchor.pub
 
 # offline, against an export
 fox ledger export main > main-ledger.jsonl

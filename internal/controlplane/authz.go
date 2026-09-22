@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -30,6 +31,18 @@ func decode(r *http.Request, v any) error {
 // sets it; every branch route, and every handler that makes a branch, uses it.
 var acl *access.Checker
 
+// secLog is the account store, for the security log (auth.Store.Audit). Serve sets it.
+var secLog *auth.Store
+
+// remoteIP is the address a request came from (not X-Forwarded-For; see auth).
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 // Every handler under /api/branches/{name} used to check only that the caller
 // was signed in, so any account could read, query, suspend or delete any other
 // account's branch by name (audit v2 G02). authorize applies the access rule
@@ -47,14 +60,14 @@ func authorize(next http.Handler) http.Handler {
 		if rest, ok := strings.CutPrefix(r.URL.EscapedPath(), "/api/branches/"); ok {
 			seg, tail, _ := strings.Cut(rest, "/")
 			name, _ := url.PathUnescape(seg)
-			if name != "" && !allowed(w, u, name, needFor(r.Method, tail)) {
+			if name != "" && !allowed(w, r, u, name, needFor(r.Method, tail)) {
 				return
 			}
 		}
 		switch r.URL.Path {
 		case "/api/ledger/diff", "/api/blackbox/diff":
 			for _, k := range []string{"a", "b"} {
-				if n := r.URL.Query().Get(k); n != "" && !allowed(w, u, n, access.Use) {
+				if n := r.URL.Query().Get(k); n != "" && !allowed(w, r, u, n, access.Use) {
 					return
 				}
 			}
@@ -64,8 +77,12 @@ func authorize(next http.Handler) http.Handler {
 }
 
 // allowed answers the request and returns false when u may not do need to name.
-func allowed(w http.ResponseWriter, u auth.User, name string, need access.Level) bool {
-	switch lvl := acl.Level(u, name); {
+func allowed(w http.ResponseWriter, r *http.Request, u auth.User, name string, need access.Level) bool {
+	lvl := acl.Level(u, name)
+	if lvl < need {
+		secLog.Audit(auth.EvDenied, u.Email, name, remoteIP(r), r.Method+" "+r.URL.Path)
+	}
+	switch {
 	case lvl == access.None:
 		writeErr(w, 404, fmt.Errorf("no branch %q", name))
 		return false
@@ -127,7 +144,24 @@ func registerAccounts(mux *http.ServeMux, store *auth.Store) {
 			writeErr(w, 400, err)
 			return
 		}
+		store.Audit(auth.EvPasswordChange, u.Email, u.Email, remoteIP(r), "")
 		writeJSON(w, 200, map[string]string{"status": "changed", "note": "every other session of this account was signed out"})
+	})
+	mux.HandleFunc("GET /api/audit", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r) {
+			writeErr(w, 403, errors.New("only an admin may read the security log"))
+			return
+		}
+		limit := 100
+		if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+		evs, err := store.RecentSecurityEvents(limit)
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"events": evs})
 	})
 	mux.HandleFunc("GET /api/users", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
@@ -167,6 +201,8 @@ func registerAccounts(mux *http.ServeMux, store *auth.Store) {
 			writeErr(w, 404, err)
 			return
 		}
+		by, _ := auth.UserFrom(r.Context())
+		store.Audit(auth.EvAccountDeleted, by.Email, email, remoteIP(r), "")
 		// An admin grant lives on the account's Postgres role, not in the
 		// store: without this, re-creating the same email would bring it back.
 		if email != "" {

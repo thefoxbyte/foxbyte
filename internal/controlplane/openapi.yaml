@@ -821,6 +821,17 @@ paths:
         "400": { description: The current password is wrong, or the new one is too short. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/audit:
+    get:
+      tags: [accounts]
+      summary: The security log, newest first (admins only) — sign-ins and failures, sign-ups, keys, passwords, deleted accounts, admin grants and refused requests. Hash-chained; `fox audit verify` checks it.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+      responses:
+        "200": { description: OK }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin. }
+
   /api/users:
     get:
       tags: [accounts]

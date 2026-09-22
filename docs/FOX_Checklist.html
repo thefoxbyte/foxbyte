@@ -135,7 +135,7 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-      <li><b>Security hardening from the 22 Sep audit</b> — safe defaults and per-user access are done; next, in order: Blackbox coverage of <code>TRUNCATE</code>/DML and signed off-host anchors (G04, G17, G28); backups to a remote target on a schedule, with one taken at install (G18, G19); signed releases, digest-pinned images and the VM suites in CI (G22–G24).</li>
+      <li><b>Security hardening from the 22 Sep audit</b> — safe defaults, per-user access and the Blackbox's data changes, signatures and security log are done; next, in order: backups and anchors to a remote S3 target with Object Lock, on a schedule, with a backup taken at install (G18, G19, G17); signed releases, digest-pinned images and the VM suites in CI (G22–G24).</li>
       <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
       <li>Make the <code>postgres-walg</code> image package public, so installs pull it instead of building it for a few minutes (C8).</li>
       <li>Run the VM integration suites in CI on every pull request (M2).</li>
@@ -329,6 +329,8 @@
       <li class="ok">httpOnly session cookie</li><li class="ok">Sign-up closed by default (<code>FOX_SIGNUP=open</code>)</li><li class="ok">Failed sign-ins throttled</li></ul></td><td class="tb">Unit (<code>TestSessions</code>)</td></tr>
     <tr data-id="G5" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">G5</td><td><b>OAuth (GitHub / Google)</b><ul class="subs">
       <li class="ok">Sign-in flows built</li><li class="ok">Defaults match what the engine serves (<code>https://localhost:8080</code>; web origin = public URL)</li><li class="ok">Session cookie <code>Secure</code> / <code>SameSite</code> follow the origin</li><li class="todo">Tested with a real OAuth app</li><li class="ok">Only a provider-verified email joins or creates an account; closed sign-up respected</li><li class="ok">State cookie one-use, <code>Secure</code>, <code>SameSite=Lax</code></li></ul></td><td class="tb">Unit; VM §1b</td></tr>
+    <tr data-id="G6" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">G6</td><td><b>Security log</b><ul class="subs">
+      <li class="ok">Sign-ins, failures, keys, passwords, accounts, admin grants, refusals</li><li class="ok">Hash-chained, append-only, anchored and signed</li><li class="ok"><code>fox audit</code>, <code>verify</code>, <code>GET /api/audit</code></li><li class="todo">Included in <code>fox backup export</code></li></ul></td><td class="tb">Unit; VM §1d</td></tr>
   </table>
 </section>
 
@@ -340,7 +342,7 @@
     <tr data-id="H1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H1</td><td><b>DDL recording</b><ul class="subs">
       <li class="ok">Who, tool, branch, statement, status, risk</li><li class="ok">Inherited by every branch</li>
       <li class="ok">A restart records nothing: the install script's own statements are not captured</li>
-      <li class="todo">Role / database changes, some dropped object types</li></ul></td><td class="tb">VM §8; v2 §9</td></tr>
+      <li class="todo">Role / database changes, some dropped object types</li><li class="ok">Agents' UPDATE and DELETE recorded; TRUNCATE by anyone</li><li class="ok">Triggers on every table, protected from drop/disable/rename</li></ul></td><td class="tb">VM §8; v2 §9; v2 §10</td></tr>
     <tr data-id="H2" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">H2</td><td><b>Hash chain, append-only &amp; verify</b><ul class="subs">
       <li class="ok">Rows can't be edited or deleted normally</li><li class="ok"><code>fox ledger verify</code></li>
       <li class="part">Superuser rewrite caught only via anchors (H10–H12)</li><li class="ok"><code>bb.policy</code> changes recorded (append-only, not chained)</li></ul></td><td class="tb">VM §8; v2 §0, §6b</td></tr>
@@ -350,7 +352,7 @@
       <li class="ok">Tool and session are client-declared by design, and labelled so</li></ul></td><td class="tb">Unit; VM §8; v2 §1c</td></tr>
     <tr data-id="H4" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H4</td><td><b>Destructive-DDL guardrail</b><ul class="subs">
       <li class="ok">DROP TABLE / DROP SCHEMA refused, attempt recorded</li><li class="ok">Override only superusers / <code>db_admin</code>, use recorded</li>
-      <li class="ok">"flag" and "allow" actions; unknown actions refused</li><li class="ok">No hang when blocked after a write in the same transaction</li></ul></td><td class="tb">VM §8; v2 §1b, §6b</td></tr>
+      <li class="ok">"flag" and "allow" actions; unknown actions refused</li><li class="ok">No hang when blocked after a write in the same transaction</li><li class="ok">TRUNCATE blocked by default, recorded</li></ul></td><td class="tb">VM §8; v2 §1b, §6b</td></tr>
     <tr data-id="H5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H5</td><td><b>Risk flags</b><ul class="subs">
       <li class="ok">Type change, drop column flagged</li><li class="ok">Judged on the running statement (no comments or literals)</li>
       <li class="ok">Automated test</li></ul></td><td class="tb">Unit; v2 §6b</td></tr>
@@ -366,9 +368,9 @@
       <li class="ok">Fail-safe, append-only</li><li class="ok">Kill switch not settable by clients</li></ul></td><td class="tb">Unit; v2 §2</td></tr>
     <tr data-id="H10" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H10</td><td><b>Checkpoints &amp; anchors</b><ul class="subs">
       <li class="ok">Merkle root in the database and in read-only anchor files</li><li class="ok">On a schedule and on demand</li>
-      <li class="ok">Published anchor format</li><li class="todo">Cloud write-once anchors (S3 Object Lock)</li></ul></td><td class="tb">Unit; v2 §3, §3b</td></tr>
+      <li class="ok">Published anchor format</li><li class="todo">Cloud write-once anchors (S3 Object Lock)</li><li class="ok">Anchors signed (Ed25519, key outside the databases)</li></ul></td><td class="tb">Unit; v2 §3, §3b</td></tr>
     <tr data-id="H11" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H11</td><td><b>fox-verify (independent verifier)</b><ul class="subs">
-      <li class="ok">Checks a live branch or an export</li><li class="ok">Release binaries for every platform</li></ul></td><td class="tb">Unit; v2 §3</td></tr>
+      <li class="ok">Checks a live branch or an export</li><li class="ok">Release binaries for every platform</li><li class="ok"><code>--pubkey</code> checks signatures</li></ul></td><td class="tb">Unit; v2 §3</td></tr>
     <tr data-id="H12" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H12</td><td><b>Blackbox integrity &amp; export</b><ul class="subs">
       <li class="ok">INTACT / TAMPERED via CLI, REST, MCP</li><li class="ok">JSON-lines export</li>
       <li class="todo">Streaming for very large ledgers</li></ul></td><td class="tb">v2 §3</td></tr>
@@ -380,7 +382,7 @@
     <tr data-id="H15" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H15</td><td><b>Policy gate (warn / block)</b><ul class="subs">
       <li class="ok">BBX02 warn / BBX01 block with JSON detail</li><li class="ok">Blocked attempts recorded</li>
       <li class="ok">Per-rule <code>db_admin</code> override</li><li class="ok">CLI, REST, MCP, web page; custom rules</li>
-      <li class="ok">Patterns match the running statement</li><li class="todo">TRUNCATE</li></ul></td><td class="tb">Unit; v2 §6, §6b</td></tr>
+      <li class="ok">Patterns match the running statement</li><li class="ok">TRUNCATE (its own guardrail, H4)</li></ul></td><td class="tb">Unit; v2 §6, §6b</td></tr>
     <tr data-id="H16" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H16</td><td><b>Agent provenance &amp; execute_change</b><ul class="subs">
       <li class="ok">Session, task, parent session on every agent change (also through the Gateway DSN)</li><li class="ok">MCP <code>execute_change</code> with policy preview</li>
       <li class="ok"><code>fox blackbox sessions</code>, REST</li><li class="part">Provenance is what the agent says (not verified)</li></ul></td><td class="tb">Unit; v2 §7</td></tr>

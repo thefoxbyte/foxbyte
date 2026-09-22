@@ -188,8 +188,12 @@ rules (it stays specific to the guardrail).
 | `drop-index` | `DROP INDEX` | any |
 | `grant-to-public` | `GRANT` | `… TO PUBLIC` |
 
-Blocking is opt-in per rule (`fox policy block <rule_id>`). TRUNCATE is out of
-scope: it doesn't fire DDL event triggers.
+Blocking is opt-in per rule (`fox policy block <rule_id>`). TRUNCATE fires no
+DDL event trigger, so these rules do not see it; it has its own guardrail
+instead — a `BEFORE TRUNCATE` trigger on every table, blocked by default like
+DROP TABLE (`bb.policy` op `TRUNCATE`), with the same override, the same error
+(`guardrail: TRUNCATE is blocked by policy …`) and a BLOCKED Blackbox entry
+naming the table.
 
 ## Where else the object appears
 

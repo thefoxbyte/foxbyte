@@ -132,6 +132,7 @@ func (s *Store) handleRegister(w http.ResponseWriter, r *http.Request) {
 	decodeBody(w, r, maxAuthBody, &b)
 	ip := "ip:" + clientIP(r)
 	if held, wait := s.throttle.blocked(ip); held {
+		s.Audit(EvThrottled, "", b.Email, clientIP(r), "sign-up")
 		tooMany(w, wait)
 		return
 	}
@@ -143,6 +144,7 @@ func (s *Store) handleRegister(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, ErrSetupToken):
 		s.throttle.fail(ip) // a guessed token counts like a guessed password
+		s.Audit(EvSetupRefused, "", b.Email, clientIP(r), "")
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		return
 	case errors.Is(err, ErrSignupClosed):
@@ -152,6 +154,7 @@ func (s *Store) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
+	s.Audit(EvRegister, u.Email, u.Email, clientIP(r), "web sign-up")
 	tok, _ := s.createSession(u.ID)
 	s.setCookie(w, tok)
 	writeJSON(w, http.StatusCreated, map[string]any{"user": u})
@@ -162,16 +165,19 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 	decodeBody(w, r, maxAuthBody, &b)
 	ip, acct := "ip:"+clientIP(r), "email:"+strings.ToLower(strings.TrimSpace(b.Email))
 	if held, wait := s.throttle.blocked(ip, acct); held {
+		s.Audit(EvThrottled, "", b.Email, clientIP(r), "sign-in")
 		tooMany(w, wait)
 		return
 	}
 	u, err := s.Login(b.Email, b.Password)
 	if err != nil {
 		s.throttle.fail(ip, acct)
+		s.Audit(EvLoginFailed, "", b.Email, clientIP(r), "password")
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
 	s.throttle.clear(acct)
+	s.Audit(EvLoginOK, u.Email, u.Email, clientIP(r), "password")
 	tok, _ := s.createSession(u.ID)
 	s.setCookie(w, tok)
 	writeJSON(w, http.StatusOK, map[string]any{"user": u})
@@ -231,12 +237,14 @@ func (s *Store) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.Audit(EvKeyCreated, u.Email, info.Prefix+"… ("+info.Name+")", clientIP(r), "")
 	writeJSON(w, http.StatusCreated, map[string]any{"key": secret, "info": info})
 }
 
 func (s *Store) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 	u, _ := UserFrom(r.Context())
 	_ = s.revokeAPIKey(u.ID, r.PathValue("id"))
+	s.Audit(EvKeyRevoked, u.Email, "key "+r.PathValue("id"), clientIP(r), "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 

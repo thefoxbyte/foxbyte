@@ -183,6 +183,21 @@ BOB_ID="$(as "$KEY" https://localhost:8080/api/users | python3 -c 'import sys,js
 assert_eq "the admin deletes bob, and his key stops working" \
   "$(code "$KEY" -X DELETE "https://localhost:8080/api/users/$BOB_ID")|$(code "$KB" https://localhost:8080/api/status)" "200|401"
 rm -f "$BCOOKIE"
+# Audit v2 G28: all of that is in the security log, which is chained and anchored.
+AUDIT="$($S audit --limit 500)"
+assert_eq "the security log records failed sign-ins, refusals, keys and deletions" \
+  "$(echo "$AUDIT" | grep -c 'login.failed' | awk '{print ($1>0)}')|$(echo "$AUDIT" | grep -c 'access.denied' | awk '{print ($1>0)}')|$(echo "$AUDIT" | grep -c 'key.created' | awk '{print ($1>0)}')|$(echo "$AUDIT" | grep 'account.deleted' | grep -c 'bob@foxbyte.dev')" "1|1|1|1"
+assert_eq "…and who changed a password" "$(echo "$AUDIT" | grep 'account.password_changed' | grep -c 'bob@foxbyte.dev')" "1"
+assert_eq "admins read it over the API; others may not" \
+  "$(as "$KEY" 'https://localhost:8080/api/audit?limit=5' | grep -c '"row_hash"' | awk '{print ($1>0)}')|$(code "$KA" https://localhost:8080/api/audit)" "1|403"
+assert_eq "it anchors, signed" "$($S audit checkpoint | grep -c 'signed by key')" "1"
+assert_eq "…and verifies" "$($S audit verify | grep -c 'security log intact')" "1"
+python3 - "$HOME/$BRAND_STATE_DIR/auth.db" <<'PY'
+import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]); c.execute("DROP TRIGGER security_events_no_update")
+c.execute("UPDATE security_events SET actor='someone-else' WHERE id=(SELECT min(id) FROM security_events WHERE kind='login.failed')"); c.commit()
+PY
+assert_eq "an edited event is caught (exit 1)" "$($S audit verify >/dev/null 2>&1; echo $?)|$($S audit verify | grep -c 'TAMPERED')" "1|1"
 curl -sk -o /dev/null -H "Authorization: Bearer $KA" -X DELETE https://localhost:8080/api/branches/alice-dev
 
 echo "### 2. branch isolation"
