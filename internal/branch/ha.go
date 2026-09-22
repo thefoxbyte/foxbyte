@@ -108,10 +108,11 @@ func startStandbyContainer(store storage) error {
 // standbyRunArgs builds the standby's `docker run` arguments. Separate from
 // startStandbyContainer so a test can assert the archive settings are there.
 func standbyRunArgs(dataPath string) []string {
-	// Publish a host port so the proxy can route to it if it is later promoted.
+	// No host port: the Gateway routes to a promoted standby by its address on
+	// the docker network (BackendAddr), exactly as it does to main. A published
+	// port only offered a way around the Gateway, with the superuser password.
 	args := []string{"run", "-d",
 		"--name", container("standby"), "--network", network,
-		"-p", "0:5432",
 		"-e", "PGPASSWORD=" + pgPass(), // used by the WAL receiver to authenticate
 		"-e", "PGDATA=/var/lib/postgresql/data/pgdata",
 		"-v", dataPath + ":/var/lib/postgresql/data",

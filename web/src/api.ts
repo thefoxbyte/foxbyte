@@ -22,7 +22,7 @@ export type Branch = {
 }
 export type QueryResult = { columns?: string[]; rows?: unknown[][]; command?: string; error?: string }
 export type ApiKey = { id: string; name: string; prefix: string; created: number }
-export type Providers = { github: boolean; google: boolean; signup: boolean }
+export type Providers = { github: boolean; google: boolean; signup: boolean; setup?: boolean }
 
 export class ApiError extends Error {
   status: number
@@ -54,7 +54,7 @@ async function req(method: string, url: string, body?: unknown) {
 export const me = () => req('GET', `${API}/auth/me`) as Promise<{ user: User | null }>
 export const providers = () => req('GET', `${API}/auth/providers`) as Promise<Providers>
 export const login = (email: string, password: string) => req('POST', `${API}/auth/login`, { email, password }) as Promise<{ user: User }>
-export const register = (email: string, password: string) => req('POST', `${API}/auth/register`, { email, password }) as Promise<{ user: User }>
+export const register = (email: string, password: string, setup_token?: string) => req('POST', `${API}/auth/register`, { email, password, setup_token }) as Promise<{ user: User }>
 export const logout = () => req('POST', `${API}/auth/logout`)
 export const oauthUrl = (provider: 'github' | 'google') => `${API}/auth/oauth/${provider}`
 

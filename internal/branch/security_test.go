@@ -29,7 +29,8 @@ func TestSuperuserSwitchesDefaultOff(t *testing.T) {
 	}
 	t.Setenv("FOX_AGENT_SUPERUSER", "1")
 	t.Setenv("FOX_MCP_SUPERUSER", "1")
-	if !AgentSuperuser() || !MCPSuperuser() {
-		t.Error("superuser compatibility switches should turn on with =1")
+	// A release build ignores them; only `-tags insecure` lets =1 through.
+	if got := AgentSuperuser() && MCPSuperuser(); got != insecureAllowed {
+		t.Errorf("with =1 the switches are %v; want %v (insecureAllowed)", got, insecureAllowed)
 	}
 }

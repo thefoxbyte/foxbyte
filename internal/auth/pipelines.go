@@ -114,3 +114,30 @@ func (s *Store) ListRuns(pipelineID string, userID int64) ([]PipelineRun, error)
 	}
 	return out, rows.Err()
 }
+
+// A pipeline run replaces its target branch, so it may only replace a branch
+// it made. pipeline_targets records which pipeline made which branch: without
+// it, naming a pipeline after someone else's branch and running it deleted that
+// branch.
+
+// ClaimPipelineTarget records that pipelineID's runs write to branch. It fails
+// when another pipeline already holds that branch.
+func (s *Store) ClaimPipelineTarget(pipelineID, branch string) error {
+	res, err := s.db.Exec(`INSERT INTO pipeline_targets(branch, pipeline_id) VALUES(?,?)
+		ON CONFLICT(branch) DO UPDATE SET pipeline_id=excluded.pipeline_id WHERE pipeline_targets.pipeline_id=excluded.pipeline_id`,
+		branch, pipelineID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return errors.New("that branch belongs to another pipeline")
+	}
+	return nil
+}
+
+// PipelineOwnsTarget reports whether pipelineID's runs made branch.
+func (s *Store) PipelineOwnsTarget(pipelineID, branch string) bool {
+	var owner string
+	err := s.db.QueryRow(`SELECT pipeline_id FROM pipeline_targets WHERE branch=?`, branch).Scan(&owner)
+	return err == nil && owner == pipelineID
+}

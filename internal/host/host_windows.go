@@ -286,12 +286,15 @@ func finishSetup(name string) error {
 	}
 	fmt.Println()
 	fmt.Println(green("FoxByte is running."))
-	fmt.Println("  Open:     https://localhost:8080   — create your account there")
+	fmt.Println("  Open:     https://localhost:8080")
 	fmt.Println("  Try:      fox status")
 	// No key is printed because none is minted: a credential is made by the
 	// person who will use it, from the API keys page or `fox apikey create`.
 	fmt.Println("  Connect:  postgresql://dbadmin:<API_KEY>@localhost:6432/main?sslmode=require")
 	fmt.Println("  Log:      " + setupLogPath())
+	// The first-run lines, with the setup token the sign-up page asks for, are
+	// part of the engine's start banner, which setup captured.
+	_ = forward([]string{"_first-run"})
 	return nil
 }
 

@@ -5,9 +5,11 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
@@ -45,8 +47,19 @@ func (s *Store) handleOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := randToken(12)
-	http.SetCookie(w, &http.Cookie{Name: "dbengine_oauth_state", Value: state, Path: "/", HttpOnly: true, MaxAge: 600})
+	http.SetCookie(w, s.stateCookie(state, 600))
 	http.Redirect(w, r, cfg.AuthCodeURL(state), http.StatusFound)
+}
+
+const stateCookieName = "dbengine_oauth_state"
+
+// stateCookie carries the OAuth state between the redirect out and the
+// callback. Secure whenever the API is served over HTTPS, so it never travels
+// in cleartext, and Lax: the callback is a top-level navigation back from the
+// provider, which Lax allows and which is the only way it should arrive.
+func (s *Store) stateCookie(value string, maxAge int) *http.Cookie {
+	return &http.Cookie{Name: stateCookieName, Value: value, Path: "/auth/oauth/", HttpOnly: true,
+		Secure: strings.HasPrefix(s.cfg.PublicURL, "https"), SameSite: http.SameSiteLaxMode, MaxAge: maxAge}
 }
 
 func (s *Store) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -56,8 +69,9 @@ func (s *Store) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provider not configured", http.StatusNotFound)
 		return
 	}
-	st, err := r.Cookie("dbengine_oauth_state")
-	if err != nil || r.URL.Query().Get("state") != st.Value {
+	st, err := r.Cookie(stateCookieName)
+	http.SetCookie(w, s.stateCookie("", -1)) // one use only, whatever happens next
+	if err != nil || st.Value == "" || r.URL.Query().Get("state") != st.Value {
 		http.Error(w, "bad oauth state", http.StatusBadRequest)
 		return
 	}
@@ -66,13 +80,17 @@ func (s *Store) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "oauth exchange failed", http.StatusBadRequest)
 		return
 	}
-	subject, email, err := fetchIdentity(r.Context(), provider, cfg, tok)
+	subject, email, verified, err := fetchIdentity(r.Context(), provider, cfg, tok)
 	if err != nil || subject == "" {
 		http.Error(w, "could not read identity", http.StatusBadRequest)
 		return
 	}
-	u, err := s.upsertOAuth(provider, subject, email)
-	if err != nil {
+	u, err := s.upsertOAuth(provider, subject, email, verified)
+	switch {
+	case errors.Is(err, errOAuthUnverified), errors.Is(err, errOAuthNoAccount):
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	case err != nil:
 		http.Error(w, "login failed", http.StatusInternalServerError)
 		return
 	}
@@ -81,43 +99,57 @@ func (s *Store) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.cfg.WebOrigin+"/dashboard", http.StatusFound)
 }
 
-func fetchIdentity(ctx context.Context, provider string, cfg *oauth2.Config, tok *oauth2.Token) (subject, email string, err error) {
+// fetchIdentity reads the provider's stable id for the user and their email,
+// and whether the provider has verified that email. Only a verified email may
+// join or create an account: an unverified one is whatever the user typed.
+func fetchIdentity(ctx context.Context, provider string, cfg *oauth2.Config, tok *oauth2.Token) (subject, email string, verified bool, err error) {
 	c := cfg.Client(ctx, tok)
 	switch provider {
 	case "github":
 		var u struct {
-			ID    int64  `json:"id"`
-			Email string `json:"email"`
+			ID int64 `json:"id"`
 		}
 		if err = getJSON(c, "https://api.github.com/user", &u); err != nil {
 			return
 		}
-		subject, email = fmt.Sprintf("%d", u.ID), u.Email
-		if email == "" {
-			var emails []struct {
-				Email   string `json:"email"`
-				Primary bool   `json:"primary"`
-			}
-			if getJSON(c, "https://api.github.com/user/emails", &emails) == nil {
-				for _, e := range emails {
-					if e.Primary {
-						email = e.Email
-					}
-				}
-			}
+		subject = fmt.Sprintf("%d", u.ID)
+		// The profile's public email carries no verified flag; the emails
+		// list does, so the primary address comes from there.
+		var emails []struct {
+			Email    string `json:"email"`
+			Primary  bool   `json:"primary"`
+			Verified bool   `json:"verified"`
+		}
+		if getJSON(c, "https://api.github.com/user/emails", &emails) == nil {
+			email, verified = githubPrimary(emails)
 		}
 		return
 	case "google":
 		var u struct {
-			Sub   string `json:"sub"`
-			Email string `json:"email"`
+			Sub           string `json:"sub"`
+			Email         string `json:"email"`
+			EmailVerified bool   `json:"email_verified"`
 		}
 		if err = getJSON(c, "https://openidconnect.googleapis.com/v1/userinfo", &u); err != nil {
 			return
 		}
-		return u.Sub, u.Email, nil
+		return u.Sub, u.Email, u.EmailVerified, nil
 	}
-	return "", "", fmt.Errorf("unknown provider")
+	return "", "", false, fmt.Errorf("unknown provider")
+}
+
+// githubPrimary picks the primary address from GitHub's emails list.
+func githubPrimary(emails []struct {
+	Email    string `json:"email"`
+	Primary  bool   `json:"primary"`
+	Verified bool   `json:"verified"`
+}) (string, bool) {
+	for _, e := range emails {
+		if e.Primary {
+			return e.Email, e.Verified
+		}
+	}
+	return "", false
 }
 
 func getJSON(c *http.Client, url string, v any) error {

@@ -7,7 +7,7 @@
 openapi: 3.1.0
 info:
   title: FoxByte API
-  version: "0.6"
+  version: "0.7"
   description: >
     Control-plane and Agent Branch APIs for FoxByte — serverless PostgreSQL
     with instant branching, time-travel, and Blackbox — a tamper-evident record of
@@ -800,6 +800,9 @@ paths:
               properties:
                 email: { type: string, format: email }
                 password: { type: string, minLength: 8 }
+                setup_token:
+                  type: string
+                  description: Required for the first account on an install, and ignored after it. `fox start` prints it; `fox setup-token` shows it again.
       responses:
         "201":
           description: Created; the session cookie is set.
@@ -807,8 +810,9 @@ paths:
             application/json:
               schema: { type: object, properties: { user: { type: object } } }
         "400": { description: The password is shorter than 8 characters. }
-        "403": { description: "Signups are closed (FOX_SIGNUP=closed)." }
+        "403": { description: "The first account needs the setup token, or sign-up is closed (the default; FOX_SIGNUP=open opens it)." }
         "409": { description: That email is already registered. }
+        "429": { description: Too many failed setup-token attempts from this address; see Retry-After. }
 
   /auth/login:
     post:
@@ -832,6 +836,7 @@ paths:
             application/json:
               schema: { type: object, properties: { user: { type: object } } }
         "401": { description: Invalid credentials. }
+        "429": { description: "Too many failed sign-ins for this address or this email (10 in 15 minutes); see Retry-After." }
 
   /auth/logout:
     post:
@@ -868,7 +873,8 @@ paths:
                 properties:
                   github: { type: boolean }
                   google: { type: boolean }
-                  signup: { type: boolean, description: Whether self-signup is open. }
+                  signup: { type: boolean, description: Whether the sign-up form can be used — for the first account (with the setup token), or because FOX_SIGNUP=open. }
+                  setup: { type: boolean, description: The install has no account yet; the next sign-up needs the setup token. }
 
   /auth/oauth/{provider}:
     get:

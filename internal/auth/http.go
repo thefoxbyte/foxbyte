@@ -5,10 +5,33 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// maxAuthBody bounds what an auth endpoint reads: an email, a password and a
+// token fit in far less.
+const maxAuthBody = 64 << 10
+
+// decodeBody reads a small JSON body, refusing anything larger than limit.
+func decodeBody(w http.ResponseWriter, r *http.Request, limit int64, v any) {
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(v)
+}
+
+// clientIP is the address the request came from. X-Forwarded-For is not
+// trusted: the services are reached directly, and a header anyone can set
+// would let a guesser pick a fresh address for every attempt.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
 
 type ctxKey int
 
@@ -36,7 +59,8 @@ func (s *Store) setCookie(w http.ResponseWriter, tok string) {
 }
 
 func (s *Store) clearCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
+		Secure: strings.HasPrefix(s.cfg.WebOrigin, "https"), SameSite: http.SameSiteLaxMode})
 }
 
 // userFromRequest resolves a user via session cookie or API key.
@@ -101,18 +125,30 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func (s *Store) handleRegister(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.SignupOpen {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "signups are closed"})
+	var b struct {
+		Email, Password string
+		SetupToken      string `json:"setup_token"`
+	}
+	decodeBody(w, r, maxAuthBody, &b)
+	ip := "ip:" + clientIP(r)
+	if held, wait := s.throttle.blocked(ip); held {
+		tooMany(w, wait)
 		return
 	}
-	var b struct{ Email, Password string }
-	_ = json.NewDecoder(r.Body).Decode(&b)
 	if len(b.Password) < 8 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters"})
 		return
 	}
-	u, err := s.CreateUser(b.Email, b.Password)
-	if err != nil {
+	u, err := s.Register(b.Email, b.Password, b.SetupToken)
+	switch {
+	case errors.Is(err, ErrSetupToken):
+		s.throttle.fail(ip) // a guessed token counts like a guessed password
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return
+	case errors.Is(err, ErrSignupClosed):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "signups are closed"})
+		return
+	case err != nil:
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
@@ -123,12 +159,19 @@ func (s *Store) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var b struct{ Email, Password string }
-	_ = json.NewDecoder(r.Body).Decode(&b)
+	decodeBody(w, r, maxAuthBody, &b)
+	ip, acct := "ip:"+clientIP(r), "email:"+strings.ToLower(strings.TrimSpace(b.Email))
+	if held, wait := s.throttle.blocked(ip, acct); held {
+		tooMany(w, wait)
+		return
+	}
 	u, err := s.Login(b.Email, b.Password)
 	if err != nil {
+		s.throttle.fail(ip, acct)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
+	s.throttle.clear(acct)
 	tok, _ := s.createSession(u.ID)
 	s.setCookie(w, tok)
 	writeJSON(w, http.StatusOK, map[string]any{"user": u})
@@ -151,11 +194,23 @@ func (s *Store) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Store) handleProviders(w http.ResponseWriter, r *http.Request) {
+	setup := !s.HasAnyUser()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"github": s.cfg.GitHub.enabled(),
 		"google": s.cfg.Google.enabled(),
-		"signup": s.cfg.SignupOpen,
+		// signup: the sign-up form is usable — for the first account (with the
+		// setup token) or because sign-up is open. setup: this is the first one.
+		"signup": s.cfg.SignupOpen || setup,
+		"setup":  setup,
 	})
+}
+
+// tooMany answers a throttled request with 429 and when to try again.
+func tooMany(w http.ResponseWriter, wait time.Duration) {
+	secs := int(wait.Seconds()) + 1
+	w.Header().Set("Retry-After", fmt.Sprint(secs))
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{
+		"error": fmt.Sprintf("too many failed attempts — try again in %d minute(s)", (secs+59)/60)})
 }
 
 func (s *Store) handleListKeys(w http.ResponseWriter, r *http.Request) {
@@ -170,7 +225,7 @@ func (s *Store) handleListKeys(w http.ResponseWriter, r *http.Request) {
 func (s *Store) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	u, _ := UserFrom(r.Context())
 	var b struct{ Name string }
-	_ = json.NewDecoder(r.Body).Decode(&b)
+	decodeBody(w, r, maxAuthBody, &b)
 	secret, info, err := s.CreateAPIKey(u.ID, b.Name)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

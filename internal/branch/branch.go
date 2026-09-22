@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -153,9 +154,9 @@ func startContainer(name string, primary bool) error {
 	// attribution. FOX_DEBUG_PORTS publishes a host port for debugging.
 	if brand.Getenv("DEBUG_PORTS") != "" {
 		if primary {
-			args = append(args, "-p", "5432:5432")
+			args = append(args, "-p", loopbackPort("5432", "5432"))
 		} else {
-			args = append(args, "-p", "0:5432")
+			args = append(args, "-p", loopbackPort("0", "5432"))
 		}
 	}
 	if primary {
@@ -442,6 +443,12 @@ func Create(name, parent string) error {
 	if parent == "" {
 		parent = "main"
 	}
+	if err := checkName(name); err != nil {
+		return err
+	}
+	if err := checkName(parent); err != nil {
+		return err
+	}
 	// Cloning a branch that doesn't exist fails deep in the storage layer with a
 	// message about datasets or snapshots; say what's actually wrong.
 	if !activeStorage().exists(parent) {
@@ -473,6 +480,9 @@ func Create(name, parent string) error {
 // Delete stops a branch's container and destroys its dataset and origin
 // snapshot. Refuses to delete "main".
 func Delete(name string) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
 	if name == "main" {
 		return fmt.Errorf("refusing to delete the primary branch 'main'")
 	}
@@ -485,6 +495,9 @@ func Delete(name string) error {
 // agent workflow — start over cheaply — and near-instant on the existing
 // primitives.
 func Reset(name, parent string) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
 	if name == "main" {
 		return fmt.Errorf("refusing to reset the primary branch 'main'")
 	}
@@ -546,6 +559,30 @@ func objStoreRunning() bool {
 	return out == objStore
 }
 
+// objStorePublic reports whether the running object store publishes a port on
+// every interface, as installs made before 22 Sep 2026 did. Up re-creates it
+// bound to loopback; its data is on a named volume, so nothing is lost.
+func objStorePublic() bool {
+	out, _ := capture("docker", "port", objStore)
+	return publishedPublicly(out)
+}
+
+// publishedPublicly reads `docker port` output ("9000/tcp -> 0.0.0.0:9000", one
+// mapping per line) and reports whether any mapping is on every interface.
+func publishedPublicly(dockerPort string) bool {
+	for _, line := range strings.Split(dockerPort, "\n") {
+		_, hostAddr, ok := strings.Cut(line, "->")
+		if !ok {
+			continue
+		}
+		hostAddr = strings.TrimSpace(hostAddr)
+		if strings.HasPrefix(hostAddr, "0.0.0.0:") || strings.HasPrefix(hostAddr, "[::]:") || strings.HasPrefix(hostAddr, ":::") {
+			return true
+		}
+	}
+	return false
+}
+
 // managedLabel marks every container this engine creates, so cleanup finds them
 // by what they are rather than by what they are called. Naming conventions have
 // changed with the product's name; the label does not.
@@ -560,14 +597,18 @@ func Up() error {
 	if err := ensureNetwork(); err != nil {
 		return err
 	}
-	if !objStoreRunning() {
+	if !objStoreRunning() || objStorePublic() {
 		quiet("docker", "rm", "-f", objStore)
 		if err := run("docker", "run", "-d",
 			"--name", objStore, "--network", network,
 			"--label", managedLabel,
 			"-e", "MINIO_ROOT_USER="+minioUser(),
 			"-e", "MINIO_ROOT_PASSWORD="+minioPass(),
-			"-p", "9000:9000", "-p", "9001:9001",
+			// Loopback only: the bucket holds every WAL segment and base
+			// backup, a full copy of main. wal-g reaches it over the docker
+			// network; the host port is for the console. Docker's published
+			// ports bypass the host firewall, so an unbound one is public.
+			"-p", loopbackPort("9000", "9000"), "-p", loopbackPort("9001", "9001"),
 			"-v", objStoreVolume+":/data",
 			minioImage(), "server", "/data", "--console-address", ":9001",
 		); err != nil {
@@ -663,7 +704,7 @@ func Restore(ts string) error {
 		"-e", "PGDATA=/var/lib/postgresql/data/pgdata",
 		"-e", "RECOVERY_TARGET_TIME="+ts,
 		"-e", "BACKUP_NAME="+backup,
-		"-p", "5433:5432",
+		"-p", loopbackPort("5433", "5432"), // a full copy of main: this machine only
 		// The script is carried in the binary and run with `bash -c`, as
 		// BranchBeforeEntry does, so installs whose image predates it still get
 		// the chosen base backup instead of the image's LATEST-only entrypoint.
@@ -740,6 +781,38 @@ type Info struct {
 }
 
 func agentBranch(id string) string { return "agent-" + id }
+
+// ErrBadName is returned for a branch or agent name the engine will not use.
+var ErrBadName = errors.New("invalid name: use letters, digits, '.', '-' and '_' (at most 63, starting with a letter or digit)")
+
+// safeNameRe is every name the engine passes to Docker, ZFS or btrfs. Stricter
+// rules for new names live where names are made (the control plane's nameRe);
+// this is the floor under every path that acts on an existing one. A '/' would
+// walk out of the branch directory on btrfs (filepath.Join), '@' would name a
+// ZFS snapshot of another dataset, and "..", a space or a leading '-' mean
+// something to one tool or another.
+var safeNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`)
+
+func checkName(name string) error {
+	if !safeNameRe.MatchString(name) || strings.Contains(name, "..") {
+		return fmt.Errorf("%w (got %q)", ErrBadName, name)
+	}
+	return nil
+}
+
+// Exists reports whether a branch's data exists, running or not.
+func Exists(name string) bool { return checkName(name) == nil && activeStorage().exists(name) }
+
+// ValidName reports whether the engine accepts name for a branch.
+func ValidName(name string) bool { return checkName(name) == nil }
+
+// loopbackPort is a `docker run -p` value that publishes a container port on
+// this machine's loopback only. Without the address Docker listens on every
+// interface — and on Linux its rules sit in front of ufw and firewalld, so a
+// host firewall does not close it.
+func loopbackPort(host, container string) string {
+	return "127.0.0.1:" + host + ":" + container
+}
 
 func dsn(host, port string) string {
 	return fmt.Sprintf("postgresql://%s:%s@%s:%s/%s", pgUser, pgPass(), host, port, pgDatabase)
@@ -832,6 +905,9 @@ func CreateAgentBranch(agentID string) (Info, error) {
 // key's scope), and the agent goes on using the DSN it was given.
 func DeleteAgentBranch(agentID string) error {
 	name := agentBranch(agentID)
+	if err := checkName(name); err != nil {
+		return err
+	}
 	revokeAgentKeys(name) // best-effort; reports its own failure
 	return Delete(name)
 }
@@ -954,6 +1030,9 @@ func ContainerState(name string) string {
 // so it can be resumed later with no data loss. The primary and the HA standby
 // can't be suspended (see suspendRefusal).
 func Suspend(name string) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
 	if err := suspendRefusal(name, PrimaryContainer(), ContainerState("standby") != "absent"); err != nil {
 		return err
 	}
@@ -986,6 +1065,9 @@ func Resume(name string) error {
 // EnsureRunning makes sure a branch is running (resuming it if suspended) and
 // returns its current backend address. Errors if the branch does not exist.
 func EnsureRunning(name string) (string, error) {
+	if err := checkName(name); err != nil {
+		return "", err
+	}
 	if name == "main" {
 		// The primary's lifecycle is managed by `up`/`ha`. Never auto-start it
 		// here — that could revive a stepped-down old primary after a failover
