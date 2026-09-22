@@ -269,11 +269,37 @@ fox blackbox revert --to <ts>   # point-in-time restore of main on :5433 (like f
 ```bash
 fox backup create               # base backup -> object storage
 fox backup list
+fox backup target               # where backups go (the local store, or a bucket)
+fox backup target set s3://my-bucket/fox --endpoint https://s3.eu-west-1.amazonaws.com \
+    --access-key AKIA… --region eu-west-1   # asks for the secret key
+fox backup prune --keep 7       # delete all but the newest 7 full backups
 fox restore --to latest         # PITR into a disposable container on port 5433
 fox restore --to '2026-08-24 15:07:00+00'
 fox backup export               # portable copy of every branch, on this machine
 fox backup restore <file> --as <new-branch>
 ```
+
+**Backups are taken for you.** `fox start` takes a first base backup on an
+install that has none, so point-in-time restore works from the first minutes;
+the control plane takes another whenever the newest is older than
+`FOX_BACKUP_INTERVAL` (24h) and keeps the newest `FOX_BACKUP_RETAIN` (7), with
+the WAL they need. `fox status` shows how old the newest one is, and warns.
+
+**Keep them off this machine.** By default the WAL archive and base backups are
+in the object store beside main — on the same disk, so a disk failure takes
+both. `fox backup target set` sends them to any S3-compatible bucket instead
+(the secret key is asked for, or read from `FOX_BACKUP_S3_SECRET_KEY`, and kept
+in a 0600 file). Create the bucket with **Object Lock** and a default retention,
+and nothing written there — backups, WAL, and the copies of the Blackbox's and
+security log's anchors that go there too — can be changed or deleted before it
+expires, not even by whoever controls this machine. Tested against MinIO with
+Object Lock; AWS S3 and other providers are expected to work the same way.
+Moving the target restarts main and takes a first backup there; backups left on
+the old target stay there, and are restorable after moving back.
+
+**Branches are disposable.** Only `main` archives WAL; a branch is a
+copy-on-write clone for experiments and agents. If a branch holds work that
+matters, `fox backup export --branch <name>` keeps a copy.
 
 A base backup belongs to one PostgreSQL major; an export (`pg_dump`, roles and
 the Blackbox, verified against its own checksums) restores into the same or any
@@ -430,8 +456,9 @@ A fresh install exposes nothing it does not have to:
   `FOX_MCP_SUPERUSER`, like `FOX_GATEWAY_NOAUTH`, only work in a build made with
   `-tags insecure`.
 
-Still open, and planned: backups and anchors to a remote target (S3 with Object
-Lock).
+- **Backups can leave the machine.** `fox backup target set` sends the WAL
+  archive, base backups and anchor copies to an S3 bucket (see
+  [Durability](#usage)); the keys never appear on a command line.
 
 ## What FoxByte is not
 

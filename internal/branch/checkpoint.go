@@ -221,6 +221,12 @@ func Checkpoint(name string) (*ledger.Anchor, string, error) {
 			log.Printf("anchor %s: chattr +i failed (%v) — the file is read-only but not immutable", path, err)
 		}
 	}
+	// Off the machine too, when backups go to a remote target. A failure is
+	// retried with the next checkpoint: MirrorAnchors copies whatever is not
+	// marked copied yet.
+	if _, err := MirrorAnchors(); err != nil {
+		log.Printf("anchor %s: copying it to the backup target: %v", path, err)
+	}
 	return &a, path, nil
 }
 

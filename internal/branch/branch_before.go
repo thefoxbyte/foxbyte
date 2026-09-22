@@ -248,14 +248,16 @@ const walArchiveFile = "wal-archive-prefix"
 
 var walPrefixRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
-// walgPrefixFor turns the file's contents into a WALG_S3_PREFIX: the bucket's
-// root for no file, or for anything that is not a plain path segment.
+// walgPrefixFor turns the file's contents into a WALG_S3_PREFIX: the backup
+// target's root (target.go) for no file, or for anything that is not a plain
+// path segment.
 func walgPrefixFor(contents string) string {
+	root := target().Root()
 	seg := strings.TrimSpace(contents)
 	if !walPrefixRe.MatchString(seg) {
-		return "s3://" + walBucket
+		return root
 	}
-	return "s3://" + walBucket + "/" + seg
+	return root + "/" + seg
 }
 
 // walgPrefix is this install's archive location, read from main's dataset
@@ -271,15 +273,11 @@ func walgPrefix() string {
 
 func walgEnv() []string { return walgEnvFor(walgPrefix()) }
 
+// walgEnvFor is the wal-g environment for one archive prefix: the prefix as an
+// argument, and the target's keys and endpoint from an env file (target.go) —
+// never as arguments, which anyone listing processes can read.
 func walgEnvFor(prefix string) []string {
-	return []string{
-		"-e", "WALG_S3_PREFIX=" + prefix,
-		"-e", "AWS_ACCESS_KEY_ID=" + minioUser(),
-		"-e", "AWS_SECRET_ACCESS_KEY=" + minioPass(),
-		"-e", "AWS_ENDPOINT=" + objStoreEndpoint,
-		"-e", "AWS_S3_FORCE_PATH_STYLE=true",
-		"-e", "AWS_REGION=us-east-1",
-	}
+	return []string{"-e", "WALG_S3_PREFIX=" + prefix, "--env-file", s3EnvFile()}
 }
 
 // listBaseBackups lists base backups from a throwaway container, so it works

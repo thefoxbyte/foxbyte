@@ -5,6 +5,7 @@ package branch
 import (
 	"crypto/ed25519"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -75,6 +76,9 @@ func CheckpointSecurityLog(store *auth.Store) (*ledger.Anchor, error) {
 	ledger.SignAnchor(&a, key)
 	if _, err := ledger.WriteAnchor(dir, a); err != nil {
 		return nil, err
+	}
+	if _, err := MirrorAnchors(); err != nil {
+		fmt.Fprintf(os.Stderr, "security log anchor: copying it to the backup target: %v\n", err)
 	}
 	return &a, nil
 }

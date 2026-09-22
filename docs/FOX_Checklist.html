@@ -135,7 +135,7 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-      <li><b>Security hardening from the 22 Sep audit</b> — safe defaults, per-user access and the Blackbox's data changes, signatures and security log are done; next, in order: backups and anchors to a remote S3 target with Object Lock, on a schedule, with a backup taken at install (G18, G19, G17); signed releases, digest-pinned images and the VM suites in CI (G22–G24).</li>
+      <li><b>Security hardening from the 22 Sep audit</b> — safe defaults, per-user access, the Blackbox's data changes and security log, and remote, scheduled backups are done; last: signed releases with an SBOM, digest-pinned images and a checked wal-g download, and the VM suites in CI (G22–G24).</li>
       <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
       <li>Make the <code>postgres-walg</code> image package public, so installs pull it instead of building it for a few minutes (C8).</li>
       <li>Run the VM integration suites in CI on every pull request (M2).</li>
@@ -243,10 +243,10 @@
     <tr><th></th><th>ID</th><th>Feature · sub-features</th><th>Tested by</th></tr>
     <tr data-id="D1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">D1</td><td><b>WAL archiving to object storage</b><ul class="subs">
       <li class="ok">wal-g ships main's WAL to MinIO, off the commit path</li><li class="ok">MinIO images pinned on quay.io</li>
-      <li class="todo">Branches archive their own WAL</li></ul></td><td class="tb">VM §3</td></tr>
+      <li class="ok">Branches are disposable by design (export one that matters)</li><li class="ok">Remote S3 target (<code>fox backup target set</code>), keys in 0600 env files</li><li class="ok">Object Lock reported; tested on MinIO</li><li class="todo">Tested against AWS S3</li></ul></td><td class="tb">VM §3; VM §11c</td></tr>
     <tr data-id="D2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">D2</td><td><b>Base backups</b><ul class="subs">
       <li class="ok">Create and list</li><li class="ok">Follow the primary after a failover; listing works with main stopped</li>
-      <li class="ok">Read-only listing: <code>GET /api/backups</code> and a Dashboard panel</li><li class="todo">Schedule and retention</li></ul></td><td class="tb">VM §3, §3b, §6</td></tr>
+      <li class="ok">Read-only listing: <code>GET /api/backups</code> and a Dashboard panel</li><li class="ok">Schedule and retention (<code>FOX_BACKUP_INTERVAL</code>, <code>FOX_BACKUP_RETAIN</code>)</li><li class="ok">A first backup at install</li><li class="ok">Age shown and warned in <code>fox status</code> and the status API</li><li class="todo">Automated test restore</li></ul></td><td class="tb">VM §3, §3b, §6; VM §11c</td></tr>
     <tr data-id="D3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">D3</td><td><b>Point-in-time restore</b><ul class="subs">
       <li class="ok">Restore to a timestamp or latest on :5433</li><li class="ok">Per-install credentials</li>
       <li class="ok">Starts from the newest base backup that precedes the target</li>
@@ -368,7 +368,7 @@
       <li class="ok">Fail-safe, append-only</li><li class="ok">Kill switch not settable by clients</li></ul></td><td class="tb">Unit; v2 §2</td></tr>
     <tr data-id="H10" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H10</td><td><b>Checkpoints &amp; anchors</b><ul class="subs">
       <li class="ok">Merkle root in the database and in read-only anchor files</li><li class="ok">On a schedule and on demand</li>
-      <li class="ok">Published anchor format</li><li class="todo">Cloud write-once anchors (S3 Object Lock)</li><li class="ok">Anchors signed (Ed25519, key outside the databases)</li></ul></td><td class="tb">Unit; v2 §3, §3b</td></tr>
+      <li class="ok">Published anchor format</li><li class="ok">Copied to the backup target (S3 Object Lock)</li><li class="ok">Anchors signed (Ed25519, key outside the databases)</li></ul></td><td class="tb">Unit; v2 §3, §3b</td></tr>
     <tr data-id="H11" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H11</td><td><b>fox-verify (independent verifier)</b><ul class="subs">
       <li class="ok">Checks a live branch or an export</li><li class="ok">Release binaries for every platform</li><li class="ok"><code>--pubkey</code> checks signatures</li></ul></td><td class="tb">Unit; v2 §3</td></tr>
     <tr data-id="H12" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H12</td><td><b>Blackbox integrity &amp; export</b><ul class="subs">

@@ -113,7 +113,7 @@ func TestStandbyRunArgsArchive(t *testing.T) {
 		"archive_mode=on",
 		"archive_command=wal-g wal-push %p",
 		"WALG_S3_PREFIX=s3://wal-archive",
-		"AWS_ENDPOINT=http://" + objStore + ":9000",
+		"--env-file " + s3EnvFile(), // the endpoint and keys (target.go)
 		"/data/standby:/var/lib/postgresql/data",
 	} {
 		if !strings.Contains(args, want) {
