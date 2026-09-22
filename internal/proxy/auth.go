@@ -17,16 +17,12 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/pbkdf2"
-
-	"github.com/thefoxbyte/foxbyte/internal/secrets"
 )
 
-// backendPassword is the Postgres role password for every branch. It is the
-// per-install secret (internal/secrets) that the engine also sets on the
-// containers — not a hardcoded default. The Gateway authenticates the client
-// with an API key, then logs in to the backend on their behalf using this, so
-// the real DB password never leaves the Gateway and clients only present a key.
-func backendPassword() string { return secrets.Load().PGPassword }
+// The Gateway authenticates the client with an API key, then logs in to the
+// backend on their behalf with the password of the role it logs in as (each
+// derived from the install secret; see branch.UserRolePassword), so no
+// database password ever leaves the engine and clients only present a key.
 
 // --- low-level message framing (post-startup Postgres protocol) ---
 
@@ -88,7 +84,7 @@ func writeAuthOk(client net.Conn) error {
 // which the caller then pipes straight through to the client.
 //
 // password is the credential for params["user"]: the per-install secret for an
-// ordinary client (backendPassword), or a branch's derived agent password when
+// ordinary client (branch.UserRolePassword or ClientRolePassword), or a branch's derived agent password when
 // the Gateway logs in as that branch's own agent role.
 func backendAuth(backend net.Conn, params map[string]string, password string) error {
 	if _, err := backend.Write(buildStartup(params)); err != nil {

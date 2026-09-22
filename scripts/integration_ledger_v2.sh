@@ -176,6 +176,9 @@ assert_eq "fox mcp with an invalid key refuses to run" \
   "$(printf '' | FOX_API_KEY=key_notarealkey $S mcp >/dev/null 2>&1; echo $?)|$(printf '' | FOX_API_KEY=key_notarealkey $S mcp 2>&1 >/dev/null | grep -c 'not valid')" "1|1"
 # On its own branch: §5b counts main's entries, and these checks would add to them.
 $S branch create v2h3 >/dev/null 2>&1
+# A branch made at the CLI is an admin's (audit v2 G02); this suite's user is
+# not one, so the branches it works on are handed to it.
+$S branch owner v2h3 "$USER_EMAIL" >/dev/null 2>&1
 assert_eq "MCP run_sql records the key's account as the actor" \
   "$(mcp_call run_sql '{"branch":"v2h3","sql":"CREATE TABLE h3mcp(x int)"}' >/dev/null; pg pg-v2h3 "SELECT DISTINCT actor||'/'||actor_kind FROM bb.schema_ledger WHERE object_identity='public.h3mcp'")" "$USER_EMAIL/agent"
 # A branch-scoped key (an agent's) reaches its own branch and nothing else.
@@ -278,6 +281,7 @@ assert_eq "checkpoints are append-only" "$(pgerr pg-main "DELETE FROM bb.ledger_
 fresh_branch() {
   $S branch delete "$1" >/dev/null 2>&1; rm -rf "$ANCH/$1"
   $S branch create "$1" >/dev/null 2>&1
+  $S branch owner "$1" "$USER_EMAIL" >/dev/null 2>&1
   $S ledger upgrade "$1" >/dev/null 2>&1
   for t in v2i_a v2i_b v2i_c; do pg "pg-$1" "CREATE TABLE $t(x int)" >/dev/null; done
   $S ledger checkpoint "$1" >/dev/null 2>&1
@@ -373,6 +377,7 @@ assert_eq "REST ledger entries lists it" \
 assert_eq "MCP ledger_entries lists it" "$(mcp_call ledger_entries '{"limit":10}' | awk '{print $1}' | grep -cx "$TID")" "1"
 
 OUT="$($S ledger branch-before "$TID" --as v2bb 2>&1)"
+$S branch owner v2bb "$USER_EMAIL" >/dev/null 2>&1
 assert_eq "CLI branch-before succeeds" "$(echo "$OUT" | grep -c 'is ready')" "1"
 assert_eq "it recovered to the entry's transaction id" "$(echo "$OUT" | grep -c 'target     xid')" "1"
 assert_eq "the new branch is running" "$(sudo docker inspect -f '{{.State.Status}}' pg-v2bb 2>/dev/null)" "running"
@@ -917,6 +922,7 @@ assert_eq "execute_change includes the impact" \
   "preview public.v2imp_orders total"
 
 $S branch create v2diff-a >/dev/null 2>&1
+$S branch owner v2diff-a "$USER_EMAIL" >/dev/null 2>&1
 gw "$KEY" main "CREATE TABLE v2diff_main_only(x int)" >/dev/null
 gw "$KEY" main "ALTER TABLE v2imp_orders ADD COLUMN on_main int" >/dev/null
 gw "$KEY" v2diff-a "CREATE TABLE v2diff_branch_only(x int)" >/dev/null

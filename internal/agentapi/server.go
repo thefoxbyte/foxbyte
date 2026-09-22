@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/httpx"
@@ -75,6 +76,10 @@ func Serve(addr string) error {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// An agent's branch belongs to the account that asked for it (audit v2
+	// G02): the list shows an account its own agents (an admin, all of them),
+	// and only the owner or an admin may delete one.
+	acl := access.New(store)
 	agents := http.NewServeMux()
 	agents.HandleFunc("GET /agents", func(w http.ResponseWriter, r *http.Request) {
 		infos, err := branch.ListAgentBranches()
@@ -82,18 +87,23 @@ func Serve(addr string) error {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
-		if infos == nil {
-			infos = []branch.Info{}
+		u, _ := auth.UserFrom(r.Context())
+		visible := []branch.Info{}
+		for _, i := range infos {
+			if acl.Can(u, i.Branch, access.Use) {
+				visible = append(visible, i)
+			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"agents": infos})
+		writeJSON(w, http.StatusOK, map[string]any{"agents": visible})
 	})
 	agents.HandleFunc("POST /agents/{id}/branch", func(w http.ResponseWriter, r *http.Request) {
 		// The body is optional. Without provenance the request takes exactly the
 		// original path and returns the original response.
 		var p branch.Provenance
 		_ = json.NewDecoder(r.Body).Decode(&p)
+		u, _ := auth.UserFrom(r.Context())
 		if !p.Requested() {
-			info, err := branch.CreateAgentBranch(r.PathValue("id"))
+			info, err := branch.CreateAgentBranchFor(u.ID, r.PathValue("id"))
 			if err != nil {
 				writeErr(w, http.StatusConflict, err)
 				return
@@ -101,7 +111,7 @@ func Serve(addr string) error {
 			writeJSON(w, http.StatusCreated, info)
 			return
 		}
-		info, s, err := branch.CreateAgentBranchWithProvenance(r.PathValue("id"), p)
+		info, s, err := branch.CreateAgentBranchWithProvenanceFor(u.ID, r.PathValue("id"), p)
 		if err != nil {
 			code := http.StatusConflict
 			if errors.Is(err, branch.ErrInvalidRequest) {
@@ -119,6 +129,15 @@ func Serve(addr string) error {
 	})
 	agents.HandleFunc("DELETE /agents/{id}/branch", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
+		u, _ := auth.UserFrom(r.Context())
+		switch lvl := acl.Level(u, "agent-"+id); {
+		case lvl == access.None:
+			writeErr(w, http.StatusNotFound, fmt.Errorf("no branch for agent %q", id))
+			return
+		case lvl < access.Manage:
+			writeErr(w, http.StatusForbidden, fmt.Errorf("only the owner of agent %q or an admin may delete it", id))
+			return
+		}
 		if err := branch.DeleteAgentBranch(id); err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
 			return

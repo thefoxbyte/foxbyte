@@ -236,6 +236,7 @@ fox branch diff main qa         # schema changes distinguishing two branches (fr
 fox branch suspend qa           # stop a branch (data preserved); wakes on connect
 fox branch resume qa
 fox branch delete qa
+fox branch owner qa you@example.com  # hand a CLI-made branch to an account (shows the owner without an email)
 ```
 
 **Blackbox** (`fox ledger …` works too)
@@ -278,6 +279,7 @@ fox apikey create <email> [name]   # mint an API key (shown once)
 fox apikey list <email>
 fox apikey revoke <email> <id>
 fox user create <email>            # create an account (prompts for a password)
+fox user list | passwd <email> | delete <email>   # accounts: list, reset a password, delete
 ```
 
 ---
@@ -395,13 +397,24 @@ A fresh install exposes nothing it does not have to:
   one email in 15 minutes hold further attempts; request bodies are capped; the
   Gateway serves at most `FOX_GATEWAY_MAX_CONNS` (1000) connections and gives a
   client 30 seconds to authenticate.
+- **Branches belong to whoever made them.** Every account may use `main`; a
+  branch made through the console, the API, the Agent API or MCP is its
+  maker's to use and delete; an admin (the first account, or anyone given
+  `fox admin grant`) may do anything. Other people's branches are not listed,
+  and answer "not found" — through the Gateway too. A branch made with the CLI
+  is an admin's.
+- **A password per database role.** Each account, each agent and the client
+  role log in to Postgres with their own password, derived from the install
+  secret; the secret itself is the superuser's alone and never appears on a
+  command line.
+- **Imports reach public databases.** Importing from this machine, a private
+  network or a container is for admins; cloud metadata addresses are refused.
 - **No superuser switches in release builds.** `FOX_AGENT_SUPERUSER` and
   `FOX_MCP_SUPERUSER`, like `FOX_GATEWAY_NOAUTH`, only work in a build made with
   `-tags insecure`.
 
-Still open, and planned: per-user ownership of branches and agents (every
-account can act on every branch today), Blackbox coverage of `TRUNCATE` and
-data changes, and backups to a remote target.
+Still open, and planned: Blackbox coverage of `TRUNCATE` and data changes, and
+backups to a remote target.
 
 ## What FoxByte is not
 
@@ -410,8 +423,8 @@ data changes, and backups to a remote target.
   still run on one host. Networked storage disaggregation is on the roadmap.
 - **HA is a single-VM demonstration**, not a production multi-host deployment.
 - **Not a vector database** — it is PostgreSQL (use `pgvector` on it if you like).
-- **Single-tenant** — authenticated users share one instance; there is no project
-  isolation yet.
+- **One instance, shared** — accounts own their branches and share `main`; there
+  are no separate projects or per-project quotas yet.
 
 ---
 

@@ -196,6 +196,12 @@ func sessionDefaultsSQL(p Provenance) string {
 // session, task and parent session, so the agent's changes are attributed without
 // the agent doing anything. If the session can't be recorded the branch is removed.
 func CreateAgentBranchWithProvenance(agentID string, p Provenance) (Info, AgentSession, error) {
+	return CreateAgentBranchWithProvenanceFor(0, agentID, p)
+}
+
+// CreateAgentBranchWithProvenanceFor is CreateAgentBranchWithProvenance on
+// behalf of an account (see CreateAgentBranchFor).
+func CreateAgentBranchWithProvenanceFor(owner int64, agentID string, p Provenance) (Info, AgentSession, error) {
 	if err := p.validate(); err != nil {
 		return Info{}, AgentSession{}, err
 	}
@@ -206,7 +212,7 @@ func CreateAgentBranchWithProvenance(agentID string, p Provenance) (Info, AgentS
 		}
 		p.SessionID = id
 	}
-	info, err := CreateAgentBranch(agentID)
+	info, err := CreateAgentBranchFor(owner, agentID)
 	if err != nil {
 		return Info{}, AgentSession{}, err
 	}
@@ -365,10 +371,14 @@ func ExecuteChange(req ExecuteChangeRequest) (ExecuteChangeResult, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), envDurationOr("FOX_EXECUTE_CHANGE_TIMEOUT", 10*time.Minute))
 	defer cancel()
-	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://db_client:%s@%s/%s", pgPass(), addr, pgDatabase))
+	if err := EnsureAppRole(name); err != nil {
+		return ExecuteChangeResult{}, err
+	}
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s@%s/%s", ClientRole, addr, pgDatabase))
 	if err != nil {
 		return ExecuteChangeResult{}, err
 	}
+	cfg.Password = ClientRolePassword()
 	cfg.OnNotice = func(_ *pgconn.PgConn, n *pgconn.Notice) { res.Notices = append(res.Notices, noticeFrom(n)) }
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {

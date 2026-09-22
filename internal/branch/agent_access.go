@@ -52,6 +52,25 @@ func AgentRolePassword(branchName string) string {
 	return hex.EncodeToString(m.Sum(nil))
 }
 
+// Every login role has a password of its own, derived from the install secret
+// (audit v2 G10). They all used to be the secret itself — the superuser's
+// password — so any one of them, read from a process list or a log, was the
+// superuser. A derived password opens its own role and nothing else, and none
+// has to be stored: the engine, the Gateway and the console derive the same one.
+
+// rolePassword derives the password of one login role.
+func rolePassword(kind, role string) string {
+	m := hmac.New(sha256.New, []byte(pgPass()))
+	m.Write([]byte("fox-" + kind + "-role:" + role))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// ClientRolePassword is the password of the shared client role (db_client).
+func ClientRolePassword() string { return rolePassword("client", ClientRole) }
+
+// UserRolePassword is the password of the login role for one account.
+func UserRolePassword(email string) string { return rolePassword("user", email) }
+
 // gatewayHostPort is where an agent should reach the Gateway.
 func gatewayHostPort() string {
 	if v := strings.TrimSpace(os.Getenv(EnvGatewayHostPort)); v != "" {
@@ -91,15 +110,24 @@ func agentGatewayDSN(branchName, key string) string {
 // It opens the store itself because an agent branch is created from three
 // places — the Agent Branch API, `fox mcp` and the CLI — and only the first has
 // an authenticated caller to inherit a store from.
-func mintAgentKey(branchName string) (string, error) {
+//
+// owner is the account the agent works for: it owns the key and the branch.
+// Without one (the command line) the key goes to the install's first account
+// and the branch has no owner, so only an admin can reach it.
+func mintAgentKey(branchName string, owner int64) (string, error) {
 	store, err := auth.OpenFromEnv()
 	if err != nil {
 		return "", err
 	}
 	defer store.Close()
-	uid, ok := store.AnyUserID()
-	if !ok {
-		return "", fmt.Errorf("no account exists yet to own the key — run `fox start` first")
+	uid := owner
+	if uid == 0 {
+		var ok bool
+		if uid, ok = store.AnyUserID(); !ok {
+			return "", fmt.Errorf("no account exists yet to own the key — run `fox start` first")
+		}
+	} else if err := store.SetBranchOwner(branchName, owner); err != nil {
+		return "", err
 	}
 	key, _, err := store.CreateScopedAPIKey(uid, "agent "+branchName, branchName)
 	if err != nil {
@@ -122,4 +150,5 @@ func revokeAgentKeys(branchName string) {
 	if err := store.RevokeScopeKeys(branchName); err != nil {
 		log.Printf("agent branch %s: could not revoke its branch-scoped key: %v", branchName, err)
 	}
+	_ = store.ForgetBranch(branchName)
 }

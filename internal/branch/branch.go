@@ -142,7 +142,7 @@ func startContainer(name string, primary bool) error {
 		"--network", network,
 		"--label", managedLabel,
 		"-e", "POSTGRES_USER=" + pgUser,
-		"-e", "POSTGRES_PASSWORD=" + pgPass(),
+		"--env-file", pgEnvFile(),
 		"-e", "POSTGRES_DB=" + pgDatabase,
 		"-e", "PGDATA=/var/lib/postgresql/data/pgdata",
 		"-v", mountpoint(name) + ":/var/lib/postgresql/data",
@@ -261,11 +261,33 @@ func Init() error {
 	return syncAppRole("main")
 }
 
-// syncAppRole sets the non-superuser client role's password to the per-install
-// secret, so the gateway can log clients in as it. The role is created by the
-// ledger install (roles are cluster-global and travel with a branch's clone).
+// syncAppRole sets the non-superuser client role's password (its own, derived
+// from the install secret), so the gateway can log clients in as it. The role
+// is created by the ledger install (roles are cluster-global and travel with a
+// branch's clone).
 func syncAppRole(name string) error {
-	return psqlStdin(name, fmt.Sprintf("ALTER ROLE db_client WITH LOGIN PASSWORD %s;", quoteLiteral(pgPass())))
+	return psqlStdin(name, fmt.Sprintf("ALTER ROLE db_client WITH LOGIN PASSWORD %s;", quoteLiteral(ClientRolePassword())))
+}
+
+// appRoleSynced records the branches whose client-role password this process
+// has set. A branch cloned before 22 Sep 2026 carries the old password (the
+// install secret) until something sets it, so whatever logs in as db_client
+// calls EnsureAppRole first.
+var appRoleSynced sync.Map
+
+// EnsureAppRole sets a branch's client-role password once per process.
+func EnsureAppRole(name string) error {
+	if name == "" {
+		name = "main"
+	}
+	if _, ok := appRoleSynced.Load(name); ok {
+		return nil
+	}
+	if err := syncAppRole(name); err != nil {
+		return err
+	}
+	appRoleSynced.Store(name, struct{}{})
+	return nil
 }
 
 // ensuredRoles caches which (branch, email) per-user roles this process has
@@ -294,7 +316,7 @@ BEGIN
   END IF;
   EXECUTE format('ALTER ROLE %%I WITH LOGIN PASSWORD %%L', r, %s);
   EXECUTE format('ALTER ROLE %%I SET role = db_client', r);
-END $do$;`, quoteLiteral(email), quoteLiteral(pgPass()))
+END $do$;`, quoteLiteral(email), quoteLiteral(UserRolePassword(email)))
 	if err := psqlStdin(branchName, sql); err != nil {
 		return err
 	}
@@ -319,7 +341,7 @@ func quoteLiteral(s string) string {
 // by piping it to psql over stdin, aborting on the first error.
 func psqlStdin(name, sql string) error {
 	cmd := exec.Command("sudo", "docker", "exec", "-i",
-		"-e", "PGPASSWORD="+pgPass(), container(name),
+		"--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-v", "ON_ERROR_STOP=1", "-q")
 	cmd.Stdin = strings.NewReader(sql)
 	cmd.Stdout = os.Stdout
@@ -347,7 +369,7 @@ func Ledger(name string, limit int) error {
 		command_tag AS command, coalesce(object_identity,'') AS object,
 		status, coalesce(risk,'') AS risk
 		FROM bb.schema_ledger ORDER BY at DESC LIMIT %d`, limit)
-	return run("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(name),
+	return run("docker", "exec", "--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-P", "pager=off", "-c", q)
 }
 
@@ -374,7 +396,7 @@ func LedgerVerify(name string) (string, error) {
 	if name == "" {
 		name = "main"
 	}
-	out, err := capture("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(name),
+	out, err := capture("docker", "exec", "--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tA", "-F", "|", "-c", LedgerVerifySQL)
 	if err != nil {
 		return "", fmt.Errorf("verify query: %w", err)
@@ -413,7 +435,7 @@ func QueryText(name, sql string) (string, error) {
 	if name == "" {
 		name = "main"
 	}
-	out, err := captureCombined("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(name),
+	out, err := captureCombined("docker", "exec", "--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-P", "pager=off", "-c", sql)
 	if err != nil {
 		return out, fmt.Errorf("%s", out)
@@ -462,7 +484,7 @@ func Create(name, parent string) error {
 	}
 	// Flush the parent to disk so the clone starts from a clean checkpoint
 	// (best-effort; crash recovery would handle it either way).
-	quiet("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(parent),
+	quiet("docker", "exec", "--env-file", pgEnvFile(), container(parent),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-c", "CHECKPOINT;")
 
 	if err := activeStorage().clone(parent, name); err != nil {
@@ -532,7 +554,7 @@ func List() error {
 // SQL runs a single statement against a branch (used by the demo and, later,
 // the Agent Branch API).
 func SQL(name, stmt string) error {
-	return run("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(name),
+	return run("docker", "exec", "--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-c", stmt)
 }
 
@@ -540,7 +562,7 @@ func SQL(name, stmt string) error {
 // tuples-only) for programmatic checks.
 func Query(name, stmt string) (string, error) {
 	out, err := exec.Command("sudo", "docker", "exec",
-		"-e", "PGPASSWORD="+pgPass(), container(name),
+		"--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc", stmt).Output()
 	return strings.TrimSpace(string(out)), err
 }
@@ -667,7 +689,7 @@ func Backup() error {
 	}
 	return run("docker", "exec",
 		"-e", "PGHOST=localhost", "-e", "PGUSER="+pgUser,
-		"-e", "PGPASSWORD="+pgPass(), "-e", "PGDATABASE="+pgDatabase,
+		"--env-file", pgEnvFile(), "-e", "PGDATABASE="+pgDatabase,
 		primary, "wal-g", "backup-push", "/var/lib/postgresql/data/pgdata")
 }
 
@@ -728,7 +750,7 @@ func waitRecovered(name string) error {
 		if exec.Command("sudo", "docker", "exec", container(name),
 			"pg_isready", "-h", "localhost", "-U", pgUser, "-d", pgDatabase).Run() == nil {
 			out, _ := exec.Command("sudo", "docker", "exec",
-				"-e", "PGPASSWORD="+pgPass(), container(name),
+				"--env-file", pgEnvFile(), container(name),
 				"psql", "-h", "localhost", "-U", pgUser, "-d", pgDatabase,
 				"-tAc", "SELECT pg_is_in_recovery();").Output()
 			if strings.TrimSpace(string(out)) == "f" {
@@ -760,7 +782,7 @@ func Status() error {
 // PsqlShell opens an interactive psql session on a branch.
 func PsqlShell(name string) error {
 	cmd := exec.Command("sudo", "docker", "exec", "-it",
-		"-e", "PGPASSWORD="+pgPass(), container(name),
+		"--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -849,8 +871,14 @@ func parsePublishedPort(out string) (string, error) {
 }
 
 // CreateAgentBranch gives agent id its own instant branch and returns how to
-// connect to it.
-func CreateAgentBranch(agentID string) (Info, error) {
+// connect to it. The branch and its key belong to the install's first account;
+// callers with an authenticated account use CreateAgentBranchFor.
+func CreateAgentBranch(agentID string) (Info, error) { return CreateAgentBranchFor(0, agentID) }
+
+// CreateAgentBranchFor is CreateAgentBranch on behalf of an account: owner
+// owns the branch (it may use and delete it) and the branch-scoped key minted
+// with it. 0 means no account, as from the command line.
+func CreateAgentBranchFor(owner int64, agentID string) (Info, error) {
 	// Cap concurrent agent branches so an agent loop can't exhaust the pool
 	// (each branch is a full Postgres). 0 disables the cap.
 	if max := agentMax(); max > 0 {
@@ -889,7 +917,7 @@ func CreateAgentBranch(agentID string) (Info, error) {
 	// inside the VM, over TLS, with a key that opens this branch and nothing
 	// else. Without the key the branch would be unreachable, so a failure here
 	// takes the branch down with it rather than returning a DSN nobody can use.
-	key, err := mintAgentKey(name)
+	key, err := mintAgentKey(name, owner)
 	if err != nil {
 		_ = Delete(name)
 		return Info{}, fmt.Errorf("minting the agent's branch-scoped key: %w", err)
@@ -1108,7 +1136,7 @@ func Wake(name string) error {
 // ActiveConnections returns the number of client connections currently open to a
 // branch (used to avoid suspending a branch that is in use).
 func ActiveConnections(name string) (int, error) {
-	out, err := capture("docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(name),
+	out, err := capture("docker", "exec", "--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc",
 		"SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid();")
 	if err != nil {

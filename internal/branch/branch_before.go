@@ -346,7 +346,7 @@ func waitPromoted(name string, timeout time.Duration) error {
 	for {
 		switch st := ContainerState(name); st {
 		case "running", "created", "restarting":
-			out, _ := exec.Command("sudo", "docker", "exec", "-e", "PGPASSWORD="+pgPass(), container(name),
+			out, _ := exec.Command("sudo", "docker", "exec", "--env-file", pgEnvFile(), container(name),
 				"psql", "-h", "localhost", "-U", pgUser, "-d", pgDatabase, "-tAc", "SELECT pg_is_in_recovery()").Output()
 			if strings.TrimSpace(string(out)) == "f" {
 				return nil

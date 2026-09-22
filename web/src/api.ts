@@ -59,6 +59,8 @@ export const logout = () => req('POST', `${API}/auth/logout`)
 export const oauthUrl = (provider: 'github' | 'google') => `${API}/auth/oauth/${provider}`
 
 // --- api keys ---
+export const changePassword = (current: string, next: string) =>
+  req('POST', `${API}/api/account/password`, { current, new: next }) as Promise<{ status: string; note: string }>
 export const listKeys = () => req('GET', `${API}/api/keys`) as Promise<{ keys: ApiKey[] }>
 export const createKey = (name: string) => req('POST', `${API}/api/keys`, { name }) as Promise<{ key: string; info: ApiKey }>
 export const revokeKey = (id: string) => req('DELETE', `${API}/api/keys/${encodeURIComponent(id)}`)

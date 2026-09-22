@@ -239,3 +239,11 @@ func (s *Store) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 	_ = s.revokeAPIKey(u.ID, r.PathValue("id"))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
+
+// SessionToken is the browser session a request carries, if any.
+func SessionToken(r *http.Request) string {
+	if c, err := r.Cookie(cookieName); err == nil {
+		return c.Value
+	}
+	return ""
+}

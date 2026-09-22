@@ -95,6 +95,9 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   started INTEGER NOT NULL, finished INTEGER, tables INTEGER NOT NULL DEFAULT 0,
   tests TEXT NOT NULL DEFAULT '[]', log TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS branch_owners (
+  branch TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS pipeline_targets (
   branch TEXT PRIMARY KEY,
   pipeline_id TEXT NOT NULL REFERENCES pipelines(id) ON DELETE CASCADE
@@ -301,9 +304,9 @@ func randToken(n int) string {
 
 // CreateUser creates an account (password may be "" for OAuth-only users).
 func (s *Store) CreateUser(email, password string) (User, error) {
-	email = strings.ToLower(strings.TrimSpace(email))
-	if email == "" {
-		return User{}, errors.New("email required")
+	email, err := normalizeEmail(email)
+	if err != nil {
+		return User{}, err
 	}
 	var hash string
 	if password != "" {

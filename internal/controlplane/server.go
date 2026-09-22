@@ -23,12 +23,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
 	"github.com/thefoxbyte/foxbyte/internal/httpx"
-	"github.com/thefoxbyte/foxbyte/internal/secrets"
 	"github.com/thefoxbyte/foxbyte/internal/tlsutil"
 	"github.com/thefoxbyte/foxbyte/web"
 )
@@ -54,6 +54,8 @@ func Serve(addr string) error {
 	// no longer creates an account of its own to hold it.
 	store.OnFirstUser = func(u auth.User) { branch.AdminForFirstAccount(u.Email) }
 
+	acl = access.New(store)
+
 	mux := http.NewServeMux()
 	store.MountPublic(mux) // /auth/* (register, login, logout, me, providers, oauth)
 
@@ -66,12 +68,13 @@ func Serve(addr string) error {
 
 	api := http.NewServeMux()
 	registerAPI(api)
-	registerPipelines(api, store)                                         // /api/pipelines* (ETL)
-	registerImpact(api)                                                   // /api/branches/{name}/impact, /api/{ledger,blackbox}/diff
-	registerPolicy(api, store)                                            // /api/branches/{name}/policies* and /admins (Blackbox policy gate)
-	registerLedgerV2(api)                                                 // /api/branches/{name}/ledger/{integrity,checkpoint,export,entries,{id}/branch}
-	store.MountKeys(api)                                                  // /api/keys (protected via Authn below)
-	mux.Handle("/api/", store.Authn(checkBranchName(blackboxAlias(api)))) // …/blackbox… also reaches …/ledger… routes
+	registerPipelines(api, store)                                                    // /api/pipelines* (ETL)
+	registerImpact(api)                                                              // /api/branches/{name}/impact, /api/{ledger,blackbox}/diff
+	registerPolicy(api, store)                                                       // /api/branches/{name}/policies* and /admins (Blackbox policy gate)
+	registerLedgerV2(api)                                                            // /api/branches/{name}/ledger/{integrity,checkpoint,export,entries,{id}/branch}
+	store.MountKeys(api)                                                             // /api/keys (protected via Authn below)
+	registerAccounts(api, store)                                                     // /api/account*, /api/users* (admins)
+	mux.Handle("/api/", store.Authn(checkBranchName(authorize(blackboxAlias(api))))) // …/blackbox… also reaches …/ledger… routes
 
 	// Blackbox 2.0: anchor new ledger entries outside the database on a schedule.
 	branch.StartCheckpointer()
@@ -177,10 +180,16 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 500, err)
 			return
 		}
-		if bs == nil {
-			bs = []branch.BranchInfo{}
+		// Only the branches the caller may reach: main, their own, and — for
+		// an admin — all of them.
+		u, _ := auth.UserFrom(r.Context())
+		visible := []branch.BranchInfo{}
+		for _, b := range bs {
+			if acl.Can(u, b.Name, access.Use) {
+				visible = append(visible, b)
+			}
 		}
-		writeJSON(w, 200, bs)
+		writeJSON(w, 200, visible)
 	})
 
 	mux.HandleFunc("POST /api/branches", func(w http.ResponseWriter, r *http.Request) {
@@ -197,12 +206,21 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 400, fmt.Errorf("invalid from: %q is not a branch name", body.From))
 			return
 		}
+		// Copying a branch reads all of it, so it needs the right to use it.
+		if u, _ := auth.UserFrom(r.Context()); !acl.Can(u, body.From, access.Use) {
+			writeErr(w, 404, fmt.Errorf("%w: %q", branch.ErrParentNotFound, body.From))
+			return
+		}
 		if err := branch.Create(body.Name, body.From); err != nil {
 			code := 409
 			if errors.Is(err, branch.ErrParentNotFound) {
 				code = 404
 			}
 			writeErr(w, code, err)
+			return
+		}
+		if err := own(r, body.Name); err != nil {
+			writeErr(w, 500, err)
 			return
 		}
 		from := body.From
@@ -217,6 +235,7 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 500, err)
 			return
 		}
+		acl.Forget(r.PathValue("name"))
 		writeJSON(w, 200, map[string]string{"status": "deleted"})
 	})
 
@@ -294,12 +313,21 @@ func registerAPI(mux *http.ServeMux) {
 			send("error", map[string]string{"message": "web import needs a connection string (postgres://, mysql://, mariadb://, mongodb://); use the file panel for .sql/.csv/.json"})
 			return
 		}
+		if err := checkImportSource(body.Source, isAdmin(r)); err != nil {
+			send("error", map[string]string{"message": err.Error()})
+			return
+		}
 		status, target, err := "imported", "", error(nil)
 		if body.Continuous {
 			status = "replicating"
 			target, err = branch.ImportContinuousTo(p, body.Source, strings.TrimSpace(body.Target))
 		} else {
 			target, err = branch.ImportTo(p, body.Source, strings.TrimSpace(body.Target))
+		}
+		// The new branch is the importer's, even when the load failed part way:
+		// what was loaded is theirs to inspect or delete.
+		if oerr := own(r, target); oerr != nil && err == nil {
+			err = oerr
 		}
 		if err != nil {
 			send("error", map[string]string{"message": err.Error()})
@@ -328,7 +356,14 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 500, err)
 			return
 		}
-		writeJSON(w, 200, list)
+		u, _ := auth.UserFrom(r.Context())
+		visible := []branch.Replication{}
+		for _, rep := range list {
+			if acl.Can(u, rep.Branch, access.Use) {
+				visible = append(visible, rep)
+			}
+		}
+		writeJSON(w, 200, visible)
 	})
 	mux.HandleFunc("GET /api/branches/{name}/replication", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
@@ -382,6 +417,9 @@ func registerAPI(mux *http.ServeMux) {
 			return
 		}
 		target, err := branch.ImportReaderTo(p, file, kind, hdr.Filename, strings.TrimSpace(r.FormValue("target")))
+		if oerr := own(r, target); oerr != nil && err == nil {
+			err = oerr
+		}
 		if err != nil {
 			send("error", map[string]string{"message": err.Error()})
 			return
@@ -489,7 +527,10 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	}
 	// The non-superuser client role, so the web console is bound by the same
 	// rules as any other client (RLS, and the append-only ledger).
-	cfg.User, cfg.Password = branch.ClientRole, secrets.Load().PGPassword
+	cfg.User, cfg.Password = branch.ClientRole, branch.ClientRolePassword()
+	if err := branch.EnsureAppRole(as.Branch); err != nil {
+		log.Printf("console: client role on %s: %v", as.Branch, err)
+	}
 	if as.Actor != "" && as.Branch != "" {
 		// The signed-in user's own role: a member of db_client that acts as
 		// db_client, so data access and object ownership are unchanged, but
@@ -499,7 +540,7 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 		if err := branch.EnsureUserRole(as.Branch, as.Actor); err != nil {
 			log.Printf("console: per-user role %q on %s: %v (using db_client)", as.Actor, as.Branch, err)
 		} else {
-			cfg.User = as.Actor
+			cfg.User, cfg.Password = as.Actor, branch.UserRolePassword(as.Actor)
 		}
 	}
 	conn, err := pgx.ConnectConfig(ctx, cfg)
@@ -757,6 +798,10 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 				"a branch named %q already exists and was not made by this pipeline — rename the pipeline, or delete that branch first", target)})
 			return
 		}
+		if err := checkImportSource(spec.Source, isAdmin(r)); err != nil {
+			send("error", map[string]string{"message": err.Error()})
+			return
+		}
 		if err := store.ClaimPipelineTarget(pl.ID, target); err != nil {
 			send("error", map[string]string{"message": fmt.Sprintf("branch %q: %v", target, err)})
 			return
@@ -779,6 +824,9 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 		}
 		runID, _ := store.StartRun(pl.ID, u.ID)
 		res, err := branch.RunPipeline(p, spec, target)
+		if oerr := own(r, target); oerr != nil && err == nil {
+			err = oerr
+		}
 		if err != nil {
 			_ = store.FinishRun(runID, "error", 0, "[]", logBuf.String())
 			send("error", map[string]string{"message": err.Error()})

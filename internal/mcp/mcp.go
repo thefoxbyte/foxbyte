@@ -19,6 +19,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/version"
 )
@@ -292,6 +293,9 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		return "", err
 	}
 	args = scoped
+	if err := checkAccess(tool, args); err != nil {
+		return "", err
+	}
 	switch tool {
 	case "create_branch":
 		var a struct {
@@ -301,16 +305,22 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		if a.AgentID == "" {
 			return "", fmt.Errorf("agent_id is required")
 		}
-		info, err := branch.CreateAgentBranch(a.AgentID)
+		info, err := branch.CreateAgentBranchFor(me.User.ID, a.AgentID)
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("Branch %q is ready — a disposable Postgres isolated from main.\nDSN: %s", info.Branch, info.DSN), nil
 
 	case "list_branches":
-		infos, err := branch.ListAgentBranches()
+		all, err := branch.ListAgentBranches()
 		if err != nil {
 			return "", err
+		}
+		var infos []branch.Info
+		for _, i := range all {
+			if acl != nil && acl.Can(me.User, i.Branch, access.Use) {
+				infos = append(infos, i)
+			}
 		}
 		if len(infos) == 0 {
 			return "No agent branches.", nil
@@ -485,6 +495,11 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		os.Stdout = stdout
 		if err != nil {
 			return "", err
+		}
+		if acl != nil && me.User.ID != 0 {
+			if err := acl.Own(me.User, res.Branch); err != nil {
+				return "", fmt.Errorf("branch %q was made, but recording you as its owner failed: %w", res.Branch, err)
+			}
 		}
 		return fmt.Sprintf("Branch %q is ready: %s as it was just before ledger entry %d (%s %s), recovered to %s %s from base backup %s in %ds.",
 			res.Branch, res.Source, res.EntryID, res.CommandTag, res.Object, res.TargetKind, res.Target, res.BaseBackup, res.Seconds), nil

@@ -95,6 +95,7 @@ Branching:
   branch create <name> [--from <branch>]  Instant copy-on-write branch of main, or of another branch
   branch list           List branches and their containers
   branch delete <name>  Stop and destroy a branch
+  branch owner <name> [email]  Show who owns a branch, or give it to an account
   branch reset <name>   Re-clone from parent, discarding everything done on it
   branch suspend <name> Stop a branch (data preserved); resumes on next connect
   branch resume <name>  Start a suspended branch
@@ -160,6 +161,7 @@ Agent Branch API:
 
 Auth (admin):
   user create <email>            Create an account (prompts for a password)
+  user list | passwd <email> | delete <email>   List accounts, reset a password, delete an account
   setup-token                    Show the token the web sign-up needs for the first account
   apikey create <email> [name]   Mint an API key (shown once)
   apikey list <email>            List a user's API keys
@@ -323,11 +325,7 @@ func main() {
 	case "ha":
 		haCmd(os.Args[2:])
 	case "user":
-		if len(os.Args) < 4 || os.Args[2] != "create" {
-			fmt.Println("usage: fox user create <email>")
-			os.Exit(2)
-		}
-		must(userCreate(os.Args[3]))
+		userCmd(os.Args[2:])
 	case "setup-token":
 		setupTokenCmd()
 	case "_first-run": // Windows setup captures `start`'s output, so it asks for this part again
@@ -535,7 +533,7 @@ func durFlag(args []string, name string, def time.Duration) time.Duration {
 // branchCmd dispatches `fox branch <subcommand>`.
 func branchCmd(args []string) {
 	if len(args) == 0 {
-		fmt.Println("usage: fox branch <create|list|delete|reset|suspend|resume> [name]")
+		fmt.Println("usage: fox branch <create|list|delete|owner|reset|suspend|resume> [name]")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -546,6 +544,9 @@ func branchCmd(args []string) {
 			os.Exit(2)
 		}
 		must(branch.Create(name, optValue(args[1:], "--from")))
+		// Made here, it is nobody's but an admin's — even if an account once
+		// owned a branch of that name.
+		forgetOwner(name)
 	case "list":
 		must(branch.List())
 	case "delete":
@@ -554,6 +555,9 @@ func branchCmd(args []string) {
 			os.Exit(2)
 		}
 		must(branch.Delete(args[1]))
+		forgetOwner(args[1])
+	case "owner":
+		branchOwnerCmd(args[1:])
 	case "reset":
 		if len(args) < 2 {
 			fmt.Println("usage: fox branch reset <name> [--from <parent>]")
@@ -628,9 +632,6 @@ func foxbyteDir() string { return brand.StateDir() }
 
 func configPath() string { return filepath.Join(foxbyteDir(), "config") }
 
-// anyAccount reports whether this install has any account yet, so the banner
-// can tell a first-time user what to do. ok is false if the store cannot be
-// opened, in which case the banner simply says less.
 // firstRunNotice tells the person who started a fresh install how to make its
 // first account, with the setup token the sign-up page asks for. Nothing is
 // printed once an account exists.
@@ -667,12 +668,116 @@ func setupTokenCmd() {
 	fmt.Println(tok)
 }
 
+// anyAccount reports whether this install has any account yet, so the banner
+// can tell a first-time user what to do. ok is false if the store cannot be
+// opened, in which case the banner simply says less.
 func anyAccount() (accounts bool, ok bool) {
 	store, err := auth.OpenFromEnv()
 	if err != nil {
 		return false, false
 	}
 	return store.HasAnyUser(), true
+}
+
+// branchOwnerCmd is `fox branch owner <name> [email]`: who owns a branch, or
+// give it to an account. A branch made here has no owner, so this is how an
+// admin hands one to the person who will use it.
+func branchOwnerCmd(args []string) {
+	if len(args) == 0 || len(args) > 2 {
+		fmt.Printf("usage: %s branch owner <name> [email]\n", brand.CLI)
+		os.Exit(2)
+	}
+	name := args[0]
+	if !branch.Exists(name) {
+		must(fmt.Errorf("no branch %q", name))
+	}
+	s := openStore()
+	defer s.Close()
+	if len(args) == 1 {
+		uid, ok := s.BranchOwner(name)
+		if !ok {
+			fmt.Printf("%s has no owner: only admins can reach it\n", name)
+			return
+		}
+		for _, a := range mustAccounts(s) {
+			if a.ID == uid {
+				fmt.Printf("%s is owned by %s\n", name, a.Email)
+				return
+			}
+		}
+		fmt.Printf("%s is owned by account %d, which no longer exists\n", name, uid)
+		return
+	}
+	u, ok := s.UserByEmail(args[1])
+	if !ok {
+		must(fmt.Errorf("no such user: %s", args[1]))
+	}
+	must(s.SetBranchOwner(name, u.ID))
+	fmt.Printf("%s is now owned by %s\n", name, u.Email)
+}
+
+func mustAccounts(s *auth.Store) []auth.Account {
+	list, err := s.ListAccounts()
+	must(err)
+	return list
+}
+
+// forgetOwner drops a branch's owner record, for a branch made or deleted at
+// the command line. Best-effort: the store may not exist yet.
+func forgetOwner(name string) {
+	if s, err := auth.OpenFromEnv(); err == nil {
+		_ = s.ForgetBranch(name)
+		s.Close()
+	}
+}
+
+// userCmd is `fox user`: accounts, for whoever runs the engine (audit v2 G16).
+func userCmd(args []string) {
+	usage := func() {
+		fmt.Printf("usage: %[1]s user create <email>\n       %[1]s user list\n       %[1]s user passwd <email>\n       %[1]s user delete <email>\n", brand.CLI)
+		os.Exit(2)
+	}
+	if len(args) == 0 {
+		usage()
+	}
+	switch args[0] {
+	case "create":
+		if len(args) < 2 {
+			usage()
+		}
+		must(userCreate(args[1]))
+	case "list":
+		list, err := openStore().ListAccounts()
+		must(err)
+		fmt.Printf("%-4s  %-40s  %-10s  %4s  %8s\n", "ID", "EMAIL", "CREATED", "KEYS", "BRANCHES")
+		for _, a := range list {
+			fmt.Printf("%-4d  %-40s  %-10s  %4d  %8d\n", a.ID, a.Email, time.Unix(a.Created, 0).Format("2006-01-02"), a.Keys, a.Branches)
+		}
+	case "passwd":
+		if len(args) < 2 {
+			usage()
+		}
+		fmt.Print("new password (min 8 chars): ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		must(openStore().ResetPassword(args[1], strings.TrimSpace(line)))
+		fmt.Printf("password changed for %s; its sessions were signed out\n", args[1])
+	case "delete":
+		if len(args) < 2 {
+			usage()
+		}
+		s := openStore()
+		u, ok := s.UserByEmail(args[1])
+		if !ok {
+			must(fmt.Errorf("no such user: %s", args[1]))
+		}
+		must(s.DeleteAccount(u.ID))
+		if err := branch.RevokeAdmin("main", u.Email); err != nil {
+			fmt.Fprintf(os.Stderr, "note: could not revoke %s's admin grant on main: %v\n", u.Email, err)
+		}
+		fmt.Printf("deleted %s: its sessions, keys and pipelines are gone; its branches are now an admin's\n", u.Email)
+	default:
+		usage()
+	}
 }
 
 func userCreate(email string) error {
