@@ -6,7 +6,9 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -94,7 +96,7 @@ func rel(tag string, draft, pre bool, names ...string) Release {
 
 func TestCandidates(t *testing.T) {
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	full := []string{"SHA256SUMS", "fox-linux-amd64", "fox-darwin-arm64"}
+	full := []string{"SHA256SUMS", "SHA256SUMS.sig", "fox-linux-amd64", "fox-darwin-arm64"}
 	rels := []Release{
 		rel("v1.0.0", false, false, "SHA256SUMS"), // still publishing: only checksums so far
 		rel("v0.9.5", false, true, full...),       // prerelease
@@ -174,10 +176,17 @@ type fakeGitHub struct {
 	delay    time.Duration
 	lists    atomic.Int32
 	assets   atomic.Int32 // asset downloads (SHA256SUMS, binaries)
+	key      ed25519.PrivateKey
 }
 
+// newFakeGitHub serves releases signed by a key of the test's own, which the
+// code under test is told to trust for the test's duration.
 func newFakeGitHub(t *testing.T) *fakeGitHub {
-	f := &fakeGitHub{files: map[string][]byte{}}
+	pub, key, _ := ed25519.GenerateKey(nil)
+	old := releasePublicKey
+	releasePublicKey = base64.StdEncoding.EncodeToString(pub)
+	t.Cleanup(func() { releasePublicKey = old })
+	f := &fakeGitHub{files: map[string][]byte{}, key: key}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if f.delay > 0 {
 			time.Sleep(f.delay)
@@ -227,6 +236,9 @@ func (f *fakeGitHub) publish(tag string, files map[string]string, unlisted ...st
 	p := "/dl/" + tag + "/SHA256SUMS"
 	f.files[p] = []byte(sums.String())
 	r.Assets = append(r.Assets, Asset{Name: "SHA256SUMS", URL: f.srv.URL + p})
+	sp := "/dl/" + tag + "/SHA256SUMS.sig"
+	f.files[sp] = ed25519.Sign(f.key, []byte(sums.String()))
+	r.Assets = append(r.Assets, Asset{Name: "SHA256SUMS.sig", URL: f.srv.URL + sp})
 	f.releases = append([]Release{r}, f.releases...)
 }
 
@@ -633,5 +645,35 @@ func TestReleaseWorkflowPublishesUpdateAssets(t *testing.T) {
 				t.Errorf("check-release-assets.sh doesn't check %s", name)
 			}
 		}
+	}
+}
+
+// A release is installed only when its SHA256SUMS is signed with the release
+// key: one signed by another key, or not signed at all, is passed over.
+func TestResolveRequiresTheReleaseSignature(t *testing.T) {
+	f := newFakeGitHub(t)
+	linux := Target{GOOS: "linux", HostArch: "amd64"}
+	f.publish("v0.9.0", map[string]string{"fox-linux-amd64": "good"})
+	f.publish("v0.9.1", map[string]string{"fox-linux-amd64": "forged"})
+	_, other, _ := ed25519.GenerateKey(nil)
+	f.files["/dl/v0.9.1/SHA256SUMS.sig"] = ed25519.Sign(other, f.files["/dl/v0.9.1/SHA256SUMS"])
+	f.publish("v0.9.2", map[string]string{"fox-linux-amd64": "unsigned"})
+	f.releases[0].Assets = f.releases[0].Assets[:len(f.releases[0].Assets)-1] // no .sig asset
+	off, err := f.client(t.TempDir()).Resolve(context.Background(), mustVersion(t, "0.8.0"), linux, "")
+	if err != nil || off == nil || off.Release.Tag != "v0.9.0" {
+		t.Fatalf("resolve = %+v, %v; want v0.9.0, the newest signed with the release key", off, err)
+	}
+	if _, err := f.client(t.TempDir()).Resolve(context.Background(), mustVersion(t, "0.8.0"), linux, "v0.9.1"); err == nil ||
+		!strings.Contains(err.Error(), "not signed with the FoxByte release key") {
+		t.Errorf("pinning the wrongly signed release: %v", err)
+	}
+}
+
+func TestNoReleaseKeyNoUpdate(t *testing.T) {
+	old := releasePublicKey
+	releasePublicKey = ""
+	defer func() { releasePublicKey = old }()
+	if err := VerifySums([]byte("x"), make([]byte, 64)); err != ErrNoReleaseKey {
+		t.Errorf("VerifySums with no key = %v", err)
 	}
 }

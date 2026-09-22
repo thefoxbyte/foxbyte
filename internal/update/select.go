@@ -60,10 +60,11 @@ func RequiredAssets(t Target) []string {
 	return out
 }
 
-// missingAssets returns the required files (and SHA256SUMS) a release lacks.
+// missingAssets returns the required files (and SHA256SUMS and its signature)
+// a release lacks.
 func missingAssets(r Release, required []string) []string {
 	var missing []string
-	for _, name := range append([]string{SumsAsset}, required...) {
+	for _, name := range append([]string{SumsAsset, SigAsset}, required...) {
 		if _, ok := r.Asset(name); !ok {
 			missing = append(missing, name)
 		}
@@ -254,6 +255,17 @@ func (c *Client) Resolve(ctx context.Context, current Version, t Target, pin str
 		body, err := c.fetchSmall(ctx, sa.URL, 1<<20)
 		if err != nil {
 			lastErr = err
+			continue
+		}
+		// Nothing in SHA256SUMS is trusted until its signature checks out.
+		sigAsset, _ := r.Asset(SigAsset)
+		sig, err := c.fetchSmall(ctx, sigAsset.URL, 1024)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if err := VerifySums(body, sig); err != nil {
+			lastErr = fmt.Errorf("release %s: %w", r.Tag, err)
 			continue
 		}
 		sums, err := ParseChecksums(bytes.NewReader(body))

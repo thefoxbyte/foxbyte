@@ -54,7 +54,12 @@ cleanup() {
 trap cleanup EXIT
 
 echo "### setup: build test releases 0.98.0 and 0.99.0, serve a fake GitHub"
-build() { (cd "$ROOT" && go build -ldflags "-X github.com/thefoxbyte/foxbyte/internal/version.Version=$1" -o "$2" ./cmd/fox); }
+# Releases are signed (audit v2 G22), and fox updates only to one signed with
+# the release key it carries. These test builds carry a test key's public half
+# instead, and the fake releases below are signed with it.
+openssl genpkey -algorithm ed25519 -out "$T/release.key" 2>/dev/null
+RELEASE_PUB="$(openssl pkey -in "$T/release.key" -pubout -outform DER 2>/dev/null | tail -c 32 | base64)"
+build() { (cd "$ROOT" && go build -ldflags "-X github.com/thefoxbyte/foxbyte/internal/version.Version=$1 -X github.com/thefoxbyte/foxbyte/internal/update.releasePublicKey=$RELEASE_PUB" -o "$2" ./cmd/fox); }
 mkdir -p "$T/bin" "$T/www/dl/v0.98.0" "$T/www/dl/v0.99.0" "$T/www/dl/v0.99.5" "$T/www/dl/v1.0.0"
 build 0.98.0 "$V" || { echo "build failed"; exit 1; }
 build 0.99.0 "$T/www/dl/v0.99.0/$ENGINE" || { echo "build failed"; exit 1; }
@@ -62,9 +67,9 @@ cp "$V" "$T/www/dl/v0.98.0/$ENGINE"
 cp "$T/www/dl/v0.99.0/$ENGINE" "$T/www/dl/v1.0.0/$ENGINE"
 cp "$T/www/dl/v0.99.0/$ENGINE" "$T/good-engine"
 # v1.0.0 is a prerelease and v0.99.5 has no engine yet: neither may be offered.
-python3 - "$FOX_UPDATE_BASE_URL" "$T/www" "$ENGINE" <<'PY'
-import hashlib, json, os, sys
-base, www, engine = sys.argv[1:4]
+python3 - "$FOX_UPDATE_BASE_URL" "$T/www" "$ENGINE" "$T/release.key" <<'PY'
+import hashlib, json, os, subprocess, sys
+base, www, engine, key = sys.argv[1:5]
 def rel(tag, files, pre=False):
     d = os.path.join(www, "dl", tag)
     assets, sums = [], ""
@@ -74,6 +79,12 @@ def rel(tag, files, pre=False):
         assets.append({"name": name, "size": os.path.getsize(p), "browser_download_url": f"{base}/dl/{tag}/{name}"})
     open(os.path.join(d, "SHA256SUMS"), "w").write(sums)
     assets.append({"name": "SHA256SUMS", "size": len(sums), "browser_download_url": f"{base}/dl/{tag}/SHA256SUMS"})
+    # openssl cannot sign an empty file with -rawin; a release that lists
+    # nothing (v0.99.5 below) is never offered anyway, signed or not.
+    if sums:
+        subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", key, "-rawin", "-in", os.path.join(d, "SHA256SUMS"),
+                        "-out", os.path.join(d, "SHA256SUMS.sig")], check=True)
+        assets.append({"name": "SHA256SUMS.sig", "size": 64, "browser_download_url": f"{base}/dl/{tag}/SHA256SUMS.sig"})
     return {"tag_name": tag, "draft": False, "prerelease": pre, "html_url": f"{base}/releases/tag/{tag}", "assets": assets}
 rels = [rel("v1.0.0", [engine], pre=True), rel("v0.99.5", []), rel("v0.99.0", [engine]), rel("v0.98.0", [engine])]
 os.makedirs(os.path.join(www, "repos/thefoxbyte/foxbyte"), exist_ok=True)

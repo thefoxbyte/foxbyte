@@ -180,6 +180,28 @@ make vm-build    # build the Linux engine into the Lima VM (macOS)
 Set `FOX_NO_REFRESH=1` when running `fox setup` from a source build, so it
 keeps your locally-built engine instead of downloading a release.
 
+### Verifying a release
+
+Every release's `SHA256SUMS` is signed with the FoxByte release key
+(`SHA256SUMS.sig`, Ed25519). `install.sh` checks the signature against the key
+it carries — which comes from this repository, not from the release — wherever
+`openssl` can do Ed25519 (OpenSSL 3; macOS's LibreSSL cannot, and the installer
+says so; `FOX_REQUIRE_SIGNATURE=1` refuses instead). `fox update` checks it on
+every update and never installs a release that fails. Each file also has a
+GitHub build attestation and the release an SBOM (`foxbyte-sbom.spdx.json`):
+
+```bash
+gh attestation verify fox-darwin-arm64 --repo thefoxbyte/foxbyte
+gh attestation verify oci://ghcr.io/thefoxbyte/postgres-walg:18 --repo thefoxbyte/foxbyte
+```
+
+For maintainers: the release key's private half is the `FOX_RELEASE_SIGNING_KEY`
+Actions secret (and a password manager); `make release-key` made it once, and
+replacing it would stop released builds from updating. The Actions are pinned
+by commit and the images by digest; Dependabot proposes Action and module
+updates, and `scripts/check-image-digests.sh` reports image pins that have
+fallen behind their tags.
+
 ---
 
 ## Quickstart

@@ -106,20 +106,25 @@ prepare_images() {
 	# MinIO no longer publishes to Docker Hub, so its images come from quay.io,
 	# pinned to the releases the engine runs (internal/branch/images.go; a unit
 	# test keeps these names in step with it).
-	local minio_image="quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
-	local mc_image="quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
+	# Pulled by digest (checked by docker), saved under the tag: `docker load`
+	# keeps no registry digest, and the engine runs a preloaded tag as is.
+	local minio_image="quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"
+	local mc_image="quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727"
 	# Tagged with the name a fresh install runs (internal/branch/images.go
 	# PostgresImageFor(PGMajor); a unit test keeps it in step): a preload under
 	# any other name is ignored, and `fox setup` pulls or builds the image anyway
 	# — which is what this whole step exists to avoid. Only the fresh-install
 	# major is preloaded: an install on an older one already has its image.
 	local pg_major=18
+	local pg_digest=sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
 	docker build -t "ghcr.io/thefoxbyte/postgres-walg:$pg_major" \
-		--build-arg "PG_MAJOR=$pg_major" "$repo/docker/postgres"
+		--build-arg "PG_MAJOR=$pg_major" --build-arg "PG_DIGEST=$pg_digest" "$repo/docker/postgres"
 	docker pull -q "$minio_image"
 	docker pull -q "$mc_image"
+	docker tag "$minio_image" "${minio_image%@*}"
+	docker tag "$mc_image" "${mc_image%@*}"
 	docker save -o "$work/foxbyte-images.tar" \
-		"ghcr.io/thefoxbyte/postgres-walg:$pg_major" "$minio_image" "$mc_image"
+		"ghcr.io/thefoxbyte/postgres-walg:$pg_major" "${minio_image%@*}" "${mc_image%@*}"
 	timer "images" "$t"
 }
 

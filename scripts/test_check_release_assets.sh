@@ -36,7 +36,7 @@ mkdir -p "$tmp/rel"
 all="fox-darwin-arm64 fox-darwin-amd64 fox-linux-arm64 fox-linux-amd64 fox-windows-amd64.exe foxbyte-docker-context.tar.gz"
 sum="$(printf 'a%.0s' $(seq 64))"
 publish() { # publish "<attached names>" "<listed names>"
-	printf '%s\n' $1 SHA256SUMS fox-verify-linux-amd64 > "$tmp/rel/assets"
+	printf '%s\n' $1 SHA256SUMS SHA256SUMS.sig fox-verify-linux-amd64 > "$tmp/rel/assets"
 	: > "$tmp/rel/SHA256SUMS"
 	for n in $2; do printf '%s  %s\n' "$sum" "$n" >> "$tmp/rel/SHA256SUMS"; done
 }
@@ -63,6 +63,16 @@ expect "binary-mode and CRLF lines count as listed" 0
 publish "$all" "$all"
 grep -vx SHA256SUMS "$tmp/rel/assets" > "$tmp/rel/a" && mv "$tmp/rel/a" "$tmp/rel/assets"
 expect "a release without SHA256SUMS fails" 1 "has no SHA256SUMS"
+
+# A release that was not signed is refused: fox update would never install it.
+publish "fox-darwin-arm64 fox-darwin-amd64 fox-linux-arm64 fox-linux-amd64 fox-windows-amd64.exe foxbyte-docker-context.tar.gz" \
+        "fox-darwin-arm64 fox-darwin-amd64 fox-linux-arm64 fox-linux-amd64 fox-windows-amd64.exe foxbyte-docker-context.tar.gz"
+grep -vx SHA256SUMS.sig "$tmp/rel/assets" > "$tmp/rel/assets.new" && mv "$tmp/rel/assets.new" "$tmp/rel/assets"
+if out="$(CHECK_RETRY_SLEEP=0 bash "$script" v9.9.9 2>&1)"; then
+	bad "an unsigned release fails"
+else
+	grep -q "no SHA256SUMS.sig" <<<"$out" && ok "an unsigned release fails" || bad "an unsigned release fails (wrong message)"
+fi
 
 echo "check-release-assets: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

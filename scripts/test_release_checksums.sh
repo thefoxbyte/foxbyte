@@ -18,8 +18,8 @@ assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1"; printf '    got:\
 
 # --- fake gh --------------------------------------------------------------
 # Supports exactly what the script uses:
-#   gh release download <tag> -p SHA256SUMS -O <dest> --clobber
-#   gh release upload   <tag> <file> --clobber
+#   gh release download <tag> -p <name> -O <dest> --clobber
+#   gh release upload   <tag> <file>... --clobber
 # STUB_RELEASE    directory holding the release's SHA256SUMS
 # STUB_OVERWRITE  if set to a file, the first upload is immediately replaced by
 #                 that file's content, as if another job uploaded at that moment
@@ -31,14 +31,15 @@ set -eu
 [ "$1" = release ] || { echo "fake gh: unsupported: $*" >&2; exit 2; }
 case "$2" in
 download)
-	dest=""
-	while [ $# -gt 0 ]; do [ "$1" = -O ] && dest="$2"; shift; done
-	[ -f "$STUB_RELEASE/SHA256SUMS" ] || { echo "release has no SHA256SUMS" >&2; exit 1; }
-	cp "$STUB_RELEASE/SHA256SUMS" "$dest"
+	dest="" name=""
+	while [ $# -gt 0 ]; do [ "$1" = -O ] && dest="$2"; [ "$1" = -p ] && name="$2"; shift; done
+	[ -f "$STUB_RELEASE/$name" ] || { echo "release has no $name" >&2; exit 1; }
+	cp "$STUB_RELEASE/$name" "$dest"
 	;;
 upload)
 	[ -z "${STUB_FAIL_UPLOAD:-}" ] || { echo "upload failed" >&2; exit 1; }
-	cp "$4" "$STUB_RELEASE/SHA256SUMS"
+	shift 3
+	for f in "$@"; do [ "$f" = --clobber ] || cp "$f" "$STUB_RELEASE/$(basename "$f")"; done
 	if [ -n "${STUB_OVERWRITE:-}" ] && [ ! -f "$STUB_RELEASE/.overwritten" ]; then
 		cp "$STUB_OVERWRITE" "$STUB_RELEASE/SHA256SUMS"
 		touch "$STUB_RELEASE/.overwritten"
@@ -110,5 +111,36 @@ unset STUB_FAIL_UPLOAD
 assert_eq "missing arguments are a usage error" "$(bash "$script" v9.9.9 >/dev/null 2>&1; echo $?)" "2"
 
 echo
+# --- signing ---------------------------------------------------------------
+# A stand-in for cmd/releasesign: the "signature" is the file's SHA-256, so the
+# test can see whether the published signature belongs to the published file.
+cat > "$tmp/bin/fakesign" <<'SIGNER'
+#!/usr/bin/env bash
+set -eu
+h() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
+case "$1" in
+sign) h "$2" > "$3" ;;
+verify) [ "$(h "$2")" = "$(cat "$3")" ] ;;
+esac
+SIGNER
+chmod +x "$tmp/bin/fakesign"
+sig_matches() { [ -f "$STUB_RELEASE/SHA256SUMS.sig" ] && [ "$(sum "$STUB_RELEASE/SHA256SUMS")" = "$(cat "$STUB_RELEASE/SHA256SUMS.sig")" ] && echo yes || echo no; }
+
+new_release signed
+RELEASE_SIGN="$tmp/bin/fakesign" publish_release
+RELEASE_SIGN="$tmp/bin/fakesign" publish_distro
+assert_eq "signed: the published signature belongs to the final, merged SHA256SUMS" "$(sig_matches)" "yes"
+
+# Another job's upload lands between this job's file and its signature, leaving
+# a signature for a file that is no longer there: merged and signed again.
+new_release signed-race
+RELEASE_SIGN="$tmp/bin/fakesign" publish_distro
+printf '%s  %s\n' "$(sum "$tmp/distro/foxbyte-distro.tar.gz")" foxbyte-distro.tar.gz > "$tmp/theirs"
+export STUB_OVERWRITE="$tmp/theirs"
+RELEASE_SIGN="$tmp/bin/fakesign" publish_release
+unset STUB_OVERWRITE
+assert_eq "signed: a signature left stale by another upload is redone" "$(sig_matches)|$(names)" \
+  "yes|fox-linux-amd64 fox-verify-linux-amd64 foxbyte-distro.tar.gz foxbyte-docker-context.tar.gz"
+
 echo "==== ${PASS} passed, ${FAIL} failed ===="
 [ "$FAIL" -eq 0 ]

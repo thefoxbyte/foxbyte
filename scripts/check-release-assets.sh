@@ -27,6 +27,11 @@ check() {
 		echo "::error::$tag has no SHA256SUMS"
 		return 1
 	fi
+	# fox update installs nothing whose SHA256SUMS is not signed (G22).
+	if ! grep -qxF SHA256SUMS.sig <<<"$attached"; then
+		echo "::error::$tag has no SHA256SUMS.sig (fox update refuses an unsigned release)"
+		return 1
+	fi
 	gh release download "$tag" -p SHA256SUMS -O "$tmp/SHA256SUMS" --clobber || return 1
 	for name in "${required[@]}"; do
 		if ! grep -qxF "$name" <<<"$attached"; then

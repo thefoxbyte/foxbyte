@@ -21,11 +21,15 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write     # build attestations (Sigstore, keyless)
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.26'
 
@@ -52,6 +56,39 @@ jobs:
           test -f dist/fox-verify-windows-amd64.exe
           test -f dist/foxbyte-docker-context.tar.gz
 
+      # A software bill of materials for the source tree: every Go module and
+      # npm package a release is built from (audit v2 G22).
+      - name: SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/foxbyte-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      # GitHub build attestations: signed (Sigstore, keyless) statements that
+      # each file was built by this workflow from this commit. Check one with
+      #   gh attestation verify fox-linux-amd64 --repo thefoxbyte/foxbyte
+      - name: Attest the release files
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/fox-*
+            dist/foxbyte-docker-context.tar.gz
+            dist/foxbyte-sbom.spdx.json
+
+      # SHA256SUMS is signed with the release key (audit v2 G22): fox update and
+      # install.sh refuse a release whose signature does not check. A missing
+      # secret fails the release here, rather than publishing one nobody can
+      # install. (cmd/releasesign also refuses a key fox would not accept.)
+      - name: Build the release signer
+        env:
+          FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
+        run: |
+          test -n "$FOX_RELEASE_SIGNING_KEY" || { echo "::error::the FOX_RELEASE_SIGNING_KEY secret is not set (see cmd/releasesign)"; exit 1; }
+          go build -o "$RUNNER_TEMP/releasesign" ./cmd/releasesign
+
       # Created as a prerelease and left as a draft-free placeholder so
       # wsl-zfs.yml can upload the ZFS bundle into it. Promote it by hand once
       # the install has been smoke-tested on a clean Windows machine.
@@ -76,15 +113,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_SIGN: ${{ runner.temp }}/releasesign
+          FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
         run: |
           cd dist
-          bash ../scripts/release-checksums.sh "$TAG" fox-* foxbyte-docker-context.tar.gz
+          bash ../scripts/release-checksums.sh "$TAG" fox-* foxbyte-docker-context.tar.gz foxbyte-sbom.spdx.json
 
       - name: Attach binaries
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
-        run: gh release upload "$TAG" dist/fox-* dist/foxbyte-docker-context.tar.gz --clobber
+        run: gh release upload "$TAG" dist/fox-* dist/foxbyte-docker-context.tar.gz dist/foxbyte-sbom.spdx.json --clobber
 
       # `fox update` only offers a release that has every file it needs for the
       # user's platform, listed in SHA256SUMS. Fail here rather than publish a
@@ -113,30 +152,54 @@ jobs:
     strategy:
       matrix:
         pg: ["16", "18"]
+        # The postgres base each is built on, pinned by digest (internal/branch/
+        # images.go PostgresBaseDigests; a test keeps these in step).
+        include:
+          - pg: "16"
+            base: sha256:efedf3595f1d6f415c08568ba171029bf54052e754cc9f030e3f2412b21f3d67
+          - pg: "18"
+            base: sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push PostgreSQL ${{ matrix.pg }} (amd64 + arm64)
-        uses: docker/build-push-action@v6
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: docker/postgres
           platforms: linux/amd64,linux/arm64
-          build-args: PG_MAJOR=${{ matrix.pg }}
+          build-args: |
+            PG_MAJOR=${{ matrix.pg }}
+            PG_DIGEST=${{ matrix.base }}
           push: true
+          # Build provenance and an SBOM travel with the image (audit v2 G22).
+          provenance: mode=max
+          sbom: true
           # The source label links the package to this repository, so it takes
           # the repository's permissions instead of starting out unlinked.
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
             ghcr.io/thefoxbyte/postgres-walg:${{ matrix.pg }}
             ghcr.io/thefoxbyte/postgres-walg:${{ matrix.pg }}-${{ inputs.tag || github.ref_name }}
+
+      # A signed statement that this image digest was built by this workflow.
+      #   gh attestation verify oci://ghcr.io/thefoxbyte/postgres-walg:18 --repo thefoxbyte/foxbyte
+      - name: Attest the image
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ghcr.io/thefoxbyte/postgres-walg
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

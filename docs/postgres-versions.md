@@ -114,10 +114,14 @@ For maintainers. Last done: 16 → 18, on 21 Sep 2026.
    release that supports `<N>` — its integration suite runs one job per
    PostgreSQL major, so the matrix says. `wal-g` is the whole durability story:
    archiving, base backups, point-in-time restore.
-2. **Change one constant.** In `internal/branch/images.go`, set `PGMajor` to the
+2. **Change one constant, and pin a digest.** In `internal/branch/images.go`, set `PGMajor` to the
    new major and add it to `SupportedPGMajors`. Keep the older majors there for
    as long as installs may still be on them: each one is an image the release
    has to keep publishing.
+   Add the new major's `postgres:<N>-bookworm` digest to `PostgresBaseDigests`
+   (the image index digest; `scripts/check-image-digests.sh` shows how it is
+   read). The tests then name the Dockerfile default and the release matrix
+   entry to add.
 3. **Let the test list the rest.** `go test ./internal/branch/` —
    `TestPostgresMajorIsInStepEverywhere` fails for each file that still names
    the old major: the Dockerfile's `ARG PG_MAJOR` default, the release

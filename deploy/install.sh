@@ -21,6 +21,8 @@
 #   FOX_PREFIX    install prefix                 (default: /usr/local)
 #   FOX_BASE_URL  release download base URL      (default: GitHub releases)
 #   FOX_NO_VERIFY set to 1 to skip checksum verification
+#   FOX_REQUIRE_SIGNATURE  set to 1 to refuse to install when the signature cannot be checked here
+#   FOX_ALLOW_UNSIGNED     set to 1 to install a release that is not signed (checksums are still checked)
 set -eu
 
 # generated from brand.json -- do not edit by hand, run `make brand`
@@ -90,7 +92,9 @@ asset_url() { # asset_url <asset-name>
 # --- integrity -------------------------------------------------------------
 # The release publishes SHA256SUMS next to its binaries. It travels over the
 # same TLS connection as the files, so it proves integrity (a complete,
-# unaltered download), not authorship — signatures would be needed for that.
+# unaltered download), not authorship. SHA256SUMS.sig proves authorship: an
+# Ed25519 signature by the FoxByte release key, whose public half is below —
+# in this script, which comes from the repository, not from the release.
 
 VERIFY=1
 [ "${FOX_NO_VERIFY:-}" = "1" ] && VERIFY=0
@@ -113,6 +117,44 @@ if [ "$VERIFY" = "1" ]; then
 	fetch "$(asset_url SHA256SUMS)" "$SUMS" 2>/dev/null || err "could not fetch SHA256SUMS for $VERSION.
 Nothing was installed. Retry, or set FOX_NO_VERIFY=1 to install without checking (not recommended)."
 fi
+
+# The release key's public half. Written by `go run ./cmd/releasesign generate
+# --write`, with fox's own copy (internal/update/signing.go).
+RELEASE_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAaTn8b2xj53r7QjOK+K2//RBU+4OBHoxzuclxGK04WZc=
+-----END PUBLIC KEY-----'
+
+can_check_signatures() {
+	command -v openssl >/dev/null 2>&1 && openssl list -public-key-algorithms 2>/dev/null | grep -qi ed25519
+}
+
+check_signature() {
+	[ "$VERIFY" = "1" ] || return 0
+	if [ "${FOX_ALLOW_UNSIGNED:-}" = "1" ]; then
+		warn "FOX_ALLOW_UNSIGNED=1: not checking who published $VERSION (every file is still checked against SHA256SUMS)"
+		return 0
+	fi
+	[ -n "$RELEASE_PUBLIC_KEY" ] || err "this installer carries no release public key, so it cannot check who published $VERSION.
+Nothing was installed. Set FOX_ALLOW_UNSIGNED=1 to install on checksums alone."
+	fetch "$(asset_url SHA256SUMS.sig)" "$tmp/SHA256SUMS.sig" 2>/dev/null || err "$VERSION has no SHA256SUMS.sig: it was not signed with the $PRODUCT release key.
+Nothing was installed. (Releases published before signing began have none: set FOX_ALLOW_UNSIGNED=1 to install one on checksums alone.)"
+	if ! can_check_signatures; then
+		[ "${FOX_REQUIRE_SIGNATURE:-}" = "1" ] && err "this machine's openssl cannot check Ed25519 signatures (FOX_REQUIRE_SIGNATURE=1).
+Nothing was installed. Install OpenSSL 3 (macOS: brew install openssl, then put it first on PATH) and re-run."
+		warn "the signature of $VERSION was not checked: this machine's openssl cannot check Ed25519 signatures (macOS ships LibreSSL).
+  Every file is still checked against SHA256SUMS, and $CLI checks signatures on every update.
+  To check this install too: install OpenSSL 3 and re-run, or set FOX_REQUIRE_SIGNATURE=1 to refuse."
+		return 0
+	fi
+	printf '%s\n' "$RELEASE_PUBLIC_KEY" > "$tmp/release.pub"
+	if openssl pkeyutl -verify -pubin -inkey "$tmp/release.pub" -rawin -in "$SUMS" -sigfile "$tmp/SHA256SUMS.sig" >/dev/null 2>&1; then
+		say "SHA256SUMS is signed with the $PRODUCT release key"
+	else
+		err "SHA256SUMS of $VERSION is not signed with the $PRODUCT release key — it was not published by $PRODUCT, or it was altered.
+Nothing was installed."
+	fi
+}
+check_signature
 
 verify_file() { # verify_file <asset-name> <path>
 	[ "$VERIFY" = "1" ] || return 0

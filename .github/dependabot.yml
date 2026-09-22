@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Proposes updates for what the build pins (audit v2 G23, G25): the Actions are
+# pinned by commit SHA, so without this they would never move; Go modules and
+# the web UI's npm packages pick up security fixes the same way. The Postgres
+# base and MinIO images are pinned by digest through build arguments Dependabot
+# cannot read; scripts/check-image-digests.sh reports when they fall behind.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: /web
+    schedule: { interval: weekly }
+    groups:
+      web: { patterns: ["*"] }

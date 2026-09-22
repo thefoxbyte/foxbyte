@@ -3,7 +3,7 @@
 # FoxByte runs inside the Linux dev VM (ZFS + Docker); day-to-day operation is
 # via `lima /tmp/fox <command>`. This Makefile just builds/checks the CLI.
 
-.PHONY: build vet fmt vm-build test integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade test-vm test-vm-stop test-vm-delete
+.PHONY: release-key build vet fmt vm-build test integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade test-vm test-vm-stop test-vm-delete
 
 VERSION ?= 0.1.0
 LDFLAGS := -s -w -X github.com/thefoxbyte/foxbyte/internal/version.Version=$(VERSION)
@@ -18,6 +18,9 @@ release-linux: web-build   ## Cross-compile just the Linux engine binary (for th
 	@mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 		go build -trimpath -tags embedui -ldflags "$(LDFLAGS)" -o dist/fox-linux-amd64 ./cmd/fox
+
+release-key:      ## One time: make the release signing key (private key to release-signing.key; public key into fox and install.sh)
+	go run ./cmd/releasesign generate --write
 
 release: web-build   ## Cross-compile release binaries + the Windows image context into ./dist
 	@mkdir -p dist

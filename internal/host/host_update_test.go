@@ -5,6 +5,7 @@ package host
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -71,6 +72,12 @@ func fakeReleases(t *testing.T, tamper bool) *httptest.Server {
 	}
 	mux.HandleFunc("/dl/SHA256SUMS", func(w http.ResponseWriter, r *http.Request) { w.Write(sums.Bytes()) })
 	rel.Assets = append(rel.Assets, update.Asset{Name: "SHA256SUMS", URL: srv.URL + "/dl/SHA256SUMS"})
+	// Signed by a key of the test's own, which fox is told to trust meanwhile.
+	pub, key, _ := ed25519.GenerateKey(nil)
+	t.Cleanup(update.TrustReleaseKeyForTest(pub))
+	sig := ed25519.Sign(key, sums.Bytes())
+	mux.HandleFunc("/dl/SHA256SUMS.sig", func(w http.ResponseWriter, r *http.Request) { w.Write(sig) })
+	rel.Assets = append(rel.Assets, update.Asset{Name: "SHA256SUMS.sig", URL: srv.URL + "/dl/SHA256SUMS.sig"})
 	mux.HandleFunc("/repos/thefoxbyte/foxbyte/releases", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]update.Release{rel})
 	})
