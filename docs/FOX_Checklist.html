@@ -135,7 +135,7 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-      <li><b>Security hardening from the 22 Sep audit</b> — done but for the last part: the VM suites nightly in CI, and UI (Playwright) and SDK contract tests (G24, G26).</li>
+      <li><b>Watch the first nightly run</b> (Actions → nightly): it is the first time the suites run on GitHub's runners, and it says whether their kernel carries the ZFS module (M2).</li>
       <li><b>Cut the first signed release</b> and check <code>gh attestation verify</code> and <code>fox update</code> against it (M4, A9).</li>
       <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
       <li>Make the <code>postgres-walg</code> image package public, so installs pull it instead of building it for a few minutes (C8).</li>
@@ -462,9 +462,9 @@
     <tr data-id="K2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K2</td><td><b>OpenAPI spec</b><ul class="subs">
       <li class="ok">Served, Blackbox 2.0 endpoints documented</li><li class="ok">Matches the code (import fields, status codes, auth routes, /blackbox aliases)</li><li class="ok">Drift check in CI</li></ul></td><td class="tb">Unit (drift check)</td></tr>
     <tr data-id="K3" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">K3</td><td><b>Python SDK</b><ul class="subs">
-      <li class="ok">Branches, query, Blackbox</li><li class="todo">Import, pipelines, keys, agents</li><li class="todo">Tests</li><li class="todo">Publish to PyPI</li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">Branches, query, Blackbox</li><li class="todo">Import, pipelines, keys, agents</li><li class="todo">Tests</li><li class="todo">Publish to PyPI</li><li class="ok">Contract tests against a live engine</li></ul></td><td class="tb">Manual; VM sdks</td></tr>
     <tr data-id="K4" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">K4</td><td><b>TypeScript SDK</b><ul class="subs">
-      <li class="ok">Same client for Node and browsers</li><li class="todo">Tests</li><li class="todo">Publish to npm</li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">Same client for Node and browsers</li><li class="todo">Tests</li><li class="todo">Publish to npm</li><li class="ok">Compiles, and contract tests against a live engine</li></ul></td><td class="tb">Manual; VM sdks</td></tr>
     <tr data-id="K5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">K5</td><td><b>Agent Branch API</b><ul class="subs">
       <li class="ok">A branch per agent, own non-superuser role</li><li class="ok">Provenance (task, parent, session)</li>
       <li class="ok">DSN reachable from the host (gateway-routed, branch-scoped key)</li><li class="ok">Cap, listing and TTL count suspended branches</li><li class="ok">Superuser switch only in <code>-tags insecure</code> builds</li><li class="ok">Agents and their keys belong to the caller</li></ul></td><td class="tb">Unit; VM §5; v2 §1c, §7</td></tr>
@@ -483,15 +483,15 @@
     <tr data-id="L1" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L1</td><td><b>Embedded single-origin UI</b><ul class="subs">
       <li class="ok">Served by the engine at :8080</li><li class="todo">Automated UI tests (whole area)</li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="L2" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L2</td><td><b>Login &amp; signup</b><ul class="subs">
-      <li class="ok">Log in / sign up tabs, OAuth buttons</li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">Log in / sign up tabs, OAuth buttons</li><li class="ok">Covered by the console's Playwright tests</li></ul></td><td class="tb">Manual; VM ui</td></tr>
     <tr data-id="L3" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L3</td><td><b>Dashboard</b><ul class="subs">
-      <li class="ok">Live tiles</li><li class="ok">Branch table: create, suspend, resume, delete, copy DSN</li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">Live tiles</li><li class="ok">Branch table: create, suspend, resume, delete, copy DSN</li><li class="ok">Covered by the console's Playwright tests</li></ul></td><td class="tb">Manual; VM ui</td></tr>
     <tr data-id="L4" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L4</td><td><b>SQL console &amp; browser</b><ul class="subs">
-      <li class="ok">Schema sidebar, rows, structure, indexes</li><li class="ok">Values shown as Postgres writes them (uuid, interval, inet, bytea)</li><li class="ok">SQL editor</li><li class="ok">System tables hidden by default, with a show button</li><li class="ok">Runs as the signed-in user; one-run override switch</li><li class="ok">Per-rule override for policy blocks</li></ul></td><td class="tb">Manual; API in v2 §6</td></tr>
+      <li class="ok">Schema sidebar, rows, structure, indexes</li><li class="ok">Values shown as Postgres writes them (uuid, interval, inet, bytea)</li><li class="ok">SQL editor</li><li class="ok">System tables hidden by default, with a show button</li><li class="ok">Runs as the signed-in user; one-run override switch</li><li class="ok">Per-rule override for policy blocks</li><li class="part">One statement per run (extended protocol)</li></ul></td><td class="tb">Manual; API in v2 §6</td></tr>
     <tr data-id="L5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">L5</td><td><b>Blackbox page</b><ul class="subs">
-      <li class="ok">Entries per branch with badges</li><li class="ok">Table / risk / date filters, and "Clear filters"</li><li class="ok">Verify button; a row expands to its statement and session</li></ul></td><td class="tb">v2 §5b; browser</td></tr>
+      <li class="ok">Entries per branch with badges</li><li class="ok">Table / risk / date filters, and "Clear filters"</li><li class="ok">Verify button; a row expands to its statement and session</li><li class="ok">Covered by the console's Playwright tests</li></ul></td><td class="tb">v2 §5b; browser; VM ui</td></tr>
     <tr data-id="L6" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L6</td><td><b>API keys page</b><ul class="subs">
-      <li class="ok">Create, copy, list, revoke</li><li class="ok">A new key is shown inside its connection string (E3's next step)</li></ul></td><td class="tb">Manual; browser review 21 Sep</td></tr>
+      <li class="ok">Create, copy, list, revoke</li><li class="ok">A new key is shown inside its connection string (E3's next step)</li><li class="ok">Covered by the console's Playwright tests</li></ul></td><td class="tb">Manual; browser review 21 Sep; VM ui</td></tr>
     <tr data-id="L7" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L7</td><td><b>Landing, Guide &amp; Docs pages</b><ul class="subs">
       <li class="ok">Landing, developer guide, reference</li><li class="ok">Refreshed against the code (https, sslmode, MCP, Blackbox, import routes)</li></ul></td><td class="tb">Type-check + build</td></tr>
     <tr data-id="L8" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L8</td><td><b>Blackbox integrity page</b><ul class="subs">
@@ -519,10 +519,10 @@
   <table>
     <tr><th></th><th>ID</th><th>Feature · sub-features</th><th>Tested by</th></tr>
     <tr data-id="M1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M1</td><td><b>Makefile targets</b><ul class="subs">
-      <li class="ok">build, vet, test, integration suites</li><li class="ok">Suites run only in a throwaway test VM (guarded)</li><li class="ok">release, web, WSL builds, feature-doc (both PDFs)</li></ul></td><td class="tb">CI</td></tr>
+      <li class="ok">build, vet, test, integration suites</li><li class="ok">Suites run only in a throwaway test VM (guarded)</li><li class="ok">release, web, WSL builds, feature-doc (both PDFs)</li><li class="ok"><code>integration-sdks</code>, <code>integration-ui</code></li></ul></td><td class="tb">CI</td></tr>
     <tr data-id="M2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M2</td><td><b>Linux CI</b><ul class="subs">
       <li class="ok">Build, vet, test, gofmt</li><li class="ok">Release script tests, checklist sync check</li>
-      <li class="todo">VM integration suites in CI</li><li class="ok">Secret scanning, govulncheck, npm audit, UI type-check</li></ul></td><td class="tb">CI</td></tr>
+      <li class="ok">VM integration suites nightly in CI (one runner per suite)</li><li class="todo">Release tags gated on them</li><li class="ok">Secret scanning, govulncheck, npm audit, UI type-check</li></ul></td><td class="tb">CI</td></tr>
     <tr data-id="M3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M3</td><td><b>Windows CI</b><ul class="subs">
       <li class="ok">Build, vet, test, Pester, installer encoding</li>
       <li class="ok">Guard tests read backslash paths, and generated files are pinned to LF (21 Sep)</li>

@@ -501,9 +501,15 @@ make build        # host binary -> ./bin/fox
 make vm-build     # Linux engine binary into the Lima VM (macOS)
 make vet test     # go vet + unit tests (also run in CI on Linux and Windows)
 make integration  # full end-to-end test, in a throwaway test VM
+make integration-sdks  # the published Python and TypeScript clients, against a live engine
+make integration-ui    # the web console in a real browser (Playwright; first run downloads Chromium)
 ```
 
-The integration suites (`make integration`, `integration-v2`, `integration-update`)
+All of them run **nightly in CI** as well (Actions → nightly), one runner per
+suite, and one can be run there on demand.
+
+The integration suites (`make integration`, `integration-v2`, `integration-update`,
+`integration-pg-upgrade`, `integration-sdks`, `integration-ui`)
 are destructive — they wipe Blackbox history, restore `main` to an earlier point and
 fail HA over — so they run in a VM of their own (`fox-test`, created on first use by
 `make test-vm`), never in the VM that holds your install, and refuse to start
