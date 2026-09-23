@@ -491,7 +491,10 @@ echo "### 11c. backups to a remote target (audit v2: G18, G19, G17)"
 # with Object Lock and a default retention as the docs recommend.
 RS=it-remote-s3; RAK=itremotekey; RSK=itremotesecret123
 MINIO_IMG="$(sudo docker inspect -f '{{.Config.Image}}' "$DB_OBJECT_STORE")"
-MC_IMG="$(sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep -m1 '/mc:')"
+# By digest first: an image pulled as tag@digest (which the engine does) is
+# listed with the tag <none>, and "repo:<none>" is not a reference docker runs.
+MC_IMG="$(sudo docker images --digests --format '{{.Repository}}@{{.Digest}}' | grep -m1 '/mc@' | grep -v '@<none>')"
+[ -n "$MC_IMG" ] || MC_IMG="$(sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep -m1 '/mc:' | grep -v ':<none>')"
 sudo docker rm -f "$RS" >/dev/null 2>&1
 sudo docker run -d --name "$RS" --network "$DB_NETWORK" -e MINIO_ROOT_USER="$RAK" -e MINIO_ROOT_PASSWORD="$RSK" "$MINIO_IMG" server /data >/dev/null
 rmc() { sudo docker run --rm --network "$DB_NETWORK" -e MC_HOST_r="http://$RAK:$RSK@$RS:9000" "$MC_IMG" "$@" 2>&1; }
@@ -502,6 +505,7 @@ assert_eq "a plain-HTTP target is refused without --allow-http" \
 OUT="$(FOX_BACKUP_S3_SECRET_KEY="$RSK" $S backup target set s3://itremote/fox --endpoint "http://$RS:9000" --access-key "$RAK" --path-style --allow-http 2>&1)"
 assert_eq "setting a remote target reports its Object Lock and moves backups there" \
   "$(echo "$OUT" | grep -c 'with Object Lock')|$(echo "$OUT" | grep -c 'Backups now go to s3://itremote/fox')" "1|1"
+grep -q 'Backups now go to' <<<"$OUT" || { echo "      what it said:"; tail -4 <<<"$OUT" | sed 's/^/      /'; }
 assert_eq "…the first base backup is taken there" "$(rmc ls --recursive r/itremote/fox/basebackups_005/ | grep -c 'backup_stop_sentinel.json' | awk '{print ($1>0)}')" "1"
 assert_eq "…and the key is in a 0600 file, not on a command line" \
   "$(stat -c %a "$HOME/$BRAND_STATE_DIR/backup-target.json")|$(stat -c %a "$HOME/$BRAND_STATE_DIR/s3.env")|$(sudo docker inspect -f '{{join .Args " "}}' pg-main | grep -c "$RSK")" "600|600|0"

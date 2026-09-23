@@ -68,8 +68,10 @@ jobs:
         run: |
           set -eux
           if [ "${{ matrix.suite }}" = "ui" ]; then
-            npm --prefix web ci --no-audit --no-fund
-            npm --prefix web run build
+            # `make web-build` builds it same-origin (VITE_API_URL=); a plain
+            # `vite build` leaves the console calling http://localhost:8080,
+            # and every request from the page fails.
+            make web-build
             go build -tags embedui -o /tmp/fox ./cmd/fox   # the console's tests need the UI embedded
           else
             go build -o /tmp/fox ./cmd/fox
