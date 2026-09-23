@@ -135,13 +135,14 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-      <li><b>Watch the first nightly run</b> (Actions → nightly): it is the first time the suites run on GitHub's runners, and it says whether their kernel carries the ZFS module (M2).</li>
-      <li><b>Cut the first signed release</b> and check <code>gh attestation verify</code> and <code>fox update</code> against it (M4, A9).</li>
+      <li><b>Cut the first signed release</b> and check it end to end: <code>SHA256SUMS.sig</code> and the SBOM attached, <code>gh attestation verify</code>, <code>install.sh</code> on a clean machine, and <code>fox update</code> onto it (A9, M4).</li>
+      <li><b>Make the <code>postgres-walg</code> package public</b>, so installs pull the image instead of building it for a few minutes (C8, M4).</li>
+      <li><b>Watch tonight's nightly run</b> (Actions → nightly). The first one found two faults in how CI built and looked things up, both fixed; the runners do carry the ZFS module (M2).</li>
       <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
-      <li>Make the <code>postgres-walg</code> image package public, so installs pull it instead of building it for a few minutes (C8).</li>
-      <li>Run the VM integration suites in CI on every pull request (M2).</li>
-      <li>Add automated tests where there are none: imports (I1–I3, I7), SDKs (K3, K4), web UI (L*).</li>
-      <li>HA beyond the demo: automatic failover and fencing (D4).</li>
+      <li>Automated tests for the imports (I1–I3, I7) — the last area with none.</li>
+      <li>Gate release tags on the nightly suites, so a tag cannot ship past a red suite (M2).</li>
+      <li>Decide how this checklist shows partial work (audit v2 G31): 34 features are badged done or manual while carrying an open sub-item. The sub-items are honest; the badge is what a summary flattens.</li>
+      <li><b>From the audit, deliberately left:</b> HA beyond the demo — automatic failover and fencing across hosts (D4, G21); metrics, alerts and restart on crash (B2, G27); branch merge (H18, G29); timeouts on the engine's own commands and splitting the branch package (G30); quotas on btrfs and per-branch CPU/memory (C6, G33); pgvector in the image (M6, G34); <code>/api/v1</code> (K1, G35).</li>
     </ol>
   <div class="foot">FOX_Checklist · overview</div>
 </section>
