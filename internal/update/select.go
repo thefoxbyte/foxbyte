@@ -246,7 +246,7 @@ func (c *Client) Resolve(ctx context.Context, current Version, t Target, pin str
 		return nil, err
 	}
 	required := RequiredAssets(t)
-	var lastErr error
+	var lastErr, sigErr error
 	for _, r := range cands {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -265,7 +265,10 @@ func (c *Client) Resolve(ctx context.Context, current Version, t Target, pin str
 			continue
 		}
 		if err := VerifySums(body, sig); err != nil {
-			lastErr = fmt.Errorf("release %s: %w", r.Tag, err)
+			// Not "nothing new": a release that exists and does not verify is
+			// either forged or broken, and saying "up to date" would hide it.
+			sigErr = fmt.Errorf("release %s: %w", r.Tag, err)
+			lastErr = sigErr
 			continue
 		}
 		sums, err := ParseChecksums(bytes.NewReader(body))
@@ -288,6 +291,9 @@ func (c *Client) Resolve(ctx context.Context, current Version, t Target, pin str
 	}
 	if pin != "" && lastErr != nil {
 		return nil, lastErr
+	}
+	if sigErr != nil {
+		return nil, sigErr
 	}
 	return nil, nil
 }

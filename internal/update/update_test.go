@@ -669,6 +669,26 @@ func TestResolveRequiresTheReleaseSignature(t *testing.T) {
 	}
 }
 
+// A release whose signature does not check is reported, not passed over in
+// silence: "up to date" would hide a forged or broken release for ever.
+func TestResolveReportsABadSignature(t *testing.T) {
+	f := newFakeGitHub(t)
+	linux := Target{GOOS: "linux", HostArch: "amd64"}
+	f.publish("v0.9.1", map[string]string{"fox-linux-amd64": "forged"})
+	_, other, _ := ed25519.GenerateKey(nil)
+	f.files["/dl/v0.9.1/SHA256SUMS.sig"] = ed25519.Sign(other, f.files["/dl/v0.9.1/SHA256SUMS"])
+	off, err := f.client(t.TempDir()).Resolve(context.Background(), mustVersion(t, "0.8.0"), linux, "")
+	if off != nil || err == nil || !strings.Contains(err.Error(), "not signed with the FoxByte release key") {
+		t.Fatalf("resolve = %+v, %v; want the signature error", off, err)
+	}
+	// A genuine newer release still wins: the bad one is simply not offered.
+	f.publish("v0.9.2", map[string]string{"fox-linux-amd64": "good"})
+	off, err = f.client(t.TempDir()).Resolve(context.Background(), mustVersion(t, "0.8.0"), linux, "")
+	if err != nil || off == nil || off.Release.Tag != "v0.9.2" {
+		t.Fatalf("resolve = %+v, %v; want v0.9.2", off, err)
+	}
+}
+
 func TestNoReleaseKeyNoUpdate(t *testing.T) {
 	old := releasePublicKey
 	releasePublicKey = ""
