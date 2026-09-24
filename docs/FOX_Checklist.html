@@ -135,9 +135,7 @@
 
   <h2>Suggested next steps</h2>
   <ol class="next">
-      <li><b>Cut the first signed release</b> and check it end to end: <code>SHA256SUMS.sig</code> and the SBOM attached, <code>gh attestation verify</code>, <code>install.sh</code> on a clean machine, and <code>fox update</code> onto it (A9, M4).</li>
-      <li><b>Make the <code>postgres-walg</code> package public</b>, so installs pull the image instead of building it for a few minutes (C8, M4).</li>
-      <li><b>Watch tonight's nightly run</b> (Actions → nightly). The first one found two faults in how CI built and looked things up, both fixed; the runners do carry the ZFS module (M2).</li>
+      <li><b>Watch tonight's nightly run</b> (Actions → nightly): the first found two faults in how CI built and looked things up, both fixed.</li>
       <li>Run on real machines what the throwaway VM cannot: <code>fox update</code> across a real release on macOS and Windows (A9); on Windows, the zstd distro image's unpack (M5), the btrfs holding area of <code>fox pg upgrade</code> (D6), and an export's copy to the host (D5).</li>
       <li>Automated tests for the imports (I1–I3, I7) — the last area with none.</li>
       <li>Gate release tags on the nightly suites, so a tag cannot ship past a red suite (M2).</li>
