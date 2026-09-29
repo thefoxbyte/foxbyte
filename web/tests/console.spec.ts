@@ -28,6 +28,17 @@ test('signing in reaches the dashboard, which lists main', async ({ page }) => {
   await expect(page.getByRole('cell', { name: 'main', exact: true })).toBeVisible()
 })
 
+// Someone locked out is standing on this page, so this is where the way out has to
+// be. `fox user passwd` has always existed; until now it appeared only in `fox help`,
+// which is no use to anyone who cannot get in.
+test('the login page says what to do about a forgotten password', async ({ page }) => {
+  await page.goto('/login', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByText(/forgotten your password/i)).toBeVisible()
+  await expect(page.getByText(/fox user passwd/)).toBeVisible()
+  // And it is honest about what is possible: a password is not recoverable.
+  await expect(page.getByText(/cannot be recovered/i)).toBeVisible()
+})
+
 test('the wrong password is refused', async ({ page }) => {
   await page.goto('/login', { waitUntil: 'domcontentloaded' })
   await page.getByPlaceholder('you@example.com').fill(email)

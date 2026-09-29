@@ -245,8 +245,24 @@ curl -H "Authorization: Bearer $FOX_KEY" -X DELETE https://localhost:8088/agents
           <tr><td>Undo a schema change</td><td><code>fox blackbox branch-before &lt;id&gt;</code></td></tr>
           <tr><td>Bring a branch's changes back</td><td><code>fox branch request &lt;source&gt;</code> · <code>fox request approve &lt;id&gt;</code></td></tr>
           <tr><td>Web console &amp; dashboard</td><td><code>fox start</code> → <code>localhost:8080</code></td></tr>
+          <tr><td>Forgotten password</td><td><code>fox user passwd &lt;email&gt;</code></td></tr>
         </tbody>
       </table>
+
+      <h2>Locked out</h2>
+      <p>
+        A password cannot be recovered. Only a hash of it is stored, so nobody can read
+        it back — not an admin, not us. What you can do is set a new one, from the
+        machine FoxByte runs on:
+      </p>
+      <pre><code>fox user passwd you@example.com</code></pre>
+      <p>
+        That signs the account out everywhere and is recorded in the security log
+        (<code>fox audit</code>). It needs no sign-in, only access to the machine, which
+        is what owning an install means. If someone else administers your install, ask
+        them to run it. On macOS and Windows it is the same command — the launcher
+        passes it into the VM.
+      </p>
 
       <p className="muted" style={{ marginTop: 18 }}>
         Want the printable version with diagrams? <a href="/foxbyte-developer-guide.pdf" target="_blank" rel="noreferrer">Download the PDF guide</a>.
