@@ -79,7 +79,7 @@ func (s *Store) setPassword(userID int64, next, keepSession string) error {
 	if _, err := s.db.Exec(`UPDATE users SET pw_hash=? WHERE id=?`, string(h), userID); err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND token<>?`, userID, keepSession)
+	_, err = s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND token<>?`, userID, hashKey(keepSession))
 	return err
 }
 

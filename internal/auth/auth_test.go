@@ -111,6 +111,36 @@ func TestSessions(t *testing.T) {
 	}
 }
 
+// The sessions table stores hashKey(token), never the token. A leaked auth.db
+// then yields nothing a reader can use: only a hash, no easier to turn into a
+// session than a random guess. The round-trip tests above pass either way, so
+// without this nothing would notice the hashing being removed again.
+func TestSessionTokenIsStoredHashed(t *testing.T) {
+	s := testStore(t)
+	u, err := s.CreateUser("s@example.com", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := s.createSession(u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stored string
+	if err := s.db.QueryRow(`SELECT token FROM sessions WHERE user_id=?`, u.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored == tok {
+		t.Error("the session token is stored in plaintext")
+	}
+	if stored != hashKey(tok) {
+		t.Error("the stored value is not hashKey(token)")
+	}
+	if _, ok := s.userBySession(tok); !ok {
+		t.Error("the token no longer resolves to its session")
+	}
+}
+
 // A scoped key is an agent's credential for one branch. It must round-trip its
 // scope, must not authenticate an HTTP request (that would hand an agent the
 // control plane), and must be revocable without touching account keys.
