@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { login, register, providers, oauthUrl, type Providers } from '../api'
 import { useAuth } from '../auth-context'
 import { Mark, Wordmark } from '../components/brand'
+import { BRAND } from '../brand'
 
 export default function Login() {
   const { user, setUser } = useAuth()
@@ -97,7 +98,21 @@ export default function Login() {
       {!signupOpen && !setup && (
         <p className="hint">
           Signups are closed on this instance. An admin can create your account with{' '}
-          <code>fox user create you@example.com</code>.
+          <code>{BRAND.cli} user create you@example.com</code>.
+        </p>
+      )}
+
+      {/* The one place someone locked out actually looks. A password cannot be
+          recovered — only a hash of it is stored — so the honest answer is how to
+          set a new one, and it needs the machine rather than an inbox: there is no
+          mail server in a local install, and access to the machine is what owning
+          the install means. */}
+      {mode === 'login' && !setup && (
+        <p className="hint">
+          Forgotten your password? It cannot be recovered, but a new one can be set on
+          the machine {BRAND.product} runs on:{' '}
+          <code>{BRAND.cli} user passwd {email.trim() || 'you@example.com'}</code>.
+          That signs the account out everywhere and is recorded in the security log.
         </p>
       )}
     </div>
