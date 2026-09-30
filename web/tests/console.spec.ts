@@ -6,6 +6,11 @@ const password = process.env.FOX_E2E_PASSWORD ?? 'password123'
 const branch = process.env.FOX_E2E_BRANCH ?? 'e2eui'      // made by the harness, owned by this account
 const newBranch = process.env.FOX_E2E_NEW_BRANCH ?? 'e2eui2' // made here, through the dashboard
 const table = process.env.FOX_E2E_TABLE ?? 'e2e_notes'
+// The promotion test's target, made by the harness like `branch` is. It used to
+// be made by the test itself, which starts a container moments before the
+// interaction being measured — and a container starting changes the host's
+// network interfaces, so Chromium aborts whatever is in flight.
+const targetBranch = process.env.FOX_E2E_TARGET_BRANCH ?? 'e2eui3'
 
 // Each test signs in and works on its own: the branch the console and Blackbox
 // tests use is made by scripts/integration_ui.sh, so no test depends on
@@ -163,22 +168,21 @@ test('a Blackbox entry offers to branch from before it, on main only', async ({ 
 test('a branch\'s changes can be reviewed and applied to another branch', async ({ page }) => {
   await signIn(page)
   const table = `e2e_promo_${Date.now().toString().slice(-6)}`
-  const target = `e2eui3`
+  const target = targetBranch
   await page.goto('/requests', { waitUntil: 'domcontentloaded' })
-  // A target of its own, made and owned by this account: promoting into main would
-  // leave the change on main for every later run, and a branch is where the
-  // ownership rule (the owner may approve) is exercised anyway.
-  await page.evaluate(async ([b, t, tgt]) => {
-    const post = (url: string, body: unknown) => fetch(url, {
+  // The target is made and owned by this account in the harness: promoting into
+  // main would leave the change on main for every later run, and a branch is where
+  // the ownership rule (the owner may approve) is exercised anyway. Only the
+  // change to promote is made here, which is a query against a branch that is
+  // already running.
+  await page.evaluate(async ([b, t]) => {
+    await fetch(`/api/branches/${b}/query`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify(body),
+      body: JSON.stringify({ sql: `CREATE TABLE ${t} (id int)` }),
     })
-    await fetch(`/api/branches/${tgt}`, { method: 'DELETE', credentials: 'include' }).catch(() => {})
-    await post('/api/branches', { name: tgt, from: 'main' })
-    await post(`/api/branches/${b}/query`, { sql: `CREATE TABLE ${t} (id int)` })
-  }, [branch, table, target])
+  }, [branch, table])
 
   await expect(page.getByRole('heading', { name: 'Change requests' })).toBeVisible()
   await page.reload({ waitUntil: 'domcontentloaded' })
@@ -211,7 +215,7 @@ test('a branch\'s changes can be reviewed and applied to another branch', async 
   await expect(page.locator('.okmsg')).toContainText(/Applied \d+ statement/i, { timeout: 60_000 })
   expect(await has(table, target)).toBe('1')
 
-  // Tidy up, best effort: the harness deletes this branch too, and a failed
-  // clean-up must not decide whether the test passed.
-  await page.request.delete(`/api/branches/${target}`).catch(() => {})
+  // No clean-up here: the target belongs to the harness, which deletes and remakes
+  // it at the start of every run. Deleting it would leave a retry with no target
+  // to select — the branch list is exactly what the second attempt could not find.
 })

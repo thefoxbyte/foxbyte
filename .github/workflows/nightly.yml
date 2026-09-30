@@ -79,6 +79,33 @@ jobs:
           go build -o /tmp/fox-verify ./cmd/fox-verify
           sudo install -m 0755 /tmp/fox /usr/local/bin/fox  # `fox update` hands the stack back to this path
 
+      # Build the Postgres image from THIS tree, tagged the way the engine names
+      # it, so ensureImageRef finds it already present and never pulls.
+      #
+      # Without this the nightly tests a published image against current source.
+      # That is not a theoretical gap: pgvector was added to the Dockerfile on 28
+      # Sep, the newest published image was from 23 Sep, and the suite's pgvector
+      # assertions failed against an image that could not have had it. Worse, the
+      # image is only republished by a release — and a release needs a green
+      # nightly — so nothing could move. A Dockerfile change must be testable
+      # before it ships, not after.
+      #
+      # No build args: the Dockerfile's own defaults are the fresh-install values,
+      # and TestPostgresMajorIsInStepEverywhere holds them to internal/branch/
+      # images.go. The major is read from there for the same reason. Single
+      # architecture and no buildx — this runner only ever runs the image natively.
+      - name: Build the engine image from this tree
+        if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
+        run: |
+          set -euo pipefail
+          major="$(grep -oE 'PGMajor += +"[0-9]+"' internal/branch/images.go | grep -oE '[0-9]+')"
+          repo="$(grep -oE 'ImageRepo += +"[^"]+"' internal/brand/brand_gen.go | sed 's/.*"\(.*\)"/\1/')"
+          [ -n "$major" ] && [ -n "$repo" ] || { echo "::error::could not read the image name from the engine"; exit 1; }
+          echo "building $repo/postgres-walg:$major from docker/postgres"
+          # The Dockerfile checks its own work (it lists vector.control after the
+          # install), so a build that succeeds is an image with pgvector in it.
+          docker build -t "$repo/postgres-walg:$major" docker/postgres
+
       - name: Run the ${{ matrix.suite }} suite
         if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
         env:
@@ -96,6 +123,24 @@ jobs:
           esac
           bash "$script" 2>&1 | tee "/tmp/${{ matrix.suite }}.log"
 
+      # The engine's own logs. The suite's stdout says which assertion failed; only
+      # these say why — a panic, a refused connection, a container that would not
+      # start. They lived in a home directory on a runner that is then destroyed,
+      # so a failure that did not reproduce locally could not be diagnosed at all.
+      # Collected under sudo and made readable: the stack runs as root.
+      - name: Collect the engine logs
+        if: ${{ failure() }}
+        run: |
+          set -u
+          mkdir -p /tmp/engine-logs
+          for d in "$HOME/.fox" /root/.fox; do
+            sudo test -d "$d" || continue
+            sudo cp -a "$d"/*.log /tmp/engine-logs/ 2>/dev/null || true
+          done
+          sudo docker ps -a > /tmp/engine-logs/docker-ps.txt 2>&1 || true
+          sudo chmod -R a+r /tmp/engine-logs || true
+          ls -la /tmp/engine-logs || true
+
       # The log is the whole story of a failure; the Playwright artefacts carry
       # the screenshot and trace of a failed console test.
       - name: Keep the log
@@ -105,6 +150,7 @@ jobs:
           name: ${{ matrix.suite }}-log
           path: |
             /tmp/${{ matrix.suite }}.log
+            /tmp/engine-logs/**
             /tmp/fox-ui-e2e/test-results/**
           if-no-files-found: ignore
           retention-days: 14

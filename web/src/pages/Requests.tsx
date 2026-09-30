@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { createRequest, decideRequest, getBranches, listRequests, type Branch, type ChangeRequest } from '../api'
+import { createRequest, decideRequest, listRequests, type ChangeRequest } from '../api'
 import { useConfirm } from '../confirm'
+import { useBranches } from '../useBranches'
 
 // Change requests: a branch's schema changes, offered for review, then applied to
 // another branch. Branching was only half a workflow until this — you could take
@@ -16,7 +17,6 @@ const STATUS = ['open', 'approved', 'rejected', 'failed'] as const
 
 export default function Requests() {
   const [requests, setRequests] = useState<ChangeRequest[]>([])
-  const [branches, setBranches] = useState<Branch[]>([])
   const [filter, setFilter] = useState<string>('open')
   const [open, setOpen] = useState<number | null>(null)
   const [source, setSource] = useState('')
@@ -36,7 +36,7 @@ export default function Requests() {
   }, [filter])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { getBranches().then(setBranches).catch(() => {}) }, [])
+  const { branches, branchesError } = useBranches()
 
   const ask = async () => {
     if (!source) return
@@ -125,9 +125,9 @@ export default function Requests() {
       </div>
 
       {msg && <div className="okmsg">{msg}</div>}
-      {err && <div className="err">{err}</div>}
+      {(err || branchesError) && <div className="err">{err || branchesError}</div>}
 
-      {requests.length === 0 && !err && (
+      {requests.length === 0 && !err && !branchesError && (
         <p className="muted" style={{ marginTop: 18 }}>
           No {filter || ''} change requests. Make one above, or with <code>fox branch request &lt;source&gt;</code>.
         </p>

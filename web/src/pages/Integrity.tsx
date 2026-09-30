@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { branchBeforeEntry, createCheckpoint, exportLedgerUrl, getBranches, getIntegrity, getLedgerEntries, type Branch, type BranchBeforeResult, type IntegrityReport, type LedgerEntry } from '../api'
+import { branchBeforeEntry, createCheckpoint, exportLedgerUrl, getIntegrity, getLedgerEntries, type Branch, type BranchBeforeResult, type IntegrityReport, type LedgerEntry } from '../api'
+import { useBranches } from '../useBranches'
 
 // Blackbox integrity: checks a branch's Blackbox record against its checkpoint
 // anchors — kept outside the database — and creates new checkpoints.
 export default function Integrity() {
-  const [branches, setBranches] = useState<Branch[]>([])
   const [branch, setBranch] = useState('main')
   const [report, setReport] = useState<IntegrityReport | null>(null)
   const [busy, setBusy] = useState(false)
@@ -17,7 +17,7 @@ export default function Integrity() {
   const [beforeErr, setBeforeErr] = useState('')
   const [entries, setEntries] = useState<LedgerEntry[]>([])
 
-  useEffect(() => { getBranches().then(setBranches).catch(() => {}) }, [])
+  const { branches, branchesError, reloadBranches } = useBranches()
 
   const loadEntries = useCallback(() => {
     getLedgerEntries('main', 20).then(setEntries).catch(() => setEntries([]))
@@ -54,7 +54,7 @@ export default function Integrity() {
     setRestoring(true); setBefore(null); setBeforeErr('')
     try {
       setBefore(await branchBeforeEntry('main', id, beforeName.trim() || undefined))
-      getBranches().then(setBranches).catch(() => {})
+      void reloadBranches()
       loadEntries()
     } catch (e) {
       setBeforeErr((e as Error).message)
@@ -157,7 +157,7 @@ export default function Integrity() {
         )}
       </div>
 
-      {err && <div className="err">{err}</div>}
+      {(err || branchesError) && <div className="err">{err || branchesError}</div>}
       {msg && <div className="muted" style={{ marginTop: 10 }}>{msg}</div>}
 
       {report && (

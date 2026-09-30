@@ -45,7 +45,25 @@ bash -n "$TMP/gate.sh" || { echo "FAIL: the gate step is not valid shell"; exit 
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'STUB'
 #!/usr/bin/env bash
-cat "$GATE_TEST_RUN_JSON"
+# Two calls now: the newest run, then that run's jobs. Routed on the path so the
+# jobs check can be given a full matrix or a partial one independently.
+#
+# --jq is applied with real jq rather than ignored, so the filter in the gate is
+# what gets exercised. Ignoring it made a full matrix look like a list of skipped
+# suites — the fixture came back whole and every name was "missing".
+fixture="$GATE_TEST_RUN_JSON"
+case "$*" in */jobs*) fixture="${GATE_TEST_JOBS_JSON:-/dev/null}" ;; esac
+filter=""
+prev=""
+for arg in "$@"; do
+	[ "$prev" = "--jq" ] && filter="$arg"
+	prev="$arg"
+done
+if [ -n "$filter" ]; then
+	jq -r "$filter" < "$fixture"
+else
+	cat "$fixture"
+fi
 STUB
 chmod +x "$TMP/bin/gh"
 
@@ -57,15 +75,39 @@ OLD_SHA="$(git rev-parse HEAD)"
 echo two > b; git add b; git commit -qm two
 NEW_SHA="$(git rev-parse HEAD)"
 
-run_gate() { # <json file> <allow_red> -> prints output, returns the exit status
-	GATE_TEST_RUN_JSON="$1" ALLOW_RED="$2" MAX_AGE_HOURS=48 \
+# Every suite the nightly runs. A full run reports all of them; a run given a
+# `suite` input skips the rest, which is what the gate must now refuse.
+SUITES="integration ledger-v2 update pg-upgrade sdks ui"
+
+jobs_json() { # <ran suite, or "all"> -> the jobs API's answer for that run
+	local only="$1" name c first=1
+	printf '{"jobs":['
+	for name in $SUITES; do
+		c=success
+		[ "$only" = all ] || [ "$only" = "$name" ] || c=skipped
+		[ "$first" = 1 ] || printf ','
+		first=0
+		printf '{"name":"suite (%s)","conclusion":"%s"}' "$name" "$c"
+	done
+	printf ']}\n'
+}
+
+run_gate() { # <json file> <allow_red> [jobs file] -> prints output, returns the exit status
+	GATE_TEST_RUN_JSON="$1" ALLOW_RED="$2" GATE_TEST_JOBS_JSON="${3:-$TMP/jobs-all.json}" \
+		MAX_AGE_HOURS=48 \
 		GITHUB_REPOSITORY=thefoxbyte/foxbyte GH_TOKEN=x \
 		PATH="$TMP/bin:$PATH" bash "$TMP/gate.sh" 2>&1
 }
+# Shaped like the real endpoint's answer, because the stub now applies the gate's
+# own --jq filter: a bare run object would be filtered away by
+# `.workflow_runs[0]` and read as "no nightly at all".
 nightly_json() { # <conclusion> <hours ago> <head_sha>
-	printf '{"conclusion":"%s","created_at":"%s","html_url":"https://example.invalid/run","head_sha":"%s"}\n' \
+	printf '{"workflow_runs":[{"id":4242,"conclusion":"%s","created_at":"%s","html_url":"https://example.invalid/run","head_sha":"%s"}]}\n' \
 		"$1" "$(date -u -d "-$2 hours" +%Y-%m-%dT%H:%M:%SZ)" "$3"
 }
+
+jobs_json all > "$TMP/jobs-all.json"
+jobs_json ui  > "$TMP/jobs-ui-only.json"
 
 echo "### a green, recent nightly lets the release through"
 nightly_json success 2 "$NEW_SHA" > "$TMP/green.json"
@@ -86,7 +128,7 @@ OUT="$(run_gate "$TMP/stale.json" false)"; RC=$?
 grep -q "says little about this tag" <<<"$OUT" && ok "…and says it is too old" || bad "…but did not say it was stale"
 
 echo "### no nightly at all stops it"
-printf '' > "$TMP/none.json"
+printf '{"workflow_runs":[]}\n' > "$TMP/none.json"
 OUT="$(run_gate "$TMP/none.json" false)"; RC=$?
 [ "$RC" != 0 ] && ok "exit non-zero when there is no nightly run" || bad "a release was allowed with no nightly run at all"
 grep -q "no completed nightly run" <<<"$OUT" && ok "…and says how to get one" || bad "…but did not explain"
@@ -102,6 +144,26 @@ nightly_json success 2 "$OLD_SHA" > "$TMP/ahead.json"
 OUT="$(run_gate "$TMP/ahead.json" false)"; RC=$?
 [ "$RC" = 0 ] && ok "a release cut after a merge is not blocked" || bad "being ahead of the nightly blocked the release"
 grep -q "::warning::this tag has commits the newest nightly never ran" <<<"$OUT" && ok "…and says so" || bad "…without saying so"
+
+echo "### a nightly that ran one suite is not evidence, however green"
+# `nightly.yml` takes a `suite` input. A run of one suite skips the other five
+# and still concludes 'success' — it would pass every other check here while
+# having tested almost nothing, which is worse than a red gate because it looks
+# like evidence. This is not hypothetical: it is how the ui suite was rerun on
+# 29 Sep 2026, and that run became the newest nightly.
+OUT="$(run_gate "$TMP/green.json" false "$TMP/jobs-ui-only.json")"; RC=$?
+[ "$RC" != 0 ] && ok "a partial nightly is refused" || bad "a nightly that skipped five suites was accepted"
+grep -q "ran only part of the matrix" <<<"$OUT" && ok "…and names the skipped suites" || bad "…without saying which"
+grep -q "integration" <<<"$OUT" && ok "…listing integration among them" || bad "…but did not list them"
+
+echo "### a full nightly still passes that check"
+OUT="$(run_gate "$TMP/green.json" false "$TMP/jobs-all.json")"; RC=$?
+[ "$RC" = 0 ] && ok "a full nightly is accepted" || { bad "a full nightly was refused (exit $RC)"; echo "$OUT" | sed 's/^/      /'; }
+grep -q "every suite in that run reported" <<<"$OUT" && ok "…and says so" || bad "…without confirming it"
+
+echo "### the override covers a partial run too, since it covers a red one"
+OUT="$(run_gate "$TMP/green.json" true "$TMP/jobs-ui-only.json")"; RC=$?
+[ "$RC" = 0 ] && ok "allow_red_nightly releases past a partial run" || bad "the override did not cover a partial run (exit $RC)"
 
 echo
 echo "nightly gate: ${PASS} passed, ${FAIL} failed"

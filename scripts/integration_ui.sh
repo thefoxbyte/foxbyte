@@ -22,6 +22,13 @@ EMAIL="e2e@foxbyte.dev"
 PASSWORD="password123"
 BRANCH="e2eui"
 NEW_BRANCH="e2eui2"
+# The promotion test's target. Made here rather than by the test, because making
+# a branch starts a container, and starting a container changes the host's
+# network interfaces — which makes Chromium abort every request in flight
+# (net::ERR_NETWORK_CHANGED). A test that did that to itself moments before the
+# interaction it measures failed for reasons that had nothing to do with the
+# console, and failed differently on each retry.
+TARGET_BRANCH="e2eui3"
 TABLE="e2e_notes"
 
 echo "### setup: a running stack, an account, a clean branch"
@@ -34,12 +41,14 @@ for _ in $(seq 60); do curl -sk "$API/api/status" >/dev/null 2>&1 && break; slee
 printf '%s\n' "$PASSWORD" | "$S" user create "$EMAIL" >/dev/null 2>&1
 # The console and Blackbox tests need a branch of their own, and a branch made
 # here belongs to no account until it is handed over (audit v2 G02).
-for b in "$BRANCH" "$NEW_BRANCH"; do "$S" branch delete "$b" >/dev/null 2>&1; done
-"$S" branch create "$BRANCH" >/dev/null 2>&1
-"$S" branch owner "$BRANCH" "$EMAIL" >/dev/null 2>&1
+for b in "$BRANCH" "$NEW_BRANCH" "$TARGET_BRANCH"; do "$S" branch delete "$b" >/dev/null 2>&1; done
+for b in "$BRANCH" "$TARGET_BRANCH"; do
+	"$S" branch create "$b" >/dev/null 2>&1
+	"$S" branch owner "$b" "$EMAIL" >/dev/null 2>&1
+done
 # main is left alone by these tests, deliberately: a change applied to main would
 # be inherited by every branch made afterwards, and the next run's `CREATE TABLE`
-# would fail as a duplicate. The promotion test makes a target of its own.
+# would fail as a duplicate. The promotion test's target is $TARGET_BRANCH, above.
 # Any table an earlier version of these tests did leave on main is removed here.
 sudo docker exec -e PGPASSWORD=foxbyte "pg-main" psql -U dbadmin -d appdb -q -c \
 	"SET bb.allow_destructive=on; DROP TABLE IF EXISTS $TABLE" >/dev/null 2>&1
@@ -65,7 +74,12 @@ npx --yes playwright install --with-deps chromium >/dev/null 2>&1 || {
 
 echo "### the console's smoke tests"
 FOX_E2E_URL="$API" FOX_E2E_EMAIL="$EMAIL" FOX_E2E_PASSWORD="$PASSWORD" \
-	FOX_E2E_BRANCH="$BRANCH" FOX_E2E_NEW_BRANCH="$NEW_BRANCH" FOX_E2E_TABLE="$TABLE" npx playwright test
+	# A retry in the log is expected in CI and is not the console misbehaving: the
+	# engine's short-lived containers change the host's network interfaces, and
+	# Chromium aborts requests in flight when they do. web/playwright.config.ts
+	# has the detail. A test that fails twice running is a real failure.
+	FOX_E2E_BRANCH="$BRANCH" FOX_E2E_NEW_BRANCH="$NEW_BRANCH" FOX_E2E_TABLE="$TABLE" \
+	FOX_E2E_TARGET_BRANCH="$TARGET_BRANCH" npx playwright test
 rc=$?
 
 echo "### cleanup"

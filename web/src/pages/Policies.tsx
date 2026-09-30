@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  addPolicyRule, checkPolicy, getAdmins, getBranches, getPolicyEvaluations, getPolicyRules, grantAdmin, removePolicyRule,
+  addPolicyRule, checkPolicy, getAdmins, getPolicyEvaluations, getPolicyRules, grantAdmin, removePolicyRule,
   revokeAdmin, updatePolicyRule,
   type Branch, type BranchAdmins, type PolicyAction, type PolicyCheckResult, type PolicyEvaluation, type PolicyRule,
 } from '../api'
+import { useBranches } from '../useBranches'
 
 // Blackbox policy gate: rules checked on every schema change before it runs.
 // A warn rule lets the change through with a notice (SQLSTATE BBX02); a block
@@ -12,7 +13,6 @@ import {
 const emptyDraft = { rule_id: '', command_tag: 'ALTER TABLE', pattern: '', action: 'warn' as PolicyAction, reason: '', hint: '' }
 
 export default function Policies() {
-  const [branches, setBranches] = useState<Branch[]>([])
   const [branch, setBranch] = useState('main')
   const [rules, setRules] = useState<PolicyRule[]>([])
   const [evals, setEvals] = useState<PolicyEvaluation[]>([])
@@ -25,7 +25,7 @@ export default function Policies() {
   const [admins, setAdmins] = useState<BranchAdmins | null>(null)
   const [newAdmin, setNewAdmin] = useState('')
 
-  useEffect(() => { getBranches().then(setBranches).catch(() => {}) }, [])
+  const { branches, branchesError } = useBranches()
 
   const loadAdmins = useCallback(async () => {
     try { setAdmins(await getAdmins(branch)) } catch { setAdmins(null) }
@@ -87,7 +87,7 @@ export default function Policies() {
         </div>
       </div>
 
-      {err && <div className="err">{err}</div>}
+      {(err || branchesError) && <div className="err">{err || branchesError}</div>}
 
       {adding && (
         <div className="panel" style={{ marginTop: 14 }}>

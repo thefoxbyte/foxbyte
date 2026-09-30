@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { branchBeforeEntry, getBranches, getLedger, verifyLedger, type Branch, type BranchBeforeResult, type LedgerVerify, type QueryResult } from '../api'
+import { branchBeforeEntry, getLedger, verifyLedger, type Branch, type BranchBeforeResult, type LedgerVerify, type QueryResult } from '../api'
+import { useBranches } from '../useBranches'
 
 type Row = Record<string, string | null>
 
@@ -51,7 +52,6 @@ function toRows(res: QueryResult | null): Row[] {
 }
 
 export default function Ledger() {
-  const [branches, setBranches] = useState<Branch[]>([])
   const [branch, setBranch] = useState('main')
   const [status, setStatus] = useState('')
   const [kind, setKind] = useState('')
@@ -81,7 +81,7 @@ export default function Ledger() {
   const sentinel = useRef<HTMLTableRowElement>(null)
   const idsRef = useRef<Set<string>>(new Set())  // ids on screen, so a poll adds only what is new
 
-  useEffect(() => { getBranches().then(setBranches).catch(() => {}) }, [])
+  const { branches, branchesError, reloadBranches } = useBranches()
 
   // Fetch one page. reset=true starts over (offset 0, replaces rows); otherwise
   // it appends the next 25 at the current offset.
@@ -179,7 +179,7 @@ export default function Ledger() {
       const r = await branchBeforeEntry('main', Number(rewind.id), rewindName.trim() || undefined)
       setRewound(r)
       setRewind(null)
-      getBranches().then(setBranches).catch(() => {})
+      void reloadBranches()
     } catch (e) {
       setRewindErr((e as Error).message)
     } finally {
@@ -281,7 +281,7 @@ export default function Ledger() {
           It is on the <Link to="/dashboard">dashboard</Link> with its connection string.
         </div>
       )}
-      {err && <div className="err">{err.includes('schema_ledger') ? 'Blackbox is not installed on this branch yet.' : err}</div>}
+      {(err || branchesError) && <div className="err">{err.includes('schema_ledger') ? 'Blackbox is not installed on this branch yet.' : (err || branchesError)}</div>}
 
       {rewind && (
         <div className="modal-overlay" onClick={() => !rewinding && setRewind(null)}>

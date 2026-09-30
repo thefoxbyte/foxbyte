@@ -57,6 +57,7 @@ jobs:
             [ "$ALLOW_RED" = "true" ] || exit 1
           fi
           conclusion="$(jq -r '.conclusion // "none"' <<<"${run_json:-\{\}}")"
+          run_id="$(jq -r '.id // ""' <<<"${run_json:-\{\}}")"
           created="$(jq -r '.created_at // ""' <<<"${run_json:-\{\}}")"
           url="$(jq -r '.html_url // ""' <<<"${run_json:-\{\}}")"
           sha="$(jq -r '.head_sha // ""' <<<"${run_json:-\{\}}")"
@@ -70,6 +71,22 @@ jobs:
           fail=0
           [ "$conclusion" = "success" ] || { echo "::error::the newest nightly concluded '$conclusion'. Fix it, or re-run it, before tagging a release."; fail=1; }
           [ "$age_hours" -le "$MAX_AGE_HOURS" ] || { echo "::error::the newest nightly is ${age_hours}h old (limit ${MAX_AGE_HOURS}h), so it says little about this tag. Re-run it."; fail=1; }
+          # Green is not enough: the nightly takes a `suite` input, and a run of one
+          # suite skips the other five and still concludes 'success'. Such a run
+          # would satisfy every check above while having tested almost nothing,
+          # which is worse than a red gate because it looks like evidence. A full
+          # nightly skips no job, so any skipped job means this run cannot speak for
+          # the release.
+          if [ -n "$run_id" ]; then
+            skipped="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" \
+              --jq '[.jobs[] | select(.conclusion == "skipped") | .name] | join(", ")' 2>/dev/null || echo "")"
+            if [ -n "$skipped" ]; then
+              echo "::error::that nightly ran only part of the matrix (skipped: $skipped). Run the whole nightly — no 'suite' input — before tagging."
+              fail=1
+            else
+              echo "  every suite in that run reported."
+            fi
+          fi
           # Whether the code being released is actually what the nightly ran. Not a
           # failure: a release cut soon after a merge is legitimately ahead of last
           # night's run, and saying so is more useful than blocking it.
