@@ -4,9 +4,21 @@ package main
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// Prose wraps, and Windows checks out text files with CRLF unless .gitattributes
+// says otherwise — which it does not for markdown. Neither the line endings nor
+// where a sentence happens to break should decide whether these checks pass, so
+// every run of whitespace becomes one space before anything is matched. Without
+// this, a needle spanning a line break failed on windows-ci while passing on
+// Linux, and would have failed everywhere the moment someone re-wrapped the
+// paragraph.
+var whitespace = regexp.MustCompile(`\s+`)
+
+func flatten(s string) string { return strings.TrimSpace(whitespace.ReplaceAllString(s, " ")) }
 
 // CONTRIBUTING.md promises contributors a CLA. For months it promised one that
 // did not exist: the text said "we will provide the CLA link on your first pull
@@ -23,12 +35,12 @@ func TestContributorGuidePromisesOnlyWhatExists(t *testing.T) {
 		return string(b)
 	}
 
-	guide := read("../../CONTRIBUTING.md")
+	guide := flatten(read("../../CONTRIBUTING.md"))
 	if !strings.Contains(guide, "CLA.md") {
 		t.Error("CONTRIBUTING.md asks for a CLA but does not link CLA.md, so nobody can find it")
 	}
 
-	cla := read("../../CLA.md")
+	cla := flatten(read("../../CLA.md"))
 	// The parts a contributor is entitled to have spelled out before signing:
 	// what they keep, what they grant, and that a paid edition is among the
 	// places their work may end up. Open core without that last sentence is a
@@ -64,9 +76,9 @@ func TestContributorGuidePromisesOnlyWhatExists(t *testing.T) {
 		"an express territory, or s.19(6) presumes India only":     "whole world",
 		"consideration, or s.25 of the Contract Act voids it":      "## 2. Consideration",
 		"that no royalty is payable, which s.19(3) asks be stated": "royalty-free",
-		"that the licence does not lapse unexercised, per s.19(4)": "does not lapse",
+		"that the licence does not lapse unexercised, per s.19(4)": "does not lapse, expire or terminate",
 		"moral rights under s.57, which cannot be waived in India": "moral rights",
-		"the governing law":           "laws of\n**India**",
+		"the governing law":           "laws of **India**",
 		"that disputes stay in India": "courts in India",
 	} {
 		if !strings.Contains(cla, want) {
