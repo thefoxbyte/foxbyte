@@ -45,4 +45,32 @@ func TestContributorGuidePromisesOnlyWhatExists(t *testing.T) {
 			t.Errorf("CLA.md does not cover %s (looked for %q)", what, want)
 		}
 	}
+
+	// The agreement is governed by Indian law, where a licence takes the
+	// assignment rules (Copyright Act 1957 s.30A). Three of those rules are
+	// defaults that apply unless the instrument says otherwise, and each one
+	// would quietly gut this agreement:
+	//
+	//   s.19(5)  no period stated      -> deemed five years
+	//   s.19(6)  no territory stated   -> presumed India only
+	//   s.25 ICA no consideration      -> void
+	//
+	// They are defeated by express words, so the express words must not be
+	// edited away by someone tidying the prose. Moral rights (s.57) cannot be
+	// waived here at all, so the acknowledgement that they stay with the author
+	// has to survive too.
+	for what, want := range map[string]string{
+		"an express duration, or s.19(5) deems it five years":      "entire term of copyright",
+		"an express territory, or s.19(6) presumes India only":     "whole world",
+		"consideration, or s.25 of the Contract Act voids it":      "## 2. Consideration",
+		"that no royalty is payable, which s.19(3) asks be stated": "royalty-free",
+		"that the licence does not lapse unexercised, per s.19(4)": "does not lapse",
+		"moral rights under s.57, which cannot be waived in India": "moral rights",
+		"the governing law": "laws of\n**India**",
+		"the chosen forum":  "Bhopal, Madhya Pradesh",
+	} {
+		if !strings.Contains(cla, want) {
+			t.Errorf("CLA.md no longer states %s (looked for %q)", what, want)
+		}
+	}
 }
