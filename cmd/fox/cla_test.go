@@ -58,6 +58,21 @@ func TestContributorGuidePromisesOnlyWhatExists(t *testing.T) {
 		}
 	}
 
+	// The sentence the bot waits for and the sentence CLA.md tells people to
+	// write have to be the same one. If they drift, a contributor signs in good
+	// faith, the signature is not recognised, and nothing on either side says
+	// why. The workflow is off until the CLA is reviewed, so this only checks
+	// the two agree whenever the file exists.
+	if wf, err := os.ReadFile("../../.github/workflows/cla.yml"); err == nil {
+		const sentence = "I have read the FoxByte CLA and I hereby sign it."
+		if !strings.Contains(cla, sentence) {
+			t.Errorf("CLA.md no longer tells people to write %q", sentence)
+		}
+		if !strings.Contains(flatten(string(wf)), sentence) {
+			t.Errorf(".github/workflows/cla.yml does not wait for %q, so a signature would not be recognised", sentence)
+		}
+	}
+
 	// The agreement is governed by Indian law, where a licence takes the
 	// assignment rules (Copyright Act 1957 s.30A). Three of those rules are
 	// defaults that apply unless the instrument says otherwise, and each one
