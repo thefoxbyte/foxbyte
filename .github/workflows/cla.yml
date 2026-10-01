@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# The Contributor License Agreement, asked for and recorded automatically.
+#
+# A contributor opens a pull request, a bot asks them to sign CLA.md, they reply
+# once with the sentence below, and the signature is committed to a branch of
+# this repository. They are never asked again, on any later pull request. Nobody
+# has to remember to ask, and nothing can be merged unsigned by accident — which
+# is exactly what happened with the first outside contribution (#37).
+#
+# OFF BY DEFAULT. CLA.md is still a draft and says so at the top; turning this on
+# now would collect signatures against a document no lawyer has read. To enable
+# it once the review is done:
+#
+#   Settings -> Secrets and variables -> Actions -> Variables -> New
+#   Name: CLA_ENABLED   Value: true
+#
+# then make "CLA" a required status check on main, so an unsigned pull request
+# cannot be merged rather than merely being asked twice.
+#
+# Why pull_request_target rather than pull_request: a pull request from a fork
+# gets a read-only token, which cannot comment or commit, so the bot would be
+# silent exactly where it is needed. pull_request_target runs with this
+# repository's token instead. That is only safe because this workflow never
+# checks out or runs the pull request's code — it reads the event and writes
+# comments. Do not add a checkout step to it.
+name: CLA
+
+on:
+  # The pull request itself, and the comment the contributor signs with.
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  contents: write      # the signatures file is committed to this repository
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    # Draft until the review lands; see the note at the top of this file.
+    if: ${{ vars.CLA_ENABLED == 'true' }}
+    steps:
+      - name: Check or record the signature
+        # Only act on a pull request, or on a comment that is on one — not on
+        # comments left on ordinary issues.
+        if: (github.event_name == 'pull_request_target') || (github.event.issue.pull_request && contains(github.event.comment.body, 'I hereby sign it'))
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Signatures live on a branch of their own. They are the evidence that
+          # a licence was granted, and sections 19(1) and 30 of the Copyright
+          # Act, 1957 want a licence in writing and signed — so they are kept in
+          # this repository's history, where the commit and its timestamp are
+          # ours, rather than on a third party's server.
+          branch: cla-signatures
+          path-to-signatures: signatures/cla.json
+
+          # The agreement being signed. A permanent link, so the comment a
+          # contributor reads points at the document they actually agreed to.
+          # Built from the event rather than written out, so it survives the
+          # rename this project has already been through twice.
+          path-to-document: ${{ github.server_url }}/${{ github.repository }}/blob/main/CLA.md
+
+          # Word for word the sentence in CLA.md's "How to sign" section. A test
+          # holds the two together (TestContributorGuidePromisesOnlyWhatExists):
+          # if they drift, a contributor reads one sentence and the bot waits for
+          # another, and nothing says why the signature is not being recognised.
+          custom-pr-sign-comment: I have read the FoxByte CLA and I hereby sign it.
+
+          custom-notsigned-prcomment: |
+            Thanks for the pull request. Before it can be merged we need you to sign the Contributor License Agreement — once, ever, not once per pull request.
+
+            **Please read it first:** it is short, and it says plainly that FoxByte has a paid edition and that your contribution may end up there. You keep your copyright and your moral rights either way. If that is not something you want, say so and we will close this with no hard feelings — we would rather lose a contribution than take one on terms its author did not want.
+
+            To sign, reply to this pull request with exactly:
+
+          custom-allsigned-prcomment: |
+            All contributors have signed the CLA. Thank you.
+
+          # Maintainers and bots. A bot cannot agree to a contract, and asking
+          # Dependabot to sign one would block every dependency bump.
+          allowlist: SauravYadav12,SauravCodemotion,dependabot[bot],*[bot]
+
+          # Locked after merge so a signature comment cannot be deleted later.
+          # The record is the evidence; it should outlive second thoughts.
+          lock-pullrequest-aftermerge: true

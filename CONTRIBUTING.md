@@ -45,11 +45,29 @@ Please:
 
 ## Contributor License Agreement (CLA)
 
-FoxByte's core is **AGPL-3.0-or-later**. To keep the option of relicensing the
-project in the future (for example to Apache-2.0), we ask contributors to sign a
-lightweight CLA granting us the right to relicense their contribution, before we
-can merge it. We will provide the CLA link on your first pull request. This is
-standard practice and does not affect your own rights to your code.
+Before your first contribution is merged, we ask you to sign a one-page CLA:
+**[CLA.md](CLA.md)**. Once, ever — not once per pull request.
+
+**You keep the copyright to your code.** It stays yours, and you can use it
+anywhere else for anything. What the CLA gives us is a licence to it, including
+the right to release it under different terms later.
+
+**Those terms include commercial ones.** FoxByte's core is AGPL-3.0-or-later and
+there is a paid edition under a commercial licence (`enterprise/`), so a
+contribution may end up in a product people pay for. We would rather say that
+plainly here than have you find out afterwards. If it is not something you want,
+say so before you open a pull request — we would rather lose a contribution than
+take one on terms its author did not want.
+
+**Why we need it:** keeping an open core and a paid edition side by side only
+works if we hold the rights across the whole tree. Without a CLA, every past
+contributor would have to be found and asked individually before any licensing
+decision — and people change jobs and email addresses. One signature at the start
+avoids a search later that may not succeed.
+
+Contributing on an employer's time or equipment? They may own the rights to your
+work, in which case we need a Corporate CLA instead. Get in touch before opening
+a pull request.
 
 ## Reporting bugs and security issues
 
