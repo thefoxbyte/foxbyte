@@ -4,7 +4,6 @@
 
 > **Not yet in force.** This document is a draft and has not been reviewed by a
 > lawyer. Do not ask anyone to sign it, and do not rely on it, until it has been.
-> Section 8 in particular needs a jurisdiction filled in.
 
 Thank you for contributing to FoxByte. This agreement sets out what you allow us
 to do with the code you contribute. It is adapted from the Apache Software
@@ -133,11 +132,12 @@ PARTICULAR PURPOSE.
 You agree to notify Us of any facts or circumstances of which You become aware
 that would make these representations inaccurate in any respect.
 
-### 8. Governing law
+### 8. Governing law and jurisdiction
 
-This agreement is governed by the laws of **[JURISDICTION — to be completed
-before this agreement is used]**, without regard to its conflict of law
-provisions.
+This agreement is governed by and construed in accordance with the laws of
+**India**, without regard to its conflict of law provisions. The courts at
+**Bhopal, Madhya Pradesh** have exclusive jurisdiction over any dispute arising
+out of or in connection with this agreement.
 
 ---
 
@@ -173,5 +173,8 @@ licensing decision — people change jobs and email addresses, and some simply
 never reply. One signature at the start avoids a search later that may not
 succeed.
 
-Your own rights are untouched by this. It is a licence to us, not a transfer of
-ownership.
+Your own rights are untouched by this. **It is a licence to us, not a transfer of
+ownership** — deliberately. Some projects ask contributors to assign copyright
+outright, which hands over the work entirely. We ask for a licence instead,
+because it gives us what we actually need to keep an open core and a paid edition
+side by side, and leaves your work yours.
