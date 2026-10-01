@@ -52,6 +52,8 @@ func TestContributorGuidePromisesOnlyWhatExists(t *testing.T) {
 		"that terms may be commercial":               "commercial",
 		"the employer case":                          "employer",
 		"how to sign it":                             "How to sign",
+		"that nothing is owed for a contribution":    "No further claim",
+		"the covenant not to claim":                  "not to bring any claim",
 	} {
 		if !strings.Contains(cla, want) {
 			t.Errorf("CLA.md does not cover %s (looked for %q)", what, want)
@@ -71,6 +73,15 @@ func TestContributorGuidePromisesOnlyWhatExists(t *testing.T) {
 		if !strings.Contains(flatten(string(wf)), sentence) {
 			t.Errorf(".github/workflows/cla.yml does not wait for %q, so a signature would not be recognised", sentence)
 		}
+	}
+
+	// A clause purporting to own moral rights, or to decide in advance that a
+	// contributor's claim is false, would be void here — section 57 rights cannot
+	// be waived or assigned in India. Clause 5 says what we want said and stops
+	// where the law does, and clause 6 is the limit it points at. Losing either
+	// turns an enforceable promise into one a court would strike.
+	if !strings.Contains(cla, "Nothing in this clause affects Your rights under clause 6") {
+		t.Error("clause 5 no longer carves out the moral rights it cannot take (s.57)")
 	}
 
 	// The agreement is governed by Indian law, where a licence takes the
