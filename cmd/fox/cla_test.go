@@ -66,8 +66,8 @@ func TestContributorGuidePromisesOnlyWhatExists(t *testing.T) {
 		"that no royalty is payable, which s.19(3) asks be stated": "royalty-free",
 		"that the licence does not lapse unexercised, per s.19(4)": "does not lapse",
 		"moral rights under s.57, which cannot be waived in India": "moral rights",
-		"the governing law": "laws of\n**India**",
-		"the chosen forum":  "Bhopal, Madhya Pradesh",
+		"the governing law":           "laws of\n**India**",
+		"that disputes stay in India": "courts in India",
 	} {
 		if !strings.Contains(cla, want) {
 			t.Errorf("CLA.md no longer states %s (looked for %q)", what, want)

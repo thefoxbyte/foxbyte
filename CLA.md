@@ -190,9 +190,11 @@ that would make any representation in this agreement inaccurate in any respect.
 ### 11. Governing law and jurisdiction
 
 This agreement is governed by and construed in accordance with the laws of
-**India**, without regard to its conflict of law provisions. The courts at
-**Bhopal, Madhya Pradesh** have exclusive jurisdiction over any dispute arising
-out of or in connection with this agreement.
+**India**, without regard to its conflict of law provisions.
+
+The **courts in India** have exclusive jurisdiction over any dispute arising out
+of or in connection with this agreement. Which court within India is determined
+by the Code of Civil Procedure, 1908.
 
 If any provision of this agreement is held to be invalid or unenforceable, the
 remaining provisions continue in full force, and the invalid provision is to be
@@ -294,8 +296,10 @@ Also outstanding:
   10A of the Information Technology Act, 2000 and on an electronic record of
   acceptance (a click or a comment). **Is that a sufficient "signature" for these
   sections, or is an electronic signature under the IT Act needed?**
-- **Stamp duty.** Whether this agreement attracts stamp duty in Madhya Pradesh,
-  and if so how an electronically accepted agreement should be stamped.
+- **Stamp duty.** Whether this agreement attracts stamp duty in the relevant
+  State, and if so how an electronically accepted agreement should be stamped.
+  Stamp duty is a State subject, so this follows from where the agreement is
+  treated as made.
 - **Patent licence formalities** under the Patents Act, 1970, including whether
   anything must take a particular form or be registered.
 - **Future contributions.** The agreement covers present and future
@@ -303,3 +307,8 @@ Also outstanding:
   anything need to be said about when the licence attaches to each?**
 - **The Corporate CLA**, which does not exist yet and is currently handled by
   asking contributors to get in touch.
+- **The forum.** Clause 11 keeps disputes in India without naming a seat, leaving
+  the court to be worked out under the Code of Civil Procedure, 1908. Naming a
+  specific city would narrow it further and make the venue predictable. **Is
+  naming one worth doing, and does leaving it open create any difficulty in
+  enforcing against a contributor outside India?**
