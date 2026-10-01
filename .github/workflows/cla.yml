@@ -46,9 +46,33 @@ jobs:
     if: ${{ vars.CLA_ENABLED == 'true' }}
     steps:
       - name: Check or record the signature
-        # Only act on a pull request, or on a comment that is on one — not on
-        # comments left on ordinary issues.
-        if: (github.event_name == 'pull_request_target') || (github.event.issue.pull_request && contains(github.event.comment.body, 'I hereby sign it'))
+        # A pull request, a comment signing it, or `recheck`.
+        #
+        # `recheck` matters more than it looks: the action's own comment tells
+        # people to write it when something has gone wrong, and a condition that
+        # does not match it leaves the bot advertising a command that silently
+        # does nothing. That is how it stays stuck — the first signature attempt
+        # here failed because the signatures branch did not exist yet, and
+        # nothing anyone typed afterwards would have retried it.
+        #
+        # `contains` rather than an exact match, because a signature arrives with
+        # whatever a person typed around it. The action does the real matching;
+        # this only decides whether to start it. One cost worth knowing: a comment
+        # that quotes the sentence to explain it — like asking someone to sign —
+        # starts a run too. Harmless, and the alternative is missing real
+        # signatures over a stray full stop.
+        #
+        # `recheck` is matched exactly, as the action's own documentation has it:
+        # it is a command rather than prose, and `contains` would fire on any
+        # comment that happened to use the word. Expressions here are limited to
+        # the functions GitHub provides — there is no trim(), and an invented one
+        # is a runtime error rather than a parse error, so it would only show up
+        # when someone needed it.
+        if: >-
+          github.event_name == 'pull_request_target' ||
+          (github.event.issue.pull_request &&
+            (contains(github.event.comment.body, 'I hereby sign it') ||
+             github.event.comment.body == 'recheck'))
         uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
