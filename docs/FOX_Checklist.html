@@ -338,7 +338,9 @@
       <li class="ok">Users, keys, sessions, OAuth ids, pipelines</li><li class="ok">Safe under concurrent use (WAL, busy timeout), including a new store created by three services at once</li>
       <li class="next">Roles / permissions, multi-tenant projects</li></ul></td><td class="tb">Unit (<code>TestVerifyKeyConcurrent</code>, <code>TestConcurrentFirstOpen</code>); VM §1</td></tr>
     <tr data-id="G2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">G2</td><td><b>Email &amp; password users</b><ul class="subs">
-      <li class="ok">Create account, log in</li><li class="ok">Password change (signs out other sessions); admin reset at the CLI</li><li class="next">Self-service reset by email</li><li class="ok">List and delete users (admins)</li><li class="ok">Emails validated; at most 63 bytes (a role name)</li></ul></td><td class="tb">Unit; VM §1; VM §1d</td></tr>
+      <li class="ok">Create account, log in</li><li class="ok">Password change (signs out other sessions); admin reset at the CLI</li><li class="next">Self-service reset by email</li><li class="ok">List and delete users (admins)</li><li class="ok">Emails validated; at most 63 bytes (a role name)</li>
+      <li class="ok">Forgotten password: <code>fox user passwd</code>, named on the login page, README and Guide</li>
+      <li class="lim">No self-service reset by email — it needs the machine, which suits a local install and not a hosted one</li></ul></td><td class="tb">Unit; VM §1; VM §1d</td></tr>
     <tr data-id="G3" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">G3</td><td><b>API keys</b><ul class="subs">
       <li class="ok">Create (shown once), list, revoke</li><li class="ok">Bearer / X-API-Key and gateway password</li>
       <li class="ok">Revoking an id that is not there is refused (404), not reported as revoked</li></ul></td><td class="tb">Unit; VM §1</td></tr>

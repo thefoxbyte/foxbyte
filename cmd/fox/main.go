@@ -183,7 +183,9 @@ Agent Branch API:
 
 Auth (admin):
   user create <email>            Create an account (prompts for a password)
-  user list | passwd <email> | delete <email>   List accounts, reset a password, delete an account
+  user passwd <email>            Set a new password when one is forgotten — a password cannot be
+                                 recovered, only replaced. Signs that account out everywhere.
+  user list | delete <email>     List accounts, or delete one
   setup-token                    Show the token the web sign-up needs for the first account
   audit [--limit N]              The security log: sign-ins, keys, passwords, accounts, admins, refusals
   audit verify [--pubkey <file>] Check the security log's hash chain, its anchors and their signatures

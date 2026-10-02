@@ -29,3 +29,11 @@ go.sum          text eol=lf
 # rest of the web sources are pinned with it, since Vite builds them on Linux.
 *.ts  text eol=lf
 *.tsx text eol=lf
+
+# Markdown is read by tests — CLA.md and CONTRIBUTING.md by
+# TestContributorGuidePromisesOnlyWhatExists — and Windows checks out text files
+# with CRLF by default. A guard whose needle spanned a line break therefore
+# passed on Linux and failed on windows-ci, with the file saying exactly what the
+# test wanted. That test no longer cares how the file is wrapped or terminated,
+# but pinning the bytes keeps the next one from finding out the same way.
+*.md  text eol=lf

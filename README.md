@@ -395,8 +395,22 @@ fox apikey create <email> [name]   # mint an API key (shown once)
 fox apikey list <email>
 fox apikey revoke <email> <id>
 fox user create <email>            # create an account (prompts for a password)
-fox user list | passwd <email> | delete <email>   # accounts: list, reset a password, delete
+fox user passwd <email>            # forgotten password: set a new one
+fox user list | delete <email>     # accounts: list, delete
 ```
+
+**Forgotten a password?** It cannot be recovered — only a hash of it is stored, so
+nobody can read it back, not even an admin. Set a new one from the machine FoxByte
+runs on:
+
+```bash
+fox user passwd you@example.com
+```
+
+That signs the account out everywhere and is recorded in the security log
+(`fox audit`). It needs no sign-in, only access to the machine — which is what
+owning an install means. On macOS and Windows run it exactly the same way; the
+launcher passes it into the VM for you.
 
 ---
 

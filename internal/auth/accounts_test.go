@@ -47,11 +47,23 @@ func TestChangePasswordEndsOtherSessions(t *testing.T) {
 	if _, err := s.Login("a@x.com", "password1"); err == nil {
 		t.Error("old password still works")
 	}
+	// A reset is what someone locked out is told to run (`fox user passwd`), so
+	// the promise is both halves: the new password works, the old one does not,
+	// and nothing that was signed in stays signed in.
 	if err := s.ResetPassword("a@x.com", "password3"); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := s.userBySession(mine); ok {
 		t.Error("an admin reset left a session signed in")
+	}
+	if _, err := s.Login("a@x.com", "password3"); err != nil {
+		t.Errorf("the password a reset set does not work: %v", err)
+	}
+	if _, err := s.Login("a@x.com", "password2"); err == nil {
+		t.Error("the password from before the reset still works")
+	}
+	if err := s.ResetPassword("nobody@x.com", "password4"); err == nil {
+		t.Error("resetting an account that does not exist should say so")
 	}
 }
 
