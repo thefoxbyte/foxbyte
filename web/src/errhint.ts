@@ -17,7 +17,7 @@ type Hint = { re: RegExp; says: string }
 const hints: Hint[] = [
   {
     re: /cannot insert multiple commands into a prepared statement/i,
-    says: 'This runs one statement per call, so several separated by semicolons are refused. Run them one at a time, or open a shell with `fox connect <branch>`.',
+    says: 'A prepared statement holds one command. The console runs scripts by falling back to the simple protocol, so seeing this means something sent the query another way.',
   },
   {
     re: /canceling statement due to statement timeout|context deadline exceeded/i,

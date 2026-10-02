@@ -39,7 +39,16 @@ export type Branch = {
   name: string; primary: boolean; agent: boolean; state: string
   used: string; refer: string; connections: number; port: string
 }
-export type QueryResult = { columns?: string[]; rows?: unknown[][]; command?: string; error?: string }
+// One statement's outcome. `results` always holds at least one, so a caller can
+// read one shape whether the SQL was a single statement or a script; the fields
+// beside it are the last statement's, kept for callers that predate scripts.
+export type StatementResult = { columns?: string[]; rows?: unknown[][]; command?: string; error?: string }
+export type QueryResult = StatementResult & {
+  results?: StatementResult[]
+  // Set when a script failed: Postgres runs one in a single transaction unless
+  // the script opens its own, so nothing it did survives.
+  note?: string
+}
 export type ApiKey = { id: string; name: string; prefix: string; created: number }
 export type Providers = { github: boolean; google: boolean; signup: boolean; setup?: boolean }
 

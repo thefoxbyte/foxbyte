@@ -142,7 +142,7 @@ paths:
   /api/branches/{name}/query:
     post:
       tags: [branches]
-      summary: Run SQL against a branch (time-bounded, row-capped).
+      summary: Run SQL against a branch — one statement or a script (time-bounded, row-capped). A script returns a result per statement in `results`, and runs in one transaction unless it opens its own.
       parameters: [{ $ref: "#/components/parameters/BranchName" }]
       requestBody:
         required: true

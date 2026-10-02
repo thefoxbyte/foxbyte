@@ -52,7 +52,7 @@ var hints = []hint{
 	{regexp.MustCompile(`(?i)canceling statement due to statement timeout|context deadline exceeded|timed out after`),
 		"The statement ran longer than its time limit and was cancelled — nothing was left half-applied.\nFor a long migration, run it through psql instead: %s connect <branch>"},
 	{regexp.MustCompile(`(?i)cannot insert multiple commands into a prepared statement`),
-		"That endpoint runs one statement per call, so a script separated by semicolons is refused.\nRun the statements one at a time, or use: %s connect <branch>"},
+		"A prepared statement holds one command, so this call could not take a script.\nThe console and POST /api/branches/{name}/query do run scripts — they fall back to the simple protocol, where Postgres wraps the whole script in one transaction.\nFor a long migration, a shell is still better: %s connect <branch>"},
 	{regexp.MustCompile(`(?i)no space left on device|disk quota exceeded|out of space`),
 		"The engine's disk is full. Branches are copy-on-write, so old ones and old backups are the usual cause.\nSee what is using it, then delete a branch or prune backups: %s status   then   %s backup prune --keep 3"},
 	{regexp.MustCompile(`(?i)permission denied.*docker\.sock|got permission denied while trying to connect`),

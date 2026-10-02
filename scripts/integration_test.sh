@@ -689,6 +689,48 @@ assert_eq "…with a vector column and a distance query" \
   "$(pg pg-main "CREATE TABLE IF NOT EXISTS vtest(id int, e vector(3)); INSERT INTO vtest VALUES (1,'[1,0,0]'),(2,'[0,1,0]')" >/dev/null 2>&1; pg pg-main "SELECT id FROM vtest ORDER BY e <-> '[1,0,0]' LIMIT 1")" "1"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS vtest" >/dev/null 2>&1
 
+echo "### 11g. the console runs a script, not just one statement"
+# Postgres refuses more than one command in the extended protocol, which is what
+# pgx speaks, so the console used to answer "cannot insert multiple commands" to
+# anything with a semicolon in it. It falls back to the simple protocol now, and
+# returns a result per statement.
+q() { # q <sql> -> the raw JSON
+  curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST \
+    -d "$(python3 -c 'import json,sys; print(json.dumps({"sql": sys.argv[1]}))' "$1")" \
+    https://localhost:8080/api/branches/main/query
+}
+jq_py() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
+
+SCRIPT='CREATE TABLE ms_demo(id int); INSERT INTO ms_demo VALUES (1),(2),(3); SELECT count(*) FROM ms_demo;'
+OUT="$(q "$SCRIPT")"
+assert_eq "a three-statement script runs" "$(jq_py 'len(d.get("results",[]))' <<<"$OUT")" "3"
+assert_eq "…and each statement reports its own command"   "$(jq_py '",".join(r.get("command","") .split()[0] for r in d["results"])' <<<"$OUT")" "CREATE,INSERT,SELECT"
+assert_eq "…and the last statement's rows are the top-level ones, as before"   "$(jq_py 'd["rows"][0][0]' <<<"$OUT")" "3"
+assert_eq "…and the rows are typed, not raw text"   "$(jq_py 'type(d["rows"][0][0]).__name__' <<<"$OUT")" "int"
+
+# One statement must answer exactly as it always did: the SDKs and the console's
+# own browse mode read the top-level fields.
+OUT="$(q 'SELECT 1 AS one')"
+assert_eq "a single statement still answers in the old shape"   "$(jq_py '"%s|%s|%s" % (d["columns"][0], d["rows"][0][0], len(d["results"]))' <<<"$OUT")" "one|1|1"
+
+# A script is one transaction unless it opens its own, so a failure halfway
+# leaves nothing behind. That is the property worth proving: a half-applied
+# migration is the thing people fear about a console.
+OUT="$(q 'INSERT INTO ms_demo VALUES (4); SELECT * FROM no_such_table;')"
+assert_eq "a script that fails reports the error"   "$(jq_py '"yes" if d.get("error") else "no"' <<<"$OUT")" "yes"
+assert_eq "…and says nothing was applied"   "$(jq_py '"yes" if "nothing was applied" in d.get("note","") else "no"' <<<"$OUT")" "yes"
+assert_eq "…and nothing was: the row count is unchanged"   "$(pg pg-main 'SELECT count(*) FROM ms_demo')" "3"
+
+# The guardrail is a trigger, so it fires on a statement inside a script exactly
+# as it does on one sent alone. A script must not become a way around it.
+# TRUNCATE rather than an unqualified DELETE: the DML guard is deliberately
+# agent-only ("a human's unqualified DELETE is their own decision"), while
+# TRUNCATE is blocked for everyone without an explicit override.
+OUT="$(q 'SELECT 1; TRUNCATE ms_demo;')"
+assert_eq "the TRUNCATE guardrail still fires inside a script" "$(jq_py '"yes" if d.get("error") else "no"' <<<"$OUT")" "yes"
+assert_eq "…and the rows are still there" "$(pg pg-main 'SELECT count(*) FROM ms_demo')" "3"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ms_demo" >/dev/null 2>&1
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

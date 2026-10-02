@@ -851,3 +851,13 @@ th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0;
   font-size: 10px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase;
   color: var(--muted); border: 1px solid var(--border);
 }
+
+/* A script's results, one block per statement. The number is what tells you
+   which statement a grid belongs to — without it a failing script is a stack of
+   tables with no way to tell where it stopped. */
+.results .result-step + .result-step { margin-top: 14px; }
+.results .step-n {
+  font: 600 11px/1 var(--font-mono, ui-monospace, monospace);
+  letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 6px;
+}

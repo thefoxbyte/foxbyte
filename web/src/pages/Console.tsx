@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdmins, getBranches, runQuery, API, type Branch, type BranchAdmins, type QueryResult } from '../api'
+import { getAdmins, getBranches, runQuery, API, type Branch, type BranchAdmins, type QueryResult, type StatementResult } from '../api'
 import { BRAND } from '../brand'
 import { hintFor } from '../errhint'
 
@@ -287,7 +287,7 @@ export default function Console() {
                   </button>
                 </div>
               </div>
-              {queryRes && <Grid res={queryRes} showCommand />}
+              {queryRes && <QueryOutput res={queryRes} />}
               {blocked && (
                 <div className="override-help">
                   {canOverride ? (
@@ -347,7 +347,30 @@ export default function Console() {
   )
 }
 
-function Grid({ res, showCommand }: { res: QueryResult; showCommand?: boolean }) {
+// What a run produced. One statement looks exactly as it always did; a script
+// shows a result per statement, numbered, so you can see which one did what —
+// and, when it failed, which one stopped it.
+function QueryOutput({ res }: { res: QueryResult }) {
+  const all = res.results && res.results.length > 1 ? res.results : null
+  if (!all) return <Grid res={res} showCommand />
+  // A script runs in one transaction unless it opens its own, so a failure
+  // undoes the statements that already reported. Saying so beside the results
+  // stops them being read as work that survived.
+  return (
+    <div className="results">
+      {res.note && <div className="err-hint" style={{ marginBottom: 10 }}>{res.note}</div>}
+      {all.map((r, i) => (
+        <div key={i} className="result-step">
+          <div className="step-n">{i + 1} of {all.length}</div>
+          <Grid res={r} showCommand />
+        </div>
+      ))}
+      {res.error && <Grid res={{ error: res.error }} />}
+    </div>
+  )
+}
+
+function Grid({ res, showCommand }: { res: StatementResult; showCommand?: boolean }) {
   const [expanded, setExpanded] = useState<number | null>(null)
   useEffect(() => { setExpanded(null) }, [res]) // reset when new results arrive
   if (res.error) {
