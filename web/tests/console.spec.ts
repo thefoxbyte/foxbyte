@@ -77,6 +77,40 @@ test('the console runs SQL on that branch, and the Blackbox shows the change', a
   await expect(page.getByText(email).first()).toBeVisible()
 })
 
+// A console that cannot take a script is a console people paste into psql
+// instead. The results have to be separable too: a stack of grids with no way to
+// tell which statement produced which is barely better than one result.
+test('the console runs a script and says which statement produced what', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  const t = `e2e_script_${Date.now().toString().slice(-6)}`
+  await page.locator('select').first().selectOption(branch)
+  await page.locator('textarea.editor').fill(
+    `CREATE TABLE ${t} (id int); INSERT INTO ${t} VALUES (1),(2); SELECT count(*) FROM ${t};`)
+  await page.getByRole('button', { name: /run query/i }).click()
+
+  // One block per statement, each labelled with the SQL it came from.
+  await expect(page.locator('.result-step')).toHaveCount(3, { timeout: 30_000 })
+  await expect(page.locator('.result-step').nth(0)).toContainText(`CREATE TABLE ${t}`)
+  await expect(page.locator('.result-step').nth(1)).toContainText(`INSERT INTO ${t}`)
+  await expect(page.locator('.result-step').nth(2)).toContainText('SELECT count(*)')
+  // And each reports its own command tag, so the labels are not the only clue.
+  await expect(page.locator('.result-step').nth(1)).toContainText(/INSERT/)
+
+  // A failure names the statement that caused it, and says nothing was applied —
+  // the script ran in one transaction, so the row it inserted is gone.
+  await page.locator('textarea.editor').fill(
+    `INSERT INTO ${t} VALUES (3); SELECT * FROM no_such_table_here;`)
+  await page.getByRole('button', { name: /run query/i }).click()
+  await expect(page.getByText(/nothing was applied/i)).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('.result-step.failed')).toHaveCount(1)
+
+  // Proof it rolled back: still two rows, not three.
+  await page.locator('textarea.editor').fill(`SELECT count(*) FROM ${t}`)
+  await page.getByRole('button', { name: /run query/i }).click()
+  await expect(page.locator('.result td').first()).toHaveText('2', { timeout: 30_000 })
+})
+
 test('an API key is shown once, and the account page offers a password change', async ({ page }) => {
   await signIn(page)
   await page.goto('/keys', { waitUntil: 'domcontentloaded' })

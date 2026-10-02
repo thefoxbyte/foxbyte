@@ -861,3 +861,12 @@ th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0;
   letter-spacing: .06em; text-transform: uppercase;
   color: var(--muted); margin-bottom: 6px;
 }
+.results .step-n { display: flex; align-items: center; gap: 10px; }
+.results .step-i { flex: none; }
+.results .step-sql {
+  font: 400 11px/1.4 var(--font-mono, ui-monospace, monospace);
+  color: var(--muted); text-transform: none; letter-spacing: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.results .step-bad { flex: none; color: var(--danger, #e5484d); text-transform: none; letter-spacing: 0; }
+.results .result-step.failed .step-i { color: var(--danger, #e5484d); }
