@@ -62,10 +62,20 @@ echo
 echo "2. each binary reports its own edition"
 std_ver="$("$TMP/fox" version 2>&1)"
 ent_ver="$("$TMP/fox-enterprise" version 2>&1)"
-case "$std_ver" in
-	*"standard edition"*) ok "Standard: $std_ver" ;;
-	*) bad "Standard build reports: $std_ver" ;;
-esac
+# Standard says only "fox <version>", and the version has to be the last field.
+# `fox update` validates a staged engine by running this and parsing it — in the
+# ALREADY INSTALLED binary, which up to v1.0 took the last whitespace field. A
+# suffix here made every one of those installs refuse to update. The edition of
+# a Standard build is reported by `fox check`, in a row of its own, and by the
+# absence of a suffix here. cmd/fox holds the unit test for the invariant.
+# The shape, not the digits: a dev build reports "0.1.0-dev", which no release
+# ever does, so counting fields is the check that holds for both.
+std_nf="$(printf '%s' "$std_ver" | awk '{print NF}')"
+if [ "$std_nf" = 2 ]; then
+	ok "Standard: $std_ver (nothing follows the version, so a pre-v1.0.1 install can read it)"
+else
+	bad "Standard's version line must be '<cli> <version>' and nothing more: $std_ver"
+fi
 case "$ent_ver" in
 	*"enterprise edition"*) ok "Enterprise: $ent_ver" ;;
 	*) bad "Enterprise build reports: $ent_ver" ;;

@@ -29,7 +29,6 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 	"github.com/thefoxbyte/foxbyte/internal/mcp"
 	"github.com/thefoxbyte/foxbyte/internal/proxy"
-	"github.com/thefoxbyte/foxbyte/internal/version"
 	"github.com/thefoxbyte/foxbyte/web"
 )
 
@@ -216,7 +215,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "version", "-v", "--version":
-		fmt.Printf("fox %s (%s)\n", version.Version, editionLine())
+		fmt.Println(versionLine())
 	case "setup":
 		must(host.Setup())
 	case "vm":
