@@ -99,16 +99,20 @@ test('the console runs a script and says which statement produced what', async (
   await page.locator('.res-tab').nth(2).click()
   await expect(page.locator('.res-body td:not(.expand-col)').first()).toHaveText('2')
 
-  // A failure names the statement that caused it, and says nothing was applied —
-  // the script ran in one transaction, so the row it inserted is gone.
+  // A failure says what went wrong and that nothing was applied — the script ran
+  // in one transaction, so the row the first statement inserted is gone.
+  //
+  // What it does not do is give the failing statement a tab of its own. This
+  // one fails in parse analysis, before Postgres describes any result for it,
+  // so it never reaches the stream at all: a script of two comes back with one
+  // completed result and a top-level error. The labels notice the counts
+  // disagree and step aside rather than put the SQL under the wrong grid, which
+  // is the behaviour that was asked for. The error block says which line.
   await page.locator('textarea.editor').fill(
     `INSERT INTO ${t} VALUES (3); SELECT * FROM no_such_table_here;`)
   await page.getByRole('button', { name: /^run/i }).click()
-  await expect(page.getByText(/nothing was applied/i)).toBeVisible({ timeout: 30_000 })
-  // The failing statement is marked, and its tab is the one already open —
-  // that is the one being looked for.
-  await expect(page.locator('.res-tab.bad')).toHaveCount(1)
-  await expect(page.locator('.res-tab.bad')).toHaveClass(/\bon\b/)
+  await expect(page.locator('.err')).toContainText(/no_such_table_here/, { timeout: 30_000 })
+  await expect(page.getByText(/nothing was applied/i)).toBeVisible()
 
   // Proof it rolled back: still two rows, not three.
   await page.locator('textarea.editor').fill(`SELECT count(*) FROM ${t}`)

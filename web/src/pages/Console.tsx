@@ -529,10 +529,15 @@ function QueryOutput({ res, sql, expanded, onExpand }:
   )
 
   // One statement: nothing to choose between, so the strip is only a header.
+  // The note still belongs here. A script that fails at its second statement
+  // comes back with one completed result, so it lands in this branch and not
+  // the tabbed one below — and "nothing was applied" is exactly what someone
+  // whose first statement was an INSERT needs to be told.
   if (!all) {
     return (
       <div className="wb-out">
         <div className="res-tabs"><span className="pane-t">Result</span><span className="wb-sp" />{expander}</div>
+        {res.note && <div className="err-hint wb-note">{res.note}</div>}
         <div className="res-body"><Grid res={res} showCommand sql={sql} /></div>
       </div>
     )
