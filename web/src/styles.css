@@ -870,6 +870,13 @@ th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0;
    on a page people return to all day. */
 .wb { height: 100%; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 
+/* Readable by a screen reader, absent from the layout. Not display:none, which
+   would take it out of the accessibility tree along with everything else. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
 .wb-bar {
   flex: none; display: flex; align-items: center; gap: var(--s-3);
   padding: 0 var(--s-4); height: 50px;

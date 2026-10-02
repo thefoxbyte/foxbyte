@@ -270,6 +270,10 @@ export default function Console() {
 
   return (
     <div className="wb">
+      {/* The title block became the toolbar below, and took the page's only
+          heading with it. A screen reader announces a page by its heading, so
+          the heading stays — it just no longer costs any of the window. */}
+      <h1 className="sr-only">SQL Console</h1>
       {/* One row where the title block used to be. A heading and a sentence of
           explanation cost about 140px of height on every visit, and this page is
           one someone returns to all day — the controls earn that space and the

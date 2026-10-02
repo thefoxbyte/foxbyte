@@ -65,7 +65,7 @@ test('the console runs SQL on that branch, and the Blackbox shows the change', a
   await expect(picker.locator(`option[value="${branch}"]`)).toHaveCount(1)
   await picker.selectOption(branch)
   await page.locator('textarea.editor').fill(`CREATE TABLE ${table} (id int)`)
-  await page.getByRole('button', { name: /run query/i }).click()
+  await page.getByRole('button', { name: /^run/i }).click()
   await expect(page.locator('.grid-wrap, .result, table').first()).toBeVisible()
 
   await page.goto('/blackbox', { waitUntil: 'domcontentloaded' })
@@ -87,7 +87,7 @@ test('the console runs a script and says which statement produced what', async (
   await page.locator('select').first().selectOption(branch)
   await page.locator('textarea.editor').fill(
     `CREATE TABLE ${t} (id int); INSERT INTO ${t} VALUES (1),(2); SELECT count(*) FROM ${t};`)
-  await page.getByRole('button', { name: /run query/i }).click()
+  await page.getByRole('button', { name: /^run/i }).click()
 
   // One tab per statement, each labelled with the SQL it came from, so the open
   // one gets the whole pane instead of three tables sharing it.
@@ -97,13 +97,13 @@ test('the console runs a script and says which statement produced what', async (
   await expect(page.locator('.res-tab').nth(2)).toContainText('SELECT count(*)')
   // The third is the one with rows, and selecting it shows them.
   await page.locator('.res-tab').nth(2).click()
-  await expect(page.locator('.res-body td').first()).toHaveText('2')
+  await expect(page.locator('.res-body td:not(.expand-col)').first()).toHaveText('2')
 
   // A failure names the statement that caused it, and says nothing was applied —
   // the script ran in one transaction, so the row it inserted is gone.
   await page.locator('textarea.editor').fill(
     `INSERT INTO ${t} VALUES (3); SELECT * FROM no_such_table_here;`)
-  await page.getByRole('button', { name: /run query/i }).click()
+  await page.getByRole('button', { name: /^run/i }).click()
   await expect(page.getByText(/nothing was applied/i)).toBeVisible({ timeout: 30_000 })
   // The failing statement is marked, and its tab is the one already open —
   // that is the one being looked for.
@@ -112,8 +112,8 @@ test('the console runs a script and says which statement produced what', async (
 
   // Proof it rolled back: still two rows, not three.
   await page.locator('textarea.editor').fill(`SELECT count(*) FROM ${t}`)
-  await page.getByRole('button', { name: /run query/i }).click()
-  await expect(page.locator('.res-body td').first()).toHaveText('2', { timeout: 30_000 })
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.res-body td:not(.expand-col)').first()).toHaveText('2', { timeout: 30_000 })
 })
 
 // The editor is read-only while a query is in flight. Two reasons: a script's
@@ -126,7 +126,7 @@ test('the editor stops taking edits while a query is running', async ({ page }) 
   await page.locator('select').first().selectOption(branch)
   const editor = page.locator('textarea.editor')
   await editor.fill('SELECT pg_sleep(2)')
-  await page.getByRole('button', { name: /run query/i }).click()
+  await page.getByRole('button', { name: /^run/i }).click()
 
   // While it runs: read-only, and the Run button says so too.
   await expect(editor).toHaveJSProperty('readOnly', true)
@@ -173,7 +173,7 @@ test('the console fills the window and its panes can take it in turn', async ({ 
   // Expanding the results hides the editor; Esc brings it back.
   await page.locator('textarea.editor').fill('SELECT 1 AS one')
   await page.getByRole('button', { name: /^run/i }).click()
-  await expect(page.locator('.res-body td').first()).toHaveText('1', { timeout: 30_000 })
+  await expect(page.locator('.res-body td:not(.expand-col)').first()).toHaveText('1', { timeout: 30_000 })
   await page.locator('.res-tabs .wb-icon').click()
   await expect(page.locator('textarea.editor')).toHaveCount(0)
   await page.keyboard.press('Escape')
@@ -205,7 +205,7 @@ test('a syntax error says which line, and the gutter marks it', async ({ page })
   // A query that is fine marks nothing.
   await page.locator('textarea.editor').fill('SELECT 1 AS ok')
   await page.getByRole('button', { name: /^run/i }).click()
-  await expect(page.locator('.res-body td').first()).toHaveText('1', { timeout: 30_000 })
+  await expect(page.locator('.res-body td:not(.expand-col)').first()).toHaveText('1', { timeout: 30_000 })
   await expect(page.locator('.wb-gutter .bad')).toHaveCount(0)
 })
 
