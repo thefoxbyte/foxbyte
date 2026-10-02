@@ -588,11 +588,40 @@ assets and publishes the multi-arch Postgres image to GHCR.
 
 ---
 
+## Editions
+
+FoxByte ships as two binaries built from this one tree. `fox` is the Standard
+edition and is what the installer gives you by default. `fox-enterprise` is the
+same engine with the code under [`enterprise/`](enterprise/) compiled in, and its
+features need a licence — without one it behaves exactly like Standard.
+
+| | Standard | Enterprise |
+|---|---|---|
+| Branching, gateway, backups, PITR, time travel | yes | yes |
+| Blackbox: the hash-chained record of every schema change | yes | yes |
+| Agent guardrails: TRUNCATE and unqualified DELETE/UPDATE blocked | yes | yes |
+| Realtime row-level change feed | — | yes |
+| Signed anchors and independent verification | — | yes |
+| Policy rule engine, impact analysis, change requests | — | yes |
+| ETL pipelines | — | yes |
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh \
+  | FOX_EDITION=enterprise sh
+```
+
+The command is `fox` either way. On macOS and Windows the engine runs in a managed
+Linux VM, and the installer puts the matching edition on both sides.
+
 ## License
 
-- **Core / server** (this repo, except `clients/`): **AGPL-3.0-or-later** — see
-  [`LICENSE`](LICENSE).
+- **Core / server** (this repo, except `clients/` and `enterprise/`):
+  **AGPL-3.0-or-later** — see [`LICENSE`](LICENSE).
 - **Clients & SDKs** (`clients/`): **Apache-2.0** — see [`clients/LICENSE`](clients/LICENSE).
+- **Enterprise edition** (`enterprise/`): a commercial licence — see
+  [`enterprise/LICENSE`](enterprise/LICENSE). Source-available, not open source.
+  The Standard binary contains none of this code, which is checked against the
+  built binary rather than the source (`scripts/test_editions.sh`).
 
 > **Using FoxByte does not make your application AGPL.** Connecting over the
 > Postgres wire protocol is not a derivative work, and the client libraries are

@@ -190,6 +190,15 @@ jobs:
           test -f dist/fox-linux-arm64
           test -f dist/fox-darwin-amd64
           test -f dist/fox-darwin-arm64
+          # The Enterprise edition, built from the same tree with -tags enterprise.
+          # An Enterprise install updates itself from these, so a release missing
+          # one of them would quietly hand that platform the Standard binary and
+          # look to the user like their licence had stopped working.
+          test -f dist/fox-enterprise-windows-amd64.exe
+          test -f dist/fox-enterprise-linux-amd64
+          test -f dist/fox-enterprise-linux-arm64
+          test -f dist/fox-enterprise-darwin-amd64
+          test -f dist/fox-enterprise-darwin-arm64
           # the independent Blackbox verifier (Blackbox 2.0)
           test -f dist/fox-verify-linux-amd64
           test -f dist/fox-verify-linux-arm64

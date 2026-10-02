@@ -22,6 +22,18 @@ import (
 	"time"
 )
 
+// Release assets are named after the edition being built (binName, select.go),
+// so these fixtures follow the build rather than hard-coding the Standard names.
+// That is the point: an Enterprise install must update itself from the
+// Enterprise assets, and this suite proves it in whichever edition it runs.
+var (
+	engLinuxAMD64   = binName() + "-linux-amd64"
+	engLinuxARM64   = binName() + "-linux-arm64"
+	hostDarwinARM64 = binName() + "-darwin-arm64"
+	hostDarwinAMD64 = binName() + "-darwin-amd64"
+	hostWinAMD64    = binName() + "-windows-amd64.exe"
+)
+
 func mustVersion(t *testing.T, s string) Version {
 	t.Helper()
 	v, err := ParseVersion(s)
@@ -75,10 +87,10 @@ func TestRequiredAssets(t *testing.T) {
 		t    Target
 		want string
 	}{
-		{Target{GOOS: "darwin", HostArch: "arm64", GuestArch: "arm64"}, "fox-darwin-arm64 fox-linux-arm64"},
-		{Target{GOOS: "darwin", HostArch: "amd64"}, "fox-darwin-amd64 fox-linux-amd64"},
-		{Target{GOOS: "windows", HostArch: "amd64"}, "fox-windows-amd64.exe fox-linux-amd64 foxbyte-docker-context.tar.gz"},
-		{Target{GOOS: "linux", HostArch: "arm64"}, "fox-linux-arm64"},
+		{Target{GOOS: "darwin", HostArch: "arm64", GuestArch: "arm64"}, hostDarwinARM64 + " " + engLinuxARM64},
+		{Target{GOOS: "darwin", HostArch: "amd64"}, hostDarwinAMD64 + " " + engLinuxAMD64},
+		{Target{GOOS: "windows", HostArch: "amd64"}, hostWinAMD64 + " " + engLinuxAMD64 + " foxbyte-docker-context.tar.gz"},
+		{Target{GOOS: "linux", HostArch: "arm64"}, engLinuxARM64},
 	} {
 		if got := strings.Join(RequiredAssets(c.t), " "); got != c.want {
 			t.Errorf("RequiredAssets(%+v) = %q, want %q", c.t, got, c.want)
@@ -96,7 +108,7 @@ func rel(tag string, draft, pre bool, names ...string) Release {
 
 func TestCandidates(t *testing.T) {
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	full := []string{"SHA256SUMS", "SHA256SUMS.sig", "fox-linux-amd64", "fox-darwin-arm64"}
+	full := []string{"SHA256SUMS", "SHA256SUMS.sig", engLinuxAMD64, hostDarwinARM64}
 	rels := []Release{
 		rel("v1.0.0", false, false, "SHA256SUMS"), // still publishing: only checksums so far
 		rel("v0.9.5", false, true, full...),       // prerelease
@@ -139,23 +151,23 @@ func TestCandidates(t *testing.T) {
 
 func TestChecksums(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "fox-linux-amd64")
+	path := filepath.Join(dir, engLinuxAMD64)
 	os.WriteFile(path, []byte("binary"), 0o755)
 	sum := sha256.Sum256([]byte("binary"))
 	hexsum := hex.EncodeToString(sum[:])
-	text := strings.ToUpper(hexsum) + " *fox-linux-amd64\r\n\r\n# comment\n" + strings.Repeat("a", 64) + "  other file.tar.gz\n"
+	text := strings.ToUpper(hexsum) + " *" + engLinuxAMD64 + "\r\n\r\n# comment\n" + strings.Repeat("a", 64) + "  other file.tar.gz\n"
 	sums, err := ParseChecksums(strings.NewReader(text))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sums["other file.tar.gz"] == "" || sums["fox-linux-amd64"] != hexsum {
+	if sums["other file.tar.gz"] == "" || sums[engLinuxAMD64] != hexsum {
 		t.Fatalf("parsed %v", sums)
 	}
-	if err := sums.Verify("fox-linux-amd64", path); err != nil {
+	if err := sums.Verify(engLinuxAMD64, path); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 	os.WriteFile(path, []byte("tampered"), 0o755)
-	if err := sums.Verify("fox-linux-amd64", path); err == nil || !strings.Contains(err.Error(), "mismatch") {
+	if err := sums.Verify(engLinuxAMD64, path); err == nil || !strings.Contains(err.Error(), "mismatch") {
 		t.Fatalf("tampered file accepted: %v", err)
 	}
 	if err := sums.Verify("missing", path); err == nil {
@@ -254,9 +266,9 @@ func (f *fakeGitHub) client(cache string) *Client {
 func TestResolveAndDownload(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.98.0", map[string]string{"fox-linux-amd64": "old"})
-	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
-	f.publish("v0.99.1", map[string]string{"fox-linux-amd64": "unlisted"}, "fox-linux-amd64") // SHA256SUMS doesn't list it
+	f.publish("v0.98.0", map[string]string{engLinuxAMD64: "old"})
+	f.publish("v0.99.0", map[string]string{engLinuxAMD64: "new"})
+	f.publish("v0.99.1", map[string]string{engLinuxAMD64: "unlisted"}, engLinuxAMD64) // SHA256SUMS doesn't list it
 	c := f.client(filepath.Join(t.TempDir(), "cache.json"))
 	ctx := context.Background()
 
@@ -282,8 +294,8 @@ func TestResolveAndDownload(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	a, _ := o.Release.Asset("fox-linux-amd64")
-	path, err := c.Download(ctx, a, o.Sums["fox-linux-amd64"], dir)
+	a, _ := o.Release.Asset(engLinuxAMD64)
+	path, err := c.Download(ctx, a, o.Sums[engLinuxAMD64], dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +317,7 @@ func TestResolveAndDownload(t *testing.T) {
 
 func TestReleaseListCache(t *testing.T) {
 	f := newFakeGitHub(t)
-	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{engLinuxAMD64: "new"})
 	cache := filepath.Join(t.TempDir(), "cache.json")
 	c := f.client(cache)
 	for i := 0; i < 2; i++ {
@@ -321,7 +333,7 @@ func TestReleaseListCache(t *testing.T) {
 
 func TestBackgroundCheck(t *testing.T) {
 	f := newFakeGitHub(t)
-	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{engLinuxAMD64: "new"})
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
 
 	got := BackgroundCheck(f.client(""), "0.98.0", linux, 5*time.Second)()
@@ -355,7 +367,7 @@ func TestBackgroundCheck(t *testing.T) {
 func TestAvailableMakesNoAssetRequests(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{engLinuxAMD64: "new"})
 	c := f.client("")
 	ctx := context.Background()
 
@@ -383,7 +395,7 @@ func TestAvailableMakesNoAssetRequests(t *testing.T) {
 func TestNoticeIsRememberedBetweenStarts(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{engLinuxAMD64: "new"})
 	c := f.client(filepath.Join(t.TempDir(), "update-check.json"))
 
 	first := BackgroundCheck(c, "0.98.0", linux, 5*time.Second)()
@@ -428,14 +440,14 @@ func TestNoticeIsRememberedBetweenStarts(t *testing.T) {
 func TestNewReleaseShowsOnNextStart(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.98.0", map[string]string{"fox-linux-amd64": "current"})
+	f.publish("v0.98.0", map[string]string{engLinuxAMD64: "current"})
 	cache := filepath.Join(t.TempDir(), "update-check.json")
 	c := f.client(cache)
 
 	if got := BackgroundCheck(c, "0.98.0", linux, 5*time.Second)(); got != "" {
 		t.Fatalf("up to date, but notice = %q", got)
 	}
-	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
+	f.publish("v0.99.0", map[string]string{engLinuxAMD64: "new"})
 	if got := BackgroundCheck(c, "0.98.0", linux, 5*time.Second)(); !strings.Contains(got, "v0.99.0 is available") {
 		t.Fatalf("release published after an up-to-date check: next start printed %q", got)
 	}
@@ -458,8 +470,8 @@ func TestReleaseForSetup(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
 	ctx := context.Background()
-	f.publish("v0.98.0", map[string]string{"fox-linux-amd64": "old"})
-	f.publish("v0.99.0", map[string]string{"fox-linux-amd64": "new"})
+	f.publish("v0.98.0", map[string]string{engLinuxAMD64: "old"})
+	f.publish("v0.99.0", map[string]string{engLinuxAMD64: "new"})
 	c := f.client("")
 
 	// Newest complete release, and its checksums come with it.
@@ -467,7 +479,7 @@ func TestReleaseForSetup(t *testing.T) {
 	if err != nil || o == nil || o.Release.Tag != "v0.99.0" {
 		t.Fatalf("latest = %v, %v", o, err)
 	}
-	if o.Sums["fox-linux-amd64"] == "" {
+	if o.Sums[engLinuxAMD64] == "" {
 		t.Error("Release didn't bring the checksums setup needs")
 	}
 	// "" means the same as "latest".
@@ -482,7 +494,7 @@ func TestReleaseForSetup(t *testing.T) {
 		t.Error("an unknown tag was accepted")
 	}
 	// A release still being published (no engine yet) is skipped, not offered.
-	f.publish("v1.0.0", map[string]string{"fox-darwin-arm64": "wrong platform"})
+	f.publish("v1.0.0", map[string]string{hostDarwinARM64: "wrong platform"})
 	if o, err := c.Release(ctx, "latest", linux); err != nil || o.Release.Tag != "v0.99.0" {
 		t.Fatalf("incomplete release offered: %v, %v", o, err)
 	}
@@ -653,11 +665,11 @@ func TestReleaseWorkflowPublishesUpdateAssets(t *testing.T) {
 func TestResolveRequiresTheReleaseSignature(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.9.0", map[string]string{"fox-linux-amd64": "good"})
-	f.publish("v0.9.1", map[string]string{"fox-linux-amd64": "forged"})
+	f.publish("v0.9.0", map[string]string{engLinuxAMD64: "good"})
+	f.publish("v0.9.1", map[string]string{engLinuxAMD64: "forged"})
 	_, other, _ := ed25519.GenerateKey(nil)
 	f.files["/dl/v0.9.1/SHA256SUMS.sig"] = ed25519.Sign(other, f.files["/dl/v0.9.1/SHA256SUMS"])
-	f.publish("v0.9.2", map[string]string{"fox-linux-amd64": "unsigned"})
+	f.publish("v0.9.2", map[string]string{engLinuxAMD64: "unsigned"})
 	f.releases[0].Assets = f.releases[0].Assets[:len(f.releases[0].Assets)-1] // no .sig asset
 	off, err := f.client(t.TempDir()).Resolve(context.Background(), mustVersion(t, "0.8.0"), linux, "")
 	if err != nil || off == nil || off.Release.Tag != "v0.9.0" {
@@ -674,7 +686,7 @@ func TestResolveRequiresTheReleaseSignature(t *testing.T) {
 func TestResolveReportsABadSignature(t *testing.T) {
 	f := newFakeGitHub(t)
 	linux := Target{GOOS: "linux", HostArch: "amd64"}
-	f.publish("v0.9.1", map[string]string{"fox-linux-amd64": "forged"})
+	f.publish("v0.9.1", map[string]string{engLinuxAMD64: "forged"})
 	_, other, _ := ed25519.GenerateKey(nil)
 	f.files["/dl/v0.9.1/SHA256SUMS.sig"] = ed25519.Sign(other, f.files["/dl/v0.9.1/SHA256SUMS"])
 	off, err := f.client(t.TempDir()).Resolve(context.Background(), mustVersion(t, "0.8.0"), linux, "")
@@ -682,7 +694,7 @@ func TestResolveReportsABadSignature(t *testing.T) {
 		t.Fatalf("resolve = %+v, %v; want the signature error", off, err)
 	}
 	// A genuine newer release still wins: the bad one is simply not offered.
-	f.publish("v0.9.2", map[string]string{"fox-linux-amd64": "good"})
+	f.publish("v0.9.2", map[string]string{engLinuxAMD64: "good"})
 	off, err = f.client(t.TempDir()).Resolve(context.Background(), mustVersion(t, "0.8.0"), linux, "")
 	if err != nil || off == nil || off.Release.Tag != "v0.9.2" {
 		t.Fatalf("resolve = %+v, %v; want v0.9.2", off, err)

@@ -15,6 +15,11 @@ required=(
 	fox-linux-arm64
 	fox-linux-amd64
 	fox-windows-amd64.exe
+	fox-enterprise-darwin-arm64
+	fox-enterprise-darwin-amd64
+	fox-enterprise-linux-arm64
+	fox-enterprise-linux-amd64
+	fox-enterprise-windows-amd64.exe
 	foxbyte-docker-context.tar.gz
 )
 tmp="$(mktemp -d)"

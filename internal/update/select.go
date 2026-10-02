@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 // Target is the platform being updated: the host OS and CPU, and the CPU of the
@@ -19,18 +22,29 @@ type Target struct {
 // ImageContextAsset is the Postgres image build context Windows installs ship.
 const ImageContextAsset = "foxbyte-docker-context.tar.gz"
 
+// binName is the asset prefix for this build's edition. An update must stay in
+// the edition it is updating: fetching the Standard asset into an Enterprise
+// install would silently remove the paid features, and the user would read it as
+// their licence having stopped working.
+func binName() string {
+	if edition.Enterprise {
+		return brand.CLI + "-enterprise"
+	}
+	return brand.CLI
+}
+
 // EngineAsset is the Linux engine binary: it runs in the VM (macOS), the WSL
 // distro (Windows, always x86_64), or directly on a Linux host.
 func EngineAsset(t Target) string {
 	switch t.GOOS {
 	case "windows":
-		return "fox-linux-amd64"
+		return binName() + "-linux-amd64"
 	case "darwin":
 		if t.GuestArch != "" {
-			return "fox-linux-" + t.GuestArch
+			return binName() + "-linux-" + t.GuestArch
 		}
 	}
-	return "fox-linux-" + t.HostArch
+	return binName() + "-linux-" + t.HostArch
 }
 
 // HostAsset is the `fox` binary for the computer itself on macOS and Windows,
@@ -38,9 +52,9 @@ func EngineAsset(t Target) string {
 func HostAsset(t Target) string {
 	switch t.GOOS {
 	case "darwin":
-		return "fox-darwin-" + t.HostArch
+		return binName() + "-darwin-" + t.HostArch
 	case "windows":
-		return "fox-windows-amd64.exe"
+		return binName() + "-windows-amd64.exe"
 	}
 	return ""
 }

@@ -575,6 +575,15 @@
       <li class="ok">Retired env prefixes, state directory, VM names and installs still handled</li>
       <li class="ok">Guards: retired names anywhere, product names in stored SQL, durable names spelt twice</li>
       <li class="lim">The sweep is text substitution: review its diff (it over-reached twice)</li></ul></td><td class="tb">Unit (brand, gen, oldnames), in CI via go test</td></tr>
+    <tr data-id="M8" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">M8</td><td><b>Two editions</b><ul class="subs">
+      <li class="ok">One tree, two binaries: <code>fox</code> (Standard, AGPL) and <code>fox-enterprise</code></li>
+      <li class="ok"><code>enterprise/</code> has its own commercial LICENSE and <code>LicenseRef-</code> headers</li>
+      <li class="ok">The Standard binary contains no paid code — checked with <code>go tool nm</code>, not just the source</li>
+      <li class="ok">An Enterprise build with no licence behaves exactly like Standard</li>
+      <li class="ok">Installer <code>--edition</code>/<code>FOX_EDITION</code>; launcher and VM engine always match</li>
+      <li class="ok"><code>fox update</code> stays inside its edition; the release publishes and checks both sets</li>
+      <li class="lim">Source-available deters, it does not prevent: the check can be removed in breach</li>
+      <li class="lim">A dependency only the paid code uses still appears in the AGPL module’s <code>go.mod</code></li></ul></td><td class="tb">Unit (edition, boundary), scripts/test_editions.sh, CI builds both</td></tr>
   </table>
 </section>
 

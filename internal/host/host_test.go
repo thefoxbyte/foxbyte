@@ -41,7 +41,9 @@ func TestBundledLinuxBinaryPrefersCache(t *testing.T) {
 	if err := os.MkdirAll(cache, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(cache, "fox-linux-testarch")
+	// Named for the edition under test: an Enterprise launcher seeds the VM with
+	// the Enterprise engine, not the Standard one.
+	want := filepath.Join(cache, EngineAsset("testarch"))
 	if err := os.WriteFile(want, elfMagic, 0o755); err != nil {
 		t.Fatal(err)
 	}

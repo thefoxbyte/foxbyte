@@ -8,14 +8,33 @@ export const AGENT_API = (import.meta.env.VITE_AGENT_API_URL as string | undefin
 export type User = { id: number; email: string }
 export type HAState = { enabled: boolean; standby: string; streaming: boolean; primary: string }
 export type StorageInfo = { used: string; avail: string }
+// Which paid features this engine can serve. A Standard build reports none, and
+// so does an Enterprise build with no licence — so a page asks `features` rather
+// than `edition` before deciding it may load, and uses `edition` only to explain
+// why something is locked.
+export type Feature =
+  | 'realtime'
+  | 'anchors'
+  | 'policy'
+  | 'impact'
+  | 'promotion'
+  | 'export'
+  | 'pipelines'
+
 export type Status = {
   mainReady: boolean
   branches: number
   agents: number
+  edition: 'standard' | 'enterprise'
+  features: Feature[]
   ha: HAState
   storage: StorageInfo
   servers: { gateway: boolean; api: boolean }
 }
+
+// has answers "may this run here?". Older engines predate these fields, so an
+// absent list means no paid features rather than a crash.
+export const has = (s: Status | null | undefined, f: Feature) => !!s?.features?.includes(f)
 export type Branch = {
   name: string; primary: boolean; agent: boolean; state: string
   used: string; refer: string; connections: number; port: string

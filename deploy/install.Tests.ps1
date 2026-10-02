@@ -151,10 +151,30 @@ Describe 'installer prefers the prebuilt distro' {
     }
 
     It 'verifies every FoxByte asset it keeps' {
-        foreach ($name in 'fox-windows-amd64.exe', 'fox-linux-amd64', 'foxbyte-docker-context.tar.gz', 'foxbyte-distro.tar.zst', 'foxbyte-distro.tar.gz') {
+        # The launcher and the engine are named from the edition, so looking for
+        # their literal names would only prove a string appears somewhere in the
+        # file. Assert the verification call itself instead -- which is what the
+        # literal scan was standing in for.
+        $script:src | Should -Match ([regex]::Escape('Assert-FoxChecksum "$Prefix\$Cli.exe" $HostAsset'))
+        $script:src | Should -Match ([regex]::Escape('Assert-FoxChecksum "$Prefix\$EngineAsset" $EngineAsset'))
+        foreach ($name in 'foxbyte-docker-context.tar.gz', 'foxbyte-distro.tar.zst', 'foxbyte-distro.tar.gz') {
             $script:src | Should -Match ([regex]::Escape("Assert-FoxChecksum"))
             $script:src | Should -Match ([regex]::Escape($name))
         }
+    }
+
+    It 'names both binaries after the edition it was asked for' {
+        # A Standard engine under an Enterprise launcher would offer commands the
+        # engine does not have, and the mismatch reads as a bug rather than a
+        # mixed install. Both names come from one $BinName.
+        $script:src | Should -Match '\$BinName\s*=\s*\$Cli\b'
+        $script:src | Should -Match '\$BinName\s*=\s*"\$Cli-enterprise"'
+        $script:src | Should -Match '\$HostAsset\s*=\s*"\$BinName-windows-amd64\.exe"'
+        $script:src | Should -Match '\$EngineAsset\s*=\s*"\$BinName-linux-amd64"'
+    }
+
+    It 'refuses an edition it does not have a binary for' {
+        $script:src | Should -Match 'unknown FOX_EDITION'
     }
 }
 

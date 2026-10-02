@@ -3,13 +3,19 @@
 # FoxByte runs inside the Linux dev VM (ZFS + Docker); day-to-day operation is
 # via `lima /tmp/fox <command>`. This Makefile just builds/checks the CLI.
 
-.PHONY: integration-sdks integration-ui release-key build vet fmt vm-build test integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade test-vm test-vm-stop test-vm-delete
+.PHONY: integration-sdks integration-ui release-key build build-enterprise vet vet-enterprise fmt vm-build test test-enterprise integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade integration-editions test-vm test-vm-stop test-vm-delete
 
 VERSION ?= 0.1.0
 LDFLAGS := -s -w -X github.com/thefoxbyte/foxbyte/internal/version.Version=$(VERSION)
 
 build:            ## Build the CLI into ./bin/fox (host)
 	go build -o bin/fox ./cmd/fox
+
+# The paid edition. `-tags enterprise` is the only difference: it compiles in
+# everything under enterprise/, which the Standard binary above does not contain
+# at all. That is what keeps ./bin/fox purely AGPL and freely redistributable.
+build-enterprise: ## Build the Enterprise CLI into ./bin/fox-enterprise (host)
+	go build -tags enterprise -o bin/fox-enterprise ./cmd/fox
 
 # The distro image bakes in one binary. Building the other four release
 # targets to get it cost several minutes of cross-compilation per run, and
@@ -27,10 +33,14 @@ release: web-build   ## Cross-compile release binaries + the Windows image conte
 	@rm -f dist/fox-* dist/foxbyte-docker-context.tar.gz
 	@for t in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64 windows/amd64; do \
 		os=$${t%/*}; arch=$${t#*/}; ext=""; [ "$$os" = "windows" ] && ext=".exe"; \
-		tags=""; [ "$$os" = "linux" ] && tags="-tags embedui"; \
+		std="-tags embedui"; ent="-tags embedui,enterprise"; \
+		[ "$$os" = "linux" ] || { std=""; ent="-tags enterprise"; }; \
 		echo "  building fox-$$os-$$arch$$ext"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
-			go build -trimpath $$tags -ldflags "$(LDFLAGS)" -o dist/fox-$$os-$$arch$$ext ./cmd/fox; \
+			go build -trimpath $$std -ldflags "$(LDFLAGS)" -o dist/fox-$$os-$$arch$$ext ./cmd/fox; \
+		echo "  building fox-enterprise-$$os-$$arch$$ext"; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
+			go build -trimpath $$ent -ldflags "$(LDFLAGS)" -o dist/fox-enterprise-$$os-$$arch$$ext ./cmd/fox; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
 			go build -trimpath -ldflags "$(LDFLAGS)" -o dist/fox-verify-$$os-$$arch$$ext ./cmd/fox-verify; \
 	done
@@ -42,6 +52,11 @@ release: web-build   ## Cross-compile release binaries + the Windows image conte
 vet:              ## go vet
 	go vet ./...
 
+# Without the tag, enterprise/ is only its untagged files, so `go vet ./...`
+# above never looks at the paid code. Both have to be run.
+vet-enterprise:   ## go vet, with the enterprise code compiled in
+	go vet -tags enterprise ./...
+
 fmt:              ## list files needing gofmt
 	gofmt -l cmd internal
 
@@ -50,6 +65,12 @@ vm-build: web-build   ## Build the Linux binary (UI embedded) inside the Lima VM
 
 test:             ## Run unit tests (host, no VM needed)
 	go test ./...
+
+# Same reason as vet-enterprise: a test under enterprise/ does not run without
+# the tag, and internal/edition's own tests assert different things in each
+# edition. Both editions have to pass.
+test-enterprise:  ## Run unit tests with the enterprise code compiled in
+	go test -tags enterprise ./...
 
 # The integration suites are destructive (they wipe Blackbox history, restore
 # main to an earlier point, fail HA over), so they run in a throwaway VM of
@@ -87,6 +108,10 @@ integration-sdks: test-vm ## Run the Python and TypeScript client contract tests
 # npm builds here on the host, since the repository is read-only in the VM.
 integration-ui: web-build test-vm ## Run the web console's Playwright tests in the test VM (first run downloads Chromium)
 	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -tags embedui -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_ui.sh"
+
+# Host-side, no VM: builds both editions and looks inside them.
+integration-editions: ## Check the edition boundary against the built binaries
+	bash scripts/test_editions.sh
 
 integration-pg-upgrade: test-vm ## Run the export/restore and `fox pg upgrade` checks (16 -> the shipped major) in the test VM
 	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_pg_upgrade.sh"

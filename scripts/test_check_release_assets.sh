@@ -33,7 +33,12 @@ chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH" STUB_RELEASE="$tmp/rel" CHECK_RETRY_SLEEP=0
 mkdir -p "$tmp/rel"
 
-all="fox-darwin-arm64 fox-darwin-amd64 fox-linux-arm64 fox-linux-amd64 fox-windows-amd64.exe foxbyte-docker-context.tar.gz"
+# Every file `fox update` needs, both editions: an Enterprise install updates
+# itself from the fox-enterprise-* set, so a release missing one of those hands
+# that platform the Standard binary.
+std="fox-darwin-arm64 fox-darwin-amd64 fox-linux-arm64 fox-linux-amd64 fox-windows-amd64.exe"
+ent="fox-enterprise-darwin-arm64 fox-enterprise-darwin-amd64 fox-enterprise-linux-arm64 fox-enterprise-linux-amd64 fox-enterprise-windows-amd64.exe"
+all="$std $ent foxbyte-docker-context.tar.gz"
 sum="$(printf 'a%.0s' $(seq 64))"
 publish() { # publish "<attached names>" "<listed names>"
 	printf '%s\n' $1 SHA256SUMS SHA256SUMS.sig fox-verify-linux-amd64 > "$tmp/rel/assets"
@@ -55,6 +60,9 @@ expect "a missing attachment fails" 1 "missing fox-linux-arm64"
 publish "$all" "${all/fox-windows-amd64.exe /}"
 expect "an unlisted checksum fails" 1 "doesn't list fox-windows-amd64.exe"
 
+publish "${all/fox-enterprise-linux-amd64 /}" "$all"
+expect "a missing Enterprise attachment fails" 1 "missing fox-enterprise-linux-amd64"
+
 publish "$all" "$all"
 sed -i.bak 's/  fox-darwin-arm64$/ *fox-darwin-arm64/' "$tmp/rel/SHA256SUMS"
 printf '%s  fox-linux-amd64\r\n' "$sum" >> "$tmp/rel/SHA256SUMS"
@@ -65,8 +73,7 @@ grep -vx SHA256SUMS "$tmp/rel/assets" > "$tmp/rel/a" && mv "$tmp/rel/a" "$tmp/re
 expect "a release without SHA256SUMS fails" 1 "has no SHA256SUMS"
 
 # A release that was not signed is refused: fox update would never install it.
-publish "fox-darwin-arm64 fox-darwin-amd64 fox-linux-arm64 fox-linux-amd64 fox-windows-amd64.exe foxbyte-docker-context.tar.gz" \
-        "fox-darwin-arm64 fox-darwin-amd64 fox-linux-arm64 fox-linux-amd64 fox-windows-amd64.exe foxbyte-docker-context.tar.gz"
+publish "$all" "$all"
 grep -vx SHA256SUMS.sig "$tmp/rel/assets" > "$tmp/rel/assets.new" && mv "$tmp/rel/assets.new" "$tmp/rel/assets"
 if out="$(CHECK_RETRY_SLEEP=0 bash "$script" v9.9.9 2>&1)"; then
 	bad "an unsigned release fails"

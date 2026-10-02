@@ -72,7 +72,7 @@ paths:
   /api/status:
     get:
       tags: [status]
-      summary: Primary readiness, branch/agent counts, HA, storage, and per-server liveness.
+      summary: Primary readiness, branch/agent counts, edition and licensed features, HA, storage, and per-server liveness.
       responses:
         "200": { description: OK, content: { application/json: { schema: { type: object } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }

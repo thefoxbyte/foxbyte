@@ -163,12 +163,12 @@ func regularFile(p string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
-// bundledLinuxBinary looks for a prebuilt linux fox (fox-linux-<arch>): first a
+// bundledLinuxBinary looks for a prebuilt linux fox (EngineAsset): first a
 // build `fox setup` freshly downloaded into the cache dir, then one the installer
 // staged alongside the host binary, then ./dist for a dev build. Used by both the
 // macOS (Lima) and Windows (WSL2) setup paths to seed the guest.
 func bundledLinuxBinary(arch string) string {
-	if c := filepath.Join(cacheDir(), "fox-linux-"+arch); regularFile(c) {
+	if c := filepath.Join(cacheDir(), EngineAsset(arch)); regularFile(c) {
 		return c
 	}
 	exe, err := os.Executable()
@@ -177,10 +177,10 @@ func bundledLinuxBinary(arch string) string {
 	}
 	dir := filepath.Dir(exe)
 	for _, c := range []string{
-		filepath.Join(dir, "fox-linux-"+arch),
-		filepath.Join(dir, "..", "share", "foxbyte", "fox-linux-"+arch),
-		filepath.Join(dir, "..", "dist", "fox-linux-"+arch),
-		filepath.Join(dir, "dist", "fox-linux-"+arch),
+		filepath.Join(dir, EngineAsset(arch)),
+		filepath.Join(dir, "..", "share", "foxbyte", EngineAsset(arch)),
+		filepath.Join(dir, "..", "dist", EngineAsset(arch)),
+		filepath.Join(dir, "dist", EngineAsset(arch)),
 	} {
 		if regularFile(c) {
 			return c
@@ -199,7 +199,7 @@ func refreshEngineBinary(arch string) string {
 	if v := brand.Getenv("NO_REFRESH"); v == "1" || v == "true" {
 		return ""
 	}
-	asset := "fox-linux-" + arch
+	asset := EngineAsset(arch)
 	dest := filepath.Join(cacheDir(), asset)
 	fmt.Println("Checking for the latest engine build…")
 

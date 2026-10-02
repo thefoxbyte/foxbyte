@@ -54,7 +54,7 @@ func (f *fakeEngine) output(bin string, args ...string) (string, error) {
 
 // fakeReleases serves a GitHub releases list with one release, v0.99.0.
 func fakeReleases(t *testing.T, tamper bool) *httptest.Server {
-	files := map[string]string{"fox-linux-amd64": "engine 0.99.0"}
+	files := map[string]string{EngineAsset("amd64"): "engine 0.99.0"}
 	var mux http.ServeMux
 	srv := httptest.NewServer(&mux)
 	t.Cleanup(srv.Close)
@@ -130,7 +130,7 @@ func TestUpdateFlow(t *testing.T) {
 	}
 	want := []string{
 		"prepare",
-		"stage fox-linux-amd64",
+		"stage " + EngineAsset("amd64"),
 		"/staged _update-guest stop-services",
 		"/staged _update-guest install-engine --src /staged --dest /usr/local/bin/fox",
 		"/usr/local/bin/fox up",

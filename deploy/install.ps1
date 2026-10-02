@@ -15,8 +15,13 @@
 # verified stops the install (FOX_NO_VERIFY=1 deliberately skips the check).
 #
 # Env overrides: FOX_VERSION (default "latest"), FOX_REPO, FOX_PREFIX,
+# FOX_EDITION ("standard" or "enterprise"; default standard),
 # FOX_NO_SETUP (skip `fox setup`), FOX_NO_ELEVATE (never prompt for admin),
 # FOX_NO_VERIFY (skip checksum verification).
+#
+# The Enterprise edition (paid) is a different binary from the same release and
+# needs a licence to unlock its features:
+#   $env:FOX_EDITION = 'enterprise'; irm .../install.ps1 | iex
 
 $ErrorActionPreference = 'Stop'
 
@@ -37,6 +42,19 @@ $DefaultRepo = "thefoxbyte/foxbyte"
 $Repo    = if ($env:FOX_REPO)    { $env:FOX_REPO }    else { $DefaultRepo }
 $Version = if ($env:FOX_VERSION) { $env:FOX_VERSION } else { 'latest' }
 $Prefix  = if ($env:FOX_PREFIX)  { $env:FOX_PREFIX }  else { "$env:LOCALAPPDATA\Programs\$Slug" }
+
+# Which edition to fetch. The asset names carry it; the installed command is
+# `fox.exe` either way, so nothing downstream has to know which one is here.
+# The launcher and the engine inside the WSL distro must match, or the launcher
+# would offer commands the engine does not have.
+$Edition = if ($env:FOX_EDITION) { $env:FOX_EDITION } else { 'standard' }
+switch ($Edition) {
+    'standard'   { $BinName = $Cli }
+    'enterprise' { $BinName = "$Cli-enterprise" }
+    default { throw "unknown FOX_EDITION '$Edition' (expected 'standard' or 'enterprise')" }
+}
+$HostAsset   = "$BinName-windows-amd64.exe"
+$EngineAsset = "$BinName-linux-amd64"
 
 # Ubuntu publishes WSL rootfs tarballs directly; pulling from upstream keeps our
 # own release small and avoids redistributing Ubuntu. Note the path: only
@@ -327,14 +345,14 @@ function Invoke-Install {
     # 2. The launcher and the engine binary, each checked against the release's
     #    own SHA256SUMS before it is kept: both run as root inside the distro.
     Write-Step "Downloading FoxByte"
-    Get-File (Get-FoxAsset 'fox-windows-amd64.exe') "$Prefix\$Cli.exe" | Out-Null
-    Assert-FoxChecksum "$Prefix\$Cli.exe" 'fox-windows-amd64.exe'
+    Get-File (Get-FoxAsset $HostAsset) "$Prefix\$Cli.exe" | Out-Null
+    Assert-FoxChecksum "$Prefix\$Cli.exe" $HostAsset
     # Installers from 21 Sep 2026 until this fix saved the launcher as bb.exe
     # (a rename rule for the SQL schema caught the file name), so `fox` was not a
     # command. Remove that copy so only one launcher is on PATH.
     Remove-Item -LiteralPath "$Prefix\bb.exe" -Force -ErrorAction SilentlyContinue
-    Get-File (Get-FoxAsset 'fox-linux-amd64') "$Prefix\fox-linux-amd64" | Out-Null
-    Assert-FoxChecksum "$Prefix\fox-linux-amd64" 'fox-linux-amd64'
+    Get-File (Get-FoxAsset $EngineAsset) "$Prefix\$EngineAsset" | Out-Null
+    Assert-FoxChecksum "$Prefix\$EngineAsset" $EngineAsset
 
     # The engine finds a Docker build context relative to the working directory,
     # which finds nothing for someone who installed fox rather than cloning the

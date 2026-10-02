@@ -9,12 +9,20 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh | sh
 #
+# The Enterprise edition (paid) is a different binary from the same release. It
+# needs a licence to unlock its features, and behaves exactly like Standard
+# without one:
+#
+#   curl -fsSL .../install.sh | FOX_EDITION=enterprise sh
+#   sh install.sh --edition enterprise        # when the script is downloaded first
+#
 # Every download is checked against the release's SHA256SUMS before it is
 # installed: these binaries are run as root, and a truncated or altered download
 # must never reach $PREFIX/bin. Anything that cannot be verified stops the
 # install (FOX_NO_VERIFY=1 deliberately skips the check).
 #
 # Env overrides:
+#   FOX_EDITION   standard | enterprise          (default: standard)
 #   FOX_VERSION   release tag to install         (default: latest)
 #   FOX_REPO      GitHub owner/repo              (default: thefoxbyte/foxbyte)
 #   FOX_DIST      install from a local dir of prebuilt binaries instead of downloading
@@ -33,6 +41,20 @@ ENV_PREFIX="FOX_"
 STATE_DIR=".fox"
 DEFAULT_REPO="thefoxbyte/foxbyte"
 # end generated
+
+EDITION="${FOX_EDITION:-standard}"
+# --edition too, for a downloaded copy run directly. A piped install has no
+# arguments, so the environment variable is the one that matters there.
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--edition)   EDITION="${2:-}"; shift 2 ;;
+		--edition=*) EDITION="${1#*=}"; shift ;;
+		-h|--help)
+			printf 'usage: install.sh [--edition standard|enterprise]\n'
+			exit 0 ;;
+		*) printf 'error: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+	esac
+done
 
 REPO="${FOX_REPO:-$DEFAULT_REPO}"
 VERSION="${FOX_VERSION:-latest}"
@@ -64,7 +86,15 @@ case "$arch" in
 	*)             err "unsupported architecture: $arch" ;;
 esac
 
-asset="$CLI-$os-$arch"
+# The download's name carries the edition; the installed command is `fox` either
+# way, so nothing downstream has to care which one is on the machine.
+case "$EDITION" in
+	standard)   BIN="$CLI" ;;
+	enterprise) BIN="$CLI-enterprise" ;;
+	*) err "unknown edition: $EDITION (expected 'standard' or 'enterprise')" ;;
+esac
+
+asset="$BIN-$os-$arch"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -193,7 +223,10 @@ $SUDO install -m 0755 "$tmp/$CLI" "$BINDIR/$CLI"
 # On macOS the engine runs in a Linux VM; stash the matching Linux binary so
 # `fox setup` can install it into the VM without another download.
 if [ "$os" = "darwin" ]; then
-	linux_asset="$CLI-linux-$arch"
+	# Same edition as the launcher above. A Standard engine under an Enterprise
+	# launcher would offer commands the engine does not have, and the mismatch
+	# would read as a bug rather than a mixed install.
+	linux_asset="$BIN-linux-$arch"
 	say "Fetching the Linux engine binary ($linux_asset) for the VM…"
 	if [ -n "${FOX_DIST:-}" ] && [ -f "$FOX_DIST/$linux_asset" ]; then
 		cp "$FOX_DIST/$linux_asset" "$tmp/$linux_asset"
@@ -212,7 +245,7 @@ if [ "$os" = "darwin" ]; then
 fi
 
 echo
-say "Installed $CLI $("$BINDIR/$CLI" version 2>/dev/null | awk '{print $2}')"
+say "Installed $CLI $("$BINDIR/$CLI" version 2>/dev/null | awk '{print $2}') ($EDITION edition)"
 if [ "$os" = "darwin" ]; then
 	cat <<EOF
 

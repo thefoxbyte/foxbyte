@@ -24,6 +24,20 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./...
+      # Both editions. Without the tag, enterprise/ is only its untagged
+      # placeholder files, so `go build`, `go vet` and `go test` above never look
+      # at the paid code at all — a break there would reach a release unseen.
+      - name: Build (enterprise)
+        run: go build -tags enterprise ./...
+      - name: Vet (enterprise)
+        run: go vet -tags enterprise ./...
+      - name: Test (enterprise)
+        run: go test -tags enterprise ./...
+      # The edition boundary, checked against the linked binaries: the Standard
+      # build must contain no code from enterprise/, because that is what keeps it
+      # purely AGPL and freely redistributable.
+      - name: Edition boundary
+        run: bash scripts/test_editions.sh
       # Under the race detector as well (audit v2 G25). The engine has real
       # concurrency — the backup and checkpoint schedulers, the gateway's
       # per-connection goroutines, and an auth store three services open at

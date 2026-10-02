@@ -29,6 +29,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/httpx"
 	"github.com/thefoxbyte/foxbyte/internal/tlsutil"
 	"github.com/thefoxbyte/foxbyte/web"
@@ -77,6 +78,9 @@ func Serve(addr string) error {
 	store.MountKeys(api)          // /api/keys (protected via Authn below)
 	registerAccounts(api, store)  // /api/account*, /api/users* (admins)
 	registerRequests(api, store)  // /api/branches/{name}/request, /api/requests*
+	// The paid edition's routes. Compiled out of the Standard build entirely,
+	// where this call does nothing (internal/controlplane/enterprise_off.go).
+	mountEnterprise(api, mux, store, acl)
 	// versionAlias first: /api/v1/… is rewritten to /api/… before authorization or
 	// the Blackbox alias look at the path, so every route is reachable both ways
 	// without a second copy of it (audit v2 G35).
@@ -193,9 +197,15 @@ func registerAPI(mux *http.ServeMux) {
 			"mainReady": mainReady,
 			"branches":  nBranch,
 			"agents":    nAgent,
-			"ha":        branch.HAInfo(),
-			"backup":    cachedBackupHealth(),
-			"storage":   branch.StorageInfo(),
+			// Which edition this engine is, and which paid features are actually
+			// usable right now. The console shows a locked feature rather than
+			// hiding it, so it needs both: a Standard build reports no features,
+			// and so does an Enterprise build with no licence.
+			"edition":  edition.Name(),
+			"features": featureNames(),
+			"ha":       branch.HAInfo(),
+			"backup":   cachedBackupHealth(),
+			"storage":  branch.StorageInfo(),
 			"servers": map[string]bool{
 				"gateway": daemon.Alive("gateway"),
 				"api":     daemon.Alive("api"),

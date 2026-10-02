@@ -14,6 +14,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/version"
 	"github.com/thefoxbyte/foxbyte/web"
 )
@@ -56,6 +57,7 @@ func checkCmd(args []string) {
 	}
 	lines := []checkLine{
 		checkVersion(),
+		checkEdition(),
 		checkConsoleEmbedded(),
 		checkStorage(),
 		checkMain(),
@@ -92,6 +94,27 @@ func checkCmd(args []string) {
 
 func checkVersion() checkLine {
 	return ok("version", fmt.Sprintf("%s %s (newer releases: `%s update --check`)", brand.CLI, version.Version, brand.CLI))
+}
+
+// checkEdition says which edition is installed and whether its features are
+// actually unlocked. An Enterprise build with no licence behaves exactly like
+// the Standard one, which is correct but surprising if you just paid for it —
+// so it is a warning with the command that fixes it, not a silent ok.
+func checkEdition() checkLine {
+	switch {
+	case !edition.Enterprise:
+		return ok("edition", "standard — Blackbox, guardrails and branching; paid features are not in this build")
+	case len(edition.Available()) == 0:
+		return warn("edition",
+			"enterprise, but no licence is active — paid features are refused",
+			fmt.Sprintf("%s license activate <file>", brand.CLI))
+	default:
+		var names []string
+		for _, f := range edition.Available() {
+			names = append(names, string(f))
+		}
+		return ok("edition", "enterprise — licensed: "+strings.Join(names, ", "))
+	}
 }
 
 // The console is compiled into the binary with -tags embedui. Without it :8080

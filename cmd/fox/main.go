@@ -203,6 +203,7 @@ Auth (admin):
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Print(usage)
+		fmt.Print(enterpriseUsage())
 		os.Exit(2)
 	}
 
@@ -215,7 +216,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "version", "-v", "--version":
-		fmt.Printf("fox %s\n", version.Version)
+		fmt.Printf("fox %s (%s)\n", version.Version, editionLine())
 	case "setup":
 		must(host.Setup())
 	case "vm":
@@ -408,8 +409,15 @@ func main() {
 		// It acts as an API key's account, so the key comes first.
 		must(mcp.Serve(mcpKey(os.Args[2:])))
 	default:
+		// The paid edition's commands. In the Standard build this is compiled
+		// out and always returns false, so they are not commands that refuse —
+		// they are commands that do not exist (cmd/fox/enterprise_off.go).
+		if enterpriseCmd(os.Args[1:]) {
+			return
+		}
 		fmt.Printf("unknown command: %s\n\n", os.Args[1])
 		fmt.Print(usage)
+		fmt.Print(enterpriseUsage())
 		os.Exit(2)
 	}
 }

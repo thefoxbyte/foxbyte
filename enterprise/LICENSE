@@ -1,0 +1,83 @@
+FoxByte Enterprise License, version 1.0
+
+This licence covers only the contents of this directory (enterprise/) and its
+subdirectories. Everything else in this repository is licensed separately: the
+core engine under the GNU Affero General Public License v3.0 or later (see the
+LICENSE file at the root), and the client SDKs under the Apache License 2.0 (see
+clients/LICENSE). Nothing in this licence changes those terms.
+
+This software is source-available. It is not open source, and it is not licensed
+under the AGPL.
+
+1. DEFINITIONS
+
+   "Licensor" means the copyright holder of this directory's contents.
+   "Software" means the contents of this directory.
+   "You" means the individual or legal entity exercising rights under this
+   licence.
+   "Licence Key" means a signed licence file issued by the Licensor that names
+   You, the features licensed to You, and the machine the licence is bound to.
+
+2. GRANT
+
+   Subject to Section 3, the Licensor grants You a non-exclusive,
+   non-transferable, non-sublicensable licence to:
+
+   (a) read this source code and compile it, for the purposes of evaluation,
+       security review, audit, and verifying what You run; and
+
+   (b) use the compiled Software in production, but only for the features, on
+       the machine, and for the period named in a valid Licence Key issued to
+       You by the Licensor.
+
+3. RESTRICTIONS
+
+   You may not:
+
+   (a) use the Software in production without a valid Licence Key covering that
+       use;
+
+   (b) remove, disable, circumvent, or interfere with any licence check,
+       entitlement check, or usage record in the Software, or use the Software
+       with a Licence Key that was not issued to You;
+
+   (c) distribute, publish, sublicense, sell, rent, lease, or otherwise make the
+       Software or any derivative of it available to any third party, whether or
+       not for a fee, and whether in source or compiled form;
+
+   (d) offer the Software, or any derivative of it, to third parties as a hosted
+       or managed service; or
+
+   (e) remove or alter any copyright, licence, or attribution notice.
+
+   Evaluation without a Licence Key is permitted for development and testing
+   that is not production use.
+
+4. RESERVATION OF RIGHTS
+
+   All rights not expressly granted are reserved by the Licensor. No rights are
+   granted by implication, estoppel, or otherwise.
+
+5. TERMINATION
+
+   This licence terminates automatically if You breach any of its terms. On
+   termination You must stop using the Software and destroy all copies. Sections
+   4, 6, and 7 survive termination.
+
+6. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+7. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL THE LICENSOR BE
+   LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+   SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+8. SEPARATE TERMS
+
+   A written commercial agreement signed by the Licensor supersedes this licence
+   to the extent the two conflict.
