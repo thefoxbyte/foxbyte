@@ -212,3 +212,40 @@ func TestUpdateInstallFailureRestartsOldEngine(t *testing.T) {
 		t.Fatal("host binary replaced after a failed engine install")
 	}
 }
+
+// `fox version` prints "fox <version>" and may say more after it. Reading the
+// version by position broke the moment it did: taking the last field parsed
+// "edition)" out of "fox 0.99.0 (standard edition)", and because the update
+// verifies the staged engine by running it and comparing what it reports, every
+// update refused to install a binary that was fine. The nightly caught it; this
+// keeps it caught.
+func TestReportedVersionIgnoresWhateverElseTheLineSays(t *testing.T) {
+	for _, c := range []struct {
+		out  string
+		want string // "" means no version should be found
+	}{
+		{"fox 0.98.0\n", "0.98.0"},
+		{"fox 0.98.0 (standard edition)\n", "0.98.0"},
+		{"fox 0.99.0 (enterprise edition, no licence active)\n", "0.99.0"},
+		{"fox 1.2.3 (enterprise edition, 4 features licensed)\n", "1.2.3"},
+		{"fox v2.0.0\n", "2.0.0"},
+		{"fox 0.5.0-rc1\n", "0.5.0-rc1"},
+		{"", ""},
+		{"command not found\n", ""},
+	} {
+		got, err := reportedVersion(c.out)
+		if c.want == "" {
+			if err == nil {
+				t.Errorf("reportedVersion(%q) = %v, want an error", c.out, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("reportedVersion(%q): %v", c.out, err)
+			continue
+		}
+		if got.String() != c.want {
+			t.Errorf("reportedVersion(%q) = %s, want %s", c.out, got, c.want)
+		}
+	}
+}

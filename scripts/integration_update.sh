@@ -34,6 +34,11 @@ contains() { if grep -qF -- "$2" <<<"$3"; then ok "$1"; else bad "$1 (no '$2' in
 lacks()    { if grep -qF -- "$2" <<<"$3"; then bad "$1 ('$2' in output)"; else ok "$1"; fi; }
 pg() { local c="$1"; shift; sudo docker exec "$c" psql -U dbadmin -d appdb -tAc "$*" 2>/dev/null; }
 pid_of() { "$V" status 2>/dev/null | sed -n "s/^$1: running (pid \([0-9]*\)).*/\1/p"; }
+# `fox version` prints "fox <version>" and then whatever else it has to say —
+# the edition, since the editions split. Compare the version itself rather than
+# the whole line: asserting on the line made every check here fail the day the
+# edition was added, which buried the one real regression in ten false ones.
+fox_version() { "$1" version 2>/dev/null | awk '{print $2}'; }
 # ledger_digest <container> <max id>  -> count and hash of the entries up to that id
 ledger_digest() { pg "$1" "SELECT count(*) || ':' || coalesce(md5(string_agg(row_hash, ',' ORDER BY id)), '') FROM bb.schema_ledger WHERE id <= ${2:-0}"; }
 EMAIL="updtest@foxbyte.dev"
@@ -97,7 +102,7 @@ start_fake_github() {
 }
 stop_fake_github() { [ -n "$HTTP_PID" ] && kill "$HTTP_PID" 2>/dev/null; HTTP_PID=""; }
 start_fake_github
-assert_eq "test binary is 0.98.0" "$("$V" version)" "fox 0.98.0"
+assert_eq "test binary is 0.98.0" "$(fox_version "$V")" "0.98.0"
 
 # Stack on the 0.98.0 binary, with data on main and on a branch.
 /usr/local/bin/fox stop >/dev/null 2>&1
@@ -157,7 +162,7 @@ assert_eq "--check exits 0" "$CODE" "0"
 contains "--check reports v0.99.0" "FoxByte v0.99.0 is available (you have 0.98.0)." "$OUT"
 lacks "prerelease v1.0.0 not offered" "v1.0.0" "$OUT"
 lacks "incomplete v0.99.5 not offered" "v0.99.5" "$OUT"
-assert_eq "--check changes nothing" "$("$V" version)" "fox 0.98.0"
+assert_eq "--check changes nothing" "$(fox_version "$V")" "0.98.0"
 OUT="$("$V" update </dev/null 2>&1)"; CODE=$?
 assert_eq "without a terminal, update needs --yes" "$CODE:$(grep -c -- '--yes' <<<"$OUT")" "1:1"
 
@@ -167,7 +172,7 @@ OUT="$("$V" update --yes 2>&1)"; CODE=$?
 assert_eq "tampered update fails" "$CODE" "1"
 contains "reports the checksum mismatch" "checksum mismatch" "$OUT"
 contains "says nothing changed" "Nothing was changed" "$OUT"
-assert_eq "still 0.98.0" "$("$V" version)" "fox 0.98.0"
+assert_eq "still 0.98.0" "$(fox_version "$V")" "0.98.0"
 assert_eq "servers untouched" "$(pid_of 'control API')" "$CP_PID"
 assert_eq "no partial download left" "$(ls "$HOME/.fox/updates/v0.99.0" 2>/dev/null | wc -l | tr -d ' ')" "0"
 cp "$T/good-engine" "$T/www/dl/v0.99.0/$ENGINE"
@@ -178,7 +183,7 @@ assert_eq "update exits 0" "$CODE" "0"
 [ "$CODE" = 0 ] || tail -n 30 <<<"$OUT" | sed 's/^/      /'
 contains "says done" "Done — FoxByte is now v0.99.0. Your data was not touched." "$OUT"
 contains "upgraded Blackbox on the branch" "updb: ledger up to date" "$OUT"
-assert_eq "fox is 0.99.0" "$("$V" version)" "fox 0.99.0"
+assert_eq "fox is 0.99.0" "$(fox_version "$V")" "0.99.0"
 NEW_CP="$(pid_of 'control API')"
 assert_eq "control API restarted" "$([ -n "$NEW_CP" ] && [ "$NEW_CP" != "$CP_PID" ] && echo yes)" "yes"
 for svc in "control API" "gateway" "agent API"; do
@@ -196,7 +201,7 @@ contains "branch Blackbox chain intact" "ledger intact" "$("$V" ledger verify up
 assert_eq "blast radius present on the branch" "$(pg pg-updb "SELECT count(*) > 0 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'bb' AND p.proname = 'blast_radius'")" "t"
 assert_eq "secrets.json unchanged" "$(md5sum "$HOME/.fox/secrets.json" 2>/dev/null)" "$SECRETS"
 assert_eq "TLS certificates unchanged" "$(cd "$HOME/.fox" && find tls -type f -exec md5sum {} + 2>/dev/null | sort)" "$TLS"
-assert_eq "previous engine kept" "$("$HOME/.fox/updates/prev/fox" version)" "fox 0.98.0"
+assert_eq "previous engine kept" "$(fox_version "$HOME/.fox/updates/prev/fox")" "0.98.0"
 assert_eq "gateway serves main with a key made before the update" "$(PGPASSWORD="$KEY" psql "postgresql://dbadmin@127.0.0.1:6432/main?sslmode=require" -tAc 'SELECT count(*) FROM updkeep' 2>&1)" "3"
 assert_eq "control plane answers" "$(curl -sk -o /dev/null -w '%{http_code}' https://localhost:8080/api/status | grep -vc '^000$')" "1"
 
