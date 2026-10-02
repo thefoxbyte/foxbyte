@@ -752,6 +752,15 @@ th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0;
 .crumbs { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13.5px; font-weight: 500; }
 .crumbs .sep { color: var(--faint); }
 .app-content { width: 100%; max-width: 1180px; margin: 0 auto; padding: 28px 28px 80px; }
+/* A page that manages its own space: the full width of the window, the full
+   height below the topbar, and no page scroll — the panes inside scroll
+   instead. Without this the console was capped at 1180px and centred, so on a
+   wide monitor it left hundreds of pixels empty on both sides while the query
+   and its results fought over the middle. */
+.app-content.full-bleed {
+  max-width: none; padding: 0;
+  height: calc(100vh - 56px); min-height: 0; overflow: hidden;
+}
 
 .icon-btn {
   display: inline-grid; place-items: center; width: 34px; height: 34px; padding: 0;
@@ -852,26 +861,124 @@ th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0;
   color: var(--muted); border: 1px solid var(--border);
 }
 
-/* A script's results, one block per statement. The number is what tells you
-   which statement a grid belongs to — without it a failing script is a stack of
-   tables with no way to tell where it stopped. */
-.results .result-step + .result-step { margin-top: 14px; }
-.results .step-n {
-  font: 600 11px/1 var(--font-mono, ui-monospace, monospace);
-  letter-spacing: .06em; text-transform: uppercase;
-  color: var(--muted); margin-bottom: 6px;
-}
-.results .step-n { display: flex; align-items: center; gap: 10px; }
-.results .step-i { flex: none; }
-.results .step-sql {
-  font: 400 11px/1.4 var(--font-mono, ui-monospace, monospace);
-  color: var(--muted); text-transform: none; letter-spacing: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
-}
-.results .step-bad { flex: none; color: var(--danger, #e5484d); text-transform: none; letter-spacing: 0; }
-.results .result-step.failed .step-i { color: var(--danger, #e5484d); }
+/* ── The console as a workbench ──────────────────────────────────────────────
+   The page fills the window and nothing scrolls but the panes that should.
+   Three things buy the space, and only the last is cosmetic: the schema rail
+   folds away (214px, to both panes at once), a script's results are tabs rather
+   than a stack, and either pane can take the window for a moment. The title and
+   its sentence of explanation moved into the toolbar — about 140px of height,
+   on a page people return to all day. */
+.wb { height: 100%; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 
-/* The editor while a query is running: read-only, and visibly so. Without a cue
-   it looks broken rather than busy — someone types, nothing appears, and the
-   only hint is a button label at the other end of the card. */
-textarea.editor.running { opacity: .72; cursor: progress; }
+.wb-bar {
+  flex: none; display: flex; align-items: center; gap: var(--s-3);
+  padding: 0 var(--s-4); height: 50px;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+}
+.wb-bar .field-inline { margin: 0; }
+.wb-bar .kbd { margin-left: 6px; opacity: .75; }
+.wb-sp { flex: 1 1 auto; min-width: 0; }
+.wb-meta { color: var(--faint); font-size: var(--t-xs); white-space: nowrap; }
+
+.wb-icon {
+  flex: none; display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-2); color: var(--muted); cursor: pointer;
+}
+.wb-icon:hover { color: var(--text); border-color: var(--border-strong); }
+.wb-icon[aria-pressed='true'] { color: var(--text); background: var(--panel-3); border-color: var(--border-strong); }
+.wb-icon.sm { width: 24px; height: 22px; border: 0; background: transparent; }
+
+.wb-body { flex: 1; display: flex; min-height: 0; }
+
+/* The rail keeps its own scroll and folds to nothing. Width is animated rather
+   than toggled so it reads as a drawer and not as the page jumping. */
+.wb-rail {
+  flex: none; width: 240px; border-radius: 0; border: 0; border-right: 1px solid var(--border);
+  position: static; box-shadow: none; display: flex; flex-direction: column; min-height: 0;
+  transition: width var(--speed) ease, opacity var(--speed) ease;
+}
+.wb-rail.shut { width: 0; opacity: 0; overflow: hidden; border-right-color: transparent; }
+.wb-rail .obj-list { flex: 1; min-height: 0; overflow: auto; }
+
+.wb-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.wb-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.wb-pane.wb-ed { flex: 0 0 auto; }
+.wb-pane.wb-res { flex: 1; }
+
+.pane-h {
+  flex: none; display: flex; align-items: center; gap: var(--s-2);
+  padding: 0 var(--s-3); height: 30px;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+  font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .07em;
+  font-weight: 650; color: var(--faint);
+}
+
+.wb-ed textarea.editor {
+  flex: 1; min-height: 0; border: 0; border-radius: 0; resize: none;
+}
+
+/* Drag to resize. Taller than it looks: a 1px line is a line, not a handle. */
+.wb-split {
+  flex: none; height: 8px; cursor: row-resize; background: var(--panel);
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  position: relative;
+}
+.wb-split::after {
+  content: ''; position: absolute; left: 50%; top: 3px; width: 44px; height: 3px;
+  margin-left: -22px; border-radius: 2px; background: var(--faint); opacity: .55;
+}
+.wb-split:hover::after { opacity: 1; }
+/* While dragging, the pointer must not select the SQL it passes over. */
+body.row-resizing { cursor: row-resize; user-select: none; }
+
+.wb-out { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.res-body { flex: 1; min-height: 0; overflow: auto; }
+.res-body .result, .res-body .grid-wrap { border: 0; border-radius: 0; }
+
+/* One tab per statement. A ten-statement migration is ten tabs, not ten tables
+   fighting over the same pane. */
+.res-tabs {
+  flex: none; display: flex; align-items: stretch; gap: 0; overflow-x: auto;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+}
+.res-tabs .pane-t {
+  display: flex; align-items: center; padding: 0 var(--s-3);
+  font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .07em;
+  font-weight: 650; color: var(--faint);
+}
+.res-tab {
+  flex: none; display: flex; align-items: center; gap: 7px; max-width: 280px;
+  padding: 7px 12px; border: 0; border-right: 1px solid var(--border);
+  background: transparent; color: var(--muted); cursor: pointer;
+  font-size: var(--t-sm); border-bottom: 2px solid transparent;
+}
+.res-tab:hover { color: var(--text); background: var(--panel-2); }
+.res-tab.on { color: var(--text); background: var(--bg); border-bottom-color: var(--accent); }
+.res-tab.bad.on { border-bottom-color: var(--red); }
+.res-tab .k {
+  flex: none; font: 600 10px/1 var(--font-mono, ui-monospace, monospace);
+  color: var(--faint); background: var(--panel-3); padding: 3px 5px; border-radius: 4px;
+}
+.res-tab .lbl {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px;
+}
+.res-tab .n-ok { flex: none; color: var(--green); font-size: 11px; }
+.res-tab .n-bad { flex: none; color: var(--red); font-size: 11px; }
+
+.wb-note { margin: 0; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.wb-empty { padding: var(--s-5) var(--s-4); color: var(--faint); font-size: var(--t-sm); }
+
+.wb-status {
+  flex: none; display: flex; align-items: center; gap: var(--s-2); height: 26px;
+  padding: 0 var(--s-4); border-top: 1px solid var(--border); background: var(--panel);
+  color: var(--faint); font-size: var(--t-xs);
+}
+
+/* Narrow: the rail is the first thing to go, and the split stops being useful
+   when neither half can hold anything. */
+@media (max-width: 860px) {
+  .wb-rail { position: absolute; z-index: 20; height: 100%; box-shadow: var(--shadow); }
+  .wb-bar { overflow-x: auto; }
+}

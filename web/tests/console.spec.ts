@@ -89,13 +89,15 @@ test('the console runs a script and says which statement produced what', async (
     `CREATE TABLE ${t} (id int); INSERT INTO ${t} VALUES (1),(2); SELECT count(*) FROM ${t};`)
   await page.getByRole('button', { name: /run query/i }).click()
 
-  // One block per statement, each labelled with the SQL it came from.
-  await expect(page.locator('.result-step')).toHaveCount(3, { timeout: 30_000 })
-  await expect(page.locator('.result-step').nth(0)).toContainText(`CREATE TABLE ${t}`)
-  await expect(page.locator('.result-step').nth(1)).toContainText(`INSERT INTO ${t}`)
-  await expect(page.locator('.result-step').nth(2)).toContainText('SELECT count(*)')
-  // And each reports its own command tag, so the labels are not the only clue.
-  await expect(page.locator('.result-step').nth(1)).toContainText(/INSERT/)
+  // One tab per statement, each labelled with the SQL it came from, so the open
+  // one gets the whole pane instead of three tables sharing it.
+  await expect(page.locator('.res-tab')).toHaveCount(3, { timeout: 30_000 })
+  await expect(page.locator('.res-tab').nth(0)).toContainText(`CREATE TABLE ${t}`)
+  await expect(page.locator('.res-tab').nth(1)).toContainText(`INSERT INTO ${t}`)
+  await expect(page.locator('.res-tab').nth(2)).toContainText('SELECT count(*)')
+  // The third is the one with rows, and selecting it shows them.
+  await page.locator('.res-tab').nth(2).click()
+  await expect(page.locator('.res-body td').first()).toHaveText('2')
 
   // A failure names the statement that caused it, and says nothing was applied —
   // the script ran in one transaction, so the row it inserted is gone.
@@ -103,12 +105,15 @@ test('the console runs a script and says which statement produced what', async (
     `INSERT INTO ${t} VALUES (3); SELECT * FROM no_such_table_here;`)
   await page.getByRole('button', { name: /run query/i }).click()
   await expect(page.getByText(/nothing was applied/i)).toBeVisible({ timeout: 30_000 })
-  await expect(page.locator('.result-step.failed')).toHaveCount(1)
+  // The failing statement is marked, and its tab is the one already open —
+  // that is the one being looked for.
+  await expect(page.locator('.res-tab.bad')).toHaveCount(1)
+  await expect(page.locator('.res-tab.bad')).toHaveClass(/\bon\b/)
 
   // Proof it rolled back: still two rows, not three.
   await page.locator('textarea.editor').fill(`SELECT count(*) FROM ${t}`)
   await page.getByRole('button', { name: /run query/i }).click()
-  await expect(page.locator('.result td').first()).toHaveText('2', { timeout: 30_000 })
+  await expect(page.locator('.res-body td').first()).toHaveText('2', { timeout: 30_000 })
 })
 
 // The editor is read-only while a query is in flight. Two reasons: a script's
@@ -134,6 +139,45 @@ test('the editor stops taking edits while a query is running', async ({ page }) 
   await expect(editor).toHaveJSProperty('readOnly', false, { timeout: 30_000 })
   await editor.fill('SELECT 1 AS back')
   await expect(editor).toHaveValue('SELECT 1 AS back')
+})
+
+// The console is a workbench: it fills the window, the schema rail folds away to
+// give both panes its width, and either pane can take the window for a moment.
+// Everything here is about space, which is the thing that cannot be checked by
+// reading the code.
+test('the console fills the window and its panes can take it in turn', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+
+  // No page scroll: the window holds the whole thing and the panes scroll inside.
+  const scrolls = await page.evaluate(() =>
+    document.documentElement.scrollHeight <= document.documentElement.clientHeight + 1)
+  expect(scrolls).toBe(true)
+
+  // The rail folds away, and the editor gets the width it was using.
+  const rail = page.locator('.wb-rail')
+  const editor = page.locator('textarea.editor')
+  await expect(rail).not.toHaveClass(/shut/)
+  const narrow = (await editor.boundingBox())!.width
+  await page.locator('.wb-icon[aria-pressed]').click()
+  await expect(rail).toHaveClass(/shut/)
+  await expect.poll(async () => (await editor.boundingBox())!.width).toBeGreaterThan(narrow + 100)
+
+  // And the choice survives a reload, because it is a choice about this screen.
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.wb-rail')).toHaveClass(/shut/)
+  await page.locator('.wb-icon[aria-pressed]').click()
+  await expect(page.locator('.wb-rail')).not.toHaveClass(/shut/)
+
+  // Expanding the results hides the editor; Esc brings it back.
+  await page.locator('textarea.editor').fill('SELECT 1 AS one')
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.res-body td').first()).toHaveText('1', { timeout: 30_000 })
+  await page.locator('.res-tabs .wb-icon').click()
+  await expect(page.locator('textarea.editor')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(page.locator('textarea.editor')).toHaveCount(1)
 })
 
 test('an API key is shown once, and the account page offers a password change', async ({ page }) => {

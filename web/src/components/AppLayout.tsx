@@ -174,7 +174,11 @@ export default function AppLayout() {
             </div>
           )}
         </header>
-        <main className="app-content"><Outlet /></main>
+        {/* The console is a workbench, not an article: it fills the window and
+            scrolls in panes of its own. Every other page keeps the centred,
+            measure-limited column, which is right for reading and wrong for a
+            query sitting next to its results. */}
+        <main className={'app-content' + (pathname.startsWith('/console') ? ' full-bleed' : '')}><Outlet /></main>
       </div>
     </div>
   )

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getAdmins, getBranches, runQuery, API, type Branch, type BranchAdmins, type QueryResult, type StatementResult } from '../api'
 import { BRAND } from '../brand'
@@ -61,6 +61,43 @@ export default function Console() {
   const [sql, setSql] = useState('SELECT version();')
   const [queryRes, setQueryRes] = useState<QueryResult | null>(null)
   const [ranSql, setRanSql] = useState('')
+  // Workbench state. The rail and the divider are remembered per browser: both
+  // are a choice about this person's screen, and re-making it on every visit is
+  // the kind of small friction that makes a tool feel borrowed.
+  const [railOpen, setRailOpen] = useState(() => localStorage.getItem('wb.rail') !== 'closed')
+  const [editorH, setEditorH] = useState(() => Number(localStorage.getItem('wb.editorH')) || 260)
+  // Which pane, if either, has the window to itself. Esc returns to the split.
+  const [expand, setExpand] = useState<'none' | 'editor' | 'results'>('none')
+  useEffect(() => { localStorage.setItem('wb.rail', railOpen ? 'open' : 'closed') }, [railOpen])
+  useEffect(() => { localStorage.setItem('wb.editorH', String(editorH)) }, [editorH])
+  useEffect(() => {
+    if (expand === 'none') return
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpand('none') }
+    window.addEventListener('keydown', esc)
+    return () => window.removeEventListener('keydown', esc)
+  }, [expand])
+
+  // Dragging the divider. Tracked on the window rather than the handle so the
+  // pointer can leave it mid-drag without the pane sticking — the usual way a
+  // splitter feels broken.
+  const dragFrom = useRef<{ y: number; h: number } | null>(null)
+  const onSplitDown = (e: React.MouseEvent) => {
+    dragFrom.current = { y: e.clientY, h: editorH }
+    const move = (ev: MouseEvent) => {
+      if (!dragFrom.current) return
+      const next = dragFrom.current.h + (ev.clientY - dragFrom.current.y)
+      setEditorH(Math.max(90, Math.min(window.innerHeight - 260, next)))
+    }
+    const up = () => {
+      dragFrom.current = null
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      document.body.classList.remove('row-resizing')
+    }
+    document.body.classList.add('row-resizing')
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
   const [busy, setBusy] = useState(false)
 
   // The branch list is what the picker is made of, and it used to be fetched once:
@@ -198,6 +235,11 @@ export default function Console() {
   const label = (o: DbObject) => (o.schema === 'public' ? o.name : o.schema + '.' + o.name)
   const canOverride = admins?.you_are_admin === true
   const err = queryRes?.error || ''
+  // The row count the status bar shows: the visible result's, which for a script
+  // is the statement whose tab is open rather than a total nobody asked for.
+  const rowCount = mode === 'browse'
+    ? browseRes?.rows?.length ?? null
+    : queryRes?.rows?.length ?? null
   // A policy-rule block names its rule; without a rule id there's nothing to override.
   const blockedRule = POLICY_RULE.test(err) ? ruleOf(err) : undefined
   const blocked = GUARDRAIL.test(err) || !!blockedRule
@@ -208,24 +250,37 @@ export default function Console() {
   )
 
   return (
-    <div className="fade-up">
-      <div className="page-head">
-        <div>
-          <h1>SQL Console</h1>
-          <p className="sub">Browse a branch’s tables and views, or run any SQL — through the control-plane API.</p>
-        </div>
-        <div className="tools">
-          <label className="field-inline">
-            <span>Branch</span>
-            <select value={branch} onChange={e => setBranch(e.target.value)}>
-              {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
-            </select>
-          </label>
-        </div>
+    <div className="wb">
+      {/* One row where the title block used to be. A heading and a sentence of
+          explanation cost about 140px of height on every visit, and this page is
+          one someone returns to all day — the controls earn that space and the
+          prose does not. */}
+      <div className="wb-bar">
+        <button className="wb-icon" title={railOpen ? 'Hide schema' : 'Show schema'}
+          aria-pressed={railOpen} onClick={() => setRailOpen(v => !v)}>▤</button>
+        <label className="field-inline">
+          <span>Branch</span>
+          <select value={branch} onChange={e => setBranch(e.target.value)}>
+            {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+          </select>
+        </label>
+        <button className={'primary' + (allowDestructive ? ' danger' : '')} onClick={() => runSql()} disabled={busy}>
+          {busy ? 'Running…' : 'Run'} <span className="kbd">⌘↵</span>
+        </button>
+        <label className={'override-toggle' + (allowDestructive ? ' on' : '')}
+          title={admins && !canOverride
+            ? `Only admins of ${branch} can override the guardrail`
+            : 'Lets DROP TABLE and other blocked changes through, for the next run only'}>
+          <input type="checkbox" checked={allowDestructive} disabled={busy || (admins !== null && !canOverride)}
+            onChange={e => setAllowDestructive(e.target.checked)} />
+          Allow destructive <span className="muted">(next run)</span>
+        </label>
+        <span className="wb-sp" />
+        <span className="wb-meta">{BRAND.product} · {branch}</span>
       </div>
 
-      <div className="console-grid">
-        <aside className="obj-panel">
+      <div className="wb-body">
+        <aside className={'obj-panel wb-rail' + (railOpen ? '' : ' shut')}>
           <div className="obj-head">
             <span>Schema</span>
             <button title={listing ? 'Reloading…' : 'Reload tables'} className={listing ? 'spinning' : ''} disabled={listing} onClick={reload}>↻</button>
@@ -263,13 +318,17 @@ export default function Console() {
           </div>
         </aside>
 
-        <div className="console-main">
+        <div className="wb-main">
           {mode === 'query' ? (
             <>
-              <div className="sql-card">
-                <div className="sql-card-head">
-                  <span className="t">Query</span>
+              {expand !== 'results' && (
+              <section className="wb-pane wb-ed" style={expand === 'editor' ? undefined : { flex: `0 0 ${editorH}px` }}>
+                <div className="pane-h">
+                  <span>Query</span>
+                  <span className="wb-sp" />
                   <span className="kbd">⌘/Ctrl + ↵</span>
+                  <button className="wb-icon sm" title={expand === 'editor' ? 'Back to the split' : 'Give the editor the window'}
+                    onClick={() => setExpand(x => (x === 'editor' ? 'none' : 'editor'))}>{expand === 'editor' ? '⤡' : '⤢'}</button>
                 </div>
                 <textarea
                   className={'editor' + (busy ? ' running' : '')}
@@ -290,21 +349,19 @@ export default function Console() {
                   // branch while the first was still going.
                   onKeyDown={e => { if (!busy && (e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql() }}
                 />
-                <div className="sql-toolbar">
-                  <label className={'override-toggle' + (allowDestructive ? ' on' : '')}
-                    title={admins && !canOverride
-                      ? `Only admins of ${branch} can override the guardrail`
-                      : 'Lets DROP TABLE and other blocked changes through, for the next run only'}>
-                    <input type="checkbox" checked={allowDestructive} disabled={busy || (admins !== null && !canOverride)}
-                      onChange={e => setAllowDestructive(e.target.checked)} />
-                    Allow destructive changes <span className="muted">(next run only)</span>
-                  </label>
-                  <button className={'primary' + (allowDestructive ? ' danger' : '')} onClick={() => runSql()} disabled={busy}>
-                    {busy ? 'Running…' : 'Run query'}
-                  </button>
-                </div>
-              </div>
-              {queryRes && <QueryOutput res={queryRes} sql={ranSql} />}
+              </section>
+              )}
+              {expand === 'none' && (
+                <div className="wb-split" role="separator" aria-orientation="horizontal"
+                  title="Drag to resize" onMouseDown={onSplitDown} />
+              )}
+              {expand !== 'editor' && (
+              <section className="wb-pane wb-res">
+                {queryRes
+                  ? <QueryOutput res={queryRes} sql={ranSql}
+                      expanded={expand === 'results'}
+                      onExpand={() => setExpand(x => (x === 'results' ? 'none' : 'results'))} />
+                  : <div className="wb-empty">Results appear here. ⌘↵ runs what is in the editor.</div>}
               {blocked && (
                 <div className="override-help">
                   {canOverride ? (
@@ -330,9 +387,11 @@ export default function Console() {
                   )}
                 </div>
               )}
+              </section>
+              )}
             </>
           ) : sel && (
-            <>
+            <section className="wb-pane wb-res">
               <div className="obj-view-head">
                 <h2>{sel.name}</h2>
                 <span className="path">{sel.schema} · {sel.type}</span>
@@ -356,9 +415,19 @@ export default function Console() {
                     disabled={total == null ? (browseRes.rows?.length || 0) < PAGE : (page + 1) * PAGE >= total}>Next ›</button>
                 </div>
               )}
-            </>
+            </section>
           )}
         </div>
+      </div>
+
+      {/* The numbers worth glancing at, where a desktop app puts them: out of the
+          way, always true, never in the path of the work. */}
+      <div className="wb-status">
+        <span>{branch}</span>
+        {rowCount != null && <><span>·</span><span>{rowCount} row{rowCount === 1 ? '' : 's'}</span></>}
+        {queryRes?.command && <><span>·</span><span>{queryRes.command}</span></>}
+        <span className="wb-sp" />
+        {expand !== 'none' && <span>Esc returns to the split</span>}
       </div>
     </div>
   )
@@ -387,27 +456,56 @@ function labelsFor(sql: string, n: number): string[] | null {
 // What a run produced. One statement looks exactly as it always did; a script
 // shows a result per statement, labelled with the SQL it came from where that
 // can be worked out safely, and numbered where it cannot.
-function QueryOutput({ res, sql }: { res: QueryResult; sql: string }) {
+function QueryOutput({ res, sql, expanded, onExpand }:
+  { res: QueryResult; sql: string; expanded: boolean; onExpand: () => void }) {
   const all = res.results && res.results.length > 1 ? res.results : null
-  if (!all) return <Grid res={res} showCommand />
-  const labels = labelsFor(sql, all.length)
-  // A statement that failed carries its own error, so repeating it underneath
-  // would say the same thing twice and hide which statement it belonged to.
-  const shownInline = all.some(r => r.error)
+  const labels = all ? labelsFor(sql, all.length) : null
+  // Which statement's result is on screen. A script that failed opens on the
+  // statement that failed, because that is the one being looked for.
+  const [active, setActive] = useState(0)
+  useEffect(() => {
+    const bad = res.results?.findIndex(r => r.error) ?? -1
+    setActive(bad >= 0 ? bad : 0)
+  }, [res])
+
+  const expander = (
+    <button className="wb-icon sm" title={expanded ? 'Back to the split' : 'Give the results the window'}
+      onClick={onExpand}>{expanded ? '⤡' : '⤢'}</button>
+  )
+
+  // One statement: nothing to choose between, so the strip is only a header.
+  if (!all) {
+    return (
+      <div className="wb-out">
+        <div className="res-tabs"><span className="pane-t">Result</span><span className="wb-sp" />{expander}</div>
+        <div className="res-body"><Grid res={res} showCommand /></div>
+      </div>
+    )
+  }
+
+  // A script: one tab per statement, so the open one gets the whole pane rather
+  // than ten tables sharing it. The tab carries the statement it came from where
+  // that can be worked out safely, and its position where it cannot.
+  const shown = all[active]
   return (
-    <div className="results">
-      {res.note && <div className="err-hint" style={{ marginBottom: 10 }}>{res.note}</div>}
-      {all.map((r, i) => (
-        <div key={i} className={'result-step' + (r.error ? ' failed' : '')}>
-          <div className="step-n">
-            <span className="step-i">{i + 1}/{all.length}</span>
-            {labels ? <code className="step-sql">{labels[i]}</code> : null}
-            {r.error ? <span className="step-bad">failed here</span> : null}
-          </div>
-          <Grid res={r} showCommand />
-        </div>
-      ))}
-      {res.error && !shownInline && <Grid res={{ error: res.error }} />}
+    <div className="wb-out">
+      <div className="res-tabs">
+        {all.map((r, i) => (
+          <button key={i} className={'res-tab' + (i === active ? ' on' : '') + (r.error ? ' bad' : '')}
+            onClick={() => setActive(i)} title={labels ? labels[i] : `Statement ${i + 1}`}>
+            <span className="k">{i + 1}</span>
+            <span className="lbl">{labels ? labels[i] : r.command || 'statement'}</span>
+            {r.error
+              ? <span className="n-bad">failed</span>
+              : r.rows?.length
+                ? <span className="n-ok">{r.rows.length}</span>
+                : null}
+          </button>
+        ))}
+        <span className="wb-sp" />{expander}
+      </div>
+      {res.note && <div className="err-hint wb-note">{res.note}</div>}
+      <div className="res-body"><Grid res={shown} showCommand /></div>
     </div>
   )
 }
