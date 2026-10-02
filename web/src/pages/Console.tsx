@@ -80,6 +80,9 @@ export default function Console() {
   // Dragging the divider. Tracked on the window rather than the handle so the
   // pointer can leave it mid-drag without the pane sticking — the usual way a
   // splitter feels broken.
+  const gutterRef = useRef<HTMLDivElement>(null)
+  const editorRef = useRef<HTMLTextAreaElement>(null)
+
   const dragFrom = useRef<{ y: number; h: number } | null>(null)
   const onSplitDown = (e: React.MouseEvent) => {
     dragFrom.current = { y: e.clientY, h: editorH }
@@ -235,6 +238,22 @@ export default function Console() {
   const label = (o: DbObject) => (o.schema === 'public' ? o.name : o.schema + '.' + o.name)
   const canOverride = admins?.you_are_admin === true
   const err = queryRes?.error || ''
+  // The line Postgres objected to, if it said. For a script the position is an
+  // offset into the whole script, which is what was sent, so it lands on the
+  // right line even in a long migration.
+  const errPos = queryRes?.results?.find(r => r.position)?.position ?? queryRes?.position
+  const errLine = errPos ? lineColOf(ranSql || sql, errPos).line : 0
+  // Put the caret where it is, once, when a new failure arrives. Jumping on
+  // every render would fight whoever is already typing somewhere else.
+  useEffect(() => {
+    if (!errPos || !editorRef.current || busy) return
+    const el = editorRef.current
+    el.focus()
+    el.setSelectionRange(errPos - 1, errPos - 1)
+    const { line } = lineColOf(ranSql || sql, errPos)
+    el.scrollTop = Math.max(0, (line - 4) * 21)
+    if (gutterRef.current) gutterRef.current.scrollTop = el.scrollTop
+  }, [errPos])
   // The row count the status bar shows: the visible result's, which for a script
   // is the statement whose tab is open rather than a total nobody asked for.
   const rowCount = mode === 'browse'
@@ -330,7 +349,22 @@ export default function Console() {
                   <button className="wb-icon sm" title={expand === 'editor' ? 'Back to the split' : 'Give the editor the window'}
                     onClick={() => setExpand(x => (x === 'editor' ? 'none' : 'editor'))}>{expand === 'editor' ? '⤡' : '⤢'}</button>
                 </div>
+                {/* The gutter is a sibling, not a wrapper: a textarea cannot hold
+                    anything, so the numbers are drawn beside it with the same font
+                    and line height and scrolled in step. That alignment only holds
+                    while the editor does not wrap — a wrapped line is two rows
+                    against one number, and every number below it would then be
+                    wrong. So the editor scrolls sideways instead, as a code editor
+                    does, and the numbers mean what they say. */}
+                <div className="wb-edit">
+                  <div className="wb-gutter" ref={gutterRef} aria-hidden="true">
+                    {sql.split('\n').map((_, i) => (
+                      <div key={i} className={i + 1 === errLine ? 'bad' : undefined}>{i + 1}</div>
+                    ))}
+                  </div>
                 <textarea
+                  ref={editorRef}
+                  onScroll={e => { if (gutterRef.current) gutterRef.current.scrollTop = e.currentTarget.scrollTop }}
                   className={'editor' + (busy ? ' running' : '')}
                   value={sql}
                   spellCheck={false}
@@ -349,6 +383,7 @@ export default function Console() {
                   // branch while the first was still going.
                   onKeyDown={e => { if (!busy && (e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql() }}
                 />
+                </div>
               </section>
               )}
               {expand === 'none' && (
@@ -433,6 +468,22 @@ export default function Console() {
   )
 }
 
+// Where a character offset falls, as a line and column.
+//
+// Postgres hands back a 1-based character offset into the SQL it was sent, and
+// that is the only thing it gives — no line, no column. Counting newlines before
+// the offset is the whole of the work, and it is worth doing because "line 7"
+// is actionable and "position 214" is not.
+//
+// Both numbers come back 1-based, which is what a gutter shows and what someone
+// counting lines in their head expects.
+export function lineColOf(sql: string, position: number): { line: number; col: number } {
+  const upto = sql.slice(0, Math.max(0, position - 1))
+  const line = upto.split('\n').length
+  const col = position - (upto.lastIndexOf('\n') + 1)
+  return { line, col }
+}
+
 // Labels for a script's results: the statement each one came from, so a block of
 // grids is readable instead of being a stack you have to count semicolons
 // against.
@@ -478,7 +529,7 @@ function QueryOutput({ res, sql, expanded, onExpand }:
     return (
       <div className="wb-out">
         <div className="res-tabs"><span className="pane-t">Result</span><span className="wb-sp" />{expander}</div>
-        <div className="res-body"><Grid res={res} showCommand /></div>
+        <div className="res-body"><Grid res={res} showCommand sql={sql} /></div>
       </div>
     )
   }
@@ -505,21 +556,28 @@ function QueryOutput({ res, sql, expanded, onExpand }:
         <span className="wb-sp" />{expander}
       </div>
       {res.note && <div className="err-hint wb-note">{res.note}</div>}
-      <div className="res-body"><Grid res={shown} showCommand /></div>
+      <div className="res-body"><Grid res={shown} showCommand sql={sql} /></div>
     </div>
   )
 }
 
-function Grid({ res, showCommand }: { res: StatementResult; showCommand?: boolean }) {
+function Grid({ res, showCommand, sql }: { res: StatementResult; showCommand?: boolean; sql?: string }) {
   const [expanded, setExpanded] = useState<number | null>(null)
   useEffect(() => { setExpanded(null) }, [res]) // reset when new results arrive
   if (res.error) {
     // The raw message stays: it is what a Postgres user knows how to search for.
     // The hint underneath is what a new one needs (web/src/errhint.ts).
     const hint = hintFor(res.error)
+    // Where, when Postgres said. Its own hint comes first — "Perhaps you meant
+    // to reference the column t.name" is usually the whole answer, and ours is a
+    // general one about a class of failure.
+    const at = res.position && sql ? lineColOf(sql, res.position) : null
     return (
       <div className="err">
         {res.error}
+        {at && <div className="err-at">line {at.line}, column {at.col}</div>}
+        {res.hint && <div className="err-hint">{res.hint}</div>}
+        {res.detail && <div className="err-hint">{res.detail}</div>}
         {hint && <div className="err-hint">{hint}</div>}
       </div>
     )

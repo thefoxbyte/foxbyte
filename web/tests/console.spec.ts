@@ -180,6 +180,35 @@ test('the console fills the window and its panes can take it in turn', async ({ 
   await expect(page.locator('textarea.editor')).toHaveCount(1)
 })
 
+// Line numbers exist so an error can be found, not for decoration. Postgres
+// reports the character offset of a syntax error and it used to be dropped on
+// the floor, leaving "syntax error at or near FORM" and forty lines to search.
+test('a syntax error says which line, and the gutter marks it', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+
+  // The typo is on line 3 of four. Two good lines above it so a gutter that was
+  // merely counting from one could not pass by accident.
+  await page.locator('textarea.editor').fill('SELECT 1;\nSELECT 2;\nSELCT 3;\nSELECT 4;')
+  await page.getByRole('button', { name: /^run/i }).click()
+
+  await expect(page.locator('.err')).toContainText(/syntax error/i, { timeout: 30_000 })
+  await expect(page.locator('.err-at')).toContainText('line 3')
+  // And the gutter marks that line, which is where someone actually looks.
+  await expect(page.locator('.wb-gutter .bad')).toHaveCount(1)
+  await expect(page.locator('.wb-gutter .bad')).toHaveText('3')
+
+  // The numbers count the lines, so they are a measure of how long the query is.
+  await expect(page.locator('.wb-gutter > div')).toHaveCount(4)
+
+  // A query that is fine marks nothing.
+  await page.locator('textarea.editor').fill('SELECT 1 AS ok')
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.res-body td').first()).toHaveText('1', { timeout: 30_000 })
+  await expect(page.locator('.wb-gutter .bad')).toHaveCount(0)
+})
+
 test('an API key is shown once, and the account page offers a password change', async ({ page }) => {
   await signIn(page)
   await page.goto('/keys', { waitUntil: 'domcontentloaded' })
