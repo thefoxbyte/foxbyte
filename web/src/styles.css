@@ -851,3 +851,27 @@ th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0;
   font-size: 10px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase;
   color: var(--muted); border: 1px solid var(--border);
 }
+
+/* A script's results, one block per statement. The number is what tells you
+   which statement a grid belongs to — without it a failing script is a stack of
+   tables with no way to tell where it stopped. */
+.results .result-step + .result-step { margin-top: 14px; }
+.results .step-n {
+  font: 600 11px/1 var(--font-mono, ui-monospace, monospace);
+  letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 6px;
+}
+.results .step-n { display: flex; align-items: center; gap: 10px; }
+.results .step-i { flex: none; }
+.results .step-sql {
+  font: 400 11px/1.4 var(--font-mono, ui-monospace, monospace);
+  color: var(--muted); text-transform: none; letter-spacing: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.results .step-bad { flex: none; color: var(--danger, #e5484d); text-transform: none; letter-spacing: 0; }
+.results .result-step.failed .step-i { color: var(--danger, #e5484d); }
+
+/* The editor while a query is running: read-only, and visibly so. Without a cue
+   it looks broken rather than busy — someone types, nothing appears, and the
+   only hint is a button label at the other end of the card. */
+textarea.editor.running { opacity: .72; cursor: progress; }

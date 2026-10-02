@@ -620,6 +620,16 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 
 	rows, err := conn.Query(ctx, sql)
 	if err != nil {
+		// Postgres refuses more than one command in the extended protocol, which
+		// is what pgx speaks. That is a protocol limit rather than a rule of
+		// ours — the guardrail and the policy gate are triggers, so they fire per
+		// statement whichever protocol carried it — and a console that cannot run
+		// a script is a console people paste into psql instead. Nothing has run
+		// at this point: the refusal happens while parsing, before execution, so
+		// sending the same text again is safe.
+		if strings.Contains(err.Error(), "cannot insert multiple commands") {
+			return runScript(ctx, conn, sql)
+		}
 		return map[string]any{"error": err.Error()}
 	}
 	defer rows.Close()
@@ -647,7 +657,92 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	if err := rows.Err(); err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	return map[string]any{"columns": cols, "rows": out, "command": rows.CommandTag().String()}
+	one := map[string]any{"columns": cols, "rows": out, "command": rows.CommandTag().String()}
+	// `results` is always present, so a caller can read one shape whether the SQL
+	// held one statement or ten. The single-statement fields stay beside it
+	// exactly as they were: this endpoint is public, the SDKs and the console's
+	// own browse mode read them, and a response that changed shape would break
+	// every one of them for a feature they did not ask for.
+	one["results"] = []map[string]any{{"columns": cols, "rows": out, "command": rows.CommandTag().String()}}
+	return one
+}
+
+// runScript runs SQL holding more than one statement, and returns a result per
+// statement.
+//
+// It speaks the simple protocol (pgconn.Exec) because that is the one that
+// accepts several commands. Two things follow, and both are worth knowing:
+//
+//   - Postgres wraps the whole string in one implicit transaction unless the SQL
+//     does its own BEGIN/COMMIT. A script that fails at statement seven leaves
+//     nothing behind, which is what someone running a migration wants and is why
+//     this is not split up and run statement by statement. Splitting would also
+//     need a real SQL parser — semicolons live inside strings and dollar-quoted
+//     function bodies, so cutting on them is wrong in a way that silently
+//     corrupts.
+//   - Values arrive as text, because the simple protocol has no binary form. They
+//     are decoded through the same type map the extended path uses, so a uuid,
+//     an interval or a bytea reads the same either way.
+func runScript(ctx context.Context, conn *pgx.Conn, sql string) map[string]any {
+	m := conn.TypeMap()
+	rdr := conn.PgConn().Exec(ctx, sql)
+	results := []map[string]any{}
+
+	for rdr.NextResult() {
+		rr := rdr.ResultReader()
+		fds := rr.FieldDescriptions()
+		cols := make([]string, len(fds))
+		for i, f := range fds {
+			cols[i] = f.Name
+		}
+		out := [][]any{}
+		for rr.NextRow() {
+			if len(out) >= 1000 {
+				continue // drain the rest; stopping early would desynchronise the stream
+			}
+			raw := rr.Values()
+			row := make([]any, len(raw))
+			for i, b := range raw {
+				row[i] = scriptCell(b, fds[i].DataTypeOID, m)
+			}
+			out = append(out, row)
+		}
+		tag, err := rr.Close()
+		res := map[string]any{"columns": cols, "rows": out, "command": tag.String()}
+		if err != nil {
+			res["error"] = err.Error()
+		}
+		results = append(results, res)
+	}
+	if err := rdr.Close(); err != nil {
+		// The statement that failed took the implicit transaction with it, so say
+		// so once rather than leaving the reader to infer it from the last result.
+		return map[string]any{"error": err.Error(), "results": results,
+			"note": "nothing was applied: Postgres runs a multi-statement script in one transaction unless the script opens its own"}
+	}
+	if len(results) == 0 {
+		return map[string]any{"error": "no statements to run"}
+	}
+	last := results[len(results)-1]
+	return map[string]any{
+		"columns": last["columns"], "rows": last["rows"], "command": last["command"],
+		"results": results,
+	}
+}
+
+// scriptCell renders one value from the simple protocol, where everything
+// arrives as text. Decoding it through the type map rather than handing back the
+// string keeps a script's results identical to the same query run on its own.
+func scriptCell(b []byte, oid uint32, m *pgtype.Map) any {
+	if b == nil {
+		return nil
+	}
+	if t, ok := m.TypeForOID(oid); ok {
+		if v, err := t.Codec.DecodeValue(m, oid, pgtype.TextFormatCode, b); err == nil {
+			return cell(v, oid, m)
+		}
+	}
+	return string(b)
 }
 
 // cell renders one result value for the console.

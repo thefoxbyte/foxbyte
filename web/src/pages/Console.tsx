@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdmins, getBranches, runQuery, API, type Branch, type BranchAdmins, type QueryResult } from '../api'
+import { getAdmins, getBranches, runQuery, API, type Branch, type BranchAdmins, type QueryResult, type StatementResult } from '../api'
 import { BRAND } from '../brand'
 import { hintFor } from '../errhint'
 
@@ -60,6 +60,7 @@ export default function Console() {
   const [browseRes, setBrowseRes] = useState<QueryResult | null>(null)
   const [sql, setSql] = useState('SELECT version();')
   const [queryRes, setQueryRes] = useState<QueryResult | null>(null)
+  const [ranSql, setRanSql] = useState('')
   const [busy, setBusy] = useState(false)
 
   // The branch list is what the picker is made of, and it used to be fetched once:
@@ -164,6 +165,10 @@ export default function Console() {
   // run can't drop something by accident.
   const runSql = async (override: { allowDestructive?: boolean; allowRules?: string[] } = { allowDestructive }) => {
     setBusy(true); setQueryRes(null); setMode('query')
+    // The SQL this run is labelled against. The editor is read-only while a
+    // query is in flight, so it should not be able to change underneath — this
+    // is the belt to that pair of braces, and it costs one assignment.
+    setRanSql(sql)
     try {
       const r = await runQuery(branch, sql, override)
       setQueryRes(r)
@@ -267,11 +272,23 @@ export default function Console() {
                   <span className="kbd">⌘/Ctrl + ↵</span>
                 </div>
                 <textarea
-                  className="editor"
+                  className={'editor' + (busy ? ' running' : '')}
                   value={sql}
                   spellCheck={false}
+                  // Read-only rather than disabled while a query is in flight. A
+                  // disabled textarea cannot be selected or copied from in some
+                  // browsers and drops out of the tab order; read-only keeps the
+                  // text usable and the caret where it was, and only refuses
+                  // edits. It is here so the editor cannot drift from the results
+                  // underneath it: a script's results are labelled with the
+                  // statements they came from, and editing mid-run would leave
+                  // those labels disagreeing with what is on screen.
+                  readOnly={busy}
                   onChange={e => setSql(e.target.value)}
-                  onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql() }}
+                  // The shortcut needs the same guard the Run button has. Without
+                  // it, ⌘↵ during a run started a second query against the same
+                  // branch while the first was still going.
+                  onKeyDown={e => { if (!busy && (e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql() }}
                 />
                 <div className="sql-toolbar">
                   <label className={'override-toggle' + (allowDestructive ? ' on' : '')}
@@ -287,7 +304,7 @@ export default function Console() {
                   </button>
                 </div>
               </div>
-              {queryRes && <Grid res={queryRes} showCommand />}
+              {queryRes && <QueryOutput res={queryRes} sql={ranSql} />}
               {blocked && (
                 <div className="override-help">
                   {canOverride ? (
@@ -347,7 +364,55 @@ export default function Console() {
   )
 }
 
-function Grid({ res, showCommand }: { res: QueryResult; showCommand?: boolean }) {
+// Labels for a script's results: the statement each one came from, so a block of
+// grids is readable instead of being a stack you have to count semicolons
+// against.
+//
+// The engine cannot provide these. It sends the whole script in one message and
+// Postgres hands back results in order, with a command tag and no statement
+// text — deliberately, because splitting SQL properly needs a parser and
+// semicolons live inside string literals and dollar-quoted function bodies.
+//
+// So this splits naively, for display only, and then checks its own work: if the
+// number of pieces is not exactly the number of results, the split was wrong and
+// it gives up rather than labelling a grid with the wrong statement. A wrong
+// label is worse than none — it would have someone reading the result of one
+// statement as another's.
+function labelsFor(sql: string, n: number): string[] | null {
+  const parts = sql.split(';').map(p => p.trim()).filter(Boolean)
+  if (parts.length !== n) return null
+  return parts.map(p => (p.length > 90 ? p.slice(0, 89) + '…' : p).replace(/\s+/g, ' '))
+}
+
+// What a run produced. One statement looks exactly as it always did; a script
+// shows a result per statement, labelled with the SQL it came from where that
+// can be worked out safely, and numbered where it cannot.
+function QueryOutput({ res, sql }: { res: QueryResult; sql: string }) {
+  const all = res.results && res.results.length > 1 ? res.results : null
+  if (!all) return <Grid res={res} showCommand />
+  const labels = labelsFor(sql, all.length)
+  // A statement that failed carries its own error, so repeating it underneath
+  // would say the same thing twice and hide which statement it belonged to.
+  const shownInline = all.some(r => r.error)
+  return (
+    <div className="results">
+      {res.note && <div className="err-hint" style={{ marginBottom: 10 }}>{res.note}</div>}
+      {all.map((r, i) => (
+        <div key={i} className={'result-step' + (r.error ? ' failed' : '')}>
+          <div className="step-n">
+            <span className="step-i">{i + 1}/{all.length}</span>
+            {labels ? <code className="step-sql">{labels[i]}</code> : null}
+            {r.error ? <span className="step-bad">failed here</span> : null}
+          </div>
+          <Grid res={r} showCommand />
+        </div>
+      ))}
+      {res.error && !shownInline && <Grid res={{ error: res.error }} />}
+    </div>
+  )
+}
+
+function Grid({ res, showCommand }: { res: StatementResult; showCommand?: boolean }) {
   const [expanded, setExpanded] = useState<number | null>(null)
   useEffect(() => { setExpanded(null) }, [res]) // reset when new results arrive
   if (res.error) {
