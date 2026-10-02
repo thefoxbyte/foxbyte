@@ -105,12 +105,25 @@ func StartUpdateNotice() func() {
 
 func (u *updater) printf(format string, args ...any) { fmt.Fprintf(u.out, format, args...) }
 
+// reportedVersion reads the version out of what `fox version` printed.
+//
+// It takes the first field that parses as one, rather than a fixed position.
+// The line is "fox <version>" and may say more after it — it gained "(standard
+// edition)" when the editions split landed — and this used to take the last
+// field, so it parsed "edition)" and failed. The effect was not cosmetic: the
+// update checks the staged engine by running it and comparing what it reports,
+// so every update refused to install with "the new engine doesn't run here",
+// having just downloaded a binary that ran perfectly well.
+//
+// ParseVersion is strict — every dot-separated part must be digits — so "fox"
+// and "(standard" cannot be mistaken for one.
 func reportedVersion(out string) (update.Version, error) {
-	f := strings.Fields(out)
-	if len(f) == 0 {
-		return update.Version{}, fmt.Errorf("no version printed")
+	for _, f := range strings.Fields(out) {
+		if v, err := update.ParseVersion(f); err == nil {
+			return v, nil
+		}
 	}
-	return update.ParseVersion(f[len(f)-1])
+	return update.Version{}, fmt.Errorf("no version printed")
 }
 
 func (u *updater) run(ctx context.Context) error {
