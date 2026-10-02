@@ -111,6 +111,31 @@ test('the console runs a script and says which statement produced what', async (
   await expect(page.locator('.result td').first()).toHaveText('2', { timeout: 30_000 })
 })
 
+// The editor is read-only while a query is in flight. Two reasons: a script's
+// results are labelled with the statements they came from, and editing mid-run
+// would leave those labels disagreeing with what is on screen — and ⌘↵ used to
+// start a second query against the same branch while the first was still going.
+test('the editor stops taking edits while a query is running', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const editor = page.locator('textarea.editor')
+  await editor.fill('SELECT pg_sleep(2)')
+  await page.getByRole('button', { name: /run query/i }).click()
+
+  // While it runs: read-only, and the Run button says so too.
+  await expect(editor).toHaveJSProperty('readOnly', true)
+  await expect(page.getByRole('button', { name: /running/i })).toBeDisabled()
+  // Typing changes nothing while it is read-only.
+  await editor.press('a')
+  await expect(editor).toHaveValue('SELECT pg_sleep(2)')
+
+  // And it comes back afterwards.
+  await expect(editor).toHaveJSProperty('readOnly', false, { timeout: 30_000 })
+  await editor.fill('SELECT 1 AS back')
+  await expect(editor).toHaveValue('SELECT 1 AS back')
+})
+
 test('an API key is shown once, and the account page offers a password change', async ({ page }) => {
   await signIn(page)
   await page.goto('/keys', { waitUntil: 'domcontentloaded' })

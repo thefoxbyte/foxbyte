@@ -513,7 +513,8 @@
     <tr data-id="L4" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">L4</td><td><b>SQL console &amp; browser</b><ul class="subs">
       <li class="ok">Schema sidebar, rows, structure, indexes</li><li class="ok">Values shown as Postgres writes them (uuid, interval, inet, bytea)</li><li class="ok">SQL editor</li><li class="ok">System tables hidden by default, with a show button</li><li class="ok">Runs as the signed-in user; one-run override switch</li><li class="ok">Per-rule override for policy blocks</li><li class="lim">One statement per run (extended protocol)</li>
       <li class="ok">Runs a script, not just one statement: a result per statement, and one transaction unless it opens its own</li>
-      <li class="ok">Each result says which statement produced it; labelling is dropped rather than guessed when a split is unsafe</li></ul></td><td class="tb">Manual; API in v2 §6</td></tr>
+      <li class="ok">Each result says which statement produced it; labelling is dropped rather than guessed when a split is unsafe</li>
+      <li class="ok">Editor is read-only while a query runs, and ⌘/Ctrl+↵ no longer starts a second one</li></ul></td><td class="tb">Manual; API in v2 §6</td></tr>
     <tr data-id="L5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">L5</td><td><b>Blackbox page</b><ul class="subs">
       <li class="ok">Entries per branch with badges</li><li class="ok">Table / risk / date filters, and "Clear filters"</li><li class="ok">Verify button; a row expands to its statement and session</li>
       <li class="ok">Live: new entries arrive on their own (3s), marked briefly, pausable; never while older pages are being read</li>

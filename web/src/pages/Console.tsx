@@ -165,9 +165,9 @@ export default function Console() {
   // run can't drop something by accident.
   const runSql = async (override: { allowDestructive?: boolean; allowRules?: string[] } = { allowDestructive }) => {
     setBusy(true); setQueryRes(null); setMode('query')
-    // The SQL as it was when Run was pressed. The editor keeps taking edits
-    // while the query is in flight, and labelling results with text the user has
-    // since changed would be worse than not labelling them at all.
+    // The SQL this run is labelled against. The editor is read-only while a
+    // query is in flight, so it should not be able to change underneath — this
+    // is the belt to that pair of braces, and it costs one assignment.
     setRanSql(sql)
     try {
       const r = await runQuery(branch, sql, override)
@@ -272,11 +272,23 @@ export default function Console() {
                   <span className="kbd">⌘/Ctrl + ↵</span>
                 </div>
                 <textarea
-                  className="editor"
+                  className={'editor' + (busy ? ' running' : '')}
                   value={sql}
                   spellCheck={false}
+                  // Read-only rather than disabled while a query is in flight. A
+                  // disabled textarea cannot be selected or copied from in some
+                  // browsers and drops out of the tab order; read-only keeps the
+                  // text usable and the caret where it was, and only refuses
+                  // edits. It is here so the editor cannot drift from the results
+                  // underneath it: a script's results are labelled with the
+                  // statements they came from, and editing mid-run would leave
+                  // those labels disagreeing with what is on screen.
+                  readOnly={busy}
                   onChange={e => setSql(e.target.value)}
-                  onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql() }}
+                  // The shortcut needs the same guard the Run button has. Without
+                  // it, ⌘↵ during a run started a second query against the same
+                  // branch while the first was still going.
+                  onKeyDown={e => { if (!busy && (e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql() }}
                 />
                 <div className="sql-toolbar">
                   <label className={'override-toggle' + (allowDestructive ? ' on' : '')}

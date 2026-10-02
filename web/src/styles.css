@@ -870,3 +870,8 @@ th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0;
 }
 .results .step-bad { flex: none; color: var(--danger, #e5484d); text-transform: none; letter-spacing: 0; }
 .results .result-step.failed .step-i { color: var(--danger, #e5484d); }
+
+/* The editor while a query is running: read-only, and visibly so. Without a cue
+   it looks broken rather than busy — someone types, nothing appears, and the
+   only hint is a button label at the other end of the card. */
+textarea.editor.running { opacity: .72; cursor: progress; }
