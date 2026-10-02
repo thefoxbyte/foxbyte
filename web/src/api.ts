@@ -42,7 +42,18 @@ export type Branch = {
 // One statement's outcome. `results` always holds at least one, so a caller can
 // read one shape whether the SQL was a single statement or a script; the fields
 // beside it are the last statement's, kept for callers that predate scripts.
-export type StatementResult = { columns?: string[]; rows?: unknown[][]; command?: string; error?: string }
+export type StatementResult = {
+  columns?: string[]
+  rows?: unknown[][]
+  command?: string
+  error?: string
+  // Where Postgres says the trouble is: a 1-based character offset into the SQL
+  // that was sent. Absent when it could not locate it — a deadlock has no
+  // position, and sending 0 would point at line 1 and be wrong.
+  position?: number
+  detail?: string
+  hint?: string
+}
 export type QueryResult = StatementResult & {
   results?: StatementResult[]
   // Set when a script failed: Postgres runs one in a single transaction unless

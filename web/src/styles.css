@@ -870,6 +870,13 @@ th.expand-col, td.expand-col { width: 34px; padding-left: 8px; padding-right: 0;
    on a page people return to all day. */
 .wb { height: 100%; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
 
+/* Readable by a screen reader, absent from the layout. Not display:none, which
+   would take it out of the accessibility tree along with everything else. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
 .wb-bar {
   flex: none; display: flex; align-items: center; gap: var(--s-3);
   padding: 0 var(--s-4); height: 50px;
@@ -981,4 +988,35 @@ body.row-resizing { cursor: row-resize; user-select: none; }
 @media (max-width: 860px) {
   .wb-rail { position: absolute; z-index: 20; height: 100%; box-shadow: var(--shadow); }
   .wb-bar { overflow-x: auto; }
+}
+
+/* Line numbers. A textarea cannot hold children, so the gutter is a sibling
+   drawn with the same font, size and line height, scrolled in step with it.
+   That alignment holds only while the editor does not wrap: a wrapped line is
+   two rows against one number, and every number below it would then be wrong —
+   which is worse than no numbers, because the point of them is to be able to
+   trust "line 7". So the editor scrolls sideways instead, as a code editor
+   does. --wb-line is the one place the two agree on a height. */
+.wb-edit { --wb-line: 21px; flex: 1; display: flex; min-height: 0; }
+.wb-gutter {
+  flex: none; overflow: hidden; user-select: none; text-align: right;
+  padding: var(--s-3) 8px var(--s-3) 10px;
+  border-right: 1px solid var(--border); background: var(--bg-elev);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--t-sm); line-height: var(--wb-line); color: var(--faint);
+}
+.wb-gutter > div { height: var(--wb-line); }
+/* The line Postgres objected to. Marked rather than described: you look at the
+   gutter to find it, not at a sentence telling you a number. */
+.wb-gutter > div.bad {
+  color: var(--accent-ink); background: var(--red); border-radius: 3px;
+  font-weight: 700; margin: 0 -4px 0 -2px; padding: 0 4px 0 2px;
+}
+.wb-edit textarea.editor {
+  flex: 1; min-width: 0; padding: var(--s-3) var(--s-3);
+  line-height: var(--wb-line); white-space: pre; overflow: auto; tab-size: 2;
+}
+.err-at {
+  margin-top: 6px; font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--t-xs); color: var(--red);
 }

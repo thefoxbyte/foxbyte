@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
@@ -630,7 +631,7 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 		if strings.Contains(err.Error(), "cannot insert multiple commands") {
 			return runScript(ctx, conn, sql)
 		}
-		return map[string]any{"error": err.Error()}
+		return queryErr(err)
 	}
 	defer rows.Close()
 
@@ -665,6 +666,35 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	// every one of them for a feature they did not ask for.
 	one["results"] = []map[string]any{{"columns": cols, "rows": out, "command": rows.CommandTag().String()}}
 	return one
+}
+
+// queryErr renders a failed query for the console: the message, and where
+// Postgres says the trouble is.
+//
+// Postgres reports the character offset of a syntax error, and it was being
+// thrown away — the console showed `syntax error at or near "FORM"` and left
+// someone to find which "FORM" in forty lines of SQL. The offset is 1-based and
+// counts characters, not bytes, which is why it is handed over as Postgres gives
+// it and turned into a line and column by the thing that has the text.
+//
+// Detail and hint come too when Postgres offers them. Its hints are often the
+// whole answer — "Perhaps you meant to reference the column t.name" — and
+// repeating them costs nothing.
+func queryErr(err error) map[string]any {
+	out := map[string]any{"error": err.Error()}
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		if pg.Position > 0 {
+			out["position"] = pg.Position
+		}
+		if pg.Detail != "" {
+			out["detail"] = pg.Detail
+		}
+		if pg.Hint != "" {
+			out["hint"] = pg.Hint
+		}
+	}
+	return out
 }
 
 // runScript runs SQL holding more than one statement, and returns a result per
@@ -710,15 +740,19 @@ func runScript(ctx context.Context, conn *pgx.Conn, sql string) map[string]any {
 		tag, err := rr.Close()
 		res := map[string]any{"columns": cols, "rows": out, "command": tag.String()}
 		if err != nil {
-			res["error"] = err.Error()
+			for k, v := range queryErr(err) {
+				res[k] = v
+			}
 		}
 		results = append(results, res)
 	}
 	if err := rdr.Close(); err != nil {
 		// The statement that failed took the implicit transaction with it, so say
 		// so once rather than leaving the reader to infer it from the last result.
-		return map[string]any{"error": err.Error(), "results": results,
-			"note": "nothing was applied: Postgres runs a multi-statement script in one transaction unless the script opens its own"}
+		out := queryErr(err)
+		out["results"] = results
+		out["note"] = "nothing was applied: Postgres runs a multi-statement script in one transaction unless the script opens its own"
+		return out
 	}
 	if len(results) == 0 {
 		return map[string]any{"error": "no statements to run"}
