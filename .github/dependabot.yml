@@ -5,18 +5,47 @@
 # the web UI's npm packages pick up security fixes the same way. The Postgres
 # base and MinIO images are pinned by digest through build arguments Dependabot
 # cannot read; scripts/check-image-digests.sh reports when they fall behind.
+#
+# Every group is minor-and-patch only, and that is the important part. A group
+# with `patterns: ["*"]` and no `update-types` swallows majors too, so a
+# framework upgrade arrives wearing the same clothes as a patch bump: "bump the
+# web group across 1 directory with 8 updates" was React 18 to 19 and React
+# Router 6 to 7, which nobody would merge on sight if the title said so. An
+# update that falls outside its group gets a pull request of its own, so majors
+# now arrive alone and named.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
     groups:
-      actions: { patterns: ["*"] }
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # One pull request a week for the routine bumps rather than one per module:
+  # five separate ones sat open for a fortnight, each needing its own rebase and
+  # its own merge, which is how they came to sit open for a fortnight.
+  #
+  # pgx is kept out of the group on purpose. It is the PostgreSQL driver — every
+  # query, every type decoded, the gateway and the simple-protocol fallback go
+  # through it — and the only tests that would notice a regression are the
+  # integration suites, which run nightly rather than on the pull request. When
+  # a nightly does go red, "which of these five did it" is a question worth not
+  # having to ask.
   - package-ecosystem: gomod
     directory: /
     schedule: { interval: weekly }
+    groups:
+      go:
+        patterns: ["*"]
+        exclude-patterns: ["github.com/jackc/pgx/*"]
+        update-types: ["minor", "patch"]
+
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly }
     groups:
-      web: { patterns: ["*"] }
+      web:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
