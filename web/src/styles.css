@@ -39,6 +39,14 @@
   --radius-pill: 999px;
 
   --grad: linear-gradient(120deg, var(--grad-a), var(--grad-b));
+  /* The mark's own two colours, sampled from the artwork. They do not change
+     with the theme, because the logo does not: it is the same cube on a dark
+     page as on a light one. Kept apart from --grad-a/--grad-b, which are the
+     product's accent and tint every button and focus ring — adopting the
+     mark's blue across all of those is a palette decision, not a logo one. */
+  --mark-a: #ff7f02;
+  --mark-b: #006bff;
+  --grad-mark: linear-gradient(100deg, var(--mark-a), var(--mark-b));
   --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
   --speed: 140ms;
 }
@@ -195,9 +203,10 @@ p, li { color: color-mix(in srgb, var(--text) 82%, transparent); font-size: var(
 .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-display);
   font-weight: 700; font-size: 18px; color: var(--text); letter-spacing: -0.02em; }
 .brand:hover { text-decoration: none; }
+.mark { display: block; object-fit: contain; }
 .brand .mark { width: 26px; height: 26px; }
 .brand .wm { display: inline-flex; }
-.brand .wm-accent { color: transparent; background: var(--grad); -webkit-background-clip: text; background-clip: text; }
+.brand .wm-accent { color: transparent; background: var(--grad-mark); -webkit-background-clip: text; background-clip: text; }
 .nav .links { display: flex; gap: 4px; margin-left: 22px; }
 .nav .links a { color: var(--muted); font-size: 14px; font-weight: 500; padding: 7px 12px; border-radius: 9px; }
 .nav .links a:hover { color: var(--text); text-decoration: none; background: var(--panel-2); }
@@ -607,7 +616,7 @@ button.primary.danger:hover { filter: brightness(1.06); }
   display: flex; align-items: center; justify-content: center; gap: var(--s-2);
   margin-bottom: var(--s-5); font-family: var(--font-display); font-size: var(--t-md);
 }
-.auth-brand .wm-accent { color: transparent; background: var(--grad); -webkit-background-clip: text; background-clip: text; }
+.auth-brand .wm-accent { color: transparent; background: var(--grad-mark); -webkit-background-clip: text; background-clip: text; }
 .authcard h1 { font-size: var(--t-xl); }
 .authcard .form { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
 .authcard .form input { width: 100%; }
