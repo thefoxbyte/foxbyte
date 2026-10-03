@@ -1,0 +1,23 @@
+# Who has to review a change, for the branch ruleset's
+# "require review from Code Owners" rule on main.
+#
+# The rule was switched on with no CODEOWNERS file in the repository, which
+# means it had nothing to ask for: every pull request reported
+# REVIEW_REQUIRED, and on a maintainer's own pull request nobody could satisfy
+# it, because GitHub does not let you approve your own. The only way through
+# was the organisation admin bypass, which is set to "always" — so the rule
+# recorded an intention and enforced nothing.
+#
+# This file is what gives it something to enforce, and it matters now rather
+# than earlier because the first outside contribution has arrived. An owner
+# must have write access to the repository or GitHub ignores the line, which
+# is why there is one name here and not two: SauravCodemotion is a maintainer
+# for the purposes of CLA.md's allowlist, but is not a collaborator on this
+# repository.
+#
+# What this does NOT change: a maintainer's own pull request still needs the
+# admin bypass, because the ruleset asks for one approving review and you
+# cannot be your own. Dependabot's pull requests can be approved normally —
+# they are authored by the bot, not by you.
+
+*       @SauravYadav12
