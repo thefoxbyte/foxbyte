@@ -78,19 +78,21 @@ command -v openssl >/dev/null 2>&1 || { echo "need openssl"; exit 1; }
 # hand-kept list that would quietly go stale.
 echo
 echo "1. which released versions are in this module's lineage"
-TAGS=""
-for t in $(git -C "$ROOT" for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/tags/v*' 2>/dev/null); do
-	mod="$(git -C "$ROOT" show "$t:go.mod" 2>/dev/null | awk 'NR==1 {print $2}')"
-	[ "$mod" = "$MODULE" ] || continue
-	TAGS="$TAGS $t"
-done
-TAGS="$(echo $TAGS | tr ' ' '\n' | head -n "$HOW_MANY" | tr '\n' ' ')"
-if [ -z "${TAGS// /}" ]; then
+# One pipeline, newline-separated. Accumulating into a space-joined string and
+# splitting it again leans on unquoted word splitting, which bash does and zsh
+# does not — run that way it quietly tested one version fewer than it reported.
+TAGS="$(
+	for t in $(git -C "$ROOT" for-each-ref --sort=-creatordate --format='%(refname:short)' 'refs/tags/v*' 2>/dev/null); do
+		mod="$(git -C "$ROOT" show "$t:go.mod" 2>/dev/null | awk 'NR==1 {print $2}')"
+		[ "$mod" = "$MODULE" ] && echo "$t"
+	done | head -n "$HOW_MANY"
+)"
+if [ -z "$TAGS" ]; then
 	echo "  FAIL: no tag shares this module path ($MODULE) — is this a shallow clone with no tags?"
 	echo "        a nightly must fetch tags (actions/checkout fetch-depth: 0) or this suite tests nothing."
 	exit 1
 fi
-ok "testing updates from:$TAGS"
+ok "testing updates from: $(printf '%s' "$TAGS" | tr '\n' ' ')"
 
 echo
 echo "2. build this tree as the release they will update to"
@@ -134,7 +136,12 @@ done
 
 echo
 echo "3. each released version updates to it"
-for tag in $TAGS; do
+# read rather than `for tag in $TAGS`, for the same reason as the selection
+# above: splitting an unquoted variable is bash behaviour and not every
+# shell's, and the cost of getting it wrong is a suite that silently tests
+# fewer versions than it says it did.
+while IFS= read -r tag; do
+	[ -n "$tag" ] || continue
 	src="$T/src/$tag"
 	if ! git -C "$ROOT" worktree add --detach -q "$src" "$tag" 2>"$T/wt-$tag.log"; then
 		skip "$tag — could not check out its source ($(tail -n1 "$T/wt-$tag.log"))"
@@ -176,7 +183,7 @@ for tag in $TAGS; do
 		bad "$tag → $CANDIDATE: never reached the staged-engine check"
 		tail -n 8 <<<"$out" | sed 's/^/      /'
 	fi
-done
+done <<<"$TAGS"
 
 echo
 echo "### $PASS passed, $FAIL failed, $SKIP skipped"
