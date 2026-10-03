@@ -28,6 +28,8 @@ The command-line tool is **`fox`**. Everything below is a `fox …` command.
 The web console is served by the engine itself at **https://localhost:8080** — no
 separate dev server to run.
 
+![The FoxByte landing page](docs/screenshots/landing.png)
+
 | Ops dashboard | Blackbox | SQL console |
 | --- | --- | --- |
 | ![Dashboard](docs/screenshots/dashboard.png) | ![Blackbox](docs/screenshots/ledger.png) | ![Console](docs/screenshots/console.png) |
