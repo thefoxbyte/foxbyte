@@ -241,15 +241,27 @@ jobs:
           go build -o "$RUNNER_TEMP/releasesign" ./cmd/releasesign
 
       # Created as a prerelease and left as a draft-free placeholder so
-      # wsl-zfs.yml can upload the ZFS bundle into it. Promote it by hand once
-      # the install has been smoke-tested on a clean Windows machine.
-      - name: Create the release if it does not exist
+      # wsl-zfs.yml can upload the ZFS bundle into it. The release-verify job
+      # below promotes it once an older install has been shown to update to it.
+      #
+      # It is forced to prerelease even when the release already exists, and
+      # that `gh release edit` is the whole point. Creating the release by hand
+      # — `gh release create`, or the web UI — makes the tag and the release in
+      # one go, so the `gh release view` below succeeds and the --prerelease on
+      # the create never ran. Both v1.0 and v1.0.1 were published that way and
+      # neither was ever a prerelease: the guard this comment describes had
+      # never once applied. A prerelease matters because `fox update` does not
+      # offer one, so an unverified release cannot reach anybody.
+      - name: Create the release if it does not exist, and hold it as a prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          set -euo pipefail
           gh release view "$TAG" >/dev/null 2>&1 ||
             gh release create "$TAG" --prerelease --generate-notes --title "$TAG"
+          gh release edit "$TAG" --prerelease
+          echo "$TAG is held as a prerelease; release-verify promotes it."
 
       # Published so the installer can verify what it downloads. Without it the
       # only integrity guarantee is TLS, and these assets are executed as root
@@ -300,6 +312,104 @@ jobs:
   # pullable after a fresh install moves on.
   # Gated too: the image is part of what a release hands people, and a red suite
   # is as good a reason not to publish it as not to publish the binaries.
+  # Does an existing install actually accept this release?
+  #
+  # Everything in the release job checks that files exist, that SHA256SUMS lists
+  # them and that the signature is ours. None of it runs the published binary.
+  # v1.0 passed every one of those checks and was then refused by every install
+  # that tried to take it, because `fox update` validates a staged engine by
+  # parsing its `version` output and the parser doing the work belongs to the
+  # OLD binary. That is not a gap a presence check can close.
+  #
+  # So this installs from the published assets, the way a person does, and then
+  # updates to this release from the one before it. `--version` is what lets it
+  # do that while the release is still a prerelease: Candidates() admits a
+  # pinned prerelease (internal/update/select.go), while an ordinary
+  # `fox update` never offers one. So nobody can be offered this release until
+  # the job below promotes it, and if the job fails it stays unreachable.
+  #
+  # It deliberately stops at the staged-engine check rather than completing the
+  # update, which would need a pool and containers. What happens after that
+  # check is covered by the nightly's `update` suite against a real stack; what
+  # is covered only here is the published artifact.
+  release-verify:
+    needs: [release, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # promotes the release on success
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # A clean machine taking this release for the first time. Catches a
+      # corrupt or wrong-architecture asset, and a binary that does not report
+      # the version it was published as — which is the one `fox update` compares
+      # against, so a mismatch stops every update to it.
+      - name: A fresh install of this release
+        run: |
+          set -euo pipefail
+          FOX_VERSION="$TAG" sh deploy/install.sh
+          line="$(fox version)"
+          echo "fox version says: $line"
+          got="$(printf '%s' "$line" | awk '{print $2}')"
+          [ "$got" = "${TAG#v}" ] || {
+            echo "::error::a fresh install of $TAG reports '$got'. fox update compares this to the release tag, so every update to $TAG would be refused."
+            exit 1
+          }
+          # The same line read the way releases up to v1.0 read it: the last
+          # field. Those installs are the ones that have to accept this release.
+          last="$(printf '%s' "$line" | awk '{print $NF}')"
+          [ "$last" = "${TAG#v}" ] || {
+            echo "::error::'$line' ends in '$last', not the version. Installs older than v1.0.1 parse the last field and would refuse this release."
+            exit 1
+          }
+
+      # And now the hop that actually broke: an older install updating to this
+      # one, over the real published assets.
+      - name: The previous release updates to this one
+        run: |
+          set -euo pipefail
+          # The greatest released tag strictly below this one. Taking "the
+          # newest other release" would pick a NEWER tag whenever an older one
+          # is re-released, and the update would then be refused as a
+          # downgrade — failing the job for the wrong reason. This tag is added
+          # to the list because --exclude-pre-releases drops it: it is being
+          # held as a prerelease right now.
+          prev="$(
+            { gh release list --exclude-drafts --exclude-pre-releases --limit 50 --json tagName --jq ".[].tagName"
+              echo "$TAG"
+            } | sort -uV | awk -v cur="$TAG" '$0 == cur { print prev; exit } { prev = $0 }'
+          )"
+          if [ -z "$prev" ]; then
+            echo "::notice::no earlier full release to update from — nothing to check on this hop."
+            exit 0
+          fi
+          echo "installing $prev, then updating it to $TAG"
+          FOX_VERSION="$prev" sh deploy/install.sh
+          installed="$(fox version | awk '{print $2}')"
+          [ "$installed" = "${prev#v}" ] || { echo "::error::wanted $prev installed, got $installed"; exit 1; }
+
+          # A throwaway HOME so this touches no state, and --version because the
+          # release is still held as a prerelease.
+          out="$(HOME="$(mktemp -d)" fox update --version "$TAG" --yes 2>&1 || true)"
+          echo "$out"
+          if printf '%s' "$out" | grep -qF "engine ${TAG#v} runs"; then
+            echo "$prev accepts the $TAG engine."
+          else
+            echo "::error::$prev refused the $TAG engine — every install on $prev or older would be stuck. $TAG stays a prerelease."
+            exit 1
+          fi
+
+      # Only now may a user be offered it.
+      - name: Promote the release
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --prerelease=false --latest
+          echo "### $TAG promoted: an older install was shown to accept it" >> "$GITHUB_STEP_SUMMARY"
+          echo "The Windows install path is still not covered by CI (A9) — smoke-test it on a real machine." >> "$GITHUB_STEP_SUMMARY"
+
   image:
     needs: nightly-gate
     runs-on: ubuntu-latest
