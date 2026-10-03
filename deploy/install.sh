@@ -98,11 +98,25 @@ asset="$BIN-$os-$arch"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-fetch() { # fetch <url> <dest>
+# fetch <url> <dest>
+#
+# The timeouts are the point of this function, not decoration. curl's default
+# connect timeout is 300 seconds per address, and the release asset host
+# resolves to three of them — so a network fault that lets connections stall
+# instead of refusing them leaves this waiting for up to a quarter of an hour.
+# With the metadata downloads below hiding curl's stderr, that looked exactly
+# like a hang with no output at all, and was reported as one.
+#
+# --speed-limit catches the other shape: a transfer that opens and then stalls
+# part-way. There is deliberately no --max-time — the largest asset is several
+# hundred megabytes, and a slow but working connection has to be allowed to
+# finish.
+fetch() {
 	if command -v curl >/dev/null 2>&1; then
-		curl -fSL "$1" -o "$2"
+		curl -fSL --connect-timeout 15 --retry 2 --retry-delay 2 \
+			--speed-limit 1024 --speed-time 60 "$1" -o "$2"
 	elif command -v wget >/dev/null 2>&1; then
-		wget -qO "$2" "$1"
+		wget -qO "$2" --connect-timeout=15 --tries=3 --read-timeout=60 "$1"
 	else
 		err "need curl or wget"
 	fi
@@ -143,6 +157,11 @@ sha256_of() { # sha256_of <file>
 
 SUMS=""
 if [ "$VERIFY" = "1" ]; then
+	# Before this, the checksums and the signature were both fetched with curl's
+	# stderr discarded and nothing printed beforehand, so the script's first
+	# visible output came only once both had arrived. On a bad connection that is
+	# minutes of apparent silence, which is indistinguishable from a hang.
+	say "Checking the $VERSION release (checksums, then signature)…"
 	SUMS="$tmp/SHA256SUMS"
 	fetch "$(asset_url SHA256SUMS)" "$SUMS" 2>/dev/null || err "could not fetch SHA256SUMS for $VERSION.
 Nothing was installed. Retry, or set FOX_NO_VERIFY=1 to install without checking (not recommended)."

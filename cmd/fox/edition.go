@@ -8,6 +8,7 @@ import (
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
+	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
 // requireFeature stops a command that needs a paid feature this build cannot
@@ -42,4 +43,38 @@ func editionLine() string {
 	default:
 		return fmt.Sprintf("enterprise edition, %d features licensed", len(edition.Available()))
 	}
+}
+
+// versionLine is what `fox version` prints.
+//
+// In the Standard edition the version is the last whitespace-separated field,
+// and the only thing after the command name. That is not a style choice.
+//
+// `fox update` checks the engine it has staged by running `version` on it and
+// parsing what comes back — and the binary doing that parsing is the one
+// already installed, not the one being installed. Every release up to and
+// including v1.0 read the last field, so when the editions split added
+// "(standard edition)" the last field became "edition)", and those installs
+// refused every update with "the new engine doesn't run here" after
+// downloading a binary that ran perfectly well. Fixing the parser could not
+// fix them: the fix ships in the new binary, which is not the one deciding.
+//
+// So the line has to stay readable by the oldest parser in the field, for as
+// long as any of those installs exist. Enterprise may say more after the
+// version: no Enterprise build predates the parser fix, and `fox update` keeps
+// a machine in its own edition, so no old parser ever sees that suffix. Which
+// edition a Standard install is remains a question `fox check` answers, in a
+// row of its own.
+func versionLine() string {
+	return versionLineFor(edition.Enterprise, version.Version, editionLine())
+}
+
+// versionLineFor is the pure half, so either build can test both editions'
+// output — the alternative is a test that only checks the edition it was
+// compiled as, which is how this went wrong in the first place.
+func versionLineFor(enterprise bool, ver, ed string) string {
+	if !enterprise {
+		return fmt.Sprintf("%s %s", brand.CLI, ver)
+	}
+	return fmt.Sprintf("%s %s (%s)", brand.CLI, ver, ed)
 }
