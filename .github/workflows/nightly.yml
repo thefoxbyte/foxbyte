@@ -21,7 +21,7 @@ on:
         description: 'One suite to run (default: all)'
         required: false
         type: choice
-        options: ['', integration, ledger-v2, update, pg-upgrade, sdks, ui]
+        options: ['', integration, ledger-v2, update, pg-upgrade, sdks, ui, upgrade]
 
 permissions:
   contents: read
@@ -33,9 +33,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [integration, ledger-v2, update, pg-upgrade, sdks, ui]
+        suite: [integration, ledger-v2, update, pg-upgrade, sdks, ui, upgrade]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The upgrade suite builds each recent tag from its own source, so it
+          # needs the tags and their history. The default is depth 1 with
+          # neither, and that suite would then have nothing to test — it says so
+          # and fails rather than passing empty.
+          fetch-depth: 0
       - if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
@@ -51,7 +57,10 @@ jobs:
       # needs its module; without it there is nothing to test, so say so plainly
       # rather than failing later inside the engine.
       - name: Install ZFS, psql and the rest
-        if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
+        # Not for `upgrade`: it drives `fox update` only as far as the staged-engine
+        # check, which on Linux is a file copy and a `version` call, so it needs no
+        # pool, no containers and no install of its own.
+        if: ${{ (inputs.suite == '' || inputs.suite == matrix.suite) && matrix.suite != 'upgrade' }}
         run: |
           set -eux
           sudo apt-get update -qq
@@ -64,7 +73,7 @@ jobs:
           docker --version
 
       - name: Build the engine
-        if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
+        if: ${{ (inputs.suite == '' || inputs.suite == matrix.suite) && matrix.suite != 'upgrade' }}
         run: |
           set -eux
           if [ "${{ matrix.suite }}" = "ui" ]; then
@@ -95,7 +104,7 @@ jobs:
       # images.go. The major is read from there for the same reason. Single
       # architecture and no buildx — this runner only ever runs the image natively.
       - name: Build the engine image from this tree
-        if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
+        if: ${{ (inputs.suite == '' || inputs.suite == matrix.suite) && matrix.suite != 'upgrade' }}
         run: |
           set -euo pipefail
           major="$(grep -oE 'PGMajor += +"[0-9]+"' internal/branch/images.go | grep -oE '[0-9]+')"
@@ -120,6 +129,7 @@ jobs:
             pg-upgrade)  script=scripts/integration_pg_upgrade.sh ;;
             sdks)        script=scripts/integration_sdks.sh ;;
             ui)          script=scripts/integration_ui.sh ;;
+            upgrade)     script=scripts/integration_upgrade.sh ;;
           esac
           bash "$script" 2>&1 | tee "/tmp/${{ matrix.suite }}.log"
 

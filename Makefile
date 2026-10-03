@@ -3,7 +3,7 @@
 # FoxByte runs inside the Linux dev VM (ZFS + Docker); day-to-day operation is
 # via `lima /tmp/fox <command>`. This Makefile just builds/checks the CLI.
 
-.PHONY: integration-sdks integration-ui release-key build build-enterprise vet vet-enterprise fmt vm-build test test-enterprise integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade integration-editions test-vm test-vm-stop test-vm-delete
+.PHONY: integration-upgrade integration-sdks integration-ui release-key build build-enterprise vet vet-enterprise fmt vm-build test test-enterprise integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade integration-editions test-vm test-vm-stop test-vm-delete
 
 VERSION ?= 0.1.0
 LDFLAGS := -s -w -X github.com/thefoxbyte/foxbyte/internal/version.Version=$(VERSION)
@@ -112,6 +112,12 @@ integration-ui: web-build test-vm ## Run the web console's Playwright tests in t
 # Host-side, no VM: builds both editions and looks inside them.
 integration-editions: ## Check the edition boundary against the built binaries
 	bash scripts/test_editions.sh
+
+# Non-destructive and needs no stack, so it runs on the host rather than in the
+# test VM — but only on Linux, where the engine is the host binary. It builds
+# each recent tag from its own source, so it needs the tags present.
+integration-upgrade: ## Check that previously released versions can update to this build (Linux)
+	bash scripts/integration_upgrade.sh
 
 integration-pg-upgrade: test-vm ## Run the export/restore and `fox pg upgrade` checks (16 -> the shipped major) in the test VM
 	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_pg_upgrade.sh"
