@@ -39,6 +39,18 @@
   --radius-pill: 999px;
 
   --grad: linear-gradient(120deg, var(--grad-a), var(--grad-b));
+  /* The mark's own two colours, exactly as the artwork has them, for the one
+     place that sits beside the artwork: the wordmark's x. They do not change
+     with the theme, because the logo does not.
+     The palette below now takes its colours from the same mark, but not these
+     literals — a brand colour and a legible colour are different problems.
+     #006bff reaches only 3.81:1 on the dark background, so links and focus
+     take a lightened blue from the same ramp, and the light theme a darkened
+     one. The mark has a full warm ramp and a full cool one; the palette uses
+     the warm for actions and the cool for interface. */
+  --mark-a: #ff7f02;
+  --mark-b: #006bff;
+  --grad-mark: linear-gradient(100deg, var(--mark-a), var(--mark-b));
   --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
   --speed: 140ms;
 }
@@ -55,14 +67,23 @@
   --faint: #71788a;
   --border: #242835;
   --border-strong: #333849;
-  --grad-a: #ff7a2f;   /* ember */
-  --grad-b: #ffc24a;   /* fox amber */
-  --accent: #ff8b3d;
-  --accent-ink: #1a1205;   /* text on an accent fill */
+  /* Buttons: the mark's own warm ramp, orange into amber. One hue family, so
+     a filled button reads as one colour with depth rather than as a second
+     logo — the cube's orange-to-blue sweep belongs to the mark, not to a
+     control someone clicks forty times a day. */
+  --grad-a: #fb6300;   /* the mark's orange */
+  --grad-b: #fec42d;   /* the mark's amber */
+  /* Interface: the mark's blue, lightened until it reads on graphite (5.83:1;
+     the artwork's own #006bff manages 3.81 and fails as link text). This is
+     what links, focus rings, selection and the active nav item take, so the
+     two halves of the logo now divide the product the way they divide the
+     mark — warm for what you press, cool for what you are looking at. */
+  --accent: #2f8bff;
+  --accent-ink: #1a1205;   /* text on an accent fill: 6.08:1 on the orange, 5.53 on the blue */
   --green: #35c48d;
   --amber: #e9a63c;
   --red: #f2555f;
-  --info: #5aa9ff;
+  --info: #04d1fe;   /* the mark's cyan, so informational blue is not the accent blue */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
   --shadow: 0 18px 40px -24px rgba(0, 0, 0, .8);
   --shadow-lg: 0 32px 70px -30px rgba(0, 0, 0, .85);
@@ -77,7 +98,7 @@
   --selection: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
-/* Light is a paper room: the same ember, darkened enough to read on white. */
+/* Light is a paper room: the same two ramps, darkened enough to read on white. */
 [data-theme='light'] {
   --bg: #f6f6f8;
   --bg-elev: #ffffff;
@@ -89,14 +110,18 @@
   --faint: #868d9e;
   --border: #e4e6ec;
   --border-strong: #cfd3de;
+  /* The warm ramp stays darkened here: white ink sits on these fills, and the
+     mark's own orange is too light to carry it. */
   --grad-a: #e0590d;
   --grad-b: #f0a01e;
-  --accent: #d2570c;
-  --accent-ink: #ffffff;
+  /* The mark's blue darkened for paper: 5.81:1, where the orange it replaces
+     managed 3.81 and never passed for link text. */
+  --accent: #0a57d6;
+  --accent-ink: #ffffff;   /* 6.27:1 on the blue */
   --green: #0f9d70;
   --amber: #b9760d;
   --red: #d33a45;
-  --info: #2d7ad6;
+  --info: #0e7490;   /* the mark's cyan, darkened for paper */
   --shadow-sm: 0 1px 2px rgba(22, 26, 40, .06);
   --shadow: 0 16px 36px -24px rgba(22, 26, 40, .3);
   --shadow-lg: 0 28px 60px -30px rgba(22, 26, 40, .35);
@@ -195,9 +220,10 @@ p, li { color: color-mix(in srgb, var(--text) 82%, transparent); font-size: var(
 .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-display);
   font-weight: 700; font-size: 18px; color: var(--text); letter-spacing: -0.02em; }
 .brand:hover { text-decoration: none; }
+.mark { display: block; object-fit: contain; }
 .brand .mark { width: 26px; height: 26px; }
 .brand .wm { display: inline-flex; }
-.brand .wm-accent { color: transparent; background: var(--grad); -webkit-background-clip: text; background-clip: text; }
+.brand .wm-accent { color: transparent; background: var(--grad-mark); -webkit-background-clip: text; background-clip: text; }
 .nav .links { display: flex; gap: 4px; margin-left: 22px; }
 .nav .links a { color: var(--muted); font-size: 14px; font-weight: 500; padding: 7px 12px; border-radius: 9px; }
 .nav .links a:hover { color: var(--text); text-decoration: none; background: var(--panel-2); }
@@ -607,7 +633,7 @@ button.primary.danger:hover { filter: brightness(1.06); }
   display: flex; align-items: center; justify-content: center; gap: var(--s-2);
   margin-bottom: var(--s-5); font-family: var(--font-display); font-size: var(--t-md);
 }
-.auth-brand .wm-accent { color: transparent; background: var(--grad); -webkit-background-clip: text; background-clip: text; }
+.auth-brand .wm-accent { color: transparent; background: var(--grad-mark); -webkit-background-clip: text; background-clip: text; }
 .authcard h1 { font-size: var(--t-xl); }
 .authcard .form { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
 .authcard .form input { width: 100%; }
