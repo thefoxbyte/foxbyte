@@ -210,7 +210,7 @@ jobs:
       # A software bill of materials for the source tree: every Go module and
       # npm package a release is built from (audit v2 G22).
       - name: SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: .
           format: spdx-json
