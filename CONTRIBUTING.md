@@ -13,8 +13,12 @@ engine commands into that VM.
 ```bash
 make build        # host binary -> ./bin/fox
 make vm-build     # Linux engine binary -> /tmp/fox inside the Lima VM (macOS)
-make web-dev      # run the web app against the API (http://localhost:5173)
+make web-build    # build the web UI to web/dist (embedded into the engine binary)
 ```
+
+The engine serves the web UI itself: run `fox start` and open
+https://localhost:8080. Only if you are working on the UI and want hot reload,
+`make web-dev` (deprecated) starts a dev server at http://localhost:5173.
 
 ## Before you open a pull request
 
