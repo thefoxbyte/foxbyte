@@ -218,17 +218,21 @@ read down so far as necessary to make it valid rather than struck out entirely.
 
 ## How to sign
 
-Open a pull request. A bot will comment with a link, and signing takes one click.
-You only ever do this once, no matter how many contributions follow.
+Open a pull request. A bot will ask You to sign, and You sign by replying to it.
 
-If that is not working, you can sign in the pull request itself by leaving a
-comment with exactly this line:
+Add a **new comment** on the pull request containing only this line:
 
 ```
 I have read the FoxByte CLA and I hereby sign it.
 ```
 
-Either method is an electronic record of Your acceptance. Under section 10A of
+Use a new comment rather than GitHub's **Quote reply**. Quote reply copies the
+bot's message into Yours, the bot compares the whole comment against the line
+above, and a reply carrying the quoted text is not recognised as a signature.
+
+You only ever do this once, no matter how many contributions follow.
+
+That comment is an electronic record of Your acceptance. Under section 10A of
 the Information Technology Act, 2000, a contract is not unenforceable merely
 because it was formed electronically.
 

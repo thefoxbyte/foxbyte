@@ -73,6 +73,35 @@ func TestContributorGuidePromisesOnlyWhatExists(t *testing.T) {
 		if !strings.Contains(flatten(string(wf)), sentence) {
 			t.Errorf(".github/workflows/cla.yml does not wait for %q, so a signature would not be recognised", sentence)
 		}
+
+		// And CLA.md must describe the signing that exists. It used to promise
+		// "A bot will comment with a link, and signing takes one click", and
+		// called the comment a fallback — which is the hosted CLA Assistant at
+		// cla-assistant.io, not the action this repository runs. There is no
+		// link and no click: the comment is the only way in. A contributor
+		// following the agreement literally waited for something that never
+		// arrived, and this is the agreement, so it has to be true.
+		//
+		// Checked against the workflow rather than unconditionally: if the day
+		// comes that the hosted service is adopted, the promise becomes correct
+		// and this check should go with the action it describes.
+		if strings.Contains(flatten(string(wf)), "contributor-assistant/github-action") {
+			for _, promise := range []string{
+				"comment with a link",
+				"takes one click",
+				"one click",
+			} {
+				if strings.Contains(flatten(cla), promise) {
+					t.Errorf("CLA.md promises %q, which only the hosted CLA Assistant does — this repository signs by comment", promise)
+				}
+			}
+			// The trap that cost a contributor a working signature: Quote reply
+			// carries the bot's message into the comment, and the action
+			// compares the whole body.
+			if !strings.Contains(flatten(cla), "Quote reply") {
+				t.Error("CLA.md does not warn against Quote reply, which is how the first contributor to try it signed and was refused")
+			}
+		}
 	}
 
 	// A clause purporting to own moral rights, or to decide in advance that a

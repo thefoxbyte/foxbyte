@@ -102,7 +102,7 @@ jobs:
 
             **Please read it first:** it is short, and it says plainly that FoxByte has a paid edition and that your contribution may end up there. You keep your copyright and your moral rights either way. If that is not something you want, say so and we will close this with no hard feelings — we would rather lose a contribution than take one on terms its author did not want.
 
-            To sign, reply to this pull request with exactly:
+            To sign, add a **new comment** on this pull request containing only this line — please do not use **Quote reply**, because the quoted text becomes part of your comment and the whole comment has to be the line:
 
           custom-allsigned-prcomment: |
             All contributors have signed the CLA. Thank you.
@@ -114,3 +114,68 @@ jobs:
           # Locked after merge so a signature comment cannot be deleted later.
           # The record is the evidence; it should outlive second thoughts.
           lock-pullrequest-aftermerge: true
+
+      # Say why it failed, which the action cannot.
+      #
+      # Its message is the same whether nobody signed or somebody signed in a
+      # way that did not match — "Committers of Pull Request number N have to
+      # sign the CLA" — and the second is the common case. GitHub's Quote reply
+      # copies the bot's whole message into the comment, and the action compares
+      # the whole body, so a quoted signature carries the sentence without being
+      # it. The workflow above is deliberately tolerant and starts a run for any
+      # comment CONTAINING the sentence; the action is strict. That gap is the
+      # trap, and before this step a contributor saw a red cross, tried
+      # `recheck`, saw the same red cross, and had nothing to go on.
+      #
+      # Only for a comment that carries the sentence but is not the sentence.
+      # Someone who has not signed at all gets the bot's own message, which is
+      # already the right one for them.
+      - name: Say why, when a signature was attempted but not matched
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          PHRASE: I have read the FoxByte CLA and I hereby sign it.
+          MARK: "<!-- cla-quote-hint -->"
+        run: |
+          set -euo pipefail
+          [ -n "${PR:-}" ] || exit 0
+          comments="$(gh api "repos/$GH_REPO/issues/$PR/comments" --paginate)"
+
+          # Said once, not once per `recheck`.
+          if jq -e --arg m "$MARK" 'any(.[]; .body | contains($m))' >/dev/null <<<"$comments"; then
+            echo "already explained on #$PR"; exit 0
+          fi
+
+          # Only the people whose signature is actually required — the pull
+          # request's committers, which is who the action's error names. A
+          # maintainer quoting the sentence to ASK someone to sign carries it
+          # too, and the first version of this step mistook exactly that for a
+          # failed signature on an already-signed pull request.
+          committers="$(gh api "repos/$GH_REPO/pulls/$PR/commits" --paginate \
+            --jq '[.[] | .author.login // empty, .committer.login // empty] | unique')"
+
+          # A committer's comment that carries the sentence without being it.
+          if ! jq -e --arg p "$PHRASE" --argjson who "$committers" '
+                any(.[];
+                  (.user.login as $u | $who | index($u))
+                  and (.body | contains($p))
+                  and ((.body | gsub("^[[:space:]]+|[[:space:]]+$"; "")) != $p))' >/dev/null <<<"$comments"; then
+            echo "no near-miss signature from a committer on #$PR; the bot's own message covers it"; exit 0
+          fi
+
+          cat > hint.md <<EOF
+          $MARK
+          It looks like the signature above was posted with **Quote reply**, so the comment carries this bot's message as well as the line. The whole comment has to be the line, which is why the check is still red — nothing is wrong with your agreement to it.
+
+          Please add a **new comment** containing only:
+
+          \`\`\`
+          $PHRASE
+          \`\`\`
+
+          Then comment \`recheck\`, or just wait — a new signature comment starts the check by itself.
+          EOF
+          gh pr comment "$PR" --body-file hint.md
+          echo "explained the near miss on #$PR"
