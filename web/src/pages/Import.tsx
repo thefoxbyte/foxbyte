@@ -56,7 +56,8 @@ export default function Import() {
       <h1>Migrate a database</h1>
       <p className="lead" style={{ marginTop: -2 }}>
         Move an existing database into a fresh FoxByte instance. Because FoxByte <em>is</em> PostgreSQL,
-        a Postgres source migrates with full fidelity.
+        a PostgreSQL source migrates with full fidelity &mdash; it is <code>pg_dump</code> into a fresh
+        instance, nothing reinterpreted on the way.
       </p>
 
       <div className="import-grid">
@@ -80,8 +81,11 @@ export default function Import() {
                 style={{ fontFamily: 'var(--font-mono)', fontSize: 13 }}
               />
               <span className="hint">
-                Postgres/Postgres-wire (RDS, Neon, Supabase, CockroachDB) with full fidelity;
+                PostgreSQL, including RDS, Neon and Supabase, with full fidelity.
                 MySQL (incl. 8.x) &amp; MariaDB; MongoDB documents relationalized (keys → typed columns).
+                Engines that only speak the Postgres wire protocol without being PostgreSQL &mdash;
+                CockroachDB among them &mdash; are not covered by that: this runs
+                <code>pg_dump</code>, whose support there varies, and we have not tested them.
               </span>
             </label>
             {isPg && (
