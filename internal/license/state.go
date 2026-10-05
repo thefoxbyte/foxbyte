@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package license
+
+import (
+	"fmt"
+	"time"
+)
+
+// State is what a licence is doing right now, as distinct from whether it is
+// genuine. CheckSignature answers "is this real"; this answers "what should the
+// product do about it", and they are different questions with different
+// consequences.
+type State int
+
+const (
+	// Active: signed, in date, and for this machine.
+	Active State = iota
+	// Warning: something is wrong but within Grace, or the fingerprint does not
+	// match. Everything still works and the user is told.
+	Warning
+	// Lapsed: past its expiry and past Grace. New paid work refuses; nothing
+	// already running stops, and nothing already recorded becomes unreadable.
+	Lapsed
+	// Invalid: not signed by our key, or edited. Never unlocks anything, and
+	// gets no grace — grace is for a customer who paid, not for a forgery.
+	Invalid
+)
+
+func (s State) String() string {
+	switch s {
+	case Active:
+		return "active"
+	case Warning:
+		return "active, with a warning"
+	case Lapsed:
+		return "lapsed"
+	default:
+		return "invalid"
+	}
+}
+
+// Status is the whole answer: what state, why, and what a person should do.
+type Status struct {
+	State   State
+	Reason  string // empty when Active
+	Action  string // what would fix it, empty when there is nothing to fix
+	License License
+}
+
+// Unlocks reports whether a feature may run. Warning unlocks: that is the whole
+// point of a warning. Lapsed and Invalid do not.
+func (s Status) Unlocks() bool { return s.State == Active || s.State == Warning }
+
+// Evaluate decides a licence's state at a moment, for a machine.
+//
+// fingerprint is this machine's; an empty one means we could not read it, which
+// must never be treated as a mismatch — failing to identify the machine is our
+// problem, not the customer's, and locking them out for it would be the worst
+// possible reading.
+func Evaluate(l License, pub []byte, fingerprint string, now time.Time) Status {
+	if err := CheckSignature(l, pub); err != nil {
+		return Status{State: Invalid, Reason: err.Error(),
+			Action: "ask for a replacement licence", License: l}
+	}
+	if !l.NotAfter.IsZero() && now.After(l.NotAfter) {
+		if now.Before(l.NotAfter.Add(Grace)) {
+			left := l.NotAfter.Add(Grace).Sub(now).Round(time.Hour)
+			return Status{State: Warning, License: l,
+				Reason: fmt.Sprintf("the licence expired on %s", l.NotAfter.UTC().Format("2 January 2006")),
+				Action: fmt.Sprintf("renew it within %s, after which the paid features stop", humanDuration(left))}
+		}
+		return Status{State: Lapsed, License: l,
+			Reason: fmt.Sprintf("the licence expired on %s", l.NotAfter.UTC().Format("2 January 2006")),
+			Action: "renew it — nothing already recorded is affected, and the databases keep running"}
+	}
+	// A fingerprint that does not match warns and no more. A rebuilt VM, a
+	// replaced disk and a new laptop all land here, and none of them is a
+	// licence problem.
+	if l.Fingerprint != "" && fingerprint != "" && l.Fingerprint != fingerprint {
+		return Status{State: Warning, License: l,
+			Reason: "this licence was activated on a different machine",
+			Action: "run `fox license rebind` to move it here"}
+	}
+	return Status{State: Active, License: l}
+}
+
+func humanDuration(d time.Duration) string {
+	if days := int(d.Hours() / 24); days >= 1 {
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	}
+	h := int(d.Hours())
+	if h <= 1 {
+		return "an hour"
+	}
+	return fmt.Sprintf("%d hours", h)
+}

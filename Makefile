@@ -3,7 +3,7 @@
 # FoxByte runs inside the Linux dev VM (ZFS + Docker); day-to-day operation is
 # via `lima /tmp/fox <command>`. This Makefile just builds/checks the CLI.
 
-.PHONY: integration-upgrade integration-sdks integration-ui release-key build build-enterprise vet vet-enterprise fmt vm-build test test-enterprise integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade integration-editions test-vm test-vm-stop test-vm-delete
+.PHONY: license-key integration-upgrade integration-sdks integration-ui release-key build build-enterprise vet vet-enterprise fmt vm-build test test-enterprise integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade integration-editions test-vm test-vm-stop test-vm-delete
 
 VERSION ?= 0.1.0
 LDFLAGS := -s -w -X github.com/thefoxbyte/foxbyte/internal/version.Version=$(VERSION)
@@ -27,6 +27,13 @@ release-linux: web-build   ## Cross-compile just the Linux engine binary (for th
 
 release-key:      ## One time: make the release signing key (private key to release-signing.key; public key into fox and install.sh)
 	go run ./cmd/releasesign generate --write
+
+# Deliberately NOT a CI secret, unlike the release key. Every tag is signed in
+# CI, so that key has to live there; this one is used by hand a few times a
+# year, and a copy in CI is a copy that mints Enterprise for anyone who reaches
+# it -- silently, because nothing calls home.
+license-key:      ## One time: make the licence signing key (private key to license-signing.key, for your password manager)
+	go run ./cmd/licensesign generate --write
 
 release: web-build   ## Cross-compile release binaries + the Windows image context into ./dist
 	@mkdir -p dist
