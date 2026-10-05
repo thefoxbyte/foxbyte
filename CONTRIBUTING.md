@@ -6,6 +6,11 @@ propose changes.
 
 ## Development setup
 
+You need **Go 1.26** and, for anything touching the web app, **Node 22.22.2 or
+newer**. The Node floor is not advisory: `web/.npmrc` sets `engine-strict`, so
+`npm ci` refuses on an older one rather than installing and failing later — the
+console's tests run in jsdom, which needs it. CI builds on the same two.
+
 The engine (ZFS + Docker + Postgres) is Linux-only and runs inside a local VM —
 Lima on macOS, WSL2 on Windows. The `fox` binary is a launcher that forwards
 engine commands into that VM.
