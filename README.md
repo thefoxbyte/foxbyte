@@ -9,13 +9,21 @@
   <b>Postgres for AI agents — instant branches, and a tamper-evident record of every schema change.</b>
 </p>
 
-FoxByte is a **serverless PostgreSQL** platform. It keeps the hot transaction
-path on stock **PostgreSQL 18** on local NVMe (native commit latency) and moves
-durability, branching, and time-travel *off* the commit path — **ZFS
-copy-on-write** clones for instant branches and **asynchronous WAL archival**
-(`wal-g`) for point-in-time recovery. It speaks the native Postgres wire
-protocol, so your existing driver, ORM, and SQL work unchanged. It is the
-postgres.ai / Database Lab model, implemented in Go.
+FoxByte is **serverless PostgreSQL** for a situation that did not use to exist:
+code writing to your database without a person having read it first.
+
+Branching is how an agent gets a database of its own — a full copy in seconds,
+thrown away when it is done. The **[Blackbox](#blackbox)** is why you can let it
+near one. Every `CREATE`, `ALTER`, `DROP` and `GRANT` is recorded as it happens,
+attributed to the login that made it, in an append-only hash chain you can
+verify. A change an agent made at 3am is distinguishable from one you made, and
+a policy gate can refuse the destructive ones before they run.
+
+Underneath it is stock **PostgreSQL 18** on local NVMe, so commits keep native
+latency. Branching and time-travel move *off* the commit path — **ZFS
+copy-on-write** clones, and **asynchronous WAL archival** (`wal-g`) for
+point-in-time recovery. It speaks the native Postgres wire protocol, so your
+driver, ORM and SQL are unchanged.
 
 The command-line tool is **`fox`**. Everything below is a `fox …` command.
 
@@ -41,8 +49,7 @@ separate dev server to run.
 - **[Blackbox](#blackbox)** — every `CREATE`/`ALTER`/`DROP`/`GRANT`
   recorded with the actor (human or agent), tool, and branch; **tamper-evident**
   (hash-chained, append-only, `fox blackbox verify`) and **non-forgeable** (clients
-  connect as a per-user role, so the recorded actor is the login identity). No
-  other Postgres branching tool has this.
+  connect as a per-user role, so the recorded actor is the login identity).
 - **Instant branching** — `fox branch create qa` clones the whole database in
   seconds (copy-on-write), fully isolated; `main` is untouched. Plus
   `fox branch reset` (start over) and `fox branch diff` (what changed, from Blackbox).
@@ -558,6 +565,11 @@ A fresh install exposes nothing it does not have to:
 - **Not a vector database** — it is PostgreSQL (use `pgvector` on it if you like).
 - **One instance, shared** — accounts own their branches and share `main`; there
   are no separate projects or per-project quotas yet.
+- **Not the first to branch Postgres.** The copy-on-write-clone-as-a-database
+  idea is [postgres.ai / Database Lab](https://postgres.ai)'s, and Neon,
+  Supabase and PlanetScale all offer branching of some kind. What is ours is
+  what happens *after* the branch exists: the Blackbox, the attribution, and the
+  policy gate.
 
 ---
 

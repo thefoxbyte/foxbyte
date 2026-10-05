@@ -2,12 +2,12 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../auth-context'
 
 const features: [string, string, string][] = [
+  ['🛡️', 'Every change, recorded', 'Each CREATE, ALTER, DROP and GRANT is written to an append-only hash chain as it happens, attributed to the login that made it. Verify it whenever you like.'],
+  ['🤖', 'A database per agent', 'Each AI agent gets an isolated, disposable database over a simple HTTP call — and you can see exactly what it did to it.'],
+  ['🚦', 'Refused, not regretted', 'A policy gate stops a destructive change before it runs. An unqualified DELETE or a DROP TABLE from an agent does not reach your data.'],
   ['🌿', 'Instant branches', 'Copy-on-write clones of your entire database in seconds — near-zero extra space.'],
   ['⏱️', 'Time-travel', 'Restore to any point within the archived WAL window. Undo mistakes.'],
-  ['🤖', 'A database per agent', 'Each AI agent gets an isolated, disposable database over a simple HTTP call.'],
-  ['💤', 'Serverless', 'Idle branches suspend automatically; the gateway wakes them on the next connection.'],
-  ['☁️', 'High availability', 'A streaming standby with a promotion that reroutes clients transparently.'],
-  ['🔌', 'One endpoint', 'A smart gateway reads the database name and routes you to the right branch — one stable address.'],
+  ['💤', 'Serverless', 'Idle branches suspend automatically; the gateway wakes them on the next connection, at one stable address.'],
 ]
 
 export default function Landing() {
@@ -19,8 +19,8 @@ export default function Landing() {
           <span className="eyebrow"><span className="pip" /> Serverless PostgreSQL · open source</span>
           <h1>The database that <span className="gradient-text">branches like code</span>.</h1>
           <p className="sub">
-            FoxByte gives Postgres instant copy-on-write branches, time-travel, a database per AI
-            agent, and high availability — at native transaction speed.
+            An AI agent gets a database of its own in seconds, and you get a tamper-evident
+            record of everything it changed — on stock Postgres, at native transaction speed.
           </p>
           <div className="cta">
             <Link className="btn" to="/guide">Get started</Link>
@@ -35,8 +35,10 @@ export default function Landing() {
               <div className="ok">  ✓ branch “feature” ready in 1.9s · copy-on-write</div>
               <div><span className="prompt">$</span> <span className="cmd">psql …/feature -c "UPDATE …"</span></div>
               <div className="dim">  UPDATE 4200</div>
-              <div><span className="prompt">$</span> <span className="cmd">fox ha failover</span></div>
-              <div className="ok">  ✓ standby promoted · same endpoint</div>
+              <div><span className="prompt">$</span> <span className="cmd">psql …/feature -c "DROP TABLE invoices"</span></div>
+              <div className="no">  ✗ blocked by policy · BBX01</div>
+              <div><span className="prompt">$</span> <span className="cmd">fox blackbox --branch feature</span></div>
+              <div className="dim">  2 changes · 1 applied · 1 blocked · agent-claude-7f2a</div>
               <div><span className="prompt">$</span> <span className="cursor" /></div>
             </div>
           </div>
