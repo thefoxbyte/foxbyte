@@ -21,7 +21,10 @@ import (
 // Migration into FoxByte. Because FoxByte *is* PostgreSQL, "migrate to
 // FoxByte" always means "land the source in a fresh Postgres instance".
 //
-//   - a Postgres (or Postgres-wire) source → pg_dump | psql, full fidelity
+//   - a PostgreSQL source                 → pg_dump | psql, full fidelity
+//     (an engine that merely speaks the Postgres wire protocol, such as
+//     CockroachDB, is not PostgreSQL: pg_dump support there varies and
+//     none of it is covered by the suites, which test only the refusals)
 //   - a .sql dump                          → psql
 //   - a .csv                               → a table (text columns) via COPY
 //   - a .json / .ndjson                    → a table of JSONB documents
