@@ -50,7 +50,23 @@ const (
 	// door they came through.
 	EvChangeRequested = "branch.change_requested"
 	EvChangeDecided   = "branch.change_decided"
+	// Licensing: when this install's paid entitlement changed, and to what.
+	//
+	// Recorded by the engine rather than by the command someone typed. On macOS
+	// and Windows `fox license` runs on the host, which has no store and so
+	// could not chain onto this log at all — but the deeper reason is that the
+	// question an auditor asks is which features this engine actually honoured,
+	// and that is the engine's answer to give rather than a laptop's.
+	EvLicenseActivated = "license.activated"
+	EvLicenseRebound   = "license.rebound"
+	EvLicenseLapsed    = "license.lapsed"
+	EvLicenseRemoved   = "license.removed"
 )
+
+// LicenseKindPrefix is what every licence event kind starts with. The licence
+// recorder asks for the last event of any of them, and does it with one
+// indexed-order query rather than by reading the log back in Go.
+const LicenseKindPrefix = "license."
 
 const auditSchema = `
 CREATE TABLE IF NOT EXISTS security_events (
@@ -192,6 +208,30 @@ func (s *Store) RecentSecurityEvents(limit int) ([]SecurityEvent, error) {
 		evs[i], evs[j] = evs[j], evs[i]
 	}
 	return evs, err
+}
+
+// LastLicenseEvent returns the newest licence event's kind and subject, and
+// whether there was one.
+//
+// The licence recorder compares against this so an unchanged licence is not
+// recorded again on every engine start. Kind and subject are enough for that
+// comparison on purpose: between them they carry which licence, which machine
+// it is bound to, and whether it was unlocking anything — so nothing has to
+// parse a sentence written for a person to read.
+func (s *Store) LastLicenseEvent() (kind, subject string, ok bool, err error) {
+	if s == nil || s.db == nil {
+		return "", "", false, nil
+	}
+	row := s.db.QueryRow(
+		`SELECT kind,subject FROM security_events WHERE kind LIKE ? ORDER BY id DESC LIMIT 1`,
+		LicenseKindPrefix+"%")
+	switch err := row.Scan(&kind, &subject); {
+	case err == sql.ErrNoRows:
+		return "", "", false, nil
+	case err != nil:
+		return "", "", false, err
+	}
+	return kind, subject, true, nil
 }
 
 // CheckEventChain recomputes the chain. It returns the id of the first event

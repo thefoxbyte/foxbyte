@@ -32,6 +32,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/httpx"
+	"github.com/thefoxbyte/foxbyte/internal/license"
 	"github.com/thefoxbyte/foxbyte/internal/tlsutil"
 	"github.com/thefoxbyte/foxbyte/web"
 )
@@ -59,6 +60,13 @@ func Serve(addr string) error {
 
 	acl = access.New(store)
 	secLog = store
+
+	// What this engine honours, in the security log. license.Install() has
+	// already run in main; this records the decision this process is actually
+	// serving under rather than reading the licence a second time. It writes
+	// nothing when nothing has changed, so a steady install records one event
+	// ever, not one per restart.
+	license.Record(store, license.Installed())
 
 	mux := http.NewServeMux()
 	store.MountPublic(mux) // /auth/* (register, login, logout, me, providers, oauth)

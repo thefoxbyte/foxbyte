@@ -115,7 +115,7 @@ func removeAt(path string) error {
 // Current is the whole picture: the installed licence, checked, against this
 // machine, now. Everything that asks "may this run" goes through here.
 func Current(machine string) (Status, error) {
-	l, boundTo, _, err := Load()
+	l, boundTo, rebinds, err := Load()
 	if err != nil {
 		return Status{}, err
 	}
@@ -123,5 +123,7 @@ func Current(machine string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	return EvaluateBound(l, pub, boundTo, machine, time.Now()), nil
+	st := EvaluateBound(l, pub, boundTo, machine, time.Now())
+	st.Rebinds = rebinds
+	return st, nil
 }

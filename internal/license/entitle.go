@@ -3,6 +3,8 @@
 package license
 
 import (
+	"sync/atomic"
+
 	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/host"
 )
@@ -29,6 +31,26 @@ import (
 // Returns the status so a caller that wants to say something — `fox check`, the
 // status endpoint — can, without reading the licence a second time.
 func Install() Status {
+	st := install()
+	installed.Store(&st)
+	return st
+}
+
+// installed is what Install last decided. The control plane records that
+// decision in the security log, and must record the one this process is
+// actually running under rather than read the licence a second time and risk
+// logging a state the process never honoured.
+var installed atomic.Pointer[Status]
+
+// Installed is the status Install produced, or a zero Status if it never ran.
+func Installed() Status {
+	if st := installed.Load(); st != nil {
+		return *st
+	}
+	return Status{}
+}
+
+func install() Status {
 	st, err := Current(host.MachineID())
 	if err != nil {
 		edition.SetEntitlement(nil)

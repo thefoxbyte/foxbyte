@@ -46,6 +46,15 @@ type Status struct {
 	Reason  string // empty when Active
 	Action  string // what would fix it, empty when there is nothing to fix
 	License License
+	// BoundTo is the machine the licence was compared against, which is not
+	// always the one it was issued for. It is here because the answer is
+	// meaningless without it: "this licence was activated on a different
+	// machine" cannot be reported, recorded or renewed without saying which.
+	BoundTo string
+	// Rebinds is how many times that binding has moved. Only Current knows it —
+	// it is kept beside the licence, not in it — so it is zero from a bare
+	// EvaluateBound.
+	Rebinds int
 }
 
 // Unlocks reports whether a feature may run. Warning unlocks: that is the whole
@@ -70,6 +79,14 @@ func Evaluate(l License, pub []byte, machine string, now time.Time) Status {
 // a rebind moves it. The licence still says which machine it was issued for,
 // which is what the portal reconciles against.
 func EvaluateBound(l License, pub []byte, boundTo, machine string, now time.Time) Status {
+	st := evaluateBound(l, pub, boundTo, machine, now)
+	// Set once here rather than in each of the returns below, so a new state
+	// cannot be added that forgets it.
+	st.BoundTo = boundTo
+	return st
+}
+
+func evaluateBound(l License, pub []byte, boundTo, machine string, now time.Time) Status {
 	if err := CheckSignature(l, pub); err != nil {
 		return Status{State: Invalid, Reason: err.Error(),
 			Action: "ask for a replacement licence", License: l}

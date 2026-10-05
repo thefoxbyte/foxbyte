@@ -93,6 +93,7 @@ func licenseActivate(args []string) error {
 	}
 	fmt.Printf("Activated %s for %s.\n", l.ID, l.Customer)
 	giveEngineTheLicence()
+	noteRestartIfRunning()
 	st := license.EvaluateBound(l, pub, l.Fingerprint, fp, time.Now())
 	printLicenseState(st, fp)
 	return nil
@@ -157,6 +158,7 @@ func licenseRebind() error {
 	}
 	giveEngineTheLicence()
 	fmt.Printf("Moved %s to this machine (%s).\n", l.ID, short(fp))
+	noteRestartIfRunning()
 	fmt.Printf("That is move %d. It is recorded here and in the security log; the\n"+
 		"number of machines on an account is counted where the licence was issued.\n", rebinds+1)
 	return nil
@@ -174,6 +176,7 @@ func licenseRemove() error {
 	// on exactly the platforms where it is hardest to notice.
 	reportEngineCopy(host.RemoveState(license.FileName), "take the licence away from")
 	fmt.Printf("Removed. This install is the %s edition again; no data was touched.\n", edition.Name())
+	noteRestartIfRunning()
 	return nil
 }
 
@@ -207,6 +210,19 @@ func reportEngineCopy(err error, what string) {
 	default:
 		fmt.Fprintf(os.Stderr, "warning: could not %s the engine: %v\n", what, err)
 	}
+}
+
+// noteRestartIfRunning says the obvious thing that would otherwise be found out
+// the hard way: an engine already running is serving the entitlement it read
+// when it started, and a licence changed underneath it takes effect on the next
+// restart. That is also when the change reaches the security log, which records
+// what the engine honoured rather than what was typed here.
+func noteRestartIfRunning() {
+	if !host.EngineRunning() {
+		return
+	}
+	fmt.Printf("\nThe engine is already running with the entitlement it read at start-up.\n"+
+		"`%s stop && %s start` applies this; nothing is interrupted until you do.\n", brand.CLI, brand.CLI)
 }
 
 // printLicenseState says what is true and what to do about it, in that order.
