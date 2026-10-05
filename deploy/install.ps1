@@ -162,20 +162,56 @@ function Install-Wsl {
     try { & wsl.exe --update *> $null } catch { }
 }
 
+# Bounded waits for every download.
+#
+# Invoke-WebRequest has no timeout by default, so a network fault that lets a
+# connection stall rather than refusing it leaves the installer waiting with
+# nothing on screen. That is the hang install.sh had, reported from a real
+# machine on 3 Oct 2026; this is the same fix on the other installer.
+#
+# Which parameter to use differs between the two PowerShells, and choosing
+# wrong would cut the 460MB distro image short on a slow link:
+#
+#   Windows PowerShell  -TimeoutSec bounds the request, NOT the reading of the
+#                       response body, so a long download is unaffected.
+#   PowerShell 7.0-7.3  -TimeoutSec became the whole operation, body included.
+#                       Nothing bounds the connect alone, so nothing is set --
+#                       waiting beats truncating a download that is working.
+#   PowerShell 7.4+     -ConnectionTimeoutSec restored the old meaning.
+#
+# Detected by asking for the parameter rather than by version number, so a
+# backport lands correctly without this having to know about it.
+$script:WebTimeout = @{}
+if ($PSVersionTable.PSVersion.Major -lt 6) {
+    $script:WebTimeout = @{ TimeoutSec = 30 }
+} elseif ((Get-Command Invoke-WebRequest).Parameters.ContainsKey('ConnectionTimeoutSec')) {
+    $script:WebTimeout = @{ ConnectionTimeoutSec = 30 }
+}
+
 function Get-File([string]$Url, [string]$Dest, [bool]$Required = $true) {
-    try {
-        # Progress rendering dominates the runtime of a large download in
-        # Windows PowerShell; suppressing it is worth several minutes on the
-        # rootfs.
-        $prev = $ProgressPreference
-        $ProgressPreference = 'SilentlyContinue'
-        try { Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Dest }
-        finally { $ProgressPreference = $prev }
-        return $true
-    } catch {
-        if ($Required) { throw "download failed: $Url`n$($_.Exception.Message)" }
-        Write-Warning "optional asset not in this release yet: $Url"
-        return $false
+    $timeout = $script:WebTimeout
+    # Three attempts. With the timeout above, a stalled connection gives up
+    # instead of hanging, and a transient fault is usually gone by the second.
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            # Progress rendering dominates the runtime of a large download in
+            # Windows PowerShell; suppressing it is worth several minutes on the
+            # rootfs.
+            $prev = $ProgressPreference
+            $ProgressPreference = 'SilentlyContinue'
+            try { Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Dest @timeout }
+            finally { $ProgressPreference = $prev }
+            return $true
+        } catch {
+            if ($attempt -lt 3) {
+                Write-Warning "download attempt $attempt of 3 failed: $Url"
+                Start-Sleep -Seconds 2
+                continue
+            }
+            if ($Required) { throw "download failed after 3 attempts: $Url`n$($_.Exception.Message)" }
+            Write-Warning "optional asset not in this release yet: $Url"
+            return $false
+        }
     }
 }
 
@@ -184,7 +220,8 @@ function Get-File([string]$Url, [string]$Dest, [bool]$Required = $true) {
 # the file. Callers decide what an unknown checksum means.
 function Get-UpstreamChecksum([string]$SumsUrl, [string]$Name) {
     try {
-        $body = (Invoke-WebRequest -UseBasicParsing -Uri $SumsUrl).Content
+        $timeout = $script:WebTimeout
+        $body = (Invoke-WebRequest -UseBasicParsing -Uri $SumsUrl @timeout).Content
     } catch {
         Write-Warning "could not fetch $SumsUrl"
         return $null
@@ -245,7 +282,8 @@ function Get-FoxSums {
     if ($env:FOX_NO_VERIFY -eq '1') { return $null }
     if ($null -ne $script:FoxSums) { return $script:FoxSums }
     try {
-        $body = (Invoke-WebRequest -UseBasicParsing -Uri (Get-FoxAsset 'SHA256SUMS')).Content
+        $timeout = $script:WebTimeout
+        $body = (Invoke-WebRequest -UseBasicParsing -Uri (Get-FoxAsset 'SHA256SUMS') @timeout).Content
     } catch {
         throw "could not fetch SHA256SUMS for $Version -- nothing was installed.`nRetry, or set FOX_NO_VERIFY=1 to install without checking (not recommended)."
     }
