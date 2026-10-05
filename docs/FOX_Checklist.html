@@ -594,6 +594,12 @@
       <li class="ok"><code>fox update</code> stays inside its edition; the release publishes and checks both sets</li>
       <li class="lim">Source-available deters, it does not prevent: the check can be removed in breach</li>
       <li class="lim">A dependency only the paid code uses still appears in the AGPL module’s <code>go.mod</code></li></ul></td><td class="tb">Unit (edition, boundary), scripts/test_editions.sh, CI builds both</td></tr>
+    <tr data-id="M9" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">M9</td><td><b>Licensing</b><ul class="subs">
+      <li class="ok">Ed25519 over a canonical payload, with a key id so the key can rotate</li>
+      <li class="ok"><code>cmd/licensesign</code>: generate, issue, verify; private key never in CI</li>
+      <li class="ok">Soft machine lock, grace before refusal, and a lapse that never stops a database</li>
+      <li class="todo">Host fingerprint, <code>~/.fox/license.json</code>, <code>fox license</code>, <code>/api/license</code></li>
+      <li class="todo">A feature actually gated behind it (anchors first)</li></ul></td><td class="tb">internal/license</td></tr>
   </table>
 </section>
 
