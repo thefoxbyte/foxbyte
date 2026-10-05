@@ -28,6 +28,7 @@ go.sum          text eol=lf
 # default, so the generated LF file looked like drift and failed CI there; the
 # rest of the web sources are pinned with it, since Vite builds them on Linux.
 *.ts  text eol=lf
+*.css text eol=lf
 *.tsx text eol=lf
 
 # Markdown is read by tests — CLA.md and CONTRIBUTING.md by

@@ -104,3 +104,60 @@ func TestLoadRejectsIncompleteBrand(t *testing.T) {
 		t.Error("a missing brand.json should be rejected")
 	}
 }
+
+// Every generated TEXT file needs a line-ending rule in .gitattributes, or the
+// test above fails on Windows and nowhere else.
+//
+// Git checks a text file out with CRLF on Windows unless told otherwise. The
+// generator writes LF. So a generated file whose extension is not pinned is
+// byte-for-byte different the moment CI clones it there — which is exactly what
+// happened the first time a .css file was generated: green on Linux and macOS,
+// red on windows-ci, with a message about brand.json that said nothing about
+// line endings.
+//
+// Every other generated file was already covered, by *.go, *.sh and *.ts. This
+// makes the next one a failure here, on any platform, rather than a surprise on
+// one.
+func TestGeneratedTextFilesHaveALineEndingRule(t *testing.T) {
+	attrs, err := os.ReadFile(filepath.Join(root, ".gitattributes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The extensions .gitattributes pins, and to what.
+	pinned := map[string]bool{}
+	for _, line := range strings.Split(string(attrs), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "eol=") {
+			continue
+		}
+		pattern := strings.Fields(line)[0]
+		if ext := strings.TrimPrefix(pattern, "*"); strings.HasPrefix(pattern, "*.") {
+			pinned[ext] = true
+		} else {
+			pinned[pattern] = true // a whole filename, e.g. Makefile
+		}
+	}
+
+	b, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := Files(root, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Images carry their own bytes and git leaves them alone.
+	binary := map[string]bool{".png": true, ".jpg": true, ".webp": true, ".ico": true}
+	for rel := range files {
+		ext := filepath.Ext(rel)
+		if binary[ext] {
+			continue
+		}
+		if pinned[ext] || pinned[filepath.Base(rel)] {
+			continue
+		}
+		t.Errorf("%s is generated but %q has no `eol=` rule in .gitattributes — "+
+			"Windows will check it out with CRLF, the generator writes LF, and "+
+			"TestGeneratedFilesAreInStep will fail there and only there", rel, ext)
+	}
+}
