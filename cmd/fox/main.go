@@ -210,6 +210,19 @@ func main() {
 		os.Exit(2)
 	}
 
+	// A licence activated while the VM was down never reached the engine, so
+	// bringing the stack up is the second chance `fox license activate` says it
+	// is. Before the forward, not after: the engine reads its entitlement once,
+	// when it starts.
+	//
+	// Quiet and best-effort. The case it repairs has already been reported once,
+	// and a licence is never a reason a database fails to come up.
+	if sub := os.Args[1]; sub == "start" || sub == "up" {
+		if raw, err := os.ReadFile(license.Path()); err == nil {
+			_ = host.PushStateStartingEngine(license.FileName, raw)
+		}
+	}
+
 	// On macOS/Windows, forward engine commands into the managed Linux VM so the
 	// user only ever runs `fox …`. On Linux (or inside the VM) this is a no-op.
 	if handled, err := host.Maybe(os.Args[1:]); handled {

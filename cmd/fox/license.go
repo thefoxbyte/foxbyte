@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -91,6 +92,7 @@ func licenseActivate(args []string) error {
 		return err
 	}
 	fmt.Printf("Activated %s for %s.\n", l.ID, l.Customer)
+	giveEngineTheLicence()
 	st := license.EvaluateBound(l, pub, l.Fingerprint, fp, time.Now())
 	printLicenseState(st, fp)
 	return nil
@@ -153,6 +155,7 @@ func licenseRebind() error {
 	if err := license.Save(l, fp, rebinds+1); err != nil {
 		return err
 	}
+	giveEngineTheLicence()
 	fmt.Printf("Moved %s to this machine (%s).\n", l.ID, short(fp))
 	fmt.Printf("That is move %d. It is recorded here and in the security log; the\n"+
 		"number of machines on an account is counted where the licence was issued.\n", rebinds+1)
@@ -167,8 +170,43 @@ func licenseRemove() error {
 	if err := license.Remove(); err != nil {
 		return err
 	}
+	// The engine's copy goes too, or the entitlement would outlive the licence
+	// on exactly the platforms where it is hardest to notice.
+	reportEngineCopy(host.RemoveState(license.FileName), "take the licence away from")
 	fmt.Printf("Removed. This install is the %s edition again; no data was touched.\n", edition.Name())
 	return nil
+}
+
+// giveEngineTheLicence copies the installed licence to wherever the engine
+// reads its state.
+//
+// On Linux that is this directory and the copy is a no-op. On macOS and Windows
+// the engine is in the VM with a home of its own, so without this a licence
+// would be installed, shown as active by `fox license show`, and still unlock
+// nothing — the worst of the three possible outcomes, because it looks like it
+// worked.
+func giveEngineTheLicence() {
+	raw, err := os.ReadFile(license.Path())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: the licence was saved but could not be read back: %v\n", err)
+		return
+	}
+	reportEngineCopy(host.PushState(license.FileName, raw), "give the licence to")
+}
+
+// reportEngineCopy says what happened to the engine's copy without letting it
+// fail the command. The licence is already installed on this machine at this
+// point: a stopped VM is a thing to mention, not a reason to unwind work that
+// succeeded.
+func reportEngineCopy(err error, what string) {
+	switch {
+	case err == nil:
+	case errors.Is(err, host.ErrNoEngine):
+		fmt.Printf("The engine is not running yet, so it does not have this change.\n"+
+			"`%s start` passes it on.\n", brand.CLI)
+	default:
+		fmt.Fprintf(os.Stderr, "warning: could not %s the engine: %v\n", what, err)
+	}
 }
 
 // printLicenseState says what is true and what to do about it, in that order.

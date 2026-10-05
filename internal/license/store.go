@@ -19,7 +19,12 @@ import (
 // without the signature, and the signature is checked against a key only we
 // hold — but it names a customer, and that is theirs rather than ours to
 // publish.
-func Path() string { return brand.StatePath("license.json") }
+func Path() string { return brand.StatePath(FileName) }
+
+// FileName is the licence's name inside the state directory. It is named
+// because the engine is given a copy of this file by name on macOS and
+// Windows, where it runs in the VM with a state directory of its own.
+const FileName = "license.json"
 
 // stored is the licence plus what we learned locally about it. The licence half
 // is signed and must be written back byte-identical; the rest is ours.
