@@ -2,13 +2,18 @@ import { useState } from 'react'
 import { getTheme, toggleTheme } from '../theme'
 import { BRAND } from '../brand'
 
-// Wordmark renders the product name with one letter picked out in the mark's
-// gradient — the letter immediately before the second capital, which in
-// FoxByte is the x the logo itself colours. Derived from the name rather than
+// Wordmark renders the product name, derived from brand.json rather than
 // written into the markup: the product has been renamed twice, and a name
 // spread across tags is exactly what a rename misses.
+//
+// One letter can be picked out in the mark's colours — the letter before the
+// second capital, the x in FoxByte. That followed the logo that drew its own x
+// in a gradient; the current one does not, so brand.json turns it off and this
+// renders the plain name. The switch is there rather than the code deleted
+// because the next logo may want it back, and finding the rule again would be
+// the expensive part.
 export function Wordmark() {
-  const m = /^(.*?)(.)([A-Z].*)$/.exec(BRAND.product)
+  const m = BRAND.wordmarkAccent ? /^(.*?)(.)([A-Z].*)$/.exec(BRAND.product) : null
   // One element around the whole name: the brand row is a flex box, and two
   // bare children would be spaced by its gap — "Fox Byte".
   return (

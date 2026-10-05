@@ -29,7 +29,8 @@ get crunchy.
 | --- | --- | --- |
 | `web/public/mark-dark.png` | 128 | the app, on a dark theme |
 | `web/public/mark-light.png` | 128 | the app, on a light theme |
-| `web/public/favicon.png` | 48 | the browser tab |
+| `web/public/favicon.png` | 48 | the browser tab, on a light bar |
+| `web/public/favicon-dark.png` | 48 | the browser tab, on a dark bar |
 | `web/public/apple-touch-icon.png` | 180 | iOS |
 | `docs/brand/foxbyte-mark.png` | 512 | the mark on its own |
 | `docs/brand/foxbyte-mark-light.png` | 512 | the same, for a light page |
@@ -50,17 +51,29 @@ jagged. Every derived asset is therefore transparent and sits on any page.
 `key_tolerance` and `key_feather` in `brand.json` are the knobs: raise the first
 if new artwork leaves a fringe, the second if its edges look hard.
 
-The favicon and the touch icon are the exceptions — they get an opaque plate of
-`logo.plate`, because iOS ignores a touch icon's alpha and composites on black,
-and a browser tab may be either colour.
+The touch icon is the one exception, and not a choice: iOS ignores a touch
+icon's alpha and composites it on black, so a transparent one arrives as a dark
+smudge. It gets `logo.touch_icon_plate` behind it. The tab icons are
+transparent.
+
+There is no single transparent tab icon that reads on both bar colours — the
+mark's cool half is white on a dark one and navy on a light one — so there are
+two, and `index.html` asks for them by `prefers-color-scheme`. The
+unconditional one comes first and is the navy mark, so a browser that ignores
+`media` on a link still gets the more legible of the two.
 
 **The mark ships in two inks and CSS chooses.** The cool half is white on a dark
 page and navy on a light one, so one file cannot serve both. Both are shipped
 and `[data-theme]` picks, which means the right one is painted on the first
-frame rather than after a script runs. The wordmark's accented letter follows
-the same rule, which is why `brand.json` carries `accent_cool_on_dark` and
-`accent_cool_on_light` rather than one colour — a single one disappeared into
-the dark theme.
+frame rather than after a script runs. **The wordmark can pick one letter out in those colours, and does not.**
+`logo.wordmark_accent` turns it on: it colours the letter before the second
+capital, the x in FoxByte. The logo that introduced it drew that x in a
+gradient of its own; the current artwork draws the name in one colour, so the
+flag is off and the app matches. The switch stays rather than the code being
+deleted, because the next logo may want it back and rediscovering the rule
+would be the expensive part. `accent_cool_on_dark` and `accent_cool_on_light`
+are kept for the same reason — and because a single cool colour disappeared
+into the dark theme when the accent was last on.
 
 The product's *name* is not here: it comes from [`brand.json`](../../brand.json).
 See [docs/branding.md](../branding.md).

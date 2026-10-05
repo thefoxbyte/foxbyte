@@ -11,4 +11,7 @@ export const BRAND = {
   stateDir: ".fox",
   repo: "thefoxbyte/foxbyte",
   repoUrl: "https://github.com/thefoxbyte/foxbyte",
+  // Whether the wordmark picks one letter out in the mark's colours. Off unless
+  // the artwork itself does it; see brand.json.
+  wordmarkAccent: false,
 } as const

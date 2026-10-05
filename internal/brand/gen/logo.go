@@ -44,6 +44,8 @@ type Logo struct {
 	KeyFeather        int    `json:"key_feather"`
 	Plate             string `json:"plate"`
 	AccentWarm        string `json:"accent_warm"`
+	WordmarkAccent    bool   `json:"wordmark_accent"`
+	TouchIconPlate    string `json:"touch_icon_plate"`
 	AccentCoolOnDark  string `json:"accent_cool_on_dark"`
 	AccentCoolOnLight string `json:"accent_cool_on_light"`
 }
@@ -96,9 +98,9 @@ func logoFiles(root string, l Logo) (map[string][]byte, error) {
 		return nil, err
 	}
 
-	plate, err := parseHex(l.Plate)
+	plate, err := parseHex(l.TouchIconPlate)
 	if err != nil {
-		return nil, fmt.Errorf("logo.plate: %w", err)
+		return nil, fmt.Errorf("logo.touch_icon_plate: %w", err)
 	}
 
 	// A tab icon and an iOS icon get the brand's own ground rather than
@@ -120,7 +122,16 @@ func logoFiles(root string, l Logo) (map[string][]byte, error) {
 	for rel, im := range map[string]image.Image{
 		filepath.Join("web", "public", "mark-dark.png"):  fit(square(markDark), appMarkPx),
 		filepath.Join("web", "public", "mark-light.png"): fit(square(markLight), appMarkPx),
-		filepath.Join("web", "public", "favicon.png"):    onPlate(fit(sq, faviconPx*5/6), faviconPx, plate),
+		// Transparent, and one per tab-bar colour. There is no single
+		// transparent icon that reads on both: the mark's cool half is white on
+		// a dark bar and navy on a light one, and whichever you pick vanishes
+		// into the other. index.html asks for them by prefers-color-scheme, with
+		// the light-page one first so a browser that ignores `media` still gets
+		// the navy mark, which is the more legible of the two on a pale bar.
+		filepath.Join("web", "public", "favicon.png"):      fit(square(markLight), faviconPx),
+		filepath.Join("web", "public", "favicon-dark.png"): fit(sq, faviconPx),
+		// The exception, and not a choice: iOS ignores a touch icon's alpha and
+		// composites it on black, so a transparent one arrives as a smudge.
 		filepath.Join("web", "public", "apple-touch-icon.png"): onPlate(
 			fit(sq, touchIconPx*5/6), touchIconPx, plate),
 		filepath.Join("docs", "brand", "foxbyte-mark.png"):       fit(sq, docsMarkPx),

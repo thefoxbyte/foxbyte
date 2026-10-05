@@ -239,9 +239,12 @@ export const BRAND = {
   stateDir: %q,
   repo: %q,
   repoUrl: %q,
+  // Whether the wordmark picks one letter out in the mark's colours. Off unless
+  // the artwork itself does it; see brand.json.
+  wordmarkAccent: %t,
 } as const
 `, b.Product, b.Tagline, b.CLI, b.Slug, b.EnvPrefix, b.StateDir, b.Repo,
-		"https://github.com/"+b.Repo)
+		"https://github.com/"+b.Repo, b.Logo.WordmarkAccent)
 }
 
 func shellBlock(b Brand) string {

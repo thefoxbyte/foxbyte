@@ -4,7 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>FoxByte — the database that branches like code</title>
+    <!-- Transparent, so the tab icon is the mark and not a tile. There is no
+         single transparent icon that reads on both tab-bar colours — the mark's
+         cool half is white on a dark one and navy on a light one — so there are
+         two, chosen by prefers-color-scheme. The unconditional one comes first
+         and is the navy mark, so a browser that ignores `media` still gets the
+         more legible of the two. -->
     <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="icon" type="image/png" href="/favicon-dark.png" media="(prefers-color-scheme: dark)" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#0b0c10" />
     <meta name="description" content="Serverless Postgres with copy-on-write branches, time-travel and a database per agent." />
