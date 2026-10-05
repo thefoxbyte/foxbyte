@@ -599,7 +599,8 @@
       <li class="ok"><code>cmd/licensesign</code>: generate, issue, verify; private key never in CI</li>
       <li class="ok">Soft machine lock, grace before refusal, and a lapse that never stops a database</li>
       <li class="ok">Host fingerprint: hashed, read on the host not in the VM, failure means unknown</li>
-      <li class="todo"><code>~/.fox/license.json</code>, <code>fox license</code>, <code>/api/license</code></li>
+      <li class="ok"><code>~/.fox/license.json</code> (0600, atomic) and <code>fox license activate|show|rebind|remove</code></li>
+      <li class="todo">Security-log records, <code>/api/license</code>, the console's banner</li>
       <li class="todo">A feature actually gated behind it (anchors first)</li></ul></td><td class="tb">internal/license</td></tr>
   </table>
 </section>

@@ -38,6 +38,11 @@ var localCommands = map[string]bool{
 	"": true, "help": true, "-h": true, "--help": true,
 	"version": true, "-v": true, "--version": true,
 	"setup": true, "vm": true, "update": true,
+	// license reads this machine's fingerprint, and the machine that matters is
+	// the one a person sits at. Forwarded into the VM it would read the guest's,
+	// and `fox setup` recreating that VM would look exactly like licence
+	// evasion rather than the ordinary repair step it is.
+	"license": true,
 	// uninstall removes the VM itself, the host binary and the host's state
 	// directory, so it must not be forwarded into the VM it is deleting.
 	"uninstall": true,

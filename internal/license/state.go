@@ -58,7 +58,18 @@ func (s Status) Unlocks() bool { return s.State == Active || s.State == Warning 
 // must never be treated as a mismatch — failing to identify the machine is our
 // problem, not the customer's, and locking them out for it would be the worst
 // possible reading.
-func Evaluate(l License, pub []byte, fingerprint string, now time.Time) Status {
+func Evaluate(l License, pub []byte, machine string, now time.Time) Status {
+	return EvaluateBound(l, pub, l.Fingerprint, machine, now)
+}
+
+// EvaluateBound is Evaluate against a binding that may have moved.
+//
+// A licence's own fingerprint is signed, so `fox license rebind` cannot change
+// it — an early version tried, and silently did nothing. The binding that is
+// compared therefore lives beside the licence: it starts as the issued one and
+// a rebind moves it. The licence still says which machine it was issued for,
+// which is what the portal reconciles against.
+func EvaluateBound(l License, pub []byte, boundTo, machine string, now time.Time) Status {
 	if err := CheckSignature(l, pub); err != nil {
 		return Status{State: Invalid, Reason: err.Error(),
 			Action: "ask for a replacement licence", License: l}
@@ -77,7 +88,7 @@ func Evaluate(l License, pub []byte, fingerprint string, now time.Time) Status {
 	// A fingerprint that does not match warns and no more. A rebuilt VM, a
 	// replaced disk and a new laptop all land here, and none of them is a
 	// licence problem.
-	if l.Fingerprint != "" && fingerprint != "" && l.Fingerprint != fingerprint {
+	if boundTo != "" && machine != "" && boundTo != machine {
 		return Status{State: Warning, License: l,
 			Reason: "this licence was activated on a different machine",
 			Action: "run `fox license rebind` to move it here"}

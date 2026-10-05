@@ -196,6 +196,9 @@ Auth (admin):
   admin revoke <email> [--branch <name>]  Remove that permission
   admin list [--branch <name>]            Show who may override (default: main + running branches)
 
+  license [show]       The paid-edition licence, and this machine's fingerprint
+  license activate <file|->   Install one  ·  license rebind  ·  license remove
+
   version              Print the fox version
 `
 
@@ -222,6 +225,8 @@ func main() {
 		must(host.VM(os.Args[2:]))
 	case "uninstall":
 		must(host.Uninstall(os.Args[2:]))
+	case "license":
+		must(licenseCmd(os.Args[2:]))
 	case "start":
 		// Linux host: look for a newer release while the stack starts. (macOS and
 		// Windows check on the host before forwarding; the guest never checks.)
