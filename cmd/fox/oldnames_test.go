@@ -213,7 +213,8 @@ func TestNoCompiledBinaryIsTracked(t *testing.T) {
 		if name == "" {
 			continue
 		}
-		f, err := os.Open(filepath.Join(root, name))
+		path := filepath.Join(root, name)
+		f, err := os.Open(path)
 		if err != nil {
 			continue // deleted in the index, or a submodule
 		}
@@ -221,7 +222,11 @@ func TestNoCompiledBinaryIsTracked(t *testing.T) {
 		n, _ := f.Read(head)
 		f.Close()
 		for _, m := range magic {
-			if n >= len(m) && bytes.HasPrefix(head[:n], m) {
+			// Magic *and* not text. "MZ" is two bytes, and a text file is
+			// perfectly entitled to start with them; every real executable in
+			// these formats has NUL bytes within its first page, so requiring
+			// both costs nothing and removes a whole class of false alarm.
+			if n >= len(m) && bytes.HasPrefix(head[:n], m) && looksCompiled(path) {
 				t.Errorf("%s is a compiled binary and is tracked in git — add it to .gitignore "+
 					"and `git rm --cached` it", name)
 				break
