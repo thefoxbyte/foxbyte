@@ -415,6 +415,9 @@ td.name-cell { white-space: nowrap; }
 .terminal .body { padding: var(--s-4) var(--s-5); font-size: var(--t-sm); color: var(--term-text); line-height: 1.9; }
 .terminal .prompt { color: var(--grad-b); } .terminal .cmd { color: #f4f6ff; }
 .terminal .ok { color: var(--green); } .terminal .dim { color: var(--faint); }
+/* A refusal in the demo above. It is the one line on this page showing the
+   product saying no, which is the thing being sold. */
+.terminal .no { color: var(--red); }
 .cursor { display: inline-block; width: 8px; height: 15px; background: var(--grad-b);
   vertical-align: -2px; margin-left: 2px; animation: blink 1.1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
