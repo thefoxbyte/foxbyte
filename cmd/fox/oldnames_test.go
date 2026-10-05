@@ -4,8 +4,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -138,7 +140,7 @@ func repoFiles(t *testing.T) []string {
 			return nil
 		}
 		switch {
-		case binary.MatchString(path),
+		case binary.MatchString(path), looksCompiled(path),
 			d.Name() == "go.sum", d.Name() == "package-lock.json",
 			d.Name() == "brand.json",  // the register of retired names
 			d.Name() == "branding.md", // the document explaining them
@@ -166,6 +168,67 @@ func repoFiles(t *testing.T) []string {
 // filepath.ToSlash, keeps the behaviour identical on every OS -- including in
 // the test below, which feeds it a Windows path while running on Linux.
 func slashPath(p string) string { return strings.ReplaceAll(p, `\`, "/") }
+
+// looksCompiled reports whether a file is not text, by the oldest reliable
+// test: a NUL byte in its first few kilobytes. The extension list above cannot
+// catch this, because a Go binary built here is named after the command and has
+// no extension at all — and one was, and these scans then reported ten
+// "retired names" found inside its own string table, with the matched line
+// printed as mojibake. Sniffing the content is the check that cannot be
+// out-guessed by a filename.
+func looksCompiled(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	return bytes.IndexByte(buf[:n], 0) >= 0
+}
+
+// And the rule itself: a compiled binary must never be committed. The ignore
+// rules are the first line of defence and this is the second, because `git add
+// -A` sweeps up whatever is in the working tree and a missing ignore rule is
+// silent — which is exactly how a 24 MB `fox` got in.
+//
+// Tracked files only, from git itself: a developer's own build artifacts are
+// their business, and failing their test run over one would be wrong.
+func TestNoCompiledBinaryIsTracked(t *testing.T) {
+	root := filepath.Join("..", "..")
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
+	if err != nil {
+		t.Skipf("git is not available to list tracked files: %v", err)
+	}
+	// ELF, Mach-O (32/64, both byte orders), universal binaries, PE, and Java
+	// class files — every executable format a build here could produce.
+	magic := [][]byte{
+		[]byte("\x7fELF"),
+		{0xFE, 0xED, 0xFA, 0xCE}, {0xFE, 0xED, 0xFA, 0xCF},
+		{0xCE, 0xFA, 0xED, 0xFE}, {0xCF, 0xFA, 0xED, 0xFE},
+		{0xCA, 0xFE, 0xBA, 0xBE},
+		[]byte("MZ"),
+	}
+	for _, name := range strings.Split(string(out), "\x00") {
+		if name == "" {
+			continue
+		}
+		f, err := os.Open(filepath.Join(root, name))
+		if err != nil {
+			continue // deleted in the index, or a submodule
+		}
+		head := make([]byte, 4)
+		n, _ := f.Read(head)
+		f.Close()
+		for _, m := range magic {
+			if n >= len(m) && bytes.HasPrefix(head[:n], m) {
+				t.Errorf("%s is a compiled binary and is tracked in git — add it to .gitignore "+
+					"and `git rm --cached` it", name)
+				break
+			}
+		}
+	}
+}
 
 // generatedFromBrand reports whether a file is written by cmd/brandgen. Those
 // carry the retired names on purpose: that is what brand.json is for.
