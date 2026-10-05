@@ -114,16 +114,34 @@ func (s *Store) Audit(kind, actor, subject, ip, detail string) {
 	if s == nil || s.db == nil {
 		return
 	}
-	var err error
-	for attempt := 0; attempt < 20; attempt++ {
-		if err = s.appendEvent(kind, actor, subject, ip, detail); err == nil || !isBusy(err) {
-			break
-		}
-		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
-	}
+	err := retryBusy(func() error { return s.appendEvent(kind, actor, subject, ip, detail) })
 	if err != nil {
 		log.Printf("security log: could not record %s (%s): %v", kind, subject, err)
 	}
+}
+
+// retryBusy runs fn until it stops reporting SQLITE_BUSY, for a few hundred
+// milliseconds.
+//
+// The DSN already sets busy_timeout, which covers contention between
+// statements. What it does not cover is the moment a connection is *opened*:
+// the WAL-mode pragma runs then, and a BUSY there is returned rather than
+// waited on (the same reason initSchema retries). The pool opens connections
+// lazily, so any statement can be the one that pays for it — which is how a
+// single-threaded test on Windows saw "database is locked" reading a table it
+// had just written.
+//
+// One policy for the whole table: a reader that gave up where the writer
+// retries would silently see an empty log and act on it.
+func retryBusy(fn func() error) error {
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err = fn(); err == nil || !isBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+	}
+	return err
 }
 
 // appendEvent chains one event onto the log, under SQLite's write lock so two
@@ -222,16 +240,24 @@ func (s *Store) LastLicenseEvent() (kind, subject string, ok bool, err error) {
 	if s == nil || s.db == nil {
 		return "", "", false, nil
 	}
-	row := s.db.QueryRow(
-		`SELECT kind,subject FROM security_events WHERE kind LIKE ? ORDER BY id DESC LIMIT 1`,
-		LicenseKindPrefix+"%")
-	switch err := row.Scan(&kind, &subject); {
-	case err == sql.ErrNoRows:
-		return "", "", false, nil
-	case err != nil:
+	err = retryBusy(func() error {
+		row := s.db.QueryRow(
+			`SELECT kind,subject FROM security_events WHERE kind LIKE ? ORDER BY id DESC LIMIT 1`,
+			LicenseKindPrefix+"%")
+		switch e := row.Scan(&kind, &subject); {
+		case e == sql.ErrNoRows:
+			kind, subject, ok = "", "", false
+			return nil
+		case e != nil:
+			return e
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
 		return "", "", false, err
 	}
-	return kind, subject, true, nil
+	return kind, subject, ok, nil
 }
 
 // CheckEventChain recomputes the chain. It returns the id of the first event

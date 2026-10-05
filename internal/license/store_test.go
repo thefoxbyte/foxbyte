@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -58,6 +59,15 @@ func TestTheStoredLicenceIsNotWorldReadable(t *testing.T) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Unix only, and not a loosening. Windows has no mode bits: Go models the
+	// read-only attribute and nothing else, so os.Stat reports 0666 whatever
+	// the file was created with, and asserting 0600 there tests the operating
+	// system rather than this code. What actually protects the file on Windows
+	// is the directory's ACL, which Go does not set and this package does not
+	// pretend to — stated here rather than hidden behind a passing test.
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file modes do not carry Unix permission bits")
 	}
 	if mode := fi.Mode().Perm(); mode != 0o600 {
 		t.Errorf("license.json is mode %o, want 600", mode)

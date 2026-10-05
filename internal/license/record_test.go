@@ -217,6 +217,10 @@ func TestRecordAgainstARealSecurityLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Windows will not delete a file that is still open, so an unclosed store
+	// fails the temp-dir cleanup rather than the assertion — which reads as a
+	// mysterious failure in a test that otherwise passed.
+	t.Cleanup(func() { store.Close() })
 	store.Audit(auth.EvLoginOK, "someone@example.com", "", "127.0.0.1", "")
 
 	st := activeStatus("FB-1", "Acme Ltd", "machine-a")
