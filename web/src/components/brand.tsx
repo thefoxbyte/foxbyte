@@ -2,13 +2,18 @@ import { useState } from 'react'
 import { getTheme, toggleTheme } from '../theme'
 import { BRAND } from '../brand'
 
-// Wordmark renders the product name with one letter picked out in the mark's
-// gradient — the letter immediately before the second capital, which in
-// FoxByte is the x the logo itself colours. Derived from the name rather than
+// Wordmark renders the product name, derived from brand.json rather than
 // written into the markup: the product has been renamed twice, and a name
 // spread across tags is exactly what a rename misses.
+//
+// One letter can be picked out in the mark's colours — the letter before the
+// second capital, the x in FoxByte. That followed the logo that drew its own x
+// in a gradient; the current one does not, so brand.json turns it off and this
+// renders the plain name. The switch is there rather than the code deleted
+// because the next logo may want it back, and finding the rule again would be
+// the expensive part.
 export function Wordmark() {
-  const m = /^(.*?)(.)([A-Z].*)$/.exec(BRAND.product)
+  const m = BRAND.wordmarkAccent ? /^(.*?)(.)([A-Z].*)$/.exec(BRAND.product) : null
   // One element around the whole name: the brand row is a flex box, and two
   // bare children would be spaced by its gap — "Fox Byte".
   return (
@@ -18,24 +23,23 @@ export function Wordmark() {
   )
 }
 
-// The mark is the logo as supplied — artwork, not geometry this file draws.
-// It replaced a fox head built from two angles of the branch graph, which was
-// an SVG filled from CSS variables so it followed the theme. The new mark
-// cannot: it is a fixed orange-to-blue cube. That is the trade, and it is the
-// right way round — the logo is the logo on either theme, and the one asset
-// with real transparency is this one, so it sits on any background without a
-// plate behind it.
+// The mark, in whichever ink the page can show it.
 //
-// 128px of artwork for something drawn at most at 30: that covers a 3x display
-// and still costs 19K. It carries the product name rather than being marked
-// decorative, because the sidebar collapses to the mark alone and the name has
-// to survive that.
+// The artwork is two-tone and the cool half changes with the background: white
+// beside the orange on a dark page, navy on a light one. One file cannot do
+// both — a white mark disappears on paper — so both are shipped and CSS picks,
+// which also means the switch costs nothing at runtime and cannot flash the
+// wrong one before a script runs.
+//
+// Both files are generated: cmd/brandgen derives every size from the artwork in
+// docs/brand/source, and `make brand-check` fails if any of them is stale. The
+// sizes are not written here for the same reason.
 export function Mark({ size = 26 }: { size?: number }) {
   return (
-    <img
-      className="mark" src="/mark.png" width={size} height={size}
-      alt={BRAND.product} draggable={false}
-    />
+    <span className="mark" style={{ width: size, height: size }} role="img" aria-label={BRAND.product}>
+      <img className="mark-dark" src="/mark-dark.png" width={size} height={size} alt="" draggable={false} />
+      <img className="mark-light" src="/mark-light.png" width={size} height={size} alt="" draggable={false} />
+    </span>
   )
 }
 
