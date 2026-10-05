@@ -77,6 +77,14 @@ paths:
         "200": { description: OK, content: { application/json: { schema: { type: object } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/license:
+    get:
+      tags: [status]
+      summary: The entitlement this engine is honouring — state, expiry, and what would fix it. Admins also see who it was issued to and which machine it is bound to.
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches:
     get:
       tags: [branches]

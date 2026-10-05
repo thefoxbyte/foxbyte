@@ -74,9 +74,9 @@ func Record(rec Recorder, st Status) {
 // fields, so nothing has to parse a sentence meant for a person. Between them
 // they say which licence, which machine, and whether it was unlocking.
 func recordFor(st Status, prevKind, prevSubject string, had bool) (kind, subject, detail string) {
-	// A Status with no licence in it is "none installed", which Install cannot
-	// distinguish from a forgery by state alone: both are Invalid.
-	if st.License.ID == "" {
+	// "None installed" is not a state of its own: Install reports it as Invalid,
+	// the same as a forgery, so Present is what tells them apart.
+	if !st.Present() {
 		if !had || prevKind == auth.EvLicenseRemoved {
 			return "", "", ""
 		}

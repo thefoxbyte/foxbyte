@@ -5,6 +5,8 @@ package host
 import (
 	"strings"
 	"testing"
+
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 )
 
 // The fingerprint has to be the same every time or a licence stops matching the
@@ -55,5 +57,19 @@ func TestTheRawIdentifierIsNotInTheFingerprint(t *testing.T) {
 	// identifier made by something else for its own purposes.
 	if !strings.HasPrefix(fingerprintDomain, "foxbyte-machine-id/") {
 		t.Errorf("the hash is not domain-separated: %q", fingerprintDomain)
+	}
+}
+
+// InGuest decides whether a licence's binding is compared at all
+// (license.licensedMachine), so the variable it reads is part of that contract
+// and not an implementation detail.
+func TestInGuestReadsTheMarker(t *testing.T) {
+	t.Setenv(brand.EnvName("IN_GUEST"), "1")
+	if !InGuest() {
+		t.Errorf("InGuest() = false with %s set", brand.EnvName("IN_GUEST"))
+	}
+	t.Setenv(brand.EnvName("IN_GUEST"), "")
+	if InGuest() {
+		t.Errorf("InGuest() = true with %s empty", brand.EnvName("IN_GUEST"))
 	}
 }

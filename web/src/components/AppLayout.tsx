@@ -4,6 +4,7 @@ import { logout as apiLogout } from '../api'
 import { useAuth } from '../auth-context'
 import { getTheme, toggleTheme } from '../theme'
 import { Mark, Wordmark } from './brand'
+import LicenseBanner from './LicenseBanner'
 import { BRAND } from '../brand'
 import * as I from './icons'
 
@@ -178,6 +179,10 @@ export default function AppLayout() {
             scrolls in panes of its own. Every other page keeps the centred,
             measure-limited column, which is right for reading and wrong for a
             query sitting next to its results. */}
+        {/* Above the page rather than inside it: a licence problem is not a
+            property of whichever page you happen to be on, and putting it in
+            each one would be fifteen copies of the same strip. */}
+        <LicenseBanner />
         <main className={'app-content' + (pathname.startsWith('/console') ? ' full-bleed' : '')}><Outlet /></main>
       </div>
     </div>

@@ -602,7 +602,8 @@
       <li class="ok"><code>~/.fox/license.json</code> (0600, atomic) and <code>fox license activate|show|rebind|remove</code></li>
       <li class="ok">The engine inside the VM is given a copy (macOS/Windows); no-op on Linux</li>
       <li class="ok">Security-log records: <code>license.{activated,rebound,lapsed,removed}</code>, written by the engine at start-up</li>
-      <li class="todo"><code>/api/license</code> and the console's banner</li>
+      <li class="ok"><code>GET /api/license</code> (state for everyone, customer and binding for admins)</li>
+      <li class="ok">The console's notice: silent when active, silent in Standard, dismissible only while it still unlocks</li>
       <li class="todo">A feature actually gated behind it (anchors first)</li></ul></td><td class="tb">internal/license</td></tr>
   </table>
 </section>

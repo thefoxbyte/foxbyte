@@ -1049,3 +1049,24 @@ body.row-resizing { cursor: row-resize; user-select: none; }
   margin-top: 6px; font-family: var(--font-mono, ui-monospace, monospace);
   font-size: var(--t-xs); color: var(--red);
 }
+
+/* The licence notice (web/src/components/LicenseBanner.tsx). It sits between
+   the top bar and the page, so it is one strip rather than one per page, and it
+   is only rendered when there is something to say — an active licence shows
+   nothing at all. Amber still unlocks everything and can be closed; red has
+   taken the paid features away and cannot. */
+.lic-banner { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 20px; border-bottom: 1px solid var(--border); font-size: var(--t-sm); }
+.lic-banner.warn { color: color-mix(in srgb, var(--amber) 70%, var(--text));
+  background: color-mix(in srgb, var(--amber) 12%, var(--panel));
+  border-bottom-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
+.lic-banner.stop { color: color-mix(in srgb, var(--red) 72%, var(--text));
+  background: color-mix(in srgb, var(--red) 12%, var(--panel));
+  border-bottom-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+.lic-text { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1; }
+.lic-text b { color: inherit; }
+.lic-reason, .lic-action { color: color-mix(in srgb, var(--text) 78%, transparent); }
+.lic-action::before { content: '→'; margin-right: 6px; opacity: .7; }
+.lic-side { display: flex; align-items: center; gap: 8px; }
+.lic-side code { font-family: var(--font-mono); font-size: 12px; padding: 2px 8px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--card); color: var(--muted); white-space: nowrap; }

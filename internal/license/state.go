@@ -14,17 +14,21 @@ import (
 type State int
 
 const (
+	// Invalid: not signed by our key, or edited. Never unlocks anything, and
+	// gets no grace — grace is for a customer who paid, not for a forgery.
+	//
+	// It is the zero value deliberately. A Status nobody has evaluated must not
+	// read as a working licence: /api/license returns what this process is
+	// honouring, and before Install has run that is nothing.
+	Invalid State = iota
 	// Active: signed, in date, and for this machine.
-	Active State = iota
+	Active
 	// Warning: something is wrong but within Grace, or the fingerprint does not
 	// match. Everything still works and the user is told.
 	Warning
 	// Lapsed: past its expiry and past Grace. New paid work refuses; nothing
 	// already running stops, and nothing already recorded becomes unreadable.
 	Lapsed
-	// Invalid: not signed by our key, or edited. Never unlocks anything, and
-	// gets no grace — grace is for a customer who paid, not for a forgery.
-	Invalid
 )
 
 func (s State) String() string {
@@ -33,6 +37,22 @@ func (s State) String() string {
 		return "active"
 	case Warning:
 		return "active, with a warning"
+	case Lapsed:
+		return "lapsed"
+	default:
+		return "invalid"
+	}
+}
+
+// Code is the state as a stable token, for an API response and a console to
+// match on. String is a sentence for a person and may be reworded; this is part
+// of the interface and may not.
+func (s State) Code() string {
+	switch s {
+	case Active:
+		return "active"
+	case Warning:
+		return "warning"
 	case Lapsed:
 		return "lapsed"
 	default:
@@ -56,6 +76,11 @@ type Status struct {
 	// EvaluateBound.
 	Rebinds int
 }
+
+// Present reports whether there is a licence here at all, which State cannot
+// say: "none installed" and "installed but refused" are both Invalid, and they
+// mean entirely different things to a person reading a console.
+func (s Status) Present() bool { return s.License.ID != "" }
 
 // Unlocks reports whether a feature may run. Warning unlocks: that is the whole
 // point of a warning. Lapsed and Invalid do not.

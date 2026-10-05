@@ -51,7 +51,7 @@ func Installed() Status {
 }
 
 func install() Status {
-	st, err := Current(host.MachineID())
+	st, err := Current(licensedMachine())
 	if err != nil {
 		edition.SetEntitlement(nil)
 		return Status{State: Invalid, Reason: err.Error()}
@@ -63,4 +63,35 @@ func install() Status {
 	l := st.License
 	edition.SetEntitlement(func(f edition.Feature) bool { return l.Has(f) })
 	return st
+}
+
+// licensedMachine is the machine a licence's binding is compared against.
+//
+// Empty inside the VM, and that is the right answer rather than a concession.
+// The machine a licence is bound to is the one a person sits at — `fox license`
+// runs there on purpose, and the VM's own id is a different number that changes
+// whenever `fox setup` recreates it. Comparing against the guest's would put
+// every macOS and Windows install permanently in "this licence was activated on
+// a different machine": warning on every command, and recording that sentence
+// in the security log as the reason a perfectly good licence was unlocking.
+//
+// An unreadable machine id is already handled everywhere as "unknown, and
+// therefore not a mismatch". This is exactly that case, known in advance.
+func licensedMachine() string {
+	if host.InGuest() {
+		return ""
+	}
+	return host.MachineID()
+}
+
+// SetInstalledForTest makes Installed report st, and returns a function that
+// puts back what was there. For tests of packages that read the entitlement
+// without being able to activate a real licence — /api/license is the one that
+// needs it, since a signed licence needs the private key. Release builds never
+// call it, and it does not touch internal/edition: this is what the engine
+// *reports*, and what it *permits* still comes only from Install.
+func SetInstalledForTest(st Status) (restore func()) {
+	old := installed.Load()
+	installed.Store(&st)
+	return func() { installed.Store(old) }
 }
