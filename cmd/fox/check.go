@@ -15,6 +15,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
+	"github.com/thefoxbyte/foxbyte/internal/license"
 	"github.com/thefoxbyte/foxbyte/internal/version"
 	"github.com/thefoxbyte/foxbyte/web"
 )
@@ -58,6 +59,7 @@ func checkCmd(args []string) {
 	lines := []checkLine{
 		checkVersion(),
 		checkEdition(),
+		checkLicense(),
 		checkConsoleEmbedded(),
 		checkStorage(),
 		checkMain(),
@@ -114,6 +116,40 @@ func checkEdition() checkLine {
 			names = append(names, string(f))
 		}
 		return ok("edition", "enterprise — licensed: "+strings.Join(names, ", "))
+	}
+}
+
+// checkLicense says what is wrong with the licence, which checkEdition cannot:
+// "no licence is active" is the same sentence whether one expired last night,
+// was issued for a machine that has since been rebuilt, or was never installed.
+// Those have different ways out, and this is where a person looks for them.
+//
+// It reports the same Reason and Action the `fox license` commands print, from
+// the same Status, so the two cannot drift into describing one licence two
+// ways.
+func checkLicense() checkLine {
+	l, _, _, err := license.Load()
+	if err == license.ErrNone {
+		if edition.Enterprise {
+			return warn("licence", "none installed",
+				fmt.Sprintf("%s license activate <file>", brand.CLI))
+		}
+		// A Standard build has nothing to unlock, so no licence is the correct
+		// and uninteresting state rather than something to flag.
+		return ok("licence", "not needed by the standard edition")
+	}
+	if err != nil {
+		return warn("licence", err.Error(), fmt.Sprintf("%s license show", brand.CLI))
+	}
+	st := license.Install()
+	switch st.State {
+	case license.Active:
+		return ok("licence", fmt.Sprintf("%s — %s, to %s", l.ID, l.Customer,
+			l.NotAfter.UTC().Format("2 January 2006")))
+	case license.Warning:
+		return warn("licence", st.Reason, st.Action)
+	default:
+		return fail("licence", st.Reason, st.Action)
 	}
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/errhint"
 	"github.com/thefoxbyte/foxbyte/internal/host"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/license"
 	"github.com/thefoxbyte/foxbyte/internal/mcp"
 	"github.com/thefoxbyte/foxbyte/internal/proxy"
 	"github.com/thefoxbyte/foxbyte/web"
@@ -215,6 +216,16 @@ func main() {
 		must(err)
 		return
 	}
+
+	// Past here this process is the engine, so tell internal/edition what the
+	// installed licence unlocks. Before here it is the launcher, which forwards
+	// rather than runs and has nothing to entitle.
+	//
+	// Silent on every failure — no licence, no key, lapsed, forged. A refusal
+	// belongs where someone asks for a paid feature, which can name the feature
+	// and the way out; announcing it on every command would be noise for the
+	// Standard installs that are the common case.
+	license.Install()
 
 	switch os.Args[1] {
 	case "version", "-v", "--version":
