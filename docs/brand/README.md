@@ -1,50 +1,66 @@
 # Brand assets
 
-The logo is artwork, not something this repository generates. Until 4 October
-2026 it was: `logo.html` drew a fox head from the same two angles as the branch
-graph, and two Chrome screenshots of that page were the README's logos. The
-mark is now a supplied orange-to-blue cube, so the page and its render commands
-are gone and these files are the originals.
+**To change the logo:** replace the four files in `source/`, set the colours in
+[`brand.json`](../../brand.json)'s `logo` block to match, run `make brand`.
+That is the whole procedure. Nothing below is cut by hand.
 
-| File | What it is | Where it is used |
+`make brand-check` — which CI runs, and which `TestGeneratedFilesAreInStep`
+also covers — fails if any derived file is stale. Forgetting to regenerate is a
+red build rather than a favicon left a version behind the mark beside it, which
+is how the last two logo changes went.
+
+## The source
+
+| File | What it is |
+| --- | --- |
+| `source/mark-dark.png` | the mark as drawn for a dark page (white and orange) |
+| `source/mark-light.png` | the mark as drawn for a light page (navy and orange) |
+| `source/lockup-dark.png` | mark and wordmark, for a dark page |
+| `source/lockup-light.png` | mark and wordmark, for a light page |
+
+These are the artwork exactly as supplied, background and all, converted to PNG
+only so the generator can read them with the standard library. **Do not trim or
+key them by hand** — the generator does both, and doing it twice is how edges
+get crunchy.
+
+## What is derived from them
+
+| File | Size | Used by |
 | --- | --- | --- |
-| `foxbyte-mark.png` | the mark on its own, 512px, **transparent** | the master for every icon below |
-| `foxbyte-logo.png` | mark and wordmark, for a light background | the README's default |
-| `foxbyte-logo-dark.png` | the same lockup for a dark background | GitHub serves it to dark-mode readers |
-| `foxbyte-wordmark.png` | the wordmark alone, for a light background | — |
-| `foxbyte-wordmark-dark.png` | the wordmark alone, for a dark background | — |
+| `web/public/mark-dark.png` | 128 | the app, on a dark theme |
+| `web/public/mark-light.png` | 128 | the app, on a light theme |
+| `web/public/favicon.png` | 48 | the browser tab |
+| `web/public/apple-touch-icon.png` | 180 | iOS |
+| `docs/brand/foxbyte-mark.png` | 512 | the mark on its own |
+| `docs/brand/foxbyte-mark-light.png` | 512 | the same, for a light page |
+| `docs/brand/foxbyte-logo.png` | 720 | the README, light |
+| `docs/brand/foxbyte-logo-dark.png` | 720 | the README, dark |
+| `web/src/brand.gen.css` | — | the two colours, as CSS custom properties |
 
-**Only the mark is transparent.** Every lockup has its background baked in, and
-the dark ones were tried both ways before being left alone: keying a flat colour
-leaves a halo, because that background is a gradient rather than one colour, and
-taking alpha from luminance — which works for bright artwork on true black —
-lifts the backdrop into a visible grey haze here, because it is `#020d20` rather
-than black. So the lockups ship as supplied, which is why they come as a
-light/dark pair and the mark does not need to.
+The sizes live in `internal/brand/gen/logo.go` rather than in `brand.json`,
+because they follow from where the image is shown and not from the artwork: the
+app never draws the mark above 30px, a tab icon is a tab icon, iOS asks for 180.
+New artwork does not change any of them.
 
-On GitHub the light lockup's `#fefefe` is invisible against the page. The dark
-one's backdrop is darker and bluer than GitHub's `#0d1117`, so it reads as a
-deliberate plate behind the logo rather than as nothing at all. New artwork with
-a transparent lockup would remove that; it is the only thing missing here.
+## Two things the generator does that are worth knowing
 
-The app's copies are derived from `foxbyte-mark.png` and live in `web/public/`:
+**It keys the background out.** The corner pixel is taken as the background and
+pixels near it become transparent, with a feathered edge so nothing comes out
+jagged. Every derived asset is therefore transparent and sits on any page.
+`key_tolerance` and `key_feather` in `brand.json` are the knobs: raise the first
+if new artwork leaves a fringe, the second if its edges look hard.
 
-| File | Size | Why that size |
-| --- | --- | --- |
-| `mark.png` | 128px | the app never draws it above 30px; 128 covers a 3x display |
-| `favicon.png` | 48px | the browser tab |
-| `apple-touch-icon.png` | 180px | on the brand's dark ground, because iOS ignores a touch icon's alpha and composites it on black |
+The favicon and the touch icon are the exceptions — they get an opaque plate of
+`logo.plate`, because iOS ignores a touch icon's alpha and composites on black,
+and a browser tab may be either colour.
 
-To regenerate them after new artwork, resize `foxbyte-mark.png` to those three
-sizes. They are a straight scale of one square image: the supplied mark is
-trimmed to its own bounds and padded to a square first, so nothing shifts
-between sizes.
-
-The two colours sampled from the mark are ember `#ff7f02` and blue `#006bff`.
-They are in `web/src/styles.css` as `--mark-a` and `--mark-b`, kept apart from
-`--grad-a`/`--grad-b`, which are the product's accent and tint every button and
-focus ring — adopting the mark's blue across those is a palette decision rather
-than a logo one, and has not been taken.
+**The mark ships in two inks and CSS chooses.** The cool half is white on a dark
+page and navy on a light one, so one file cannot serve both. Both are shipped
+and `[data-theme]` picks, which means the right one is painted on the first
+frame rather than after a script runs. The wordmark's accented letter follows
+the same rule, which is why `brand.json` carries `accent_cool_on_dark` and
+`accent_cool_on_light` rather than one colour — a single one disappeared into
+the dark theme.
 
 The product's *name* is not here: it comes from [`brand.json`](../../brand.json).
 See [docs/branding.md](../branding.md).

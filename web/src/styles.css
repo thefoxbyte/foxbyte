@@ -1,3 +1,4 @@
+@import "./brand.gen.css";
 /* ============ FoxByte design system ============ */
 /*
  * Two layers, on purpose:
@@ -39,18 +40,11 @@
   --radius-pill: 999px;
 
   --grad: linear-gradient(120deg, var(--grad-a), var(--grad-b));
-  /* The mark's own two colours, exactly as the artwork has them, for the one
-     place that sits beside the artwork: the wordmark's x. They do not change
-     with the theme, because the logo does not.
-     The palette below now takes its colours from the same mark, but not these
-     literals — a brand colour and a legible colour are different problems.
-     #006bff reaches only 3.81:1 on the dark background, so links and focus
-     take a lightened blue from the same ramp, and the light theme a darkened
-     one. The mark has a full warm ramp and a full cool one; the palette uses
-     the warm for actions and the cool for interface. */
-  --mark-a: #ff7f02;
-  --mark-b: #006bff;
-  --grad-mark: linear-gradient(100deg, var(--mark-a), var(--mark-b));
+  /* --mark-a, --mark-b and --grad-mark come from brand.gen.css, which
+     cmd/brandgen writes from brand.json. They are the artwork's own ink, for
+     the one place that sits beside the artwork: the wordmark's accented
+     letter. The palette below is a different problem — a brand colour and a
+     legible colour are not the same thing — so it keeps its own values. */
   --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
   --speed: 140ms;
 }
@@ -220,7 +214,13 @@ p, li { color: color-mix(in srgb, var(--text) 82%, transparent); font-size: var(
 .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-display);
   font-weight: 700; font-size: 18px; color: var(--text); letter-spacing: -0.02em; }
 .brand:hover { text-decoration: none; }
-.mark { display: block; object-fit: contain; }
+/* The mark ships in two inks and CSS chooses, so the right one is painted on
+   the first frame rather than after a script decides. */
+.mark { display: inline-block; position: relative; flex: none; }
+.mark img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.mark .mark-light { display: none; }
+[data-theme='light'] .mark .mark-dark { display: none; }
+[data-theme='light'] .mark .mark-light { display: block; }
 .brand .mark { width: 26px; height: 26px; }
 .brand .wm { display: inline-flex; }
 .brand .wm-accent { color: transparent; background: var(--grad-mark); -webkit-background-clip: text; background-clip: text; }

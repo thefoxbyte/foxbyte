@@ -1,0 +1,20 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Generated from brand.json by cmd/brandgen. DO NOT EDIT.
+   The logo's own ink, so the wordmark's accented letter is drawn in the
+   colours beside it rather than a hex someone matched by eye and then forgot
+   to change.
+
+   The cool half swaps with the page, exactly as the mark does: white on a dark
+   one, navy on a light one. A single cool colour would disappear into one of
+   the two backgrounds, and on the dark theme that is what it did. */
+
+:root {
+  --mark-a: #fe6637;
+  --mark-b: #fefefe;
+  --grad-mark: linear-gradient(100deg, var(--mark-a), var(--mark-b));
+}
+
+[data-theme='light'] {
+  --mark-b: #253546;
+}

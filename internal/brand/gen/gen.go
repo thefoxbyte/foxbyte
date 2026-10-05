@@ -38,6 +38,7 @@ type Brand struct {
 	ImageRepo  string `json:"image_repo"`
 	VMInstance string `json:"vm_instance"`
 	TestVM     string `json:"test_vm"`
+	Logo       Logo   `json:"logo"`
 	Previous   []struct {
 		Product   string `json:"product"`
 		CLI       string `json:"cli"`
@@ -89,6 +90,17 @@ func Files(root string, b Brand) (map[string][]byte, error) {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		out[path] = next
+	}
+	// The logo's sizes, derived from the artwork in docs/brand/source. Generated
+	// here so `make brand-check` and TestGeneratedFilesAreInStep cover them: the
+	// mark has been replaced three times, and each time the risk was a favicon
+	// left a version behind the mark beside it.
+	logos, err := logoFiles(root, b.Logo)
+	if err != nil {
+		return nil, fmt.Errorf("logo: %w", err)
+	}
+	for rel, data := range logos {
+		out[rel] = data
 	}
 	return out, nil
 }
