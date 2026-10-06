@@ -29,6 +29,15 @@ func QuerySQL(target, sql string) (string, error) {
 // QuoteLiteral renders s as a SQL string literal.
 func QuoteLiteral(s string) string { return sqlQuote(s) }
 
+// LedgerQuery runs a query against a branch as the superuser and returns its
+// non-empty output lines — one JSON document per row, for the ledger queries.
+// Distinct from QuerySQL because the Blackbox tables are not readable by the
+// client role, which is the point of them.
+func LedgerQuery(name, sql string) ([]string, error) { return ledgerLines(name, sql) }
+
+// ResolveBranch checks a branch name and defaults an empty one to main.
+func ResolveBranch(name string) (string, error) { return ledgerBranchName(name) }
+
 // SetGuard enables or disables the Blackbox guardrail event trigger on a
 // branch. A pipeline turns it off while it rebuilds its own tables, because the
 // guardrails exist to stop a person dropping something by accident, not to stop
