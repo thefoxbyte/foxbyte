@@ -19,8 +19,11 @@ func requireFeature(f edition.Feature) {
 	if edition.Has(f) {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "error: %s is part of %s Enterprise, and this is the %s edition.\n",
-		edition.Describe(f), brand.Product, edition.Name())
+	// Phrased so the feature's name is never the subject: several of them are
+	// plural ("ETL pipelines", "change requests"), and "ETL pipelines is part
+	// of…" is the kind of thing nobody notices until a customer reads it.
+	fmt.Fprintf(os.Stderr, "error: %s Enterprise is needed for %s, and this is the %s edition.\n",
+		brand.Product, edition.Describe(f), edition.Name())
 	if edition.Enterprise {
 		fmt.Fprintf(os.Stderr, "\nThis build can run it, but no licence covers %q.\n"+
 			"Activate one with: %s license activate <file>\n", f, brand.CLI)

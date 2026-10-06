@@ -67,6 +67,7 @@ func ledgerV2Cmd(args []string) bool {
 			os.Exit(1)
 		}
 	case "export":
+		requireFeature(edition.Export)
 		if f := optValue(args, "--format"); f != "" && f != "jsonl" {
 			must(fmt.Errorf("unsupported export format %q (supported: jsonl)", f))
 		}

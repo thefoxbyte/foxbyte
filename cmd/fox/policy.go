@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 // policyCmd handles `fox policy …`, the Blackbox policy gate: rules checked on
@@ -47,16 +48,19 @@ func policyCmd(args []string) {
 			}
 		}
 	case "block", "warn":
+		requireFeature(edition.Policy)
 		needArg()
 		action := sub
 		must(branch.UpdatePolicyRule(name, arg, &action, nil, actor))
 		fmt.Printf("%s: rule %s now %ss matching changes\n", name, arg, sub)
 	case "enable", "disable":
+		requireFeature(edition.Policy)
 		needArg()
 		on := sub == "enable"
 		must(branch.UpdatePolicyRule(name, arg, nil, &on, actor))
 		fmt.Printf("%s: rule %s %sd\n", name, arg, sub)
 	case "add":
+		requireFeature(edition.Policy)
 		needArg()
 		r := branch.PolicyRule{
 			RuleID:     arg,
@@ -78,6 +82,7 @@ func policyCmd(args []string) {
 		must(branch.AddPolicyRule(name, r, actor))
 		fmt.Printf("%s: added rule %s (%s)\n", name, arg, r.Action)
 	case "remove":
+		requireFeature(edition.Policy)
 		needArg()
 		must(branch.RemovePolicyRule(name, arg, actor))
 		fmt.Printf("%s: removed rule %s\n", name, arg)

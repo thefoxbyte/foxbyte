@@ -605,6 +605,8 @@
       <li class="ok"><code>GET /api/license</code> (state for everyone, customer and binding for admins)</li>
       <li class="ok">The console's notice: silent when active, silent in Standard, dismissible only while it still unlocks</li>
       <li class="ok">Anchors gated: writing is Enterprise, checking (<code>integrity</code>, <code>fox-verify</code>, <code>anchor-key</code>) and the security log's anchors stay free</li></ul></td><td class="tb">internal/license</td></tr>
+      <li class="ok">Policy authoring, impact, promotion, export and pipelines gated; reading each stays free</li>
+      <li class="todo">Moving the paid code behind <code>//go:build enterprise</code> (with the SQL schema split)</li>
   </table>
 </section>
 

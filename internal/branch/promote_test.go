@@ -3,6 +3,7 @@
 package branch
 
 import (
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"strings"
 	"testing"
 
@@ -93,7 +94,17 @@ func TestRiskyEntries(t *testing.T) {
 
 // A request with no statements is refused rather than producing an empty
 // transaction that reports success.
+//
+// Enterprise only since promotion was gated: the licence is checked before the
+// request is looked at, which is the right order — "you cannot do this at all"
+// comes before "your request was empty" — and in a Standard build the feature
+// can never be entitled, so there is nothing here to test. The gating itself is
+// asserted in edition_test.go.
 func TestApplyRequestRefusesNothing(t *testing.T) {
+	if !edition.Enterprise {
+		t.Skip("promotion cannot be entitled in a Standard build")
+	}
+	entitle(t, edition.Promotion)
 	if _, err := ApplyRequest(1, "main", "someone@example.com", nil); err != ErrNothingToPromote {
 		t.Errorf("applying an empty request gave %v, want ErrNothingToPromote", err)
 	}

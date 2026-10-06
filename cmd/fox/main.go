@@ -24,6 +24,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/controlplane"
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/errhint"
 	"github.com/thefoxbyte/foxbyte/internal/host"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
@@ -396,6 +397,7 @@ func main() {
 	case "branch":
 		branchCmd(os.Args[2:])
 	case "impact":
+		requireFeature(edition.Impact)
 		impactCmd(os.Args[2:])
 	case "ledger", "blackbox": // Blackbox is the product name; both commands work
 		ledgerCmd(os.Args[2:])
@@ -408,6 +410,7 @@ func main() {
 		}
 		must(branch.ImportCutover(os.Args[2]))
 	case "pipeline":
+		requireFeature(edition.Pipelines)
 		pipelineCmd(os.Args[2:])
 	case "ha":
 		haCmd(os.Args[2:])

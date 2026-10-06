@@ -23,21 +23,6 @@ func entitle(t *testing.T, features ...edition.Feature) {
 	t.Cleanup(func() { edition.SetEntitlement(nil) })
 }
 
-// The line this gating draws: making anchors is paid. Checkpoint is the one
-// function that writes one, which is why the gate is in it rather than only at
-// the CLI and the route — the scheduler calls it directly, and so would anything
-// added later.
-func TestCheckpointRefusesWithoutTheFeature(t *testing.T) {
-	edition.SetEntitlement(nil)
-	a, path, err := Checkpoint("main")
-	if !errors.Is(err, ErrAnchorsNotLicensed) {
-		t.Fatalf("Checkpoint() error = %v, want ErrAnchorsNotLicensed", err)
-	}
-	if a != nil || path != "" {
-		t.Errorf("Checkpoint() refused but returned %v, %q", a, path)
-	}
-}
-
 // And the other half of the same rule: with the feature, it gets past the gate
 // and fails for an ordinary reason instead (there is no database in a unit
 // test). What is asserted is that the refusal is no longer the licence.
@@ -54,20 +39,6 @@ func TestCheckpointGetsPastTheGateWithTheFeature(t *testing.T) {
 	_, _, err := Checkpoint("main")
 	if errors.Is(err, ErrAnchorsNotLicensed) {
 		t.Error("Checkpoint() still refused on the licence with the feature entitled")
-	}
-}
-
-// In a Standard build the feature can never be entitled, so the gate holds
-// whatever a licence claims. This is the property the edition split exists for,
-// asserted here for the one function that writes tamper-evidence.
-func TestAStandardBuildCannotBeTalkedIntoAnchoring(t *testing.T) {
-	if edition.Enterprise {
-		t.Skip("this build contains the paid code; the Standard build is the one under test")
-	}
-	edition.SetEntitlement(func(edition.Feature) bool { return true }) // a licence saying yes to everything
-	t.Cleanup(func() { edition.SetEntitlement(nil) })
-	if _, _, err := Checkpoint("main"); !errors.Is(err, ErrAnchorsNotLicensed) {
-		t.Fatalf("a Standard build anchored on a licence's say-so: %v", err)
 	}
 }
 

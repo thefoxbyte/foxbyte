@@ -11,6 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
@@ -178,6 +179,14 @@ func PolicyRules(name string) ([]PolicyRule, error) {
 
 // AddPolicyRule adds a custom rule.
 func AddPolicyRule(name string, r PolicyRule, actor string) error {
+	// Authoring is the paid half. PolicyRules, PolicyCheck and
+	// PolicyEvaluations below stay free: rules written before an install
+	// changed edition keep enforcing, and being unable to read the rule that
+	// just blocked you would be worse than useless. The two default guardrails
+	// are enforced in SQL and are not rules at all, so they are untouched.
+	if err := requireFeature(edition.Policy); err != nil {
+		return err
+	}
 	name, err := ledgerBranchName(name)
 	if err != nil {
 		return err
@@ -197,6 +206,10 @@ func AddPolicyRule(name string, r PolicyRule, actor string) error {
 
 // UpdatePolicyRule changes a rule's action and/or whether it is enabled.
 func UpdatePolicyRule(name, ruleID string, action *string, enabled *bool, actor string) error {
+	// Authoring: `policy block`, `warn`, `enable` and `disable` all land here.
+	if err := requireFeature(edition.Policy); err != nil {
+		return err
+	}
 	name, err := ledgerBranchName(name)
 	if err != nil {
 		return err
@@ -219,6 +232,10 @@ func UpdatePolicyRule(name, ruleID string, action *string, enabled *bool, actor 
 
 // RemovePolicyRule removes a custom rule. Built-in rules can only be disabled.
 func RemovePolicyRule(name, ruleID, actor string) error {
+	// Authoring.
+	if err := requireFeature(edition.Policy); err != nil {
+		return err
+	}
 	name, err := ledgerBranchName(name)
 	if err != nil {
 		return err

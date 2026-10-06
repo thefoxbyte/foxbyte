@@ -147,21 +147,6 @@ func lastCheckpoint(name string) (int64, string, error) {
 // Checkpoint anchors a branch's ledger entries added since its last checkpoint.
 // It returns (nil, "", nil) when there is nothing new. It refuses to anchor rows
 // whose hash chain is already broken.
-// ErrAnchorsNotLicensed is why Checkpoint refused.
-//
-// The line this gating draws is: **making anchors is paid, checking them is
-// free.** Everything that reads an anchor stays in Standard — Integrity below,
-// `blackbox anchor-key`, and cmd/fox-verify — for two reasons. An install that
-// anchored before upgrading still holds anchors, and taking away its ability to
-// check them would be punishing a customer for the version they were on. And an
-// "independent verifier" that has to be bought is close to a contradiction:
-// what makes it worth anything is that it needs no trust in us.
-//
-// The security log's own anchors (CheckpointSecurityLog) are not gated either.
-// That is the accountability trail — it records who signed in, what was
-// refused, and now the licence itself — and the rule the editions follow is
-// that safety stays free.
-var ErrAnchorsNotLicensed = errors.New("creating signed Blackbox anchors is an Enterprise feature")
 
 // Checkpoint anchors a branch's new ledger entries outside the database.
 //
@@ -169,8 +154,8 @@ var ErrAnchorsNotLicensed = errors.New("creating signed Blackbox anchors is an E
 // this is the one function that writes an anchor: the scheduler calls it too,
 // and a future caller would otherwise have to remember.
 func Checkpoint(name string) (*ledger.Anchor, string, error) {
-	if !edition.Has(edition.Anchors) {
-		return nil, "", ErrAnchorsNotLicensed
+	if err := requireFeature(edition.Anchors); err != nil {
+		return nil, "", err
 	}
 	return checkpoint(name)
 }
@@ -313,6 +298,12 @@ func Integrity(name string) (ledger.Report, error) {
 // ExportLedger writes every ledger row of a branch, with its capture columns, as
 // JSON lines — a file fox-verify can check offline against the anchors.
 func ExportLedger(name string, w io.Writer) error {
+	// fox-verify keeps working without this. It reads the live database with
+	// --dsn, so the free verification path does not depend on a paid export —
+	// which it would, if this were the only way to produce the file it checks.
+	if err := requireFeature(edition.Export); err != nil {
+		return err
+	}
 	name, err := ledgerBranchName(name)
 	if err != nil {
 		return err

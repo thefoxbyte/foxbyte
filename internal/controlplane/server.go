@@ -891,6 +891,9 @@ func jsonText(v any) any {
 // Authn and scoped to the calling user.
 func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 	mux.HandleFunc("GET /api/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Pipelines) {
+			return
+		}
 		u, _ := auth.UserFrom(r.Context())
 		ps, err := store.ListPipelines(u.ID)
 		if err != nil {
@@ -900,6 +903,9 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 		writeJSON(w, 200, map[string]any{"pipelines": ps})
 	})
 	mux.HandleFunc("POST /api/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Pipelines) {
+			return
+		}
 		u, _ := auth.UserFrom(r.Context())
 		name, spec, err := decodePipelineBody(r)
 		if err != nil {
@@ -914,6 +920,9 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 		writeJSON(w, 200, p)
 	})
 	mux.HandleFunc("GET /api/pipelines/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Pipelines) {
+			return
+		}
 		u, _ := auth.UserFrom(r.Context())
 		p, ok := store.GetPipeline(r.PathValue("id"), u.ID)
 		if !ok {
@@ -923,6 +932,9 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 		writeJSON(w, 200, p)
 	})
 	mux.HandleFunc("PUT /api/pipelines/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Pipelines) {
+			return
+		}
 		u, _ := auth.UserFrom(r.Context())
 		name, spec, err := decodePipelineBody(r)
 		if err != nil {
@@ -936,6 +948,9 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 		writeJSON(w, 200, map[string]string{"status": "updated"})
 	})
 	mux.HandleFunc("DELETE /api/pipelines/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Pipelines) {
+			return
+		}
 		u, _ := auth.UserFrom(r.Context())
 		if err := store.DeletePipeline(r.PathValue("id"), u.ID); err != nil {
 			writeErr(w, 500, err)
@@ -944,6 +959,9 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 		writeJSON(w, 200, map[string]string{"status": "deleted"})
 	})
 	mux.HandleFunc("GET /api/pipelines/{id}/runs", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Pipelines) {
+			return
+		}
 		u, _ := auth.UserFrom(r.Context())
 		runs, err := store.ListRuns(r.PathValue("id"), u.ID)
 		if err != nil {
@@ -954,6 +972,9 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 	})
 	// Run a pipeline, streaming its log/progress as SSE (same contract as import).
 	mux.HandleFunc("POST /api/pipelines/{id}/run", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Pipelines) {
+			return
+		}
 		u, _ := auth.UserFrom(r.Context())
 		pl, ok := store.GetPipeline(r.PathValue("id"), u.ID)
 		send, _, sok := newSSE(w)

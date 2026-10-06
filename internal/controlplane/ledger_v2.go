@@ -122,6 +122,9 @@ func registerLedgerV2(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("GET /api/branches/{name}/ledger/export", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Export) {
+			return
+		}
 		name := r.PathValue("name")
 		if _, err := branch.EnsureRunning(name); err != nil {
 			writeErr(w, 404, err)

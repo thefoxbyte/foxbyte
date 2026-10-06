@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { branchBeforeEntry, createCheckpoint, exportLedgerUrl, getIntegrity, getLedgerEntries, getStatus, has, type Branch, type BranchBeforeResult, type IntegrityReport, type LedgerEntry, type Status } from '../api'
+import { branchBeforeEntry, createCheckpoint, exportLedgerUrl, getIntegrity, getLedgerEntries, type Branch, type BranchBeforeResult, type IntegrityReport, type LedgerEntry } from '../api'
+import { useFeatures, why } from '../features'
 import { useBranches } from '../useBranches'
 
 // Blackbox integrity: checks a branch's Blackbox record against its checkpoint
@@ -16,18 +17,16 @@ export default function Integrity() {
   const [before, setBefore] = useState<BranchBeforeResult | null>(null)
   const [beforeErr, setBeforeErr] = useState('')
   const [entries, setEntries] = useState<LedgerEntry[]>([])
-  const [status, setStatus] = useState<Status | null>(null)
 
   const { branches, branchesError, reloadBranches } = useBranches()
-  // Until /api/status answers, assume the button works: an engine too old to
-  // report features should not have its controls disabled by a newer console.
-  const canAnchor = !status || has(status, 'anchors')
+  const { can, edition } = useFeatures()
+  const canAnchor = can('anchors')
+  const canExport = can('export')
 
   const loadEntries = useCallback(() => {
     getLedgerEntries('main', 20).then(setEntries).catch(() => setEntries([]))
   }, [])
   useEffect(() => { loadEntries() }, [loadEntries])
-  useEffect(() => { getStatus().then(setStatus).catch(() => setStatus(null)) }, [])
 
   const verify = useCallback(async () => {
     setBusy(true); setErr('')
@@ -88,10 +87,9 @@ export default function Integrity() {
           creating a checkpoint keeps working without a licence -- verifying,
           exporting, and checking anchors already written -- so the page says
           which half is which instead of quietly losing a button. */}
-      {status && !canAnchor && (
+      {edition && !canAnchor && (
         <p className="muted" style={{ marginTop: -6, fontSize: 13 }}>
-          Creating checkpoints is part of Enterprise, and this is the {status.edition} edition. Verifying, exporting and
-          checking anchors already written are unaffected.
+          {why(edition, 'Creating checkpoints')} Verifying and checking anchors already written are unaffected.
         </p>
       )}
 
@@ -105,7 +103,9 @@ export default function Integrity() {
           title={canAnchor ? undefined : 'Creating checkpoints is an Enterprise feature'}>
           {canAnchor ? 'Create checkpoint' : 'Create checkpoint (Enterprise)'}
         </button>
-        <a className="btn ghost" href={exportLedgerUrl(branch)} download={`${branch}-ledger.jsonl`}>Export (JSONL)</a>
+        {canExport
+          ? <a className="btn ghost" href={exportLedgerUrl(branch)} download={`${branch}-ledger.jsonl`}>Export (JSONL)</a>
+          : <button className="ghost" disabled title={why(edition, 'Blackbox export')}>Export (JSONL) (Enterprise)</button>}
       </div>
 
       <div className="panel" style={{ marginTop: 18 }}>
