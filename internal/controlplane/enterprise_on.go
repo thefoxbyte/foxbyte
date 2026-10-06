@@ -11,6 +11,7 @@ import (
 	// here calls it: the free half dispatches through the runner this sets, so
 	// that internal/branch never has to import enterprise/. Importing it is
 	// what makes the engine exist in this binary.
+	_ "github.com/thefoxbyte/foxbyte/enterprise/anchor"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/impact"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pipeline"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/promote"

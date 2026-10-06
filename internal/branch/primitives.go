@@ -50,6 +50,12 @@ func LedgerRows(name string, withExt bool, where string) ([]ledger.Row, error) {
 // disagree about where a branch forked.
 func CommonPrefix(a, b []ledger.Row) int { return commonPrefix(a, b) }
 
+// LedgerV2Tables reports which of the richer Blackbox tables a branch has.
+func LedgerV2Tables(name string) (ext, checkpoints bool, err error) { return ledgerV2Tables(name) }
+
+// TruthyEnv reads one of this engine's boolean environment variables.
+func TruthyEnv(key string) bool { return truthyEnv(key) }
+
 // ResolveBranch checks a branch name and defaults an empty one to main.
 func ResolveBranch(name string) (string, error) { return ledgerBranchName(name) }
 
