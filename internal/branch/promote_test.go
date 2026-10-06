@@ -3,7 +3,6 @@
 package branch
 
 import (
-	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"strings"
 	"testing"
 
@@ -89,69 +88,6 @@ func TestRiskyEntries(t *testing.T) {
 	got := riskyEntries(entries)
 	if len(got) != 1 || !strings.Contains(got[0], "entry 12") || !strings.Contains(got[0], "drop-column") {
 		t.Errorf("riskyEntries = %v", got)
-	}
-}
-
-// A request with no statements is refused rather than producing an empty
-// transaction that reports success.
-//
-// Enterprise only since promotion was gated: the licence is checked before the
-// request is looked at, which is the right order — "you cannot do this at all"
-// comes before "your request was empty" — and in a Standard build the feature
-// can never be entitled, so there is nothing here to test. The gating itself is
-// asserted in edition_test.go.
-func TestApplyRequestRefusesNothing(t *testing.T) {
-	if !edition.Enterprise {
-		t.Skip("promotion cannot be entitled in a Standard build")
-	}
-	entitle(t, edition.Promotion)
-	if _, err := ApplyRequest(1, "main", "someone@example.com", nil); err != ErrNothingToPromote {
-		t.Errorf("applying an empty request gave %v, want ErrNothingToPromote", err)
-	}
-}
-
-// Names are checked before anything reaches a container.
-func TestBuildRequestChecksNames(t *testing.T) {
-	if _, _, err := BuildRequest("dev", "dev", nil); err == nil {
-		t.Error("a branch was allowed to be its own source and target")
-	}
-	if _, _, err := BuildRequest("../etc", "main", nil); err == nil {
-		t.Error("a source that is not a branch name was accepted")
-	}
-	if _, _, err := BuildRequest("dev", "../etc", nil); err == nil {
-		t.Error("a target that is not a branch name was accepted")
-	}
-}
-
-// What a branch has already had applied elsewhere must not be offered again, and
-// must not make its next round look like a conflict.
-func TestAlreadyPromoted(t *testing.T) {
-	snapshot, err := MarshalEntries([]RequestEntry{entry(11, "a", "human", "CREATE TABLE", "public.t", "CREATE TABLE t (id int)")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	history := []auth.ChangeRequest{
-		{ID: 3, Source: "dev", Target: "main", Status: auth.RequestApproved, Applied: 1, Entries: snapshot},
-		{ID: 4, Source: "dev", Target: "main", Status: auth.RequestRejected, Applied: 0, Entries: snapshot},
-		{ID: 5, Source: "other", Target: "main", Status: auth.RequestApproved, Applied: 1, Entries: snapshot},
-		{ID: 6, Source: "dev", Target: "staging", Status: auth.RequestApproved, Applied: 1, Entries: snapshot},
-	}
-	ids, sessions := alreadyPromoted("dev", "main", history)
-	if !ids[11] {
-		t.Error("an entry applied by an earlier request is not remembered")
-	}
-	if !sessions["request-3"] {
-		t.Error("the session the statements were applied under is not remembered")
-	}
-	// A rejected request applied nothing; another source's and another target's
-	// requests say nothing about this pair.
-	for _, no := range []string{"request-4", "request-5", "request-6"} {
-		if sessions[no] {
-			t.Errorf("%s should not count for dev → main", no)
-		}
-	}
-	if len(sessions) != 1 {
-		t.Errorf("sessions = %v, want only request-3", sessions)
 	}
 }
 

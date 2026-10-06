@@ -13,6 +13,7 @@ import (
 	// what makes the engine exist in this binary.
 	_ "github.com/thefoxbyte/foxbyte/enterprise/impact"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pipeline"
+	_ "github.com/thefoxbyte/foxbyte/enterprise/promote"
 	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 )
