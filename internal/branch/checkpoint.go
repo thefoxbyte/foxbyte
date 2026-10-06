@@ -122,28 +122,6 @@ func loadLedgerRows(name string, withExt bool, where string) ([]ledger.Row, erro
 	return rows, nil
 }
 
-// lastCheckpoint returns the last checkpoint's to_id and merkle_root (0, "" if none).
-func lastCheckpoint(name string) (int64, string, error) {
-	lines, err := ledgerLines(name, "SELECT coalesce((SELECT to_id::text || '|' || merkle_root "+
-		"FROM bb.ledger_checkpoints ORDER BY to_id DESC LIMIT 1), '0|')")
-	if err != nil {
-		return 0, "", err
-	}
-	if len(lines) == 0 {
-		return 0, "", nil
-	}
-	f := strings.SplitN(lines[0], "|", 2)
-	to, err := strconv.ParseInt(f[0], 10, 64)
-	if err != nil {
-		return 0, "", fmt.Errorf("reading the last checkpoint: %q", lines[0])
-	}
-	root := ""
-	if len(f) > 1 {
-		root = f[1]
-	}
-	return to, root, nil
-}
-
 // Checkpoint anchors a branch's ledger entries added since its last checkpoint.
 // It returns (nil, "", nil) when there is nothing new. It refuses to anchor rows
 // whose hash chain is already broken.
@@ -157,92 +135,40 @@ func Checkpoint(name string) (*ledger.Anchor, string, error) {
 	if err := requireFeature(edition.Anchors); err != nil {
 		return nil, "", err
 	}
-	return checkpoint(name)
+	if writeAnchor == nil {
+		return nil, "", ErrAnchorsNotLicensed
+	}
+	return writeAnchor(name)
 }
 
-func checkpoint(name string) (*ledger.Anchor, string, error) {
-	name, err := ledgerBranchName(name)
-	if err != nil {
-		return nil, "", err
+// The paid half, supplied by enterprise/anchor in an Enterprise build and nil
+// in a Standard one. Reading stays here — Integrity below, AnchorDir,
+// AnchorPublicKey and the security log's own anchors in seclog.go — so an
+// install that anchored before changing edition can still prove it.
+var (
+	writeAnchor  func(name string) (*ledger.Anchor, string, error)
+	exportLedger func(name string, w io.Writer) error
+)
+
+// SetAnchorWriter installs them. Called from enterprise/anchor's init, and from
+// nowhere else.
+func SetAnchorWriter(write func(string) (*ledger.Anchor, string, error), export func(string, io.Writer) error) {
+	writeAnchor, exportLedger = write, export
+}
+
+// ExportLedger writes every ledger row of a branch, with its capture columns,
+// as JSON lines — a file fox-verify can check offline against the anchors.
+func ExportLedger(name string, w io.Writer) error {
+	// fox-verify keeps working without this. It reads the live database with
+	// --dsn, so the free verification path does not depend on a paid export —
+	// which it would, if this were the only way to produce the file it checks.
+	if err := requireFeature(edition.Export); err != nil {
+		return err
 	}
-	withExt, hasCheckpoints, err := ledgerV2Tables(name)
-	if err != nil {
-		return nil, "", err
+	if exportLedger == nil {
+		return ErrExportNotLicensed
 	}
-	if !hasCheckpoints {
-		return nil, "", fmt.Errorf("ledger checkpoints are not installed on %q — run: fox ledger upgrade %s", name, name)
-	}
-	lastTo, prevRoot, err := lastCheckpoint(name)
-	if err != nil {
-		return nil, "", err
-	}
-	// The new rows, plus the last chained row before them so the chain link into
-	// the new range is checked too.
-	rows, err := loadLedgerRows(name, withExt, fmt.Sprintf(
-		"WHERE s.id > %d OR s.id = (SELECT max(id) FROM bb.schema_ledger WHERE id <= %d AND row_hash IS NOT NULL)",
-		lastTo, lastTo))
-	if err != nil {
-		return nil, "", err
-	}
-	var pred *ledger.Row
-	var fresh []ledger.Row
-	for i := range rows {
-		if rows[i].ID <= lastTo {
-			p := rows[i]
-			pred = &p
-		} else {
-			fresh = append(fresh, rows[i])
-		}
-	}
-	if len(fresh) == 0 {
-		return nil, "", nil
-	}
-	if err := ledger.CheckChain(pred, fresh); err != nil {
-		return nil, "", fmt.Errorf("not anchoring %q: %v — inspect with: fox ledger integrity %s", name, err, name)
-	}
-	a, err := ledger.BuildAnchor(name, lastTo+1, prevRoot, fresh)
-	if err != nil {
-		return nil, "", err
-	}
-	dir := AnchorDir(name)
-	path := filepath.Join(dir, ledger.AnchorFileName(a.ToID))
-	lines, err := ledgerLines(name, fmt.Sprintf(`INSERT INTO bb.ledger_checkpoints
-  (from_id, to_id, entry_count, last_row_hash, merkle_root, prev_root, algorithm, anchor_uri)
-  VALUES (%d, %d, %d, %s, %s, %s, %s, %s) RETURNING id`,
-		a.FromID, a.ToID, a.EntryCount, quoteLiteral(a.LastRowHash), quoteLiteral(a.MerkleRoot),
-		quoteLiteral(a.PrevRoot), quoteLiteral(a.Algorithm), quoteLiteral(path)))
-	if err != nil {
-		return nil, "", fmt.Errorf("recording the checkpoint: %w", err)
-	}
-	if len(lines) == 0 {
-		return nil, "", errors.New("recording the checkpoint: no id returned")
-	}
-	if a.CheckpointID, err = strconv.ParseInt(lines[0], 10, 64); err != nil {
-		return nil, "", fmt.Errorf("recording the checkpoint: unexpected id %q", lines[0])
-	}
-	// Signed, so a copy of the anchor proves itself wherever it goes. A key
-	// that cannot be read is an error: an unsigned anchor after signed ones
-	// is exactly what a verifier refuses.
-	key, err := ledger.LoadOrCreateSigningKey(AnchorKeyPath())
-	if err != nil {
-		return &a, "", fmt.Errorf("checkpoint %d was recorded but its anchor could not be signed: %w", a.CheckpointID, err)
-	}
-	ledger.SignAnchor(&a, key)
-	if _, err := ledger.WriteAnchor(dir, a); err != nil {
-		return &a, "", fmt.Errorf("checkpoint %d was recorded but its anchor could not be written: %w", a.CheckpointID, err)
-	}
-	if truthyEnv("FOX_ANCHOR_IMMUTABLE") {
-		if err := exec.Command("sudo", "chattr", "+i", path).Run(); err != nil {
-			log.Printf("anchor %s: chattr +i failed (%v) — the file is read-only but not immutable", path, err)
-		}
-	}
-	// Off the machine too, when backups go to a remote target. A failure is
-	// retried with the next checkpoint: MirrorAnchors copies whatever is not
-	// marked copied yet.
-	if _, err := MirrorAnchors(); err != nil {
-		log.Printf("anchor %s: copying it to the backup target: %v", path, err)
-	}
-	return &a, path, nil
+	return exportLedger(name, w)
 }
 
 // Integrity checks a branch's whole ledger against the anchor files in its
@@ -293,37 +219,6 @@ func Integrity(name string) (ledger.Report, error) {
 				"and anchors already written still verify.", rep.UnanchoredRows, ErrAnchorsNotLicensed))
 	}
 	return rep, nil
-}
-
-// ExportLedger writes every ledger row of a branch, with its capture columns, as
-// JSON lines — a file fox-verify can check offline against the anchors.
-func ExportLedger(name string, w io.Writer) error {
-	// fox-verify keeps working without this. It reads the live database with
-	// --dsn, so the free verification path does not depend on a paid export —
-	// which it would, if this were the only way to produce the file it checks.
-	if err := requireFeature(edition.Export); err != nil {
-		return err
-	}
-	name, err := ledgerBranchName(name)
-	if err != nil {
-		return err
-	}
-	withExt, _, err := ledgerV2Tables(name)
-	if err != nil {
-		return err
-	}
-	lines, err := ledgerLines(name, ledger.ExportQuery(withExt))
-	if err != nil {
-		return err
-	}
-	for _, l := range lines {
-		if strings.HasPrefix(l, "{") {
-			if _, err := io.WriteString(w, l+"\n"); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func envDurationOr(key string, def time.Duration) time.Duration {

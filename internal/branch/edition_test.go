@@ -4,9 +4,12 @@ package branch
 
 import (
 	"errors"
+	"io"
 	"testing"
 
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // The whole table, in one place: which functions refuse without a licence.
@@ -90,5 +93,84 @@ func TestAStandardBuildCannotBeEntitled(t *testing.T) {
 	}
 	if _, _, err := Checkpoint("main"); !errors.Is(err, ErrNotLicensed) {
 		t.Errorf("a Standard build anchored on a licence's say-so: %v", err)
+	}
+}
+
+// The seam itself: a dispatcher calls the engine that registered with it, and
+// refuses rather than panicking when none did.
+//
+// "None did" is what a Standard binary is — the paid packages are not compiled
+// into it, so nothing ever calls the setters. The licence check normally
+// refuses first, and this is the belt to that braces: if the two ever got out
+// of order, a nil call would be a crash rather than a message.
+func TestTheDispatchersCallTheRegisteredEngine(t *testing.T) {
+	if !edition.Enterprise {
+		t.Skip("a Standard build cannot entitle a paid feature, so the dispatch is unreachable")
+	}
+	entitle(t, edition.Anchors, edition.Export, edition.Impact, edition.Promotion, edition.Pipelines)
+
+	called := map[string]bool{}
+	SetAnchorWriter(
+		func(string) (*ledger.Anchor, string, error) { called["anchor"] = true; return nil, "", nil },
+		func(string, io.Writer) error { called["export"] = true; return nil },
+	)
+	SetImpactAnalyser(func(_, _, _, _ string) (ImpactReport, error) { called["impact"] = true; return ImpactReport{}, nil })
+	SetPromotion(
+		func(_, _ string, _ []auth.ChangeRequest) ([]RequestEntry, int64, error) {
+			called["build"] = true
+			return nil, 0, nil
+		},
+		func(int64, string, string, []RequestEntry) (int, error) { called["apply"] = true; return 0, nil },
+	)
+	SetPipelineRunner(func(*Progress, PipelineSpec, string) (RunResult, error) {
+		called["pipeline"] = true
+		return RunResult{}, nil
+	})
+	t.Cleanup(func() {
+		SetAnchorWriter(nil, nil)
+		SetImpactAnalyser(nil)
+		SetPromotion(nil, nil)
+		SetPipelineRunner(nil)
+	})
+
+	_, _, _ = Checkpoint("main")
+	_ = ExportLedger("main", io.Discard)
+	_, _ = Impact("main", "select 1", "", "")
+	_, _, _ = BuildRequest("dev", "main", nil)
+	_, _ = ApplyRequest(1, "main", "me", []RequestEntry{{ID: 1}})
+	_, _ = RunPipeline(nil, PipelineSpec{}, "main")
+
+	for _, w := range []string{"anchor", "export", "impact", "build", "apply", "pipeline"} {
+		if !called[w] {
+			t.Errorf("the %s dispatcher did not reach its engine", w)
+		}
+	}
+}
+
+// Entitled, but nothing registered: refused, not a panic.
+func TestTheDispatchersRefuseWithNoEngine(t *testing.T) {
+	if !edition.Enterprise {
+		t.Skip("a Standard build cannot entitle a paid feature")
+	}
+	entitle(t, edition.Anchors, edition.Export, edition.Impact, edition.Promotion, edition.Pipelines)
+	SetAnchorWriter(nil, nil)
+	SetImpactAnalyser(nil)
+	SetPromotion(nil, nil)
+	SetPipelineRunner(nil)
+
+	for _, c := range []struct {
+		what string
+		call func() error
+	}{
+		{"Checkpoint", func() error { _, _, err := Checkpoint("main"); return err }},
+		{"ExportLedger", func() error { return ExportLedger("main", io.Discard) }},
+		{"Impact", func() error { _, err := Impact("main", "select 1", "", ""); return err }},
+		{"BuildRequest", func() error { _, _, err := BuildRequest("dev", "main", nil); return err }},
+		{"ApplyRequest", func() error { _, err := ApplyRequest(1, "main", "me", []RequestEntry{{ID: 1}}); return err }},
+		{"RunPipeline", func() error { _, err := RunPipeline(nil, PipelineSpec{}, "main"); return err }},
+	} {
+		if err := c.call(); !errors.Is(err, ErrNotLicensed) {
+			t.Errorf("%s with no engine = %v, want a refusal", c.what, err)
+		}
 	}
 }

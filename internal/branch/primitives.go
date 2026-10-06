@@ -2,6 +2,8 @@
 
 package branch
 
+import "github.com/thefoxbyte/foxbyte/internal/ledger"
+
 // The few primitives the paid edition needs from this package.
 //
 // Code under enterprise/ cannot reach an unexported helper, and the core must
@@ -28,6 +30,46 @@ func QuerySQL(target, sql string) (string, error) {
 
 // QuoteLiteral renders s as a SQL string literal.
 func QuoteLiteral(s string) string { return sqlQuote(s) }
+
+// LedgerQuery runs a query against a branch as the superuser and returns its
+// non-empty output lines — one JSON document per row, for the ledger queries.
+// Distinct from QuerySQL because the Blackbox tables are not readable by the
+// client role, which is the point of them.
+func LedgerQuery(name, sql string) ([]string, error) { return ledgerLines(name, sql) }
+
+// LedgerRows reads a branch's Blackbox entries, optionally filtered. The paid
+// features that compare two branches' records need them as rows rather than as
+// the JSON LedgerQuery returns.
+func LedgerRows(name string, withExt bool, where string) ([]ledger.Row, error) {
+	return loadLedgerRows(name, withExt, where)
+}
+
+// CommonPrefix is how many leading entries two branch histories share, which is
+// where they split. Shared rather than copied: `blackbox diff` and a change
+// request ask the same question, and two answers to it would eventually
+// disagree about where a branch forked.
+func CommonPrefix(a, b []ledger.Row) int { return commonPrefix(a, b) }
+
+// LedgerV2Tables reports which of the richer Blackbox tables a branch has.
+func LedgerV2Tables(name string) (ext, checkpoints bool, err error) { return ledgerV2Tables(name) }
+
+// TruthyEnv reads one of this engine's boolean environment variables.
+func TruthyEnv(key string) bool { return truthyEnv(key) }
+
+// QuoteLiteralOrNull renders an optional string as a SQL literal or NULL.
+func QuoteLiteralOrNull(p *string) string { return sqlTextOrNull(p) }
+
+// PolicyQuery runs a statement against a branch's policy tables and returns its
+// output lines, with the policy gate's own errors made readable.
+func PolicyQuery(name, sql string) ([]string, error) { return policyLines(name, sql) }
+
+// ResolveBranch checks a branch name and defaults an empty one to main.
+func ResolveBranch(name string) (string, error) { return ledgerBranchName(name) }
+
+// ExecScript runs a multi-statement SQL script on a branch over stdin, aborting
+// at the first error. Applying a change request is several statements that must
+// stand or fall together, which ExecSQL's one statement at a time cannot do.
+func ExecScript(target, sql string) error { return psqlStdin(target, sql) }
 
 // SetGuard enables or disables the Blackbox guardrail event trigger on a
 // branch. A pipeline turns it off while it rebuilds its own tables, because the

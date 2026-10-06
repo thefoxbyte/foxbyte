@@ -23,25 +23,6 @@ func entitle(t *testing.T, features ...edition.Feature) {
 	t.Cleanup(func() { edition.SetEntitlement(nil) })
 }
 
-// And the other half of the same rule: with the feature, it gets past the gate
-// and fails for an ordinary reason instead (there is no database in a unit
-// test). What is asserted is that the refusal is no longer the licence.
-//
-// Enterprise only, and not because the test is awkward in Standard: in a
-// Standard build edition.Has is false whatever an entitlement says, because the
-// code the feature unlocks is not in the binary. That is asserted on its own
-// below.
-func TestCheckpointGetsPastTheGateWithTheFeature(t *testing.T) {
-	if !edition.Enterprise {
-		t.Skip("a Standard build cannot entitle a paid feature at all")
-	}
-	entitle(t, edition.Anchors)
-	_, _, err := Checkpoint("main")
-	if errors.Is(err, ErrAnchorsNotLicensed) {
-		t.Error("Checkpoint() still refused on the licence with the feature entitled")
-	}
-}
-
 // The free side of the line, asserted so it cannot drift.
 //
 // The security log's own anchors are not gated. That is the accountability

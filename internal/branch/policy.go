@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/thefoxbyte/foxbyte/internal/brand"
-	"regexp"
 	"strings"
 	"text/tabwriter"
 
@@ -52,22 +50,10 @@ type PolicyEvaluation struct {
 	BlackboxID *int64  `json:"blackbox_id"`
 }
 
-var commandTagRe = regexp.MustCompile(`^[A-Z][A-Z ]{1,62}[A-Z]$`)
-
-func validatePolicyRule(r PolicyRule) error {
-	switch {
-	case !ledger.ValidRuleID(r.RuleID):
-		return fmt.Errorf("%w: rule id %q must be lowercase letters, digits and dashes", ErrInvalidRequest, r.RuleID)
-	case !commandTagRe.MatchString(r.CommandTag):
-		return fmt.Errorf("%w: command %q must be a command tag such as \"ALTER TABLE\"", ErrInvalidRequest, r.CommandTag)
-	case r.Action != "warn" && r.Action != "block":
-		return fmt.Errorf("%w: action must be warn or block", ErrInvalidRequest)
-	case strings.TrimSpace(r.Reason) == "":
-		return fmt.Errorf("%w: a reason is required", ErrInvalidRequest)
-	}
-	return nil
-}
-
+// friendlyPolicyErr turns database errors into messages a person can act on.
+// sqlTextOrNull renders an optional string as a SQL literal or NULL. Shared:
+// the provenance record uses it too, which is why it stayed when authoring
+// moved out.
 func sqlTextOrNull(p *string) string {
 	if p == nil || *p == "" {
 		return "NULL"
@@ -75,51 +61,6 @@ func sqlTextOrNull(p *string) string {
 	return quoteLiteral(*p)
 }
 
-func policyActor(actor string) string {
-	if actor == "" {
-		return brand.CLI
-	}
-	return actor
-}
-
-// Rule changes run in one psql -c transaction that first sets bb.actor, which
-// the rule-history trigger records.
-func withActor(actor, sql string) string {
-	return fmt.Sprintf("SELECT set_config('bb.actor', %s, true) IS NOT NULL;\n%s", quoteLiteral(policyActor(actor)), sql)
-}
-
-func addRuleSQL(r PolicyRule, actor string) string {
-	return withActor(actor, fmt.Sprintf(`WITH ins AS (
-  INSERT INTO bb.policy_rules (rule_id, command_tag, pattern, action, reason, hint, enabled, updated_by)
-  VALUES (%s, %s, %s, %s, %s, %s, true, %s)
-  ON CONFLICT (rule_id) DO NOTHING RETURNING rule_id)
-SELECT 'added' FROM ins;`,
-		quoteLiteral(r.RuleID), quoteLiteral(r.CommandTag), sqlTextOrNull(r.Pattern), quoteLiteral(r.Action),
-		quoteLiteral(r.Reason), sqlTextOrNull(r.Hint), quoteLiteral(policyActor(actor))))
-}
-
-func updateRuleSQL(ruleID string, action *string, enabled *bool, actor string) string {
-	a, e := "NULL::text", "NULL::boolean"
-	if action != nil {
-		a = quoteLiteral(*action)
-	}
-	if enabled != nil {
-		e = fmt.Sprintf("%t", *enabled)
-	}
-	return withActor(actor, fmt.Sprintf(`WITH u AS (
-  UPDATE bb.policy_rules SET action = coalesce(%s, action), enabled = coalesce(%s, enabled),
-         updated_at = clock_timestamp(), updated_by = %s
-  WHERE rule_id = %s RETURNING 1)
-SELECT 'updated' FROM u;`, a, e, quoteLiteral(policyActor(actor)), quoteLiteral(ruleID)))
-}
-
-func removeRuleSQL(ruleID, actor string) string {
-	return withActor(actor, fmt.Sprintf(`WITH d AS (DELETE FROM bb.policy_rules WHERE rule_id = %[1]s AND NOT builtin RETURNING 1)
-SELECT 'removed' FROM d
-UNION ALL SELECT 'builtin' FROM bb.policy_rules WHERE rule_id = %[1]s AND builtin;`, quoteLiteral(ruleID)))
-}
-
-// friendlyPolicyErr turns database errors into messages a person can act on.
 func friendlyPolicyErr(name string, err error) error {
 	s := err.Error()
 	switch {
@@ -139,15 +80,6 @@ func policyLines(name, sql string) ([]string, error) {
 		return nil, friendlyPolicyErr(name, err)
 	}
 	return lines, nil
-}
-
-func hasLine(lines []string, want string) bool {
-	for _, l := range lines {
-		if l == want {
-			return true
-		}
-	}
-	return false
 }
 
 // PolicyRules lists a branch's policy rules.
@@ -175,82 +107,6 @@ func PolicyRules(name string) ([]PolicyRule, error) {
 		rules = append(rules, r)
 	}
 	return rules, nil
-}
-
-// AddPolicyRule adds a custom rule.
-func AddPolicyRule(name string, r PolicyRule, actor string) error {
-	// Authoring is the paid half. PolicyRules, PolicyCheck and
-	// PolicyEvaluations below stay free: rules written before an install
-	// changed edition keep enforcing, and being unable to read the rule that
-	// just blocked you would be worse than useless. The two default guardrails
-	// are enforced in SQL and are not rules at all, so they are untouched.
-	if err := requireFeature(edition.Policy); err != nil {
-		return err
-	}
-	name, err := ledgerBranchName(name)
-	if err != nil {
-		return err
-	}
-	if err := validatePolicyRule(r); err != nil {
-		return err
-	}
-	lines, err := policyLines(name, addRuleSQL(r, actor))
-	if err != nil {
-		return err
-	}
-	if !hasLine(lines, "added") {
-		return fmt.Errorf("%w: %q", ErrRuleExists, r.RuleID)
-	}
-	return nil
-}
-
-// UpdatePolicyRule changes a rule's action and/or whether it is enabled.
-func UpdatePolicyRule(name, ruleID string, action *string, enabled *bool, actor string) error {
-	// Authoring: `policy block`, `warn`, `enable` and `disable` all land here.
-	if err := requireFeature(edition.Policy); err != nil {
-		return err
-	}
-	name, err := ledgerBranchName(name)
-	if err != nil {
-		return err
-	}
-	if action != nil && *action != "warn" && *action != "block" {
-		return fmt.Errorf("%w: action must be warn or block", ErrInvalidRequest)
-	}
-	if action == nil && enabled == nil {
-		return fmt.Errorf("%w: nothing to change (send action and/or enabled)", ErrInvalidRequest)
-	}
-	lines, err := policyLines(name, updateRuleSQL(ruleID, action, enabled, actor))
-	if err != nil {
-		return err
-	}
-	if !hasLine(lines, "updated") {
-		return fmt.Errorf("%w: %q", ErrRuleNotFound, ruleID)
-	}
-	return nil
-}
-
-// RemovePolicyRule removes a custom rule. Built-in rules can only be disabled.
-func RemovePolicyRule(name, ruleID, actor string) error {
-	// Authoring.
-	if err := requireFeature(edition.Policy); err != nil {
-		return err
-	}
-	name, err := ledgerBranchName(name)
-	if err != nil {
-		return err
-	}
-	lines, err := policyLines(name, removeRuleSQL(ruleID, actor))
-	if err != nil {
-		return err
-	}
-	switch {
-	case hasLine(lines, "removed"):
-		return nil
-	case hasLine(lines, "builtin"):
-		return fmt.Errorf("%w — disable it instead: fox policy disable %s", ErrBuiltinRule, ruleID)
-	}
-	return fmt.Errorf("%w: %q", ErrRuleNotFound, ruleID)
 }
 
 // PolicyCheck previews the rules a statement would trigger on a branch without
@@ -404,4 +260,58 @@ func FormatPolicyEvaluations(evs []PolicyEvaluation) string {
 	}
 	_ = tw.Flush()
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// The authoring half, supplied by enterprise/policy in an Enterprise build and
+// nil in a Standard one.
+var (
+	addPolicy    func(name string, r PolicyRule, actor string) error
+	updatePolicy func(name, ruleID string, action *string, enabled *bool, actor string) error
+	removePolicy func(name, ruleID, actor string) error
+)
+
+// SetPolicyAuthoring installs them. Called from enterprise/policy's init, and
+// from nowhere else.
+func SetPolicyAuthoring(
+	add func(string, PolicyRule, string) error,
+	update func(string, string, *string, *bool, string) error,
+	remove func(string, string, string) error,
+) {
+	addPolicy, updatePolicy, removePolicy = add, update, remove
+}
+
+// AddPolicyRule writes a new rule to a branch's policy gate.
+func AddPolicyRule(name string, r PolicyRule, actor string) error {
+	// Authoring is the paid half. PolicyRules, PolicyCheck and
+	// PolicyEvaluations above stay free.
+	if err := requireFeature(edition.Policy); err != nil {
+		return err
+	}
+	if addPolicy == nil {
+		return ErrPolicyNotLicensed
+	}
+	return addPolicy(name, r, actor)
+}
+
+// UpdatePolicyRule changes a rule's action or whether it is enabled. `policy
+// block`, `warn`, `enable` and `disable` all land here.
+func UpdatePolicyRule(name, ruleID string, action *string, enabled *bool, actor string) error {
+	if err := requireFeature(edition.Policy); err != nil {
+		return err
+	}
+	if updatePolicy == nil {
+		return ErrPolicyNotLicensed
+	}
+	return updatePolicy(name, ruleID, action, enabled, actor)
+}
+
+// RemovePolicyRule deletes a rule.
+func RemovePolicyRule(name, ruleID, actor string) error {
+	if err := requireFeature(edition.Policy); err != nil {
+		return err
+	}
+	if removePolicy == nil {
+		return ErrPolicyNotLicensed
+	}
+	return removePolicy(name, ruleID, actor)
 }
