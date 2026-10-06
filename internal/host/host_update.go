@@ -308,6 +308,27 @@ func refreshEngineCache(files map[string]string, t update.Target) {
 	}
 }
 
+// EngineRunning reports whether the control plane is answering right now.
+//
+// One ask with a short deadline, no retries: this decides whether to print a
+// sentence, and a command must never sit waiting to find out. A false answer
+// costs the user a notice they did not need, which is the right way round.
+//
+// It works from the host on macOS and Windows because the VM forwards the port,
+// which is the same reason checkControlPlane below can use it after an update.
+func EngineRunning() bool {
+	c := &http.Client{
+		Timeout:   700 * time.Millisecond,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec
+	}
+	resp, err := c.Get("https://localhost:8080/api/status")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return true
+}
+
 // checkControlPlane waits up to ~10s for the control plane to answer.
 func checkControlPlane() error {
 	c := &http.Client{

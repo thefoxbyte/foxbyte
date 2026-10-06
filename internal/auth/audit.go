@@ -50,7 +50,23 @@ const (
 	// door they came through.
 	EvChangeRequested = "branch.change_requested"
 	EvChangeDecided   = "branch.change_decided"
+	// Licensing: when this install's paid entitlement changed, and to what.
+	//
+	// Recorded by the engine rather than by the command someone typed. On macOS
+	// and Windows `fox license` runs on the host, which has no store and so
+	// could not chain onto this log at all — but the deeper reason is that the
+	// question an auditor asks is which features this engine actually honoured,
+	// and that is the engine's answer to give rather than a laptop's.
+	EvLicenseActivated = "license.activated"
+	EvLicenseRebound   = "license.rebound"
+	EvLicenseLapsed    = "license.lapsed"
+	EvLicenseRemoved   = "license.removed"
 )
+
+// LicenseKindPrefix is what every licence event kind starts with. The licence
+// recorder asks for the last event of any of them, and does it with one
+// indexed-order query rather than by reading the log back in Go.
+const LicenseKindPrefix = "license."
 
 const auditSchema = `
 CREATE TABLE IF NOT EXISTS security_events (
@@ -98,16 +114,34 @@ func (s *Store) Audit(kind, actor, subject, ip, detail string) {
 	if s == nil || s.db == nil {
 		return
 	}
-	var err error
-	for attempt := 0; attempt < 20; attempt++ {
-		if err = s.appendEvent(kind, actor, subject, ip, detail); err == nil || !isBusy(err) {
-			break
-		}
-		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
-	}
+	err := retryBusy(func() error { return s.appendEvent(kind, actor, subject, ip, detail) })
 	if err != nil {
 		log.Printf("security log: could not record %s (%s): %v", kind, subject, err)
 	}
+}
+
+// retryBusy runs fn until it stops reporting SQLITE_BUSY, for a few hundred
+// milliseconds.
+//
+// The DSN already sets busy_timeout, which covers contention between
+// statements. What it does not cover is the moment a connection is *opened*:
+// the WAL-mode pragma runs then, and a BUSY there is returned rather than
+// waited on (the same reason initSchema retries). The pool opens connections
+// lazily, so any statement can be the one that pays for it — which is how a
+// single-threaded test on Windows saw "database is locked" reading a table it
+// had just written.
+//
+// One policy for the whole table: a reader that gave up where the writer
+// retries would silently see an empty log and act on it.
+func retryBusy(fn func() error) error {
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err = fn(); err == nil || !isBusy(err) {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+	}
+	return err
 }
 
 // appendEvent chains one event onto the log, under SQLite's write lock so two
@@ -192,6 +226,38 @@ func (s *Store) RecentSecurityEvents(limit int) ([]SecurityEvent, error) {
 		evs[i], evs[j] = evs[j], evs[i]
 	}
 	return evs, err
+}
+
+// LastLicenseEvent returns the newest licence event's kind and subject, and
+// whether there was one.
+//
+// The licence recorder compares against this so an unchanged licence is not
+// recorded again on every engine start. Kind and subject are enough for that
+// comparison on purpose: between them they carry which licence, which machine
+// it is bound to, and whether it was unlocking anything — so nothing has to
+// parse a sentence written for a person to read.
+func (s *Store) LastLicenseEvent() (kind, subject string, ok bool, err error) {
+	if s == nil || s.db == nil {
+		return "", "", false, nil
+	}
+	err = retryBusy(func() error {
+		row := s.db.QueryRow(
+			`SELECT kind,subject FROM security_events WHERE kind LIKE ? ORDER BY id DESC LIMIT 1`,
+			LicenseKindPrefix+"%")
+		switch e := row.Scan(&kind, &subject); {
+		case e == sql.ErrNoRows:
+			kind, subject, ok = "", "", false
+			return nil
+		case e != nil:
+			return e
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return "", "", false, err
+	}
+	return kind, subject, ok, nil
 }
 
 // CheckEventChain recomputes the chain. It returns the id of the first event

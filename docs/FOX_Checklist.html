@@ -598,7 +598,12 @@
       <li class="ok">Ed25519 over a canonical payload, with a key id so the key can rotate</li>
       <li class="ok"><code>cmd/licensesign</code>: generate, issue, verify; private key never in CI</li>
       <li class="ok">Soft machine lock, grace before refusal, and a lapse that never stops a database</li>
-      <li class="todo">Host fingerprint, <code>~/.fox/license.json</code>, <code>fox license</code>, <code>/api/license</code></li>
+      <li class="ok">Host fingerprint: hashed, read on the host not in the VM, failure means unknown</li>
+      <li class="ok"><code>~/.fox/license.json</code> (0600, atomic) and <code>fox license activate|show|rebind|remove</code></li>
+      <li class="ok">The engine inside the VM is given a copy (macOS/Windows); no-op on Linux</li>
+      <li class="ok">Security-log records: <code>license.{activated,rebound,lapsed,removed}</code>, written by the engine at start-up</li>
+      <li class="ok"><code>GET /api/license</code> (state for everyone, customer and binding for admins)</li>
+      <li class="ok">The console's notice: silent when active, silent in Standard, dismissible only while it still unlocks</li>
       <li class="todo">A feature actually gated behind it (anchors first)</li></ul></td><td class="tb">internal/license</td></tr>
   </table>
 </section>

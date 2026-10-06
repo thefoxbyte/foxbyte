@@ -38,10 +38,23 @@ var localCommands = map[string]bool{
 	"": true, "help": true, "-h": true, "--help": true,
 	"version": true, "-v": true, "--version": true,
 	"setup": true, "vm": true, "update": true,
+	// license reads this machine's fingerprint, and the machine that matters is
+	// the one a person sits at. Forwarded into the VM it would read the guest's,
+	// and `fox setup` recreating that VM would look exactly like licence
+	// evasion rather than the ordinary repair step it is.
+	"license": true,
 	// uninstall removes the VM itself, the host binary and the host's state
 	// directory, so it must not be forwarded into the VM it is deleting.
 	"uninstall": true,
 }
+
+// InGuest reports whether this process is the engine running inside the managed
+// VM, rather than the launcher on the machine a person sits at.
+//
+// The forwarder sets the marker, and it reaches the daemons `fox start` spawns
+// in there too, which is what makes it answerable from a long-running server
+// and not only from a forwarded command.
+func InGuest() bool { return os.Getenv(envInGuest) != "" }
 
 // Maybe performs host-side dispatch.
 //
@@ -50,7 +63,7 @@ var localCommands = map[string]bool{
 //   - macOS/Windows engine command: forwards into the VM and returns (true, err).
 //   - Local commands (version/help/setup) always return (false, nil).
 func Maybe(args []string) (handled bool, err error) {
-	if runtime.GOOS == "linux" || os.Getenv(envInGuest) != "" {
+	if runtime.GOOS == "linux" || InGuest() {
 		return false, nil
 	}
 	sub := ""

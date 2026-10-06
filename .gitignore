@@ -1,5 +1,12 @@
-# Binaries
+# Binaries. `make build` writes into bin/, but a plain
+# `go build ./cmd/fox` drops the binary here under the command's own name --
+# and a 24 MB one was committed that way once, which broke the repository-wide
+# scans by matching retired names inside its own string table. The names are
+# listed rather than globbed because most files here have no extension either.
 /bin/
+/fox
+/fox-enterprise
+/fox-verify
 /foxbyte
 *.exe
 

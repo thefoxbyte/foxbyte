@@ -27,6 +27,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/errhint"
 	"github.com/thefoxbyte/foxbyte/internal/host"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/license"
 	"github.com/thefoxbyte/foxbyte/internal/mcp"
 	"github.com/thefoxbyte/foxbyte/internal/proxy"
 	"github.com/thefoxbyte/foxbyte/web"
@@ -196,6 +197,9 @@ Auth (admin):
   admin revoke <email> [--branch <name>]  Remove that permission
   admin list [--branch <name>]            Show who may override (default: main + running branches)
 
+  license [show]       The paid-edition licence, and this machine's fingerprint
+  license activate <file|->   Install one  ·  license rebind  ·  license remove
+
   version              Print the fox version
 `
 
@@ -206,12 +210,35 @@ func main() {
 		os.Exit(2)
 	}
 
+	// A licence activated while the VM was down never reached the engine, so
+	// bringing the stack up is the second chance `fox license activate` says it
+	// is. Before the forward, not after: the engine reads its entitlement once,
+	// when it starts.
+	//
+	// Quiet and best-effort. The case it repairs has already been reported once,
+	// and a licence is never a reason a database fails to come up.
+	if sub := os.Args[1]; sub == "start" || sub == "up" {
+		if raw, err := os.ReadFile(license.Path()); err == nil {
+			_ = host.PushStateStartingEngine(license.FileName, raw)
+		}
+	}
+
 	// On macOS/Windows, forward engine commands into the managed Linux VM so the
 	// user only ever runs `fox …`. On Linux (or inside the VM) this is a no-op.
 	if handled, err := host.Maybe(os.Args[1:]); handled {
 		must(err)
 		return
 	}
+
+	// Past here this process is the engine, so tell internal/edition what the
+	// installed licence unlocks. Before here it is the launcher, which forwards
+	// rather than runs and has nothing to entitle.
+	//
+	// Silent on every failure — no licence, no key, lapsed, forged. A refusal
+	// belongs where someone asks for a paid feature, which can name the feature
+	// and the way out; announcing it on every command would be noise for the
+	// Standard installs that are the common case.
+	license.Install()
 
 	switch os.Args[1] {
 	case "version", "-v", "--version":
@@ -222,6 +249,8 @@ func main() {
 		must(host.VM(os.Args[2:]))
 	case "uninstall":
 		must(host.Uninstall(os.Args[2:]))
+	case "license":
+		must(licenseCmd(os.Args[2:]))
 	case "start":
 		// Linux host: look for a newer release while the stack starts. (macOS and
 		// Windows check on the host before forwarding; the guest never checks.)

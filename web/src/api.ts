@@ -106,6 +106,29 @@ export const revokeKey = (id: string) => req('DELETE', `${API}/api/keys/${encode
 
 // --- control plane ---
 export const getStatus = () => req('GET', `${API}/api/status`) as Promise<Status>
+
+// What the engine is honouring, and why. /api/status says which features are
+// usable; this says what to do when they are not. The fields after `action` are
+// admin-only, because who bought the licence and which machine it is tied to
+// are the account's details rather than the product's.
+export type License = {
+  edition: 'standard' | 'enterprise'
+  present: boolean                                   // is a licence installed at all
+  state: 'active' | 'warning' | 'lapsed' | 'invalid'
+  unlocks: boolean                                   // are the paid features usable right now
+  features: Feature[]
+  reason: string                                     // empty when there is nothing wrong
+  action: string                                     // what would fix it
+  expires?: string                                   // RFC 3339
+  id?: string
+  customer?: string
+  licensed?: Feature[]                               // what the licence names, vs what this build serves
+  issuedAt?: string
+  issuedFor?: string
+  boundTo?: string
+  rebinds?: number
+}
+export const getLicense = () => req('GET', `${API}/api/license`) as Promise<License>
 export const getBranches = () => req('GET', `${API}/api/branches`) as Promise<Branch[]>
 // from: the branch to copy (default main).
 export const createBranch = (name: string, from?: string) =>
