@@ -85,6 +85,13 @@ jobs:
         run: go run github.com/zricethezav/gitleaks/v8@v8.21.2 dir . --redact --no-banner
       - name: Known vulnerabilities in Go code and dependencies (govulncheck)
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      # And again with the paid code compiled in. govulncheck analyses the
+      # packages a build actually loads, so without the tag nothing under
+      # enterprise/ is scanned at all -- nor the dependencies only it uses.
+      # That hole opened the moment the paid code moved behind the build tag,
+      # and it is exactly where a dependency nobody else links would hide.
+      - name: Known vulnerabilities in the Enterprise build (govulncheck)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -tags=enterprise ./...
 
   web:
     runs-on: ubuntu-latest
