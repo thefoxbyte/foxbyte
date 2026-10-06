@@ -260,16 +260,7 @@ func startContainer(name string, primary bool) error {
 		args = append(args, "-e", "WALG_COMPRESSION_METHOD=lz4")
 	}
 	args = append(args, img)
-	if primary {
-		args = append(args,
-			"postgres",
-			"-c", "wal_level=replica",
-			"-c", "archive_mode=on",
-			"-c", "archive_command=wal-g wal-push %p",
-			"-c", "archive_timeout=60",
-			"-c", "listen_addresses=*",
-		)
-	}
+	args = append(args, postgresArgs(primary)...)
 	// `docker run -d` answers with the container id, which was the last thing
 	// `fox branch create` printed — a 64-character hash where a person wanted the
 	// branch's name and how to reach it. The id is kept for a failure, where it is
@@ -278,6 +269,56 @@ func startContainer(name string, primary bool) error {
 		return fmt.Errorf("starting the container for %q: %w\n%s", name, err, strings.TrimSpace(out))
 	}
 	return nil
+}
+
+// postgresArgs is the command line a container's Postgres is started with.
+//
+// Extracted so the change feed's settings have one place to be added and one
+// place to be tested. The shape to preserve, and the reason this is additive:
+// with the feed off, a primary gets exactly the five settings it always got, in
+// the order it always got them, and a branch gets no command line at all — the
+// image's own default. Anything else would restart every database on upgrade
+// for a feature nobody asked for.
+func postgresArgs(primary bool) []string {
+	if !RealtimeOn() {
+		if !primary {
+			return nil
+		}
+		return primaryArgs("replica")
+	}
+	// The budget is what makes durable replay safe: past it Postgres
+	// invalidates an abandoned slot instead of holding WAL for it forever,
+	// which on a pool shared with main is how a closed laptop takes a database
+	// read-only. See WALKeepSize.
+	keep := "max_slot_wal_keep_size=" + WALKeepSize()
+	if !primary {
+		// A branch has never been given a command line. `postgres` has to lead
+		// it, or docker takes the first flag for the command — and
+		// listen_addresses is stated rather than inherited, because a branch is
+		// reached over the docker network and should say so.
+		return []string{"postgres",
+			"-c", "wal_level=logical",
+			"-c", keep,
+			"-c", "listen_addresses=*",
+		}
+	}
+	return append(primaryArgs("logical"), "-c", keep)
+}
+
+// primaryArgs is the primary's five settings, with wal_level named once.
+//
+// Postgres does take the last of a repeated -c, but a setting that decides
+// whether the write-ahead log can be decoded at all is not a thing to leave
+// resting on precedence: stated once, it is either right or obviously wrong.
+func primaryArgs(walLevel string) []string {
+	return []string{
+		"postgres",
+		"-c", "wal_level=" + walLevel,
+		"-c", "archive_mode=on",
+		"-c", "archive_command=wal-g wal-push %p",
+		"-c", "archive_timeout=60",
+		"-c", "listen_addresses=*",
+	}
 }
 
 func waitReady(name string) error {
@@ -741,6 +782,10 @@ const managedLabel = "dev.dbengine.managed=1"
 // Up brings up the full stack: docker network, MinIO (object storage) with its
 // WAL bucket, and the primary "main" branch (which archives WAL to MinIO).
 func Up() error {
+	// A slot nobody is draining holds WAL forever, and the engine coming up is
+	// the moment nobody is subscribed yet. Best-effort: this must never stop
+	// the stack from starting.
+	defer SweepRealtimeSlots()
 	if err := Provision(); err != nil {
 		return err
 	}

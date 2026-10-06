@@ -528,6 +528,7 @@ func buildStartup(params map[string]string) []byte {
 var (
 	probeConnections = branch.ActiveConnections
 	probeReplication = branch.ReplicationStatus
+	probeRealtime    = branch.RealtimeActive
 )
 
 // canSuspend reports whether a branch that has been idle past the window can be
@@ -537,6 +538,13 @@ var (
 // branch looks idle, and suspending it silently stops the import until
 // something wakes the branch again. A probe that fails leaves the branch
 // running -- an unreachable branch is not proof that it is unused.
+//
+// A branch with a live change feed is refused for the same reason, and the
+// question is put to Postgres rather than answered from memory here: the reaper
+// runs in the gateway and the decoder runs in the control plane, so
+// process-local state would know nothing about it and a subscribed branch would
+// be suspended out from under its subscribers. pg_replication_slots is the one
+// thing both processes can see.
 func canSuspend(name string) bool {
 	active, err := probeConnections(name)
 	if err != nil || active > 0 {
@@ -544,6 +552,10 @@ func canSuspend(name string) bool {
 	}
 	r, err := probeReplication(name)
 	if err != nil || r.Replicating {
+		return false
+	}
+	streaming, err := probeRealtime(name)
+	if err != nil || streaming {
 		return false
 	}
 	return true
