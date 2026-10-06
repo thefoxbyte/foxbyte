@@ -23,7 +23,7 @@ type Feature string
 
 const (
 	Realtime  Feature = "realtime"  // row-level change feed
-	Anchors   Feature = "anchors"   // signed Blackbox anchors + independent verification
+	Anchors   Feature = "anchors"   // writing signed Blackbox anchors (checking them is free)
 	Policy    Feature = "policy"    // the Blackbox policy rule engine (the default guardrails are free)
 	Impact    Feature = "impact"    // impact analysis
 	Promotion Feature = "promotion" // change requests: propose, review, apply
@@ -35,7 +35,7 @@ const (
 // rather than repeating the feature's identifier back at them.
 var descriptions = map[Feature]string{
 	Realtime:  "the realtime change feed",
-	Anchors:   "signed Blackbox anchors and independent verification",
+	Anchors:   "writing signed Blackbox anchors",
 	Policy:    "the Blackbox policy rule engine",
 	Impact:    "impact analysis",
 	Promotion: "change requests",
