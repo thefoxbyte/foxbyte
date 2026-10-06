@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: AGPL-3.0-or-later
+-- SPDX-License-Identifier: LicenseRef-FoxByte-Enterprise-1.0
 --
 -- FoxByte Blackbox impact analysis (Blackbox 2.0 Phase 7) — installed AFTER
 -- the other Blackbox objects.

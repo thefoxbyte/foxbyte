@@ -3,50 +3,8 @@
 package ledger
 
 import (
-	"regexp"
-	"strings"
 	"testing"
 )
-
-func TestSchemaImpact(t *testing.T) {
-	s := lf(SchemaImpact)
-	for _, want := range []string{
-		"CREATE OR REPLACE FUNCTION bb.blast_radius(target text, target_column text DEFAULT NULL, max_depth integer DEFAULT 5)",
-		"LANGUAGE plpgsql STABLE AS $$",                  // read-only; the caller's search_path resolves the target
-		"least(greatest(coalesce(max_depth, 5), 1), 10)", // depth is capped
-		"dep.deptype IN ('n', 'a')",
-		"'pg_rewrite'::regclass", "'pg_constraint'::regclass", "'pg_trigger'::regclass", "'pg_policy'::regclass",
-		"SELECT x.indrelid FROM pg_index x", // an index is reported against the table it indexes
-		"GRANT EXECUTE ON FUNCTION bb.blast_radius(text, text, integer) TO db_client;",
-		"SET session_replication_role = replica;", "SET session_replication_role = DEFAULT;",
-	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("impact.sql is missing %q", want)
-		}
-	}
-	if strings.Contains(s, "SECURITY DEFINER") {
-		t.Error("blast_radius must run with the caller's rights")
-	}
-	// A pinned search_path would hide the caller's schemas from to_regclass, so an
-	// unqualified table name would never be found.
-	if strings.Contains(s, "SET search_path") {
-		t.Error("blast_radius must resolve names with the caller's search_path")
-	}
-	// Reported names come from pg_identify_object (always schema-qualified), not
-	// from regclass text, which depends on the caller's search_path.
-	if strings.Contains(s, "::regclass::text") {
-		t.Error("report schema-qualified identities, not regclass text")
-	}
-	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\b(insert|update|delete)\s+(into|from)?\s*bb\.`),
-		regexp.MustCompile(`(?i)alter\s+table`),
-		regexp.MustCompile(`(?i)drop\s+(table|trigger|function|event\s+trigger|index)`),
-	} {
-		if loc := re.FindStringIndex(s); loc != nil {
-			t.Errorf("impact.sql must only read: found %q", s[loc[0]:loc[1]])
-		}
-	}
-}
 
 func TestParseTarget(t *testing.T) {
 	cases := []struct {

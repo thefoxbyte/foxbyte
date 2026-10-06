@@ -3,16 +3,13 @@
 package ledger
 
 import (
-	_ "embed"
 	"strings"
 	"unicode"
 )
 
-// SchemaImpact is the idempotent SQL for Blackbox impact analysis
-// (bb.blast_radius). Apply it after the other Blackbox schemas.
-//
-//go:embed impact.sql
-var SchemaImpact string
+// bb.blast_radius lives in enterprise/schema: only the paid edition installs
+// it. Everything below is statement parsing, which the free Blackbox uses to
+// name what a change touches.
 
 // Target is the object a statement changes, as found in its text.
 type Target struct {

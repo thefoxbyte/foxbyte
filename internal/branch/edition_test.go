@@ -174,3 +174,53 @@ func TestTheDispatchersRefuseWithNoEngine(t *testing.T) {
 		}
 	}
 }
+
+// Which schema each edition installs, as a list, so a new schema file cannot be
+// added to the free set by accident.
+//
+// The schema lives in the database rather than in the binary, which is the
+// whole shape of this: a branch keeps whatever it was given. One checkpointed
+// or given policy rules before an install changed edition keeps those tables,
+// and everything in them stays readable and verifiable. An edition decides only
+// what gets created from here on.
+func TestTheFreeSchemaSetIsInstalledInEveryEdition(t *testing.T) {
+	for name, sql := range map[string]string{
+		// Richer recording, keyed by ledger row id — not proof.
+		"ledger_ext.sql": ledger.SchemaExt,
+		// Agent provenance: the MCP server records a session for every change
+		// an agent makes, and `fox blackbox sessions` reads them back. Knowing
+		// which agent did what is part of the guardrails, not the paid tier —
+		// and there is no licence that could unlock it, since provenance is not
+		// a feature internal/edition knows about.
+		"provenance.sql": ledger.SchemaProvenance,
+		// The two default guardrails. Not policy rules.
+		"datachanges.sql": ledger.SchemaData,
+	} {
+		if sql == "" {
+			t.Errorf("%s is not embedded, so no edition installs it", name)
+		}
+	}
+	for _, f := range edition.Features() {
+		if string(f) == "provenance" {
+			t.Error("provenance is now a licensed feature — provenance.sql must move with it")
+		}
+	}
+}
+
+// And which the paid half asks for, per feature rather than all-or-nothing: a
+// licence covering anchors but not the rule engine installs the checkpoint
+// table and not bb.policy_rules, the same line the commands draw.
+func TestThePaidSchemaFollowsTheEntitlement(t *testing.T) {
+	edition.SetEntitlement(nil)
+	t.Cleanup(func() { edition.SetEntitlement(nil) })
+	if c, p, i := PaidSchemaWanted(); c || p || i {
+		t.Errorf("unlicensed install wants checkpoints=%v policy=%v impact=%v", c, p, i)
+	}
+	if !edition.Enterprise {
+		return // a Standard build cannot entitle anything, which is the point
+	}
+	entitle(t, edition.Anchors)
+	if c, p, i := PaidSchemaWanted(); !c || p || i {
+		t.Errorf("a licence for anchors alone wants checkpoints=%v policy=%v impact=%v", c, p, i)
+	}
+}

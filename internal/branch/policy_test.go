@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
@@ -15,9 +16,18 @@ func TestFriendlyPolicyErr(t *testing.T) {
 	if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "invalid pattern") {
 		t.Errorf("pattern error: %v", err)
 	}
+	// A missing rule engine means two different things, and must not be
+	// reported the same way. On a build that may have it, it is an upgrade
+	// someone has not run. On one that may not, the engine was never installed
+	// and never will be — pointing that user at `fox blackbox upgrade` would
+	// send them after a command that cannot fix it.
 	err = friendlyPolicyErr("qa", errors.New(`ERROR:  relation "bb.policy_rules" does not exist`))
-	if !strings.Contains(err.Error(), "fox blackbox upgrade qa") {
+	if !errors.Is(err, ErrPolicyEngineAbsent) {
 		t.Errorf("not installed: %v", err)
+	}
+	if got, wantUpgrade := strings.Contains(err.Error(), "fox blackbox upgrade qa"), edition.Has(edition.Policy); got != wantUpgrade {
+		t.Errorf("not installed on a build that %s the rule engine: %v",
+			map[bool]string{true: "may have", false: "cannot have"}[wantUpgrade], err)
 	}
 	other := errors.New("boom")
 	if friendlyPolicyErr("main", other) != other {

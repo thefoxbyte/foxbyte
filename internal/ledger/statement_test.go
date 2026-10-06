@@ -12,7 +12,10 @@ import (
 // sent with it. What makes that safe lives in SQL; these pin the parts a later
 // edit could quietly undo. The behaviour itself is exercised by integration-v2 §6b.
 func TestSchemaStatementMatching(t *testing.T) {
-	ledgerSQL, policySQL := lf(Schema), lf(SchemaPolicy)
+	// The policy gate's half of this contract is checked in enterprise/schema,
+	// where policy.sql now lives. Everything below is ledger.sql's, and runs in
+	// every edition.
+	ledgerSQL := lf(Schema)
 
 	for _, want := range []string{
 		"CREATE OR REPLACE FUNCTION bb._sql_statements(q text)",
@@ -35,7 +38,7 @@ func TestSchemaStatementMatching(t *testing.T) {
 	if grant < 0 || revoke < 0 || revoke < grant {
 		t.Errorf("_statement_texts must be revoked from clients after the blanket grant (grant at %d, revoke at %d)", grant, revoke)
 	}
-	if regexp.MustCompile(`(?i)grant[^;]*bb\.statement_cursor[^;]*to`).MatchString(ledgerSQL + policySQL) {
+	if regexp.MustCompile(`(?i)grant[^;]*bb\.statement_cursor[^;]*to`).MatchString(ledgerSQL) {
 		t.Error("clients must not be granted anything on bb.statement_cursor")
 	}
 
@@ -43,25 +46,16 @@ func TestSchemaStatementMatching(t *testing.T) {
 	if regexp.MustCompile(`\bq ~\*`).MatchString(ledgerSQL) {
 		t.Error("ledger.sql matches a risk pattern against the whole query (q ~*) instead of the statement texts")
 	}
-	if strings.Contains(policySQL, "q ~* pattern") || !strings.Contains(policySQL, "texts := bb._statement_texts('start', TG_TAG, ctx);") {
-		t.Error("the policy gate must match rules against bb._statement_texts, not the whole query")
-	}
-	if !strings.Contains(policySQL, "unnest(bb._statement_candidates(statement, command))") {
-		t.Error("the policy preview must match the way the gate does")
-	}
-
 	// A blocked attempt is written through dblink; if this transaction already holds
-	// the Blackbox append lock that write waits for us forever. Both writers check.
-	for name, sql := range map[string]string{"ledger.sql (guardrail)": ledgerSQL, "policy.sql (gate)": policySQL} {
-		lock := strings.Index(sql, "IF bb._holds_chain_lock() THEN")
-		write := strings.Index(sql, "INSERT INTO bb.schema_ledger")
+	// the Blackbox append lock that write waits for us forever. Both writers check;
+	// the gate's half of this is in enterprise/schema.
+	{
+		lock := strings.Index(ledgerSQL, "IF bb._holds_chain_lock() THEN")
+		write := strings.Index(ledgerSQL, "INSERT INTO bb.schema_ledger")
 		if lock < 0 || write < 0 {
-			t.Errorf("%s: lock check at %d, BLOCKED write at %d", name, lock, write)
-			continue
-		}
-		// the check has to guard the dblink write, so it comes first
-		if blocked := strings.Index(sql[lock:], "'BLOCKED','policy'"); blocked < 0 {
-			t.Errorf("%s: no BLOCKED write follows the lock check", name)
+			t.Errorf("ledger.sql (guardrail): lock check at %d, BLOCKED write at %d", lock, write)
+		} else if blocked := strings.Index(ledgerSQL[lock:], "'BLOCKED','policy'"); blocked < 0 {
+			t.Error("ledger.sql (guardrail): no BLOCKED write follows the lock check")
 		}
 	}
 
