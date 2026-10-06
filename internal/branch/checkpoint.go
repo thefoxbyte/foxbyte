@@ -13,9 +13,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
@@ -145,7 +147,35 @@ func lastCheckpoint(name string) (int64, string, error) {
 // Checkpoint anchors a branch's ledger entries added since its last checkpoint.
 // It returns (nil, "", nil) when there is nothing new. It refuses to anchor rows
 // whose hash chain is already broken.
+// ErrAnchorsNotLicensed is why Checkpoint refused.
+//
+// The line this gating draws is: **making anchors is paid, checking them is
+// free.** Everything that reads an anchor stays in Standard — Integrity below,
+// `blackbox anchor-key`, and cmd/fox-verify — for two reasons. An install that
+// anchored before upgrading still holds anchors, and taking away its ability to
+// check them would be punishing a customer for the version they were on. And an
+// "independent verifier" that has to be bought is close to a contradiction:
+// what makes it worth anything is that it needs no trust in us.
+//
+// The security log's own anchors (CheckpointSecurityLog) are not gated either.
+// That is the accountability trail — it records who signed in, what was
+// refused, and now the licence itself — and the rule the editions follow is
+// that safety stays free.
+var ErrAnchorsNotLicensed = errors.New("creating signed Blackbox anchors is an Enterprise feature")
+
+// Checkpoint anchors a branch's new ledger entries outside the database.
+//
+// The gate lives here rather than only at the CLI and the REST route, because
+// this is the one function that writes an anchor: the scheduler calls it too,
+// and a future caller would otherwise have to remember.
 func Checkpoint(name string) (*ledger.Anchor, string, error) {
+	if !edition.Has(edition.Anchors) {
+		return nil, "", ErrAnchorsNotLicensed
+	}
+	return checkpoint(name)
+}
+
+func checkpoint(name string) (*ledger.Anchor, string, error) {
 	name, err := ledgerBranchName(name)
 	if err != nil {
 		return nil, "", err
@@ -265,6 +295,18 @@ func Integrity(name string) (ledger.Report, error) {
 	} else {
 		rep.Notes = append(rep.Notes, "ledger checkpoints are not installed on this branch — run: fox ledger upgrade "+name)
 	}
+	// Say why nothing new is being anchored, or this reads as a fault.
+	//
+	// An install that upgrades into the gating keeps the anchors it already
+	// has, and they keep verifying — the summary would just show a number of
+	// unanchored rows climbing with no explanation, which looks exactly like a
+	// checkpointer that has stopped working. The difference between a broken
+	// install and an unlicensed feature is the whole of this sentence.
+	if !edition.Has(edition.Anchors) && rep.UnanchoredRows > 0 {
+		rep.Notes = append(rep.Notes, fmt.Sprintf(
+			"%d row(s) will stay unanchored: %v. The chain above is still checked in full, "+
+				"and anchors already written still verify.", rep.UnanchoredRows, ErrAnchorsNotLicensed))
+	}
 	return rep, nil
 }
 
@@ -327,6 +369,11 @@ func pendingCheckpointRows(name string) (int, error) {
 // the branch's last checkpoint, or sooner when FOX_CHECKPOINT_ENTRIES
 // (default 500) entries are waiting. It only looks at branches that are already
 // running, so it never wakes a suspended one. FOX_CHECKPOINTS=off disables it.
+// saidWhyNotAnchoring keeps the scheduler from repeating itself every tick.
+// The reason is worth saying once and worth saying clearly; saying it every two
+// minutes would bury the log it is written into.
+var saidWhyNotAnchoring sync.Once
+
 func StartCheckpointer() {
 	switch strings.ToLower(strings.TrimSpace(brand.Getenv("CHECKPOINTS"))) {
 	case "off", "0", "false", "no":
@@ -357,6 +404,16 @@ func StartCheckpointer() {
 				} else if a != nil {
 					log.Printf("security log checkpoint: events %d–%d", a.FromID, a.ToID)
 				}
+			}
+			// The branch ledgers' half, and only this half. The security
+			// log above keeps anchoring in every edition.
+			if !edition.Has(edition.Anchors) {
+				saidWhyNotAnchoring.Do(func() {
+					log.Printf("ledger checkpoints: not anchoring branch ledgers — %v "+
+						"(the security log is still anchored, and existing anchors still verify)",
+						ErrAnchorsNotLicensed)
+				})
+				continue
 			}
 			names, err := RunningBranches()
 			if err != nil {

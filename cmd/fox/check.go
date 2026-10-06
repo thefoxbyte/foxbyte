@@ -66,7 +66,7 @@ func checkCmd(args []string) {
 	}
 	lines = append(lines, checkServers()...)
 	lines = append(lines, checkPorts()...)
-	lines = append(lines, checkAPI(), checkAPIClosed(), checkBlackbox(), checkBackups(), checkRestore(), checkSampleData())
+	lines = append(lines, checkAPI(), checkAPIClosed(), checkBlackbox(), checkAnchors(), checkBackups(), checkRestore(), checkSampleData())
 
 	failed, warned := 0, 0
 	for _, l := range lines {
@@ -278,6 +278,29 @@ func checkBlackbox() checkLine {
 			fmt.Sprintf("%s blackbox verify main", brand.CLI))
 	}
 	return ok("blackbox", firstLine(out))
+}
+
+// Where someone looks when anchors stop appearing.
+//
+// An install that upgrades into the gating keeps every anchor it has and keeps
+// verifying them, but stops writing new ones — and nothing else would say so.
+// It is reported as a fact rather than a warning, because nothing is wrong, and
+// as a line rather than silence, because a capability that quietly disappeared
+// is the single worst way to learn about an edition split.
+func checkAnchors() checkLine {
+	if edition.Has(edition.Anchors) {
+		return ok("blackbox anchors", "on — new entries are anchored outside the database on a schedule")
+	}
+	// The same distinction requireFeature draws, because it is the same
+	// question: one of these is a download and the other is a purchase, and a
+	// line that blamed "the enterprise edition" for a missing licence would
+	// send someone to reinstall a binary they already have.
+	why := "not in the standard edition"
+	if edition.Enterprise {
+		why = "no licence covers them"
+	}
+	return ok("blackbox anchors", fmt.Sprintf("not written (%s); the record is still hash-chained "+
+		"and checked, and anchors already written still verify", why))
 }
 
 func checkBackups() checkLine {

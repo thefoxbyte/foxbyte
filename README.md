@@ -108,7 +108,12 @@ and `fox blackbox verify` catches it. A database superuser could rewrite rows
 few minutes the engine writes a checkpoint of the chain to a file outside the
 database, signed with a key the database cannot read, and
 `fox blackbox integrity` (or the standalone `fox-verify --pubkey`) checks the
-rows against them. Keep anchors off the machine (`FOX_ANCHOR_DIR`) and give the
+rows against them. **Writing** those anchors for a branch's Blackbox is an
+Enterprise feature; **checking** them is not, in any edition — an independent
+verifier you have to buy is not much of an independent verifier, and an install
+that anchored before upgrading keeps every anchor it has and can still prove it.
+The security log's own anchors are free as well: that is the accountability
+trail, and safety stays free. Keep anchors off the machine (`FOX_ANCHOR_DIR`) and give the
 public key (`fox blackbox anchor-key`) to whoever audits; someone with root on
 the machine itself holds the key too, so for them anchors held elsewhere are
 the proof. And
@@ -615,7 +620,9 @@ features need a licence — without one it behaves exactly like Standard.
 | Blackbox: the hash-chained record of every schema change | yes | yes |
 | Agent guardrails: TRUNCATE and unqualified DELETE/UPDATE blocked | yes | yes |
 | Realtime row-level change feed | — | yes |
-| Signed anchors and independent verification | — | yes |
+| Writing signed Blackbox anchors (checkpoints, on a schedule) | — | yes |
+| Checking anchors: `fox blackbox integrity`, `fox-verify`, `anchor-key` | yes | yes |
+| The security log's own anchors (`fox audit verify`) | yes | yes |
 | Policy rule engine, impact analysis, change requests | — | yes |
 | ETL pipelines | — | yes |
 

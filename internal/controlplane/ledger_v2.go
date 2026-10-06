@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 // registerLedgerV2 mounts the Blackbox 2.0 endpoints (behind auth):
@@ -36,6 +37,9 @@ func registerLedgerV2(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("POST /api/branches/{name}/ledger/checkpoint", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Anchors) {
+			return
+		}
 		name := r.PathValue("name")
 		if _, err := branch.EnsureRunning(name); err != nil {
 			writeErr(w, 404, err)

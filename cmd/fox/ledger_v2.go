@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
@@ -34,6 +35,10 @@ func ledgerV2Cmd(args []string) bool {
 	}
 	switch args[0] {
 	case "checkpoint":
+		// Before the work, so the refusal names the feature and the way out
+		// rather than surfacing as a failed command. branch.Checkpoint refuses
+		// too; that one is the gate, this one is the explanation.
+		requireFeature(edition.Anchors)
 		a, path, err := branch.Checkpoint(name)
 		must(err)
 		if a == nil {
