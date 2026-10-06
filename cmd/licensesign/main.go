@@ -22,10 +22,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/license"
 )
 
@@ -80,11 +82,13 @@ func usage() {
 
 issue flags:
   --customer NAME        who it is for                    (required)
-  --features a,b         which features it unlocks         (required)
+  --features a,b|all     which features it unlocks         (required; "all" = every one)
   --months N             how long it runs                  (default 12)
   --id ID                our reference                     (default from the date)
   --fingerprint HASH     tie it to one machine; omit for a site licence
   --rebinds N            how many times that may change    (default 3)
+  --count N              mint N of them; --id becomes a prefix  (default 1)
+  --out DIR              write <id>.json into DIR instead of printing (required above 1)
 
 The private key is read from `+envKey+` and never from a file in the
 repository. It must not be a CI secret: a leaked licence key mints Enterprise
@@ -96,6 +100,18 @@ func generate(write, force bool) error {
 	if cur, _ := license.PublicKey(); cur != nil && !force {
 		return fmt.Errorf("fox already has a licence key (%s). Replacing it means every licence issued so far stops verifying, because this build would only trust the new one; pass --force if that is really what you want",
 			base64.StdEncoding.EncodeToString(cur))
+	}
+	// And the private half, separately.
+	//
+	// The check above is about the key this build *trusts*; this is about the
+	// key that can *sign*, and they go missing in different ways. Running
+	// `generate` without --write leaves the private key on disk and the build
+	// with no public key at all — and in that state the check above passes, so
+	// a second run would overwrite the only copy of a key that may already have
+	// signed licences. There is no recovering it: the file is gitignored by
+	// design, and every licence it signed would have to be reissued.
+	if _, err := os.Stat(keyFile); err == nil && !force {
+		return fmt.Errorf("%s already exists. If it has signed any licence, replacing it makes that licence unverifiable for good — move it somewhere safe first, then pass --force", keyFile)
 	}
 	pub, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -151,11 +167,20 @@ func issue(args []string) error {
 	id := fs.String("id", "", "our reference")
 	fingerprint := fs.String("fingerprint", "", "machine fingerprint; omit for a site licence")
 	rebinds := fs.Int("rebinds", 3, "how many times the machine may change")
+	count := fs.Int("count", 1, "how many to mint; above one, --id becomes a prefix and --out is required")
+	outDir := fs.String("out", "", "directory to write <id>.json into, instead of printing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *customer == "" || *features == "" {
 		return fmt.Errorf("--customer and --features are both required")
+	}
+	if *count < 1 {
+		return fmt.Errorf("--count must be at least 1")
+	}
+	// Fifty licences on a terminal are fifty licences nobody can tell apart.
+	if *count > 1 && *outDir == "" {
+		return fmt.Errorf("--out <dir> is required with --count above 1")
 	}
 	key, err := privateKey()
 	if err != nil {
@@ -170,23 +195,71 @@ func issue(args []string) error {
 		}
 	}
 	now := time.Now().UTC().Truncate(time.Second)
-	ref := *id
-	if ref == "" {
-		ref = "FB-" + now.Format("20060102-150405")
-	}
-	l := license.License{
-		ID: ref, Customer: *customer, Edition: "enterprise",
-		Features: split(*features), IssuedAt: now,
-		NotAfter:    now.AddDate(0, *months, 0),
-		Fingerprint: *fingerprint, RebindsAllowed: *rebinds,
-	}
-	license.Sign(&l, key)
-	out, err := json.MarshalIndent(l, "", "  ")
+	wanted, err := featureList(*features)
 	if err != nil {
 		return err
 	}
-	fmt.Println(string(out))
+	if *outDir != "" {
+		// 0700: a licence is not a secret, but a directory of fifty of them
+		// names a customer fifty times.
+		if err := os.MkdirAll(*outDir, 0o700); err != nil {
+			return err
+		}
+	}
+	for i := 1; i <= *count; i++ {
+		ref := *id
+		switch {
+		case ref == "" && *count == 1:
+			ref = "FB-" + now.Format("20060102-150405")
+		case ref == "":
+			ref = "FB-" + now.Format("20060102-150405")
+			fallthrough
+		case *count > 1:
+			// A prefix, so every licence has an id of its own. Issuing fifty
+			// that all answer to the same reference would make the record
+			// useless the first time one had to be found.
+			ref = fmt.Sprintf("%s-%03d", ref, i)
+		}
+		l := license.License{
+			ID: ref, Customer: *customer, Edition: "enterprise",
+			Features: wanted, IssuedAt: now,
+			NotAfter:    now.AddDate(0, *months, 0),
+			Fingerprint: *fingerprint, RebindsAllowed: *rebinds,
+		}
+		license.Sign(&l, key)
+		out, err := json.MarshalIndent(l, "", "  ")
+		if err != nil {
+			return err
+		}
+		if *outDir == "" {
+			fmt.Println(string(out))
+			continue
+		}
+		path := filepath.Join(*outDir, ref+".json")
+		if err := os.WriteFile(path, append(out, '\n'), 0o600); err != nil {
+			return err
+		}
+		fmt.Println(path)
+	}
 	return nil
+}
+
+// featureList turns --features into the names to sign. "all" is every feature
+// this build knows about, which is what an evaluation licence wants and what
+// nobody should have to keep in step by hand.
+func featureList(spec string) ([]string, error) {
+	if strings.TrimSpace(spec) != "all" {
+		names := split(spec)
+		if len(names) == 0 {
+			return nil, fmt.Errorf("--features named nothing")
+		}
+		return names, nil
+	}
+	var all []string
+	for _, f := range edition.Features() {
+		all = append(all, string(f))
+	}
+	return all, nil
 }
 
 func verify(path string) error {

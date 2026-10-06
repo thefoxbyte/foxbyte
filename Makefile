@@ -3,7 +3,7 @@
 # FoxByte runs inside the Linux dev VM (ZFS + Docker); day-to-day operation is
 # via `lima /tmp/fox <command>`. This Makefile just builds/checks the CLI.
 
-.PHONY: license-key integration-upgrade integration-sdks integration-ui release-key build build-enterprise vet vet-enterprise fmt vm-build test test-enterprise integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade integration-editions test-vm test-vm-stop test-vm-delete
+.PHONY: license-key license-samples integration-upgrade integration-sdks integration-ui release-key build build-enterprise vet vet-enterprise fmt vm-build test test-enterprise integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade integration-editions test-vm test-vm-stop test-vm-delete
 
 VERSION ?= 0.1.0
 LDFLAGS := -s -w -X github.com/thefoxbyte/foxbyte/internal/version.Version=$(VERSION)
@@ -34,6 +34,16 @@ release-key:      ## One time: make the release signing key (private key to rele
 # it -- silently, because nothing calls home.
 license-key:      ## One time: make the licence signing key (private key to license-signing.key, for your password manager)
 	go run ./cmd/licensesign generate --write
+
+# Evaluation licences for collaborators: every feature, any machine, three
+# months. Site-wide and short-lived on purpose -- see docs/evaluation-licences.md.
+COUNT ?= 50
+license-samples:  ## Mint $(COUNT) evaluation licences into ./eval-licences (needs license-signing.key)
+	@test -f license-signing.key || { echo "no license-signing.key — run: make license-key"; exit 1; }
+	@FOX_LICENSE_SIGNING_KEY=$$(cat license-signing.key) go run ./cmd/licensesign issue \
+		--customer "FoxByte evaluation" --features all --months 3 \
+		--id FB-EVAL --count $(COUNT) --out ./eval-licences
+	@echo "$(COUNT) licences in ./eval-licences — give one file to each collaborator"
 
 release: web-build   ## Cross-compile release binaries + the Windows image context into ./dist
 	@mkdir -p dist
