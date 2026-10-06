@@ -29,7 +29,7 @@ type Table struct {
 	Name            string
 	Kind            string   // pg_class.relkind: r ordinary, p partitioned, v view, m matview
 	HasPrimaryKey   bool     //
-	ReplicaIdentity string   // pg_class.relreplident: d default, f full, n nothing, i index
+	ReplicaIdentity byte     // pg_class.relreplident: d default, f full, n nothing, i index
 	RLSEnabled      bool     // relrowsecurity
 	ClientCanSelect bool     // db_client has SELECT on the relation
 	ColumnsHidden   []string // columns db_client may not read
@@ -139,7 +139,7 @@ func Preflight(r Request) error {
 	// table … because it does not have a replica identity". Enabling a feed
 	// would break queries that work today, which is exactly what the additive
 	// rule forbids. So it is refused, and both ways forward are named.
-	if r.PublishesChanges() && !t.HasPrimaryKey && t.ReplicaIdentity != "f" && !r.FullIdentity {
+	if r.PublishesChanges() && !t.HasPrimaryKey && t.ReplicaIdentity != 'f' && !r.FullIdentity {
 		return fmt.Errorf("%s has no primary key, and publishing updates or deletes for a table "+
 			"without one makes every later UPDATE and DELETE on it fail. Either "+
 			"--replica-identity=full (more WAL per update, and the change is recorded in the "+

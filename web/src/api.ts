@@ -2,6 +2,8 @@
 // When the UI is served by the control-plane itself (the embedded production
 // build sets VITE_API_URL=""), API is "" — i.e. same-origin, relative requests.
 // The dev server (`make web-dev`, VITE_API_URL unset) falls back to :8080.
+import { splitFrames } from './sse'
+
 export const API = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8080'
 export const AGENT_API = (import.meta.env.VITE_AGENT_API_URL as string | undefined) ?? 'http://localhost:8088'
 
@@ -103,6 +105,70 @@ export const changePassword = (current: string, next: string) =>
 export const listKeys = () => req('GET', `${API}/api/keys`) as Promise<{ keys: ApiKey[] }>
 export const createKey = (name: string) => req('POST', `${API}/api/keys`, { name }) as Promise<{ key: string; info: ApiKey }>
 export const revokeKey = (id: string) => req('DELETE', `${API}/api/keys/${encodeURIComponent(id)}`)
+
+// --- the change feed (Enterprise) ---
+
+// One event from the feed. Values are Postgres text, so a bigint and a numeric
+// survive the trip; null means SQL NULL, and a column missing from `new` means
+// it was a large value the update did not touch — leave your own copy alone
+// rather than treating it as null. `unchanged` names those explicitly.
+export type RealtimeRow = Record<string, string | null>
+export type RealtimeEvent =
+  | { type: 'schema'; table: string; columns: { name: string; type_oid: number; key: boolean }[] }
+  | {
+      type: 'change'; table: string; action: 'insert' | 'update' | 'delete' | 'truncate'
+      commit_lsn: string; identity: RealtimeRow
+      new?: RealtimeRow; old?: RealtimeRow; changed?: string[]; unchanged?: string[]
+    }
+  | { type: 'resync' | 'error'; code?: string; detail?: string }
+
+// streamChanges opens the feed and calls onEvent for each one, until the
+// returned function is called or the stream ends.
+//
+// A fetch reader rather than EventSource, for the same reason consumeSSE is
+// one: EventSource cannot set a request header, which would force the API key
+// into the URL where it lands in logs and history.
+export function streamChanges(
+  name: string,
+  onEvent: (e: RealtimeEvent) => void,
+  opts: { since?: string; onClose?: (reason?: string) => void } = {},
+): () => void {
+  const ctrl = new AbortController()
+  const url = `${API}/api/branches/${encodeURIComponent(name)}/realtime`
+    + (opts.since ? `?since=${encodeURIComponent(opts.since)}` : '')
+  ;(async () => {
+    let reason: string | undefined
+    try {
+      // Cookie/session auth, like every other call here. A branch-scoped
+      // API key reaches this route too, but that is for a program using
+      // the API directly; the console is a signed-in person.
+      const res = await fetch(url, { credentials: 'include', signal: ctrl.signal })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new ApiError(res.status, (data as { error?: string }).error || `HTTP ${res.status}`)
+      }
+      const reader = res.body!.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const { frames, rest } = splitFrames(buf)
+        buf = rest
+        for (const f of frames) {
+          if (!f.data) continue
+          try { onEvent(JSON.parse(f.data) as RealtimeEvent) } catch { /* not ours */ }
+        }
+      }
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') reason = (e as Error).message
+    } finally {
+      opts.onClose?.(reason)
+    }
+  })()
+  return () => ctrl.abort()
+}
 
 // --- control plane ---
 export const getStatus = () => req('GET', `${API}/api/status`) as Promise<Status>

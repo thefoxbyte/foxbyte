@@ -7,16 +7,16 @@ package controlplane
 import (
 	"net/http"
 
-	// Registers the ETL engine with internal/branch. Blank, because nothing
-	// here calls it: the free half dispatches through the runner this sets, so
-	// that internal/branch never has to import enterprise/. Importing it is
-	// what makes the engine exist in this binary.
+	// Register the paid engines with internal/branch. Blank, because nothing
+	// here calls them: the free halves dispatch through the runners these set,
+	// so internal/branch never has to import enterprise/.
 	_ "github.com/thefoxbyte/foxbyte/enterprise/anchor"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/impact"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pipeline"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/policy"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/promote"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/schema"
+
 	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 )
@@ -32,5 +32,5 @@ import (
 // This is the only file in the repository that may import enterprise/, and it is
 // compiled out of the Standard build.
 func mountEnterprise(api, outer *http.ServeMux, store *auth.Store, acl *access.Checker) {
-	// Stage 3 mounts the realtime feed here.
+	mountRealtimeStream(outer, store, acl)
 }

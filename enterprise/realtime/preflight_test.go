@@ -13,7 +13,7 @@ import (
 // key, no RLS, readable by db_client.
 func ok() Table {
 	return Table{Schema: "public", Name: "orders", Kind: "r",
-		HasPrimaryKey: true, ReplicaIdentity: "d", ClientCanSelect: true}
+		HasPrimaryKey: true, ReplicaIdentity: 'd', ClientCanSelect: true}
 }
 
 func TestPreflightAcceptsAnOrdinaryTable(t *testing.T) {
@@ -48,7 +48,7 @@ func TestPreflightRefusesATableWithNoPrimaryKey(t *testing.T) {
 		t.Errorf("--events=insert was still refused: %v", err)
 	}
 	// And a table already set to FULL needs neither.
-	tbl.ReplicaIdentity = "f"
+	tbl.ReplicaIdentity = 'f'
 	if err := Preflight(Request{Table: tbl}); err != nil {
 		t.Errorf("a table already at REPLICA IDENTITY FULL was refused: %v", err)
 	}
