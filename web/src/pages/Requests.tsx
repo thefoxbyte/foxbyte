@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { createRequest, decideRequest, listRequests, type ChangeRequest } from '../api'
+import { useFeatures, why } from '../features'
 import { useConfirm } from '../confirm'
 import { useBranches } from '../useBranches'
 
@@ -16,6 +17,10 @@ import { useBranches } from '../useBranches'
 const STATUS = ['open', 'approved', 'rejected', 'failed'] as const
 
 export default function Requests() {
+  const { can, edition } = useFeatures()
+  // Rejecting is deliberately not gated, so a request left open when an install
+  // changed edition can still be closed rather than stranded.
+  const canApply = can('promotion')
   const [requests, setRequests] = useState<ChangeRequest[]>([])
   const [filter, setFilter] = useState<string>('open')
   const [open, setOpen] = useState<number | null>(null)
@@ -152,7 +157,10 @@ export default function Requests() {
               {c.status === 'open' && (
                 <>
                   <button className="ghost" onClick={() => decide(c, 'reject')} disabled={busy}>Reject</button>
-                  <button className="primary" onClick={() => decide(c, 'approve')} disabled={busy}>Apply to {c.target}</button>
+                  <button className="primary" onClick={() => decide(c, 'approve')} disabled={busy || !canApply}
+                    title={canApply ? undefined : why(edition, 'Applying a change request')}>
+                    {canApply ? `Apply to ${c.target}` : `Apply to ${c.target} (Enterprise)`}
+                  </button>
                 </>
               )}
             </div>

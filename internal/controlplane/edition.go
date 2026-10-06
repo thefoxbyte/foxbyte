@@ -33,7 +33,7 @@ func requireFeature(w http.ResponseWriter, f edition.Feature) bool {
 	if edition.Has(f) {
 		return true
 	}
-	writeErr(w, 403, fmt.Errorf("%s is part of %s Enterprise, and this is the %s edition — see GET /api/license",
-		edition.Describe(f), brand.Product, edition.Name()))
+	writeErr(w, 403, fmt.Errorf("%s Enterprise is needed for %s, and this is the %s edition — see GET /api/license",
+		brand.Product, edition.Describe(f), edition.Name()))
 	return false
 }

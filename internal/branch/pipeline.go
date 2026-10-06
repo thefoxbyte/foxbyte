@@ -4,6 +4,7 @@ package branch
 
 import (
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"regexp"
 	"strconv"
 	"strings"
@@ -84,6 +85,11 @@ func renderSQL(sql string) string {
 // into `public`, then run the tests. Test failures set RunResult.Failed but the
 // data is left in place for inspection.
 func RunPipeline(p *Progress, spec PipelineSpec, branch string) (RunResult, error) {
+	// `fox import` is deliberately not gated: migrating data in is onboarding,
+	// not ETL, and charging for the way in is a bad trade for both sides.
+	if err := requireFeature(edition.Pipelines); err != nil {
+		return RunResult{}, err
+	}
 	res := RunResult{Branch: branch}
 	if strings.TrimSpace(spec.Source) == "" {
 		return res, fmt.Errorf("pipeline needs a source connection string")

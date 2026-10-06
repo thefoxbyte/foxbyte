@@ -50,7 +50,7 @@ it('locks the checkpoint button without the feature, and says what still works',
   show()
   const btn = await screen.findByRole('button', { name: /Create checkpoint \(Enterprise\)/ })
   expect((btn as HTMLButtonElement).disabled).toBe(true)
-  expect(await screen.findByText(/Verifying, exporting and checking anchors already written are unaffected/)).toBeTruthy()
+  expect(await screen.findByText(/Verifying and checking anchors already written are unaffected/)).toBeTruthy()
 })
 
 // Locked, not hidden: a feature nobody can see sells nothing, and a button that
@@ -66,7 +66,7 @@ it('leaves the button working when the feature is licensed', async () => {
   show()
   const btn = await screen.findByRole('button', { name: /^Create checkpoint$/ })
   expect((btn as HTMLButtonElement).disabled).toBe(false)
-  expect(screen.queryByText(/part of Enterprise/)).toBeNull()
+  expect(screen.queryByText(/Creating checkpoints is part of Enterprise/)).toBeNull()
 })
 
 // An engine too old to report features must not have its controls disabled by a

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
@@ -184,6 +185,11 @@ func impactErr(name string, err error) error {
 // the object (and optionally column) directly; object and column override what
 // is found in the statement. Nothing is run.
 func Impact(name, statement, object, column string) (ImpactReport, error) {
+	// The analysis itself. `blackbox diff` is a read of two records and is
+	// not gated: reading the record stays free in every edition.
+	if err := requireFeature(edition.Impact); err != nil {
+		return ImpactReport{}, err
+	}
 	name, err := ledgerBranchName(name)
 	if err != nil {
 		return ImpactReport{}, err

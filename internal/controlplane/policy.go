@@ -12,6 +12,7 @@ import (
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
@@ -77,6 +78,9 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 	})
 
 	mux.HandleFunc("POST /api/branches/{name}/policies", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Policy) {
+			return
+		}
 		name := r.PathValue("name")
 		if !running(w, name) {
 			return
@@ -101,6 +105,9 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 	})
 
 	mux.HandleFunc("PUT /api/branches/{name}/policies/{rule}", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Policy) {
+			return
+		}
 		name := r.PathValue("name")
 		if !running(w, name) {
 			return
@@ -125,6 +132,9 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 	})
 
 	mux.HandleFunc("DELETE /api/branches/{name}/policies/{rule}", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Policy) {
+			return
+		}
 		name := r.PathValue("name")
 		if !running(w, name) {
 			return

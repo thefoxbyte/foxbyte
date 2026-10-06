@@ -11,6 +11,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 // Change requests over the API: a branch's schema changes, offered for review,
@@ -39,6 +40,9 @@ func registerRequests(mux *http.ServeMux, store *auth.Store) {
 	// Ask for a branch's changes to be applied elsewhere. The path's branch is the
 	// source (authorize has already checked the caller may use it).
 	mux.HandleFunc("POST /api/branches/{name}/request", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Promotion) {
+			return
+		}
 		u, _ := auth.UserFrom(r.Context())
 		source := r.PathValue("name")
 		var body struct {
@@ -108,8 +112,13 @@ func registerRequests(mux *http.ServeMux, store *auth.Store) {
 		writeJSON(w, 200, viewOf(c))
 	})
 
-	// Approving applies the statements. Rejecting leaves the target alone.
+	// Approving applies the statements. Rejecting leaves the target alone, and
+	// is therefore not gated: a request left pending when an install changed
+	// edition can still be closed rather than stranded open forever.
 	mux.HandleFunc("POST /api/requests/{id}/approve", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Promotion) {
+			return
+		}
 		decideRequest(w, r, store, auth.RequestApproved)
 	})
 	mux.HandleFunc("POST /api/requests/{id}/reject", func(w http.ResponseWriter, r *http.Request) {

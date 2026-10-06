@@ -623,8 +623,10 @@ features need a licence — without one it behaves exactly like Standard.
 | Writing signed Blackbox anchors (checkpoints, on a schedule) | — | yes |
 | Checking anchors: `fox blackbox integrity`, `fox-verify`, `anchor-key` | yes | yes |
 | The security log's own anchors (`fox audit verify`) | yes | yes |
-| Policy rule engine, impact analysis, change requests | — | yes |
-| ETL pipelines | — | yes |
+| Writing Blackbox policy rules; impact analysis; asking for and applying a change request | — | yes |
+| Reading rules, checking a statement against them, the evaluations log, listing and rejecting requests | yes | yes |
+| Blackbox export (the compliance bundle) | — | yes |
+| ETL pipelines (`fox import` is free: migrating in is onboarding, not ETL) | — | yes |
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh \

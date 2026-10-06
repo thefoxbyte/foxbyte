@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"strings"
 	"text/tabwriter"
 
@@ -222,6 +223,12 @@ func UnmarshalEntries(s string) ([]RequestEntry, error) {
 // request applied it, and the request says who approved it. One transaction means
 // the target is never left half-merged — either every statement is in, or none is.
 func ApplyRequest(requestID int64, target, approver string, entries []RequestEntry) (int, error) {
+	// Applying is the paid half. Reading requests stays free, so one left
+	// pending when an install changed edition is still visible and can still
+	// be rejected rather than stranded.
+	if err := requireFeature(edition.Promotion); err != nil {
+		return 0, err
+	}
 	if len(entries) == 0 {
 		return 0, ErrNothingToPromote
 	}

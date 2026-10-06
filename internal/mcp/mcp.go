@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"io"
 	"log"
 	"os"
@@ -238,7 +240,30 @@ func toolList() []map[string]any {
 			}
 		}
 	}
-	return tools
+	// Tools this install cannot serve are left out of the list entirely.
+	//
+	// This is the one surface where hiding beats showing locked. A console is
+	// read by a person who can act on an upsell; this list is read by a model,
+	// which will otherwise plan around a tool, call it, and have to recover
+	// from a refusal. Advertising a capability to something that cannot buy it
+	// only wastes its turn — and callTool still refuses by name, so a client
+	// working from a cached list gets an answer rather than a surprise.
+	out := tools[:0]
+	for _, t := range tools {
+		if f, gated := gatedTools[t["name"].(string)]; gated && !edition.Has(f) {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// gatedTools are the tools a licence unlocks. The rest are free, including
+// every tool that reads: policy_check previews the rules, list_change_requests
+// reads what is already there, and the Blackbox tools read the record.
+var gatedTools = map[string]edition.Feature{
+	"impact":          edition.Impact,
+	"request_changes": edition.Promotion,
 }
 
 // blackboxToolNames maps each Blackbox tool name to the ledger tool it runs.
@@ -288,6 +313,18 @@ func callTool(params json.RawMessage) map[string]any {
 		Arguments json.RawMessage `json:"arguments"`
 	}
 	_ = json.Unmarshal(params, &p)
+	// Refused by name, not only hidden from the list: a client may be working
+	// from a list it cached before the licence changed, and an answer saying
+	// which feature and why is more use to a model than a tool that is simply
+	// missing.
+	if f, gated := gatedTools[p.Name]; gated && !edition.Has(f) {
+		return map[string]any{
+			"content": []map[string]any{{"type": "text", "text": fmt.Sprintf(
+				"%s Enterprise is needed for %s, and this install is the %s edition.",
+				brand.Product, edition.Describe(f), edition.Name())}},
+			"isError": true,
+		}
+	}
 	text, err := runTool(p.Name, p.Arguments)
 	if err != nil {
 		return map[string]any{

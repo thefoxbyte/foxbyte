@@ -33,17 +33,49 @@ func TestCheckpointRouteRefusesWithoutTheFeature(t *testing.T) {
 	}
 }
 
-// The free side of the line, asserted so it cannot drift: reading an anchor is
-// not gated. An install that anchored before upgrading still holds anchors, and
-// taking away its ability to check them would punish a customer for the version
-// they were on.
+// Every route a licence closes, in one place, so a new one added without a gate
+// shows up as a gap here rather than as a feature given away.
+func TestTheGatedRoutesRefuseWithoutALicence(t *testing.T) {
+	edition.SetEntitlement(nil)
+	mux := http.NewServeMux()
+	registerLedgerV2(mux)
+	registerImpact(mux)
+	registerPolicy(mux, nil)
+	for _, c := range []struct{ method, path string }{
+		{"POST", "/api/branches/main/ledger/checkpoint"},
+		{"GET", "/api/branches/main/ledger/export"},
+		{"POST", "/api/branches/main/impact"},
+		{"POST", "/api/branches/main/policies"},
+		{"PUT", "/api/branches/main/policies/r1"},
+		{"DELETE", "/api/branches/main/policies/r1"},
+	} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(c.method, c.path, nil))
+		if rec.Code != 403 {
+			t.Errorf("%s %s = %d, want 403: %s", c.method, c.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// The free side of the line, asserted so it cannot drift.
+//
+// These are what a person still needs after an install changes edition: the
+// rule that just blocked them, the record of what happened, the anchors they
+// already hold. An install that used a feature before upgrading keeps
+// everything it produced and can still read it.
 func TestReadingTheRecordIsNotGated(t *testing.T) {
 	edition.SetEntitlement(nil)
 	mux := http.NewServeMux()
 	registerLedgerV2(mux)
+	registerImpact(mux)
+	registerPolicy(mux, nil)
 	for _, path := range []string{
 		"/api/branches/main/ledger/integrity",
 		"/api/branches/main/ledger/entries",
+		"/api/branches/main/policies",
+		"/api/branches/main/policies/evaluations",
+		"/api/ledger/diff?a=main&b=other",
+		"/api/blackbox/diff?a=main&b=other",
 	} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))

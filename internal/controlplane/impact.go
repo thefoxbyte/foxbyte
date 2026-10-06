@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 // registerImpact mounts Blackbox impact analysis and diff (behind auth):
@@ -18,6 +19,9 @@ import (
 //	GET  /api/blackbox/diff?a=&b=      the same, under the Blackbox name
 func registerImpact(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/branches/{name}/impact", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Impact) {
+			return
+		}
 		name := r.PathValue("name")
 		if _, err := branch.EnsureRunning(name); err != nil {
 			writeErr(w, 404, err)

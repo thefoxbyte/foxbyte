@@ -12,6 +12,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 // `fox request` — review a branch's schema changes, then apply them.
@@ -32,6 +33,10 @@ func requestCmd(args []string) {
 	case "show":
 		requestShowCmd(args[1:])
 	case "approve":
+		// Approving applies the change; rejecting below does not, and stays
+		// free so a request left pending when an install changed edition can
+		// be closed rather than stranded.
+		requireFeature(edition.Promotion)
 		requestDecideCmd(args[1:], auth.RequestApproved)
 	case "reject":
 		requestDecideCmd(args[1:], auth.RequestRejected)
@@ -47,6 +52,7 @@ func requestCmd(args []string) {
 
 // branchRequestCmd is `fox branch request <source> [--to <target>]`.
 func branchRequestCmd(args []string) {
+	requireFeature(edition.Promotion)
 	source := firstPositional(args, "--to")
 	if source == "" {
 		fmt.Printf("usage: %s branch request <source> [--to <target>]\n", brand.CLI)

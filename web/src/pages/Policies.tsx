@@ -5,6 +5,7 @@ import {
   type Branch, type BranchAdmins, type PolicyAction, type PolicyCheckResult, type PolicyEvaluation, type PolicyRule,
 } from '../api'
 import { useBranches } from '../useBranches'
+import { useFeatures, why } from '../features'
 
 // Blackbox policy gate: rules checked on every schema change before it runs.
 // A warn rule lets the change through with a notice (SQLSTATE BBX02); a block
@@ -13,6 +14,12 @@ import { useBranches } from '../useBranches'
 const emptyDraft = { rule_id: '', command_tag: 'ALTER TABLE', pattern: '', action: 'warn' as PolicyAction, reason: '', hint: '' }
 
 export default function Policies() {
+  const { can, edition } = useFeatures()
+  // Authoring only. Listing rules, checking a statement against them, the
+  // evaluations log and the admin grants below all stay free -- a rule written
+  // before an install changed edition keeps enforcing, and being unable to read
+  // the rule that just blocked you would be worse than useless.
+  const canAuthor = can('policy')
   const [branch, setBranch] = useState('main')
   const [rules, setRules] = useState<PolicyRule[]>([])
   const [evals, setEvals] = useState<PolicyEvaluation[]>([])
@@ -83,7 +90,10 @@ export default function Policies() {
               {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
             </select>
           </label>
-          <button className="ghost" onClick={() => setAdding(a => !a)} disabled={busy}>{adding ? 'Cancel' : 'Add rule'}</button>
+          <button className="ghost" onClick={() => setAdding(a => !a)} disabled={busy || !canAuthor}
+            title={canAuthor ? undefined : why(edition, 'Writing policy rules')}>
+            {adding ? 'Cancel' : canAuthor ? 'Add rule' : 'Add rule (Enterprise)'}
+          </button>
         </div>
       </div>
 
@@ -126,7 +136,7 @@ export default function Policies() {
                 <td>
                   <div className="seg">
                     {(['warn', 'block'] as PolicyAction[]).map(a => (
-                      <button key={a} className={r.action === a ? 'active' : ''} disabled={busy || r.action === a}
+                      <button key={a} className={r.action === a ? 'active' : ''} disabled={busy || r.action === a || !canAuthor}
                         onClick={() => act(() => updatePolicyRule(branch, r.rule_id, { action: a }))}>{a}</button>
                     ))}
                   </div>
@@ -136,7 +146,9 @@ export default function Policies() {
                     onChange={e => act(() => updatePolicyRule(branch, r.rule_id, { enabled: e.target.checked }))} />
                 </td>
                 <td>
-                  {!r.builtin && <button className="ghost" disabled={busy} onClick={() => act(() => removePolicyRule(branch, r.rule_id))}>Remove</button>}
+                  {!r.builtin && <button className="ghost" disabled={busy || !canAuthor}
+                    title={canAuthor ? undefined : why(edition, 'Writing policy rules')}
+                    onClick={() => act(() => removePolicyRule(branch, r.rule_id))}>Remove</button>}
                 </td>
               </tr>
             ))}
