@@ -13,11 +13,13 @@ func enterpriseCmd(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	// Stage 3 adds `realtime` here.
+	// `realtime` is dispatched by main and falls through to
+	// realtimeEnterpriseCmd, so the paid subcommands sit beside the free ones
+	// rather than in a separate top-level command.
 	default:
 		return false
 	}
 }
 
 // enterpriseUsage is appended to `fox help`.
-func enterpriseUsage() string { return "" }
+func enterpriseUsage() string { return realtimeEnterpriseUsage() + "\n" }

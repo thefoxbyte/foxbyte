@@ -33,7 +33,13 @@ func realtimeCmd(args []string) error {
 	case "status", "":
 		return realtimeStatus()
 	default:
-		return fmt.Errorf("unknown: %s realtime %s\n\n%s", brand.CLI, sub, realtimeUsage())
+		// enable, disable and tables are the paid half, and exist only in the
+		// Enterprise build.
+		if realtimeEnterpriseCmd(args) {
+			return nil
+		}
+		return fmt.Errorf("unknown: %s realtime %s\n\n%s%s", brand.CLI, sub, realtimeUsage(),
+			realtimeEnterpriseUsage())
 	}
 }
 

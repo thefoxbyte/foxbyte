@@ -26,6 +26,7 @@ export const APP_NAV: NavSection[] = [
       { to: '/console', label: 'Console', icon: I.IconConsole },
       { to: '/import', label: 'Import', icon: I.IconImport },
       { to: '/pipelines', label: 'Pipelines', icon: I.IconPipelines },
+      { to: '/realtime', label: 'Change feed', icon: I.IconConsole },
     ],
   },
   {

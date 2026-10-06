@@ -85,6 +85,30 @@ paths:
         "200": { description: OK, content: { application/json: { schema: { type: object } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/realtime:
+    get:
+      tags: [branches]
+      summary: >-
+        The row-level change feed, as server-sent events (Enterprise). Each event is a JSON
+        object: schema (column names and type OIDs), change (identity, new, old, changed,
+        unchanged, commit_lsn), resync or error. Values are Postgres text as JSON strings,
+        never numbers, so bigint and numeric survive. Resume with ?since=<commit_lsn>.
+        Accepts an API key scoped to this branch, which no other /api route does.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: since
+          in: query
+          required: false
+          description: The commit_lsn of the last change seen; the feed replays after it, within the WAL budget.
+          schema: { type: string }
+      responses:
+        "200": { description: An event stream, content: { text/event-stream: { schema: { type: string } } } }
+        "400": { description: since is not a log position }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: No licence covers the change feed }
+        "404": { description: No such branch, or not yours }
+        "409": { description: The change feed is not set up on this install }
+
   /api/branches:
     get:
       tags: [branches]

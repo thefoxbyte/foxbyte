@@ -5,6 +5,7 @@ package branch
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -264,4 +265,53 @@ func SweepRealtimeSlots() {
 			}
 		}
 	}
+}
+
+// RealtimeRole is the role a decoder connects as.
+const RealtimeRole = "db_realtime"
+
+// EnsureRealtimeRole creates the role a change feed decodes with.
+//
+// LOGIN REPLICATION, and nothing else: no table grants, and deliberately *not*
+// a member of db_client. It can open a replication connection and decode the
+// write-ahead log, and it cannot run a query — so a leaked decoder credential
+// reads the tables somebody explicitly published and nothing more. NOBYPASSRLS
+// for the same reason db_client has it, even though the preflight already
+// refuses an RLS table: two independent reasons a policy cannot be sidestepped
+// are better than one.
+func EnsureRealtimeRole(name, password string) error {
+	return ExecSQL(name, fmt.Sprintf(`DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN
+    EXECUTE format('CREATE ROLE %%I LOGIN REPLICATION NOSUPERUSER NOBYPASSRLS NOINHERIT', %s);
+  END IF;
+  EXECUTE format('ALTER ROLE %%I PASSWORD %%L', %s, %s);
+END $$`, QuoteLiteral(RealtimeRole), QuoteLiteral(RealtimeRole),
+		QuoteLiteral(RealtimeRole), QuoteLiteral(password)))
+}
+
+// RealtimeRolePassword is the decode role's password, derived from the install
+// secret like every other role's — so it is never stored, and a decoder on this
+// machine can always work it out while nothing off it can.
+func RealtimeRolePassword() string { return rolePassword("realtime", RealtimeRole) }
+
+// PublicationName is the one publication a branch's feed uses.
+func PublicationName() string { return SlotPrefix + "pub" }
+
+// RealtimeDSN is how a decoder reaches a branch: the replication connection
+// string, as the decode role.
+//
+// replication=database is what makes it a *logical* connection. The
+// `replication` lines in pg_hba match only physical replication, so this falls
+// through to the ordinary host line and authenticates with a password like any
+// other client — checked against a live database before the feed was designed,
+// because the alternative was widening pg_hba, which nobody wants to do.
+func RealtimeDSN(name, password string) string {
+	return fmt.Sprintf("postgres://%s:%s@%s:5432/%s?replication=database&sslmode=disable",
+		RealtimeRole, url.QueryEscape(password), container(name), pgDatabase)
+}
+
+// PublishedTables is what a branch's feed currently carries.
+func PublishedTables(name string) ([]string, error) {
+	return LedgerQuery(name, `SELECT schemaname || '.' || tablename FROM pg_publication_tables
+	  WHERE pubname = `+QuoteLiteral(PublicationName())+` ORDER BY 1`)
 }

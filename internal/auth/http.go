@@ -88,6 +88,40 @@ func (s *Store) userFromRequest(r *http.Request) (User, bool) {
 	return User{}, false
 }
 
+// UserForBranchStream authenticates a request that may use a branch-scoped key,
+// and only for the branch that key is scoped to.
+//
+// Authn above refuses a scoped key outright, and that reasoning stands: it is
+// about the control plane, where one key would otherwise reach every branch its
+// owner can. This is the narrow exception, and it is safe because the reach
+// shrinks rather than grows — that key already opens all SQL on that branch
+// through the Gateway, as db_client. A read-only stream of the tables somebody
+// with Manage explicitly enabled, on the same branch, is a strict subset of
+// what it could already do.
+//
+// It is deliberately not a widening of Authn: a caller has to name the branch,
+// and a key scoped to another one is simply not authenticated here.
+func (s *Store) UserForBranchStream(r *http.Request, branchName string) (User, bool) {
+	if u, ok := s.userFromRequest(r); ok {
+		return u, true // a session, or an unscoped key: Authn's rules
+	}
+	key := ""
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		key = strings.TrimPrefix(h, "Bearer ")
+	}
+	if key == "" {
+		key = r.Header.Get("X-API-Key")
+	}
+	if key == "" || branchName == "" {
+		return User{}, false
+	}
+	u, scope, ok := s.VerifyKey(key)
+	if !ok || scope == "" || scope != branchName {
+		return User{}, false
+	}
+	return u, true
+}
+
 // Authn wraps a handler, requiring a valid session or API key.
 func (s *Store) Authn(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

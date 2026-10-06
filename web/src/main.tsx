@@ -12,6 +12,7 @@ import Docs from './pages/Docs'
 import Guide from './pages/Guide'
 import Ledger from './pages/Ledger'
 import Integrity from './pages/Integrity'
+import Realtime from './pages/Realtime'
 import Requests from './pages/Requests'
 import Policies from './pages/Policies'
 import Import from './pages/Import'
@@ -103,6 +104,7 @@ const router = createBrowserRouter([
       { path: 'blackbox', element: <Ledger /> },
       { path: 'ledger', element: <Ledger /> }, // the page's original address
       { path: 'integrity', element: <Integrity /> },
+      { path: 'realtime', element: <Realtime /> },
       { path: 'requests', element: <Requests /> },
       { path: 'policies', element: <Policies /> },
       { path: 'import', element: <Import /> },
