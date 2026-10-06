@@ -5,6 +5,7 @@ package branch
 import (
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
@@ -222,5 +223,44 @@ func TestThePaidSchemaFollowsTheEntitlement(t *testing.T) {
 	entitle(t, edition.Anchors)
 	if c, p, i := PaidSchemaWanted(); !c || p || i {
 		t.Errorf("a licence for anchors alone wants checkpoints=%v policy=%v impact=%v", c, p, i)
+	}
+}
+
+// A remedy nobody can act on is worse than no remedy: a licensed boundary then
+// reads as a broken install.
+//
+// `fox blackbox upgrade` applies the current Blackbox definition, and what that
+// contains depends on the edition — the paid schema lives in enterprise/schema,
+// so a Standard build has none of it. Suggesting the upgrade to an install that
+// cannot have the thing it is missing sends someone after a command that will
+// not help.
+//
+// This caught two live instances: the policy gate's "isn't installed" error,
+// and the note `fox blackbox integrity` adds when a branch has no checkpoints —
+// the second in free code, on a command a Standard user runs.
+func TestNoUpgradeHintAnInstallCannotActOn(t *testing.T) {
+	edition.SetEntitlement(nil)
+	t.Cleanup(func() { edition.SetEntitlement(nil) })
+
+	for _, f := range edition.Features() {
+		if h := UpgradeHint("main", f); h != "" {
+			t.Errorf("unlicensed %s suggests %q", f, h)
+		}
+	}
+	// And the message that carries it says only what is true.
+	err := friendlyPolicyErr("qa", errors.New(`ERROR:  relation "bb.policy_rules" does not exist`))
+	if strings.Contains(err.Error(), "upgrade") {
+		t.Errorf("an install that cannot have the rule engine is told to upgrade: %v", err)
+	}
+
+	if !edition.Enterprise {
+		return // nothing here can be entitled, which is the point
+	}
+	entitle(t, edition.Policy)
+	if h := UpgradeHint("main", edition.Policy); h == "" {
+		t.Error("a licensed install is not told how to install what it is missing")
+	}
+	if err := friendlyPolicyErr("qa", errors.New(`ERROR:  relation "bb.policy_rules" does not exist`)); !strings.Contains(err.Error(), "upgrade qa") {
+		t.Errorf("a licensed install is not told to upgrade: %v", err)
 	}
 }

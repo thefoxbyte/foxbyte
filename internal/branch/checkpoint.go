@@ -203,20 +203,33 @@ func Integrity(name string) (ledger.Report, error) {
 					n, len(anchors), dir))
 			}
 		}
-	} else {
-		rep.Notes = append(rep.Notes, "ledger checkpoints are not installed on this branch — run: fox ledger upgrade "+name)
+	} else if hint := UpgradeHint(name, edition.Anchors); hint != "" {
+		// Missing on an install that can have them: an upgrade nobody has run.
+		rep.Notes = append(rep.Notes, "ledger checkpoints are not installed on this branch — "+hint)
 	}
-	// Say why nothing new is being anchored, or this reads as a fault.
+	// Say why nothing is being anchored, or this reads as a fault.
 	//
-	// An install that upgrades into the gating keeps the anchors it already
-	// has, and they keep verifying — the summary would just show a number of
+	// Two situations, one sentence each, and never the upgrade line above —
+	// which on an install that cannot have checkpoints points at a command that
+	// will not install them. Sending someone after a fix that cannot work is
+	// worse than saying nothing, and is how a licensed boundary comes to look
+	// like a broken install.
+	//
+	// An install that upgraded into the gating keeps the anchors it already has
+	// and they keep verifying; without this, the summary would show a count of
 	// unanchored rows climbing with no explanation, which looks exactly like a
-	// checkpointer that has stopped working. The difference between a broken
-	// install and an unlicensed feature is the whole of this sentence.
-	if !edition.Has(edition.Anchors) && rep.UnanchoredRows > 0 {
-		rep.Notes = append(rep.Notes, fmt.Sprintf(
-			"%d row(s) will stay unanchored: %v. The chain above is still checked in full, "+
-				"and anchors already written still verify.", rep.UnanchoredRows, ErrAnchorsNotLicensed))
+	// checkpointer that has stopped working.
+	if !edition.Has(edition.Anchors) {
+		switch {
+		case !hasCheckpoints:
+			rep.Notes = append(rep.Notes, fmt.Sprintf(
+				"this branch has no checkpoints and will not get any: %v. The chain above is "+
+					"still checked in full.", ErrAnchorsNotLicensed))
+		case rep.UnanchoredRows > 0:
+			rep.Notes = append(rep.Notes, fmt.Sprintf(
+				"%d row(s) will stay unanchored: %v. The chain above is still checked in full, "+
+					"and anchors already written still verify.", rep.UnanchoredRows, ErrAnchorsNotLicensed))
+		}
 	}
 	return rep, nil
 }

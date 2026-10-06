@@ -79,8 +79,8 @@ func friendlyPolicyErr(name string, err error) error {
 	case strings.Contains(s, "bb.policy_rules") && strings.Contains(s, "does not exist"),
 		strings.Contains(s, "bb.ledger_policy_evaluations") && strings.Contains(s, "does not exist"),
 		strings.Contains(s, "function bb.policy_check") && strings.Contains(s, "does not exist"):
-		if edition.Has(edition.Policy) {
-			return fmt.Errorf("%w — run: fox blackbox upgrade %s", ErrPolicyEngineAbsent, name)
+		if hint := UpgradeHint(name, edition.Policy); hint != "" {
+			return fmt.Errorf("%w — %s", ErrPolicyEngineAbsent, hint)
 		}
 		return ErrPolicyEngineAbsent
 	}
@@ -239,6 +239,10 @@ func str(p *string) string {
 // FormatPolicyRules renders rules as a text table.
 func FormatPolicyRules(rules []PolicyRule) string {
 	if len(rules) == 0 {
+		if !edition.Has(edition.Policy) {
+			return "No policy rules. The rule engine is an Enterprise feature; the two default " +
+				"guardrails are active in every edition and are not rules."
+		}
 		return "No policy rules."
 	}
 	var b strings.Builder
