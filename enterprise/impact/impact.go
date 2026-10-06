@@ -30,13 +30,6 @@ func deref(p *string) string {
 	return *p
 }
 
-func textOrNull(p *string) string {
-	if p == nil || *p == "" {
-		return "NULL"
-	}
-	return branch.QuoteLiteral(*p)
-}
-
 // init registers the analysis with internal/branch, which is how the free half
 // reaches it without importing this package.
 func init() { branch.SetImpactAnalyser(compute) }
@@ -194,7 +187,7 @@ func compute(name, statement, object, column string) (branch.ImpactReport, error
 	if statement != "" {
 		rep.Command = ledger.CommandTag(statement)
 	}
-	lines, err := branch.LedgerQuery(name, fmt.Sprintf("SELECT bb.blast_radius(%s, %s, 5)::text", branch.QuoteLiteral(t.Object), textOrNull(&t.Column)))
+	lines, err := branch.LedgerQuery(name, fmt.Sprintf("SELECT bb.blast_radius(%s, %s, 5)::text", branch.QuoteLiteral(t.Object), branch.QuoteLiteralOrNull(&t.Column)))
 	if err != nil {
 		return branch.ImpactReport{}, impactErr(name, err)
 	}
@@ -232,7 +225,7 @@ func branchPresence(self, object, column string) []branch.BranchPresence {
 	}
 	q := fmt.Sprintf(`SELECT coalesce((SELECT CASE WHEN %[2]s IS NULL THEN true ELSE EXISTS (
     SELECT 1 FROM pg_attribute a WHERE a.attrelid = r AND a.attname = %[2]s AND a.attnum > 0 AND NOT a.attisdropped) END
-  FROM to_regclass(%[1]s) AS r WHERE r IS NOT NULL), false)`, branch.QuoteLiteral(object), textOrNull(&column))
+  FROM to_regclass(%[1]s) AS r WHERE r IS NOT NULL), false)`, branch.QuoteLiteral(object), branch.QuoteLiteralOrNull(&column))
 	for _, b := range infos {
 		if b.Name == self || b.Name == "standby" || b.Name == "restore" {
 			continue

@@ -56,6 +56,13 @@ func LedgerV2Tables(name string) (ext, checkpoints bool, err error) { return led
 // TruthyEnv reads one of this engine's boolean environment variables.
 func TruthyEnv(key string) bool { return truthyEnv(key) }
 
+// QuoteLiteralOrNull renders an optional string as a SQL literal or NULL.
+func QuoteLiteralOrNull(p *string) string { return sqlTextOrNull(p) }
+
+// PolicyQuery runs a statement against a branch's policy tables and returns its
+// output lines, with the policy gate's own errors made readable.
+func PolicyQuery(name, sql string) ([]string, error) { return policyLines(name, sql) }
+
 // ResolveBranch checks a branch name and defaults an empty one to main.
 func ResolveBranch(name string) (string, error) { return ledgerBranchName(name) }
 
