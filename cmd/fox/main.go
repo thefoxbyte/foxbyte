@@ -127,6 +127,7 @@ Blackbox — the database's record of every schema change (RECORD layer; fox led
   blackbox [branch] [--limit N]   Show captured DDL changes — attributed & policy-checked
   blackbox verify [branch]        Verify the tamper-evident hash chain is intact
   blackbox upgrade [branch|--all] Apply the current Blackbox definition to existing branches
+  realtime status | setup | teardown | slots   The row-level change feed
   blackbox checkpoint [branch]    Anchor new entries outside the database (Merkle checkpoint)
   blackbox anchor-key             Print the public key anchors are signed with (for fox-verify --pubkey)
   blackbox integrity [branch]     Check the record against its anchors (detects rewritten history)
@@ -412,6 +413,8 @@ func main() {
 	case "pipeline":
 		requireFeature(edition.Pipelines)
 		pipelineCmd(os.Args[2:])
+	case "realtime":
+		must(realtimeCmd(os.Args[2:]))
 	case "ha":
 		haCmd(os.Args[2:])
 	case "user":

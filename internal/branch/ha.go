@@ -122,12 +122,12 @@ func standbyRunArgs(dataPath string) []string {
 	args = append(args, restartPolicy...)
 	args = append(args, walgEnv()...)
 	args = append(args, "-e", "WALG_COMPRESSION_METHOD=lz4")
-	return append(args, pgImage(), "postgres",
-		"-c", "wal_level=replica",
-		"-c", "archive_mode=on",
-		"-c", "archive_command=wal-g wal-push %p",
-		"-c", "archive_timeout=60",
-		"-c", "listen_addresses=*")
+	// The same settings the primary runs with, including the change feed's —
+	// this standby is a primary in waiting, and one started without them would
+	// come up after a failover unable to decode. Realtime would stop working at
+	// the worst possible moment and for no visible reason.
+	args = append(args, pgImage())
+	return append(args, postgresArgs(true)...)
 }
 
 // HAEnable provisions a hot standby streaming from the current primary.
