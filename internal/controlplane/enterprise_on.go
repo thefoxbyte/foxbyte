@@ -16,6 +16,7 @@ import (
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pipeline"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/policy"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/promote"
+	_ "github.com/thefoxbyte/foxbyte/enterprise/schema"
 	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 )

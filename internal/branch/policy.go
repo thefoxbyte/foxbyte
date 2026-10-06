@@ -61,6 +61,16 @@ func sqlTextOrNull(p *string) string {
 	return quoteLiteral(*p)
 }
 
+// ErrPolicyEngineAbsent means the rule engine's tables are not on this branch.
+//
+// Two quite different situations, and they must not be reported the same way.
+// On an install that may have the rule engine it is a missing upgrade, and
+// saying so is useful. On one that may not, the engine was never installed and
+// never will be — telling that user to run `fox blackbox upgrade` would send
+// them after a command that cannot fix it, which is how a licensed boundary
+// comes to look like a broken install.
+var ErrPolicyEngineAbsent = errors.New("the Blackbox policy rule engine is not installed on this branch")
+
 func friendlyPolicyErr(name string, err error) error {
 	s := err.Error()
 	switch {
@@ -69,7 +79,10 @@ func friendlyPolicyErr(name string, err error) error {
 	case strings.Contains(s, "bb.policy_rules") && strings.Contains(s, "does not exist"),
 		strings.Contains(s, "bb.ledger_policy_evaluations") && strings.Contains(s, "does not exist"),
 		strings.Contains(s, "function bb.policy_check") && strings.Contains(s, "does not exist"):
-		return fmt.Errorf("the Blackbox policy gate isn't installed on %q — run: fox blackbox upgrade %s", name, name)
+		if hint := UpgradeHint(name, edition.Policy); hint != "" {
+			return fmt.Errorf("%w — %s", ErrPolicyEngineAbsent, hint)
+		}
+		return ErrPolicyEngineAbsent
 	}
 	return err
 }
@@ -92,6 +105,12 @@ func PolicyRules(name string) ([]PolicyRule, error) {
   SELECT rule_id, command_tag, pattern, action, reason, hint, enabled, builtin,
          to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS updated_at, updated_by
   FROM bb.policy_rules ORDER BY rule_id) r`)
+	// No rule engine is no rules, which is the true answer rather than a
+	// failure: an install without it has the two default guardrails, which are
+	// not rules and are unaffected.
+	if errors.Is(err, ErrPolicyEngineAbsent) && !edition.Has(edition.Policy) {
+		return []PolicyRule{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +151,11 @@ func PolicyCheckTag(name, tag, statement string) (string, []ledger.PolicyDetail,
 		return "", nil, fmt.Errorf("%w: sql is required", ErrInvalidRequest)
 	}
 	lines, err := policyLines(name, fmt.Sprintf("SELECT bb.policy_check(%s, %s)::text", quoteLiteral(tag), quoteLiteral(statement)))
+	// No rule engine means no rule matches it, which is the answer the caller
+	// wants: the preview is "what would stop this", and nothing here would.
+	if errors.Is(err, ErrPolicyEngineAbsent) && !edition.Has(edition.Policy) {
+		return tag, []ledger.PolicyDetail{}, nil
+	}
 	if err != nil {
 		return "", nil, err
 	}
@@ -165,6 +189,10 @@ func PolicyEvaluations(name string, limit int) ([]PolicyEvaluation, error) {
   SELECT id, to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS at, xid, rule_id, action,
          command_tag, actor, blackbox_id
   FROM bb.ledger_policy_evaluations ORDER BY id DESC LIMIT %d) e`, limit))
+	// Nothing was ever evaluated, because there is nothing to evaluate against.
+	if errors.Is(err, ErrPolicyEngineAbsent) && !edition.Has(edition.Policy) {
+		return []PolicyEvaluation{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +239,10 @@ func str(p *string) string {
 // FormatPolicyRules renders rules as a text table.
 func FormatPolicyRules(rules []PolicyRule) string {
 	if len(rules) == 0 {
+		if !edition.Has(edition.Policy) {
+			return "No policy rules. The rule engine is an Enterprise feature; the two default " +
+				"guardrails are active in every edition and are not rules."
+		}
 		return "No policy rules."
 	}
 	var b strings.Builder

@@ -4,12 +4,17 @@ package ledger
 
 import _ "embed"
 
-// SchemaV2 is the idempotent SQL for the Blackbox 2.0 additions. Apply it
-// after Schema, with a superuser connection to the target branch. It never
-// alters an object Schema owns, so existing ledgers and hash chains are untouched.
+// SchemaExt is the idempotent SQL for the Blackbox 2.0 capture table
+// (bb.ledger_ext): xid/lsn, agent provenance and the destructive-DDL override,
+// keyed by ledger row id. Apply it after Schema, with a superuser connection to
+// the target branch. It never alters an object Schema owns, so existing ledgers
+// and hash chains are untouched.
 //
-//go:embed ledger_v2.sql
-var SchemaV2 string
+// Standard, deliberately: this is richer *recording*, and SchemaCheckpoints
+// below is *proof*. The split between them is where the editions divide.
+//
+//go:embed ledger_ext.sql
+var SchemaExt string
 
 // SchemaData guards and records data changes the event triggers cannot see:
 // TRUNCATE, and agents' UPDATE and DELETE (audit v2 G04). Apply it after the

@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: AGPL-3.0-or-later
+-- SPDX-License-Identifier: LicenseRef-FoxByte-Enterprise-1.0
 --
 -- FoxByte Blackbox policy gate (Blackbox 2.0 Phase 5) — installed AFTER
 -- ledger.sql and ledger_v2.sql. What clients receive is a public contract:

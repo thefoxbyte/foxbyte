@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
@@ -59,4 +60,23 @@ func requireFeature(f edition.Feature) error {
 		return nil
 	}
 	return notLicensed{f}
+}
+
+// UpgradeHint is "run: fox blackbox upgrade <branch>" when that would help, and
+// empty when it would not.
+//
+// `fox blackbox upgrade` applies the current Blackbox definition to a branch —
+// but what "current" contains depends on the edition, because the paid schema
+// objects live in enterprise/schema and a Standard build has none of them. So
+// on an install that cannot have a feature, pointing at the upgrade sends
+// someone after a command that will not install the thing they are missing.
+//
+// That is worse than saying nothing: a licensed boundary then reads as a broken
+// install, and the next step they take is a support ticket. One function, so
+// every message that wants to suggest the upgrade asks the same question first.
+func UpgradeHint(name string, f edition.Feature) string {
+	if !edition.Has(f) {
+		return ""
+	}
+	return fmt.Sprintf("run: %s blackbox upgrade %s", brand.CLI, name)
 }

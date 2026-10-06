@@ -3,7 +3,6 @@
 package ledger
 
 import (
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -11,11 +10,10 @@ import (
 	"unicode"
 )
 
-// SchemaPolicy is the idempotent SQL for the Blackbox policy gate. Apply it after
-// Schema and SchemaV2. What clients receive is specified in docs/policy-errors.md.
-//
-//go:embed policy.sql
-var SchemaPolicy string
+// The policy gate's SQL lives in enterprise/schema: only the paid edition
+// installs the rule engine. What a client receives when a rule fires is in
+// docs/policy-errors.md, and the codes below are read in every edition — a rule
+// written before an install changed edition keeps firing.
 
 // SQLSTATEs of the policy gate (docs/policy-errors.md).
 const (
