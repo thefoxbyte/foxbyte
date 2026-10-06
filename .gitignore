@@ -43,3 +43,4 @@ id_ecdsa*
 # The release signing key (cmd/releasesign) belongs in the Actions secret and a password manager
 release-signing.key
 license-signing.key
+/eval-licences/
