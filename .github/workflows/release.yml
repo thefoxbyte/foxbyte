@@ -395,10 +395,23 @@ jobs:
           # release is still held as a prerelease.
           out="$(HOME="$(mktemp -d)" fox update --version "$TAG" --yes 2>&1 || true)"
           echo "$out"
-          if printf '%s' "$out" | grep -qF "engine ${TAG#v} runs"; then
+          # `fox update` prints the version it *parsed*, which is canonicalised
+          # to three parts (internal/host/host_update.go: "engine %s runs"
+          # formats a Version). So a two-part tag like v2.0 appears as 2.0.0,
+          # and grepping for the raw tag found nothing. It had only ever been
+          # given three-part tags, where the two forms coincide -- v2.0 was the
+          # first release this check could not pass, and it held a release whose
+          # assets were all correct.
+          want="${TAG#v}"
+          case "$want" in
+            *.*.*) ;;
+            *.*)   want="$want.0" ;;
+            *)     want="$want.0.0" ;;
+          esac
+          if printf '%s' "$out" | grep -qF "engine $want runs"; then
             echo "$prev accepts the $TAG engine."
           else
-            echo "::error::$prev refused the $TAG engine — every install on $prev or older would be stuck. $TAG stays a prerelease."
+            echo "::error::$prev refused the $TAG engine (looked for \"engine $want runs\") — every install on $prev or older would be stuck. $TAG stays a prerelease."
             exit 1
           fi
 
