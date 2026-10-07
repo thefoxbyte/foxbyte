@@ -85,10 +85,18 @@ assert_contains "the licence unlocks this build" "$("$S" version)" "features lic
 # assumed a clean install, so a second run found the feed already set up, the
 # tables already published, and reported six failures that were its own doing.
 #
-# Forcefully, because a run killed mid-stream leaves an active replication slot
-# and `realtime teardown` rightly refuses to pull one out from under a live
-# subscriber. That refusal is correct for a person and wrong for a suite, so the
-# suite clears them itself rather than inheriting the last run's state.
+# The stack has to be up before anything can be cleaned: slots live in Postgres,
+# and a stopped branch cannot be asked to drop one. The first version reset
+# before starting, so on a run that followed a failed one it found the stack
+# down, could clean nothing, and then reported five failures in later sections
+# that were all the same inherited state.
+"$S" stop >/dev/null 2>&1; sleep 1
+"$S" start >/dev/null 2>&1; sleep 5; main_ready
+
+# Now that Postgres is running, clear anything the last run left behind. A run
+# killed mid-stream leaves an active slot, and `realtime teardown` rightly
+# refuses to pull one out from under a live subscriber -- correct for a person,
+# wrong for a suite.
 sudo docker exec pg-main psql -U dbadmin -d appdb -tAc "
   SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots
    WHERE slot_name LIKE 'fox_rt_%' AND active_pid IS NOT NULL" >/dev/null 2>&1
@@ -96,9 +104,8 @@ sudo docker exec pg-main psql -U dbadmin -d appdb -tAc "
   SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots
    WHERE slot_name LIKE 'fox_rt_%'" >/dev/null 2>&1
 TEARDOWN="$("$S" realtime teardown --yes 2>&1)"
-case "$TEARDOWN" in *rror*) echo "  (teardown on entry: $TEARDOWN)";; esac
-"$S" stop >/dev/null 2>&1; sleep 1
-"$S" start >/dev/null 2>&1; sleep 5; main_ready
+case "$TEARDOWN" in *"left on"*) echo "  (could not reset the feed on entry: $TEARDOWN)";; esac
+main_ready
 USER_EMAIL="rt@foxbyte.dev"
 printf 'password123\n' | "$S" user create "$USER_EMAIL" >/dev/null 2>&1 || true
 KEY="$("$S" apikey create "$USER_EMAIL" rt 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
@@ -262,10 +269,129 @@ fi
 echo
 echo "6. slots are found, listed and swept"
 assert_contains "the feed's slot is listed" "$("$S" realtime slots main 2>&1)" "fox_rt_"
+# An idle slot survives, because it is exactly what a reconnecting subscriber
+# resumes from and max_slot_wal_keep_size already bounds what it can cost. Only
+# a *lost* one is swept -- see SweepRealtimeSlots, and section 8.
+BEFORE="$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%'")"
 "$S" up >/dev/null 2>&1
 sleep 2
-LEFT="$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND NOT active")"
-assert_eq "an idle slot is swept by \`fox up\`" "$LEFT" "0"
+AFTER="$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%'")"
+assert_eq "an idle slot survives \`fox up\`, so a subscriber can still resume" "$AFTER" "$BEFORE"
+
+# ── 8. Replay: a subscriber resumes where it left off ───────────────────────
+echo
+echo "8. replay, and the budget that bounds it"
+
+# stream_for <seconds> <file> [since]  -- capture the feed for a while.
+stream_for() {
+  local secs="$1" out="$2" since="${3:-}" url="$API/api/branches/main/realtime"
+  [ -n "$since" ] && url="$url?since=$since"
+  : > "$out"
+  curl -skN --max-time "$secs" -H "Authorization: Bearer $KEY" "$url" \
+    | sed -u -n 's/^data: //p' >> "$out"
+}
+# last_lsn <file> -- the commit_lsn of the last change in a capture.
+last_lsn() { python3 -c '
+import json,sys
+lsn=""
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: e=json.loads(line)
+    except Exception: continue
+    if e.get("type")=="change" and e.get("commit_lsn"): lsn=e["commit_lsn"]
+print(lsn)' "$1" 2>/dev/null; }
+# ids_in <file> -- the identity ids of every change, in order.
+ids_in() { python3 -c '
+import json,sys
+out=[]
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: e=json.loads(line)
+    except Exception: continue
+    if e.get("type")=="change":
+        v=(e.get("identity") or {}).get("id")
+        if v is not None: out.append(str(v))
+print(",".join(out))' "$1" 2>/dev/null; }
+
+pg pg-main "DELETE FROM public.ok_t" >/dev/null
+A=/tmp/rt-before.ndjson
+B=/tmp/rt-after.ndjson
+
+# Watch, write one row, and note where we got to.
+( stream_for 8 "$A" ) &
+W=$!
+sleep 3
+pg pg-main "INSERT INTO public.ok_t VALUES (100, 'first', 'x')" >/dev/null
+wait "$W" 2>/dev/null
+MARK="$(last_lsn "$A")"
+# The DELETE above is itself a change, so the capture legitimately opens with
+# those deletes. What matters is that the insert arrived and is last.
+case "$(ids_in "$A")" in
+  *100) ok "the first change arrives and carries a position" ;;
+  *) bad "the first change did not arrive (got '$(ids_in "$A")')" ;;
+esac
+if [ -n "$MARK" ]; then ok "and the position is usable ($MARK)"; else bad "no commit_lsn to resume from"; fi
+
+# Now nobody is listening. These are the changes a subscriber must not lose.
+pg pg-main "INSERT INTO public.ok_t VALUES (101, 'missed one', 'x')" >/dev/null
+pg pg-main "INSERT INTO public.ok_t VALUES (102, 'missed two', 'x')" >/dev/null
+pg pg-main "INSERT INTO public.ok_t VALUES (103, 'missed three', 'x')" >/dev/null
+
+# Reconnect from the mark. This is the promise durable replay was chosen for:
+# changes made while disconnected arrive, in order, rather than silently never
+# arriving at all.
+stream_for 8 "$B" "$MARK"
+GOT="$(ids_in "$B")"
+case "$GOT" in
+  *101*102*103*) ok "every change made while disconnected is replayed, in order" ;;
+  *) bad "replay lost changes (got '$GOT', want 101,102,103 in order)" ;;
+esac
+
+# ── 9. The budget: a slot past saving says so ───────────────────────────────
+echo
+echo "9. exceeding the WAL budget costs a resync, not a full disk"
+
+# A tiny budget. It has to be set the way an operator would -- the environment
+# variable, then `realtime setup` -- because Postgres gives a setting from the
+# command line precedence over ALTER SYSTEM, and the engine passes this one on
+# the command line. An ALTER SYSTEM here is accepted and silently ignored, which
+# is how the first version of this test "proved" the budget does not work.
+"$S" realtime teardown --yes >/dev/null 2>&1
+FOX_REALTIME_WAL_KEEP=0 "$S" realtime setup --yes >/dev/null 2>&1
+main_ready
+assert_eq "the budget really is what we asked for" \
+  "$(pg pg-main "SELECT setting FROM pg_settings WHERE name='max_slot_wal_keep_size'")" "0"
+"$S" realtime enable ok_t >/dev/null 2>&1
+
+# A brief connection, to leave a slot behind for the WAL to outrun.
+stream_for 4 /tmp/rt-seed.ndjson
+SEED="$(last_lsn /tmp/rt-seed.ndjson)"
+[ -z "$SEED" ] && SEED="$MARK"
+
+for i in 1 2 3 4 5 6; do
+  pg pg-main "INSERT INTO public.ok_t SELECT 200+$i*1000+g, 'bulk', repeat(md5(random()::text), 50) FROM generate_series(1,2000) g" >/dev/null
+  pg pg-main "SELECT pg_switch_wal()" >/dev/null
+  pg pg-main "CHECKPOINT" >/dev/null
+done
+sleep 2
+STATUS="$(pg pg-main "SELECT wal_status FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' LIMIT 1")"
+assert_eq "Postgres invalidated the slot rather than hold more WAL" "$STATUS" "lost"
+
+# A lost slot can never be resumed from, and the subscriber has to be told --
+# silence is a gap in its copy that nothing downstream could detect.
+C=/tmp/rt-lost.ndjson
+stream_for 12 "$C" "$SEED"
+assert_contains "the subscriber is told to resync, not left waiting" \
+  "$(cat "$C" 2>/dev/null)" "resync"
+
+# And the lost slot is cleaned up: it holds a catalog entry and can do nothing
+# else for anyone.
+"$S" up >/dev/null 2>&1
+sleep 2
+assert_eq "a lost slot is swept by \`fox up\`" \
+  "$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND wal_status='lost'")" "0"
 
 # ── 7. Teardown leaves the database working ─────────────────────────────────
 echo
@@ -276,9 +402,13 @@ assert_eq "main is back to replica" "$(pg pg-main 'SHOW wal_level')" "replica"
 assert_eq "no publications are left" \
   "$(pg pg-main "SELECT count(*) FROM pg_publication WHERE pubname LIKE 'fox_rt_%'")" "0"
 # The point of the whole exercise: nothing it touched is worse off.
-pg pg-main "UPDATE public.ok_t SET note='after' WHERE id=1" >/dev/null
+# A row of its own: section 8 empties this table, so reading one written in
+# section 4 found nothing and the assertion failed for a reason that had no
+# bearing on what it was testing.
+pg pg-main "INSERT INTO public.ok_t VALUES (900, 'before', 'x') ON CONFLICT (id) DO NOTHING" >/dev/null
+pg pg-main "UPDATE public.ok_t SET note='after' WHERE id=900" >/dev/null
 assert_eq "UPDATE on a formerly-streamed table still works" \
-  "$(pg pg-main "SELECT note FROM public.ok_t WHERE id=1")" "after"
+  "$(pg pg-main "SELECT note FROM public.ok_t WHERE id=900")" "after"
 pg pg-main "UPDATE public.nokey SET b='z' WHERE a=1" >/dev/null
 assert_eq "and on the one that was set to FULL" \
   "$(pg pg-main "SELECT b FROM public.nokey WHERE a=1")" "z"

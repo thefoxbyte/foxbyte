@@ -108,3 +108,26 @@ func TestCloseIsSafeTwiceAndUnderPublish(t *testing.T) {
 		t.Errorf("%d subscribers left attached", h.Count())
 	}
 }
+
+// A subscriber that attaches after the decoder has already given up must be
+// told at once, not left waiting.
+//
+// The route starts a decoder and then subscribes, so a decoder that fails
+// immediately -- an invalidated slot, say -- closes the hub before anybody is
+// on it. The first version left that subscriber on a stream that would never
+// carry anything until its hour-long deadline: exactly the silence this design
+// promises never to produce.
+func TestSubscribingAfterTheHubHasGivenUp(t *testing.T) {
+	h := NewHub()
+	h.Close(Notice{Type: "resync", Code: CodeSlotLost, Detail: "refetch and subscribe again"})
+
+	s := h.Subscribe()
+	select {
+	case <-s.Done():
+		if s.Reason().Code != CodeSlotLost {
+			t.Errorf("reason = %+v, want %s", s.Reason(), CodeSlotLost)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a subscriber attached to a hub that had given up was left waiting")
+	}
+}

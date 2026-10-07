@@ -35,6 +35,16 @@ type Hub struct {
 	mu     sync.Mutex
 	subs   map[int64]*Subscriber
 	nextID int64
+	// closed and why are remembered, so a subscriber that attaches after the
+	// decoder has already given up is told immediately rather than waiting.
+	//
+	// That race is real and was not theoretical: the route starts the decoder
+	// and then subscribes, so a decoder that failed at once -- an invalidated
+	// slot, say -- closed the hub before anybody was on it, and the subscriber
+	// then sat on a stream that would never carry anything until the hour-long
+	// deadline. Exactly the silence this design promises never to produce.
+	closed bool
+	why    Notice
 }
 
 func NewHub() *Hub { return &Hub{subs: map[int64]*Subscriber{}} }
@@ -57,6 +67,13 @@ func (h *Hub) Subscribe() *Subscriber {
 	defer h.mu.Unlock()
 	h.nextID++
 	s := &Subscriber{id: h.nextID, hub: h, ch: make(chan any, BufferSize), done: make(chan struct{})}
+	if h.closed {
+		// Already over. Hand back a stream that is finished and says why, so
+		// the caller reports it and moves on.
+		s.reason = h.why
+		close(s.done)
+		return s
+	}
 	h.subs[s.id] = s
 	return s
 }
@@ -96,6 +113,7 @@ func (h *Hub) Publish(ev any) {
 // going away.
 func (h *Hub) Close(n Notice) {
 	h.mu.Lock()
+	h.closed, h.why = true, n
 	subs := make([]*Subscriber, 0, len(h.subs))
 	for _, s := range h.subs {
 		subs = append(subs, s)

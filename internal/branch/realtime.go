@@ -73,7 +73,11 @@ func SetRealtimeOn(on bool) error {
 // than a full disk.
 //
 // Tunable, because the right number depends on how much the database writes and
-// how long a subscriber may reasonably be away.
+// how long a subscriber may reasonably be away — but only through this variable
+// and `fox realtime setup`. The engine passes the setting on Postgres's command
+// line, and a command-line setting takes precedence over ALTER SYSTEM: an
+// operator who reaches for ALTER SYSTEM will have it accepted and then silently
+// ignored.
 func WALKeepSize() string {
 	if v := strings.TrimSpace(brand.Getenv("REALTIME_WAL_KEEP")); v != "" {
 		return v
@@ -132,7 +136,16 @@ type RealtimeSlot struct {
 	Branch   string `json:"branch"`
 	Active   bool   `json:"active"`
 	WALBytes int64  `json:"wal_bytes"` // held for this slot, and so unreclaimable
+	// Status is Postgres's own: reserved, extended, unreserved, or lost. `lost`
+	// means the slot fell further behind than max_slot_wal_keep_size allows and
+	// Postgres invalidated it rather than hold more — the budget doing its job.
+	// A lost slot can never be resumed from.
+	Status string `json:"status"`
 }
+
+// Lost reports whether this slot is past saving, so a subscriber must refetch
+// rather than resume.
+func (s RealtimeSlot) Lost() bool { return s.Status == "lost" }
 
 // RealtimeSlots lists the feed's slots on a branch, with how much WAL each is
 // holding. `fox realtime slots` prints it and `fox check` warns on it: a slot
@@ -140,6 +153,7 @@ type RealtimeSlot struct {
 func RealtimeSlots(name string) ([]RealtimeSlot, error) {
 	lines, err := LedgerQuery(name, `SELECT slot_name || '|' || active::text || '|' ||
 	    coalesce(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint, 0)::text
+	    || '|' || coalesce(wal_status, '')
 	  FROM pg_replication_slots WHERE slot_name LIKE '`+SlotPrefix+`%' ORDER BY slot_name`)
 	if err != nil {
 		return nil, err
@@ -147,7 +161,7 @@ func RealtimeSlots(name string) ([]RealtimeSlot, error) {
 	out := make([]RealtimeSlot, 0, len(lines))
 	for _, l := range lines {
 		parts := strings.Split(l, "|")
-		if len(parts) != 3 {
+		if len(parts) < 4 {
 			continue
 		}
 		n, _ := strconv.ParseInt(parts[2], 10, 64)
@@ -156,6 +170,7 @@ func RealtimeSlots(name string) ([]RealtimeSlot, error) {
 			Branch:   name,
 			Active:   strings.HasPrefix(strings.ToLower(parts[1]), "t"),
 			WALBytes: n,
+			Status:   parts[3],
 		})
 	}
 	return out, nil
@@ -219,12 +234,16 @@ func DropRealtimeObjects() error {
 	for _, n := range names {
 		slots, err := RealtimeSlots(n)
 		if err != nil {
-			failed = append(failed, n)
+			failed = append(failed, n+" (not reachable)")
 			continue
 		}
 		for _, s := range slots {
 			if err := DropRealtimeSlot(n, s.Name); err != nil {
-				failed = append(failed, n+"/"+s.Name)
+				why := "could not be dropped"
+				if s.Active {
+					why = "a subscriber is still attached"
+				}
+				failed = append(failed, fmt.Sprintf("%s on %s: %s", s.Name, n, why))
 			}
 		}
 		if _, err := LedgerQuery(n, `DO $$ DECLARE p record; BEGIN
@@ -240,10 +259,20 @@ func DropRealtimeObjects() error {
 	return nil
 }
 
-// SweepRealtimeSlots drops the feed's slots that no live subscriber holds, on
-// every running branch. Called from Up(), because a slot nobody is draining is
-// the one failure of this design that costs disk — and the engine coming up is
-// the moment nobody is subscribed yet.
+// SweepRealtimeSlots drops the feed's slots that can never be used again.
+//
+// Only the lost ones. An earlier version dropped every slot nobody was
+// currently holding, which was wrong in a way that quietly removed the feature
+// this design was chosen for: a durable slot is exactly what a subscriber
+// resumes from, and Up() runs on every engine start, so a restart between a
+// disconnect and a reconnect threw the subscriber's position away. There was
+// nothing to see — the next connection simply started from "now", with a silent
+// gap where the missed changes should have been.
+//
+// An idle slot does not need sweeping, because max_slot_wal_keep_size already
+// bounds what it can cost: past that budget Postgres invalidates it and marks
+// it lost, and *that* is the slot worth dropping — it holds a catalog entry and
+// can never be resumed from.
 func SweepRealtimeSlots() {
 	if !RealtimeOn() {
 		return
@@ -258,11 +287,14 @@ func SweepRealtimeSlots() {
 			continue
 		}
 		for _, s := range slots {
-			if s.Active {
+			if s.Active || !s.Lost() {
 				continue
 			}
 			if err := DropRealtimeSlot(n, s.Name); err != nil {
-				log.Printf("change feed: could not drop the idle slot %s on %s: %v", s.Name, n, err)
+				log.Printf("change feed: could not drop the lost slot %s on %s: %v", s.Name, n, err)
+			} else {
+				log.Printf("change feed: dropped %s on %s — it had fallen further behind than %s allows",
+					s.Name, n, WALKeepSize())
 			}
 		}
 	}
