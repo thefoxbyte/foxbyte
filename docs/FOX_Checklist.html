@@ -449,7 +449,8 @@
       <li class="ok">Status and cutover from REST and the Import page</li><li class="ok">A replicating branch is never auto-suspended</li>
       <li class="ok">Automated test (VM §5b) and driven in the browser</li></ul></td><td class="tb">Unit; VM §5b</td></tr>
     <tr data-id="I9" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">I9</td><td><b>Guard handling during import</b><ul class="subs">
-      <li class="ok">Guardrail paused, recording stays on</li><li class="ok">Re-armed even after a crash</li></ul></td><td class="tb">Manual</td></tr>
+      <li class="ok">Guardrail paused, recording stays on</li><li class="ok">Re-armed even after a crash</li>
+      <li class="ok">The target keeps the grants <code>db_client</code> needs: preparing it drops and recreates <code>public</code>, which had left imported data readable by the import's own superuser and by no gateway client at all</li></ul></td><td class="tb">Manual; integration_test.sh &sect;5b</td></tr>
     <tr data-id="I10" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">I10</td><td><b>Live progress (CLI &amp; SSE)</b><ul class="subs">
       <li class="ok">Live log and progress bar</li><li class="lim">psql subprocess output not streamed</li></ul></td><td class="tb">Manual</td></tr>
     <tr data-id="I11" data-st="man"><td class="c"><i class="ck man"></i></td><td class="id">I11</td><td><b>Import REST endpoints</b><ul class="subs">
@@ -615,9 +616,33 @@
   </table>
 </section>
 
+<!-- ============================ REALTIME ============================ -->
+<section class="area-sec" data-area="N">
+  <h2><span class="al">N</span>Realtime change feed<span class="cnt"></span></h2>
+  <table>
+    <tr><th></th><th>ID</th><th>Item &middot; scope</th><th>Tested by</th></tr>
+    <tr data-id="N1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">N1</td><td><b>Realtime change feed</b><ul class="subs">
+      <li class="ok">Opt-in: <code>fox realtime setup --yes</code> says what it will restart; with the feed off, a primary's arguments are byte-identical to before and a branch gets none</li>
+      <li class="ok">Durable replay through <code>?since=&lt;commit_lsn&gt;</code>, bounded by <code>max_slot_wal_keep_size</code>; past it the subscriber is told to <code>resync</code> rather than left waiting</li>
+      <li class="ok">One decoder per branch in the control plane, started on the first subscriber and stopped after the last; it wakes a suspended branch</li>
+      <li class="ok">Refusals that hold: row-level security (no override), no primary key (and <code>UPDATE</code> still works afterwards), anything outside <code>public</code>, the Blackbox's own tables, anything <code>db_client</code> cannot read</li>
+      <li class="ok">Wire format: values as text, identity always, <code>old</code> only when sent, <code>changed</code> only under FULL, unchanged-TOAST named rather than nulled</li>
+      <li class="ok">SSE on the outer mux so a branch-scoped key reaches its own branch and nothing else; somebody else's branch is 404, not 403</li>
+      <li class="ok">Slots named, listed, accounted for and swept only once Postgres has marked them lost; <code>fox check</code> warns on one nothing is draining</li>
+      <li class="ok">The reaper leaves a subscribed branch alone (asked of Postgres, not of memory), and a resumed branch gets a fresh idle window</li>
+      <li class="ok">A failover keeps the feed: the standby carries the same arguments, <code>setup</code> restarts one that predates it, and the feed follows <code>main</code> onto the promoted standby</li>
+      <li class="ok">Neighbours unaffected: a continuous import runs under logical decoding and is itself decodable; backups, verify, failover and failback all pass</li>
+      <li class="ok"><code>setup</code>, <code>teardown</code>, <code>status</code> and <code>slots</code> stay in the free build, so a downgrade can still undo it</li>
+      <li class="lim">Console and REST only this release; the published SDKs get the feed once the wire format has survived real use</li>
+      <li class="lim">No per-subscriber row filters, which is why an RLS table is refused rather than filtered</li>
+      <li class="lim">A delete under the default replica identity carries the primary key and nothing else</li></ul></td><td class="tb">enterprise/realtime, scripts/integration_realtime.sh</td></tr>
+  </table>
+  <div class="foot">FOX_Checklist &middot; area N</div>
+</section>
+
 <!-- ============================ NOT STARTED ============================ -->
-<section class="area-sec" data-area="N" style="page-break-before: always">
-  <h2><span class="al" style="background:#64748b">N</span>Not started (roadmap)<span class="cnt"></span></h2>
+<section class="area-sec" data-area="Z" style="page-break-before: always">
+  <h2><span class="al" style="background:#64748b">Z</span>Not started (roadmap)<span class="cnt"></span></h2>
   <p class="sub">Planned or discussed, nothing built yet. When work starts, move the row into its area with the next id there.</p>
   <table>
     <tr><th></th><th>ID</th><th>Item · scope</th><th>Related</th></tr>
@@ -650,7 +675,7 @@
       var h = sec.querySelector("h2");
       var name = h.childNodes[1].textContent;
       var label = sec.dataset.area + " · " + name;
-      if (sec.dataset.area === "N") { // the roadmap isn't built features: listed after the total
+      if (sec.dataset.area === "Z") { // the roadmap isn't built features: listed after the total
         h.querySelector(".cnt").textContent = c.n + " items";
         roadmap = row(label, c, false);
         return;

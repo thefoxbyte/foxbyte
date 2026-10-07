@@ -38,7 +38,7 @@ func Facts(branchName, schema, table string) (Table, error) {
 	FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 	WHERE n.nspname = %s AND c.relname = %s`, branch.QuoteLiteral(schema), branch.QuoteLiteral(table))
 
-	lines, err := branch.LedgerQuery(branchName, q)
+	lines, err := branch.LedgerQuery(branch.ServingBranch(branchName), q)
 	if err != nil {
 		return Table{}, err
 	}
@@ -64,6 +64,10 @@ func isTrue(s string) bool { return strings.HasPrefix(strings.ToLower(s), "t") }
 
 // Enable adds a table to the branch's publication, after the preflight.
 func Enable(branchName string, req Request) error {
+	// Resolved once, here: after a failover the container serving "main" is the
+	// promoted standby, and every statement below reaches Postgres by container
+	// name. See branch.ServingBranch.
+	branchName = branch.ServingBranch(branchName)
 	t, err := Facts(branchName, req.Table.Schema, req.Table.Name)
 	if err != nil {
 		return err
@@ -105,6 +109,7 @@ func Enable(branchName string, req Request) error {
 // only be in one of them -- Enable adds it to the one for its event set -- but
 // the caller does not have to remember which, so this looks.
 func Disable(branchName, schema, table string) error {
+	branchName = branch.ServingBranch(branchName)
 	pubs, err := branch.Publications(branchName)
 	if err != nil {
 		return err

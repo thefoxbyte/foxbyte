@@ -311,9 +311,20 @@ func defaultTargetName(dsn string) string {
 // prepareTarget gives the new instance a clean public schema, independent of
 // main's current contents (the fox ledger schema is left intact).
 func prepareTarget(target string) error {
+	// Dropping the schema takes its grants with it, and that is not a detail:
+	// the gateway logs every client in as a role inheriting db_client, so an
+	// imported instance whose public schema had been recreated bare could not
+	// be read at all through the gateway — only by the superuser the import
+	// itself uses, which is why every test of it passed. The grants are the
+	// ones ledger.sql establishes (see its "Least-privilege client role"
+	// section, whose comment already says they are meant to cover imported
+	// tables), re-applied because this statement undoes them.
 	return run("docker", "exec", "-e", pgImportOptions, container(target),
 		"psql", "-q", "-U", pgUser, "-d", pgDatabase, "-c",
-		"DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;")
+		"DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;",
+		"-c", "GRANT USAGE, CREATE ON SCHEMA public TO db_client;",
+		"-c", "ALTER DEFAULT PRIVILEGES FOR ROLE "+pgUser+" IN SCHEMA public GRANT ALL ON TABLES TO db_client;",
+		"-c", "ALTER DEFAULT PRIVILEGES FOR ROLE "+pgUser+" IN SCHEMA public GRANT ALL ON SEQUENCES TO db_client;")
 }
 
 func loadPostgres(p *Progress, target, dsn string) error {

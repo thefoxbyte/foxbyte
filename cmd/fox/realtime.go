@@ -106,6 +106,15 @@ func realtimeSetup(args []string) error {
 		_ = branch.SetRealtimeOn(false)
 		return fmt.Errorf("main did not come back, so nothing was changed: %w", err)
 	}
+	// And the standby, which is a primary in waiting: see RestartStandby. Not
+	// fatal if it fails -- main is already serving with the feed available, and
+	// `fox ha enable` rebuilds a standby from scratch -- but it has to be said,
+	// because a standby left behind would promote without the feed.
+	if err := branch.RestartStandby(); err != nil {
+		fmt.Printf("\nThe HA standby could not be restarted, so it is still running without\n"+
+			"logical decoding and a failover would promote a primary that cannot\n"+
+			"stream: %v\nRebuild it with `%s ha enable`.\n", err, brand.CLI)
+	}
 	fmt.Printf("Done. `%s realtime status` confirms it.\n", brand.CLI)
 	return nil
 }
@@ -152,6 +161,12 @@ func realtimeTeardown(args []string) error {
 	fmt.Println("Restarting main…")
 	if err := branch.RestartPrimary(); err != nil {
 		return fmt.Errorf("the feed is off but main did not come back: %w", err)
+	}
+	// The standby too, so it stops paying for a feature this install no longer
+	// has. Harmless if it fails: a standby carrying the old settings only
+	// writes more WAL than it needs to.
+	if err := branch.RestartStandby(); err != nil {
+		fmt.Printf("\nThe HA standby kept its old settings (%v); `%s ha enable` rebuilds it.\n", err, brand.CLI)
 	}
 	fmt.Println("Done.")
 	return nil

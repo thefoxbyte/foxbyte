@@ -66,7 +66,7 @@ func checkCmd(args []string) {
 	}
 	lines = append(lines, checkServers()...)
 	lines = append(lines, checkPorts()...)
-	lines = append(lines, checkAPI(), checkAPIClosed(), checkBlackbox(), checkAnchors(), checkBackups(), checkRestore(), checkSampleData())
+	lines = append(lines, checkAPI(), checkAPIClosed(), checkBlackbox(), checkAnchors(), checkRealtime(), checkBackups(), checkRestore(), checkSampleData())
 
 	failed, warned := 0, 0
 	for _, l := range lines {
@@ -301,6 +301,73 @@ func checkAnchors() checkLine {
 	}
 	return ok("blackbox anchors", fmt.Sprintf("not written (%s); the record is still hash-chained "+
 		"and checked, and anchors already written still verify", why))
+}
+
+// Where somebody looks when a change feed is costing something.
+//
+// Three separate facts, and they report differently because they lead
+// different places: whether the databases are set up for a feed at all,
+// whether this binary can serve one, and whether a slot is holding WAL that
+// nothing is draining.
+//
+// The middle one matters most on an install that went back to Standard. The
+// setting survives -- `realtime teardown` is deliberately in the free build so
+// it can be undone -- but nothing can stream, and a database quietly paying
+// extra WAL for a feature nobody can use is exactly the kind of thing an
+// install should say out loud rather than leave to be discovered.
+//
+// The last is the one failure of this design that costs disk, so a slot is
+// named with its branch and what it holds: "a slot is idle" is not something
+// anybody can act on.
+func checkRealtime() checkLine {
+	keep := branch.WALKeepSize()
+	if !branch.RealtimeOn() {
+		return ok("change feed", "off — databases run at wal_level=replica, as they always have")
+	}
+	if !edition.Has(edition.Realtime) {
+		// The same distinction requireFeature and checkAnchors draw: one of
+		// these is a download and the other is a purchase.
+		why := "not in the standard edition"
+		if edition.Enterprise {
+			why = "no licence covers it"
+		}
+		return warn("change feed", fmt.Sprintf("set up (wal_level=logical, %s of WAL per slot) but nothing can stream: %s", keep, why),
+			fmt.Sprintf("%s realtime teardown", brand.CLI))
+	}
+	names, err := branch.RunningBranches()
+	if err != nil {
+		return ok("change feed", fmt.Sprintf("on (wal_level=logical, at most %s of WAL per slot)", keep))
+	}
+	var idle, lost, live []string
+	for _, n := range names {
+		slots, err := branch.RealtimeSlots(n)
+		if err != nil {
+			continue // a branch that cannot be asked is not a finding about slots
+		}
+		for _, s := range slots {
+			switch {
+			case s.Lost():
+				lost = append(lost, n+"/"+s.Name)
+			case s.Active:
+				live = append(live, n)
+			default:
+				idle = append(idle, fmt.Sprintf("%s/%s holding %s", n, s.Name, humanBytes(s.WALBytes)))
+			}
+		}
+	}
+	switch {
+	case len(lost) > 0:
+		return warn("change feed", fmt.Sprintf("%d slot(s) fell past the %s budget and cannot be resumed from: %s",
+			len(lost), keep, strings.Join(lost, ", ")),
+			fmt.Sprintf("%s up   — sweeps them; their subscribers are told to resync", brand.CLI))
+	case len(idle) > 0:
+		return warn("change feed", fmt.Sprintf("on, with %d idle slot(s) kept for a subscriber that may not come back: %s",
+			len(idle), strings.Join(idle, ", ")),
+			fmt.Sprintf("%s realtime slots <branch> --drop <name>", brand.CLI))
+	case len(live) > 0:
+		return ok("change feed", fmt.Sprintf("streaming on %s (at most %s of WAL per slot)", strings.Join(live, ", "), keep))
+	}
+	return ok("change feed", fmt.Sprintf("on (wal_level=logical, at most %s of WAL per slot); nothing streaming", keep))
 }
 
 func checkBackups() checkLine {

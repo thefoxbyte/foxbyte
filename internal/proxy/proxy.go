@@ -529,6 +529,8 @@ var (
 	probeConnections = branch.ActiveConnections
 	probeReplication = branch.ReplicationStatus
 	probeRealtime    = branch.RealtimeActive
+	listSuspendable  = branch.SuspendableBranches
+	suspendBranch    = branch.Suspend
 )
 
 // canSuspend reports whether a branch that has been idle past the window can be
@@ -573,30 +575,45 @@ func reaper(idle time.Duration) {
 	}
 	for {
 		time.Sleep(interval)
-		names, err := branch.SuspendableBranches()
-		if err != nil {
+		sweepOnce(idle)
+	}
+}
+
+// sweepOnce is one pass of the reaper: suspend every branch that has been idle
+// past the window and that nothing is still using. Separate from the loop above
+// so the idle bookkeeping can be tested without waiting for one.
+func sweepOnce(idle time.Duration) {
+	names, err := listSuspendable()
+	if err != nil {
+		return
+	}
+	for _, n := range names {
+		mu.Lock()
+		last, seen := lastActivity[n]
+		if !seen {
+			lastActivity[n] = time.Now() // first sight: start the idle clock
+			mu.Unlock()
 			continue
 		}
-		for _, n := range names {
-			mu.Lock()
-			last, seen := lastActivity[n]
-			if !seen {
-				lastActivity[n] = time.Now() // first sight: start the idle clock
-				mu.Unlock()
-				continue
-			}
-			idleFor := time.Since(last)
-			mu.Unlock()
-			if idleFor < idle {
-				continue
-			}
-			if !canSuspend(n) {
-				continue
-			}
-			log.Printf("auto-suspend: %s idle %s, 0 connections -> stopping", n, idleFor.Round(time.Second))
-			if err := branch.Suspend(n); err != nil {
-				log.Printf("suspend %s: %v", n, err)
-			}
+		idleFor := time.Since(last)
+		mu.Unlock()
+		if idleFor < idle || !canSuspend(n) {
+			continue
 		}
+		log.Printf("auto-suspend: %s idle %s, 0 connections -> stopping", n, idleFor.Round(time.Second))
+		if err := suspendBranch(n); err != nil {
+			log.Printf("suspend %s: %v", n, err)
+			continue
+		}
+		// Forget the idle clock, so whatever resumes this branch next gets a
+		// full window. Keeping the timestamp meant a branch resumed by anything
+		// other than a gateway connection -- `fox branch resume`, the agent
+		// API, a change-feed subscriber -- was eligible for suspension again
+		// the moment it came back, before its first client could connect: a
+		// subscriber would wake a branch and have it stopped underneath them
+		// seconds later, over and over.
+		mu.Lock()
+		delete(lastActivity, n)
+		mu.Unlock()
 	}
 }

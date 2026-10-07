@@ -302,6 +302,13 @@ for i in $(seq 1 60); do [ "$(repl | python3 -c 'import sys,json; d=json.load(sy
 assert_eq "status: the initial copy finishes (1 of 1 tables)" \
   "$(repl | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["replicating"], d["tables_ready"], d["tables"])')" "True 1 1"
 assert_eq "the initial copy has the rows" "$(pg pg-itrep 'SELECT count(*) FROM items')" "3"
+# Through the gateway, as a client -- not as the superuser the import runs as.
+# The two had never been distinguished here, and they were not the same: the
+# target's public schema is dropped and recreated during preparation, which
+# took the grants db_client needs with it, so imported data could be read by
+# the import itself and by no client at all.
+assert_eq "a gateway client can read what was imported" \
+  "$(PGPASSWORD="$KEY" psql "$GATEWAY/itrep" -tAc 'SELECT count(*) FROM items' 2>&1 | head -1)" "3"
 sudo docker exec itsrc psql -U postgres -q -c "INSERT INTO items VALUES (4,'d')" >/dev/null
 for i in $(seq 1 30); do [ "$(pg pg-itrep 'SELECT count(*) FROM items')" = 4 ] && break; sleep 1; done
 assert_eq "a change on the source streams across" "$(pg pg-itrep 'SELECT count(*) FROM items')" "4"

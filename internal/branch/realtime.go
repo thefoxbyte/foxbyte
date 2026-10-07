@@ -114,6 +114,27 @@ func sanitiseSlotPart(s string) string {
 	return out
 }
 
+// ServingBranch is the branch whose container actually answers for a name.
+//
+// Everything in this file reaches Postgres by container name, and after
+// `fox ha failover` the container serving "main" is the promoted standby while
+// pg-main is stopped. RealtimeDSN already resolved this by address, and these
+// did not — so a feed on "main" after a failover could not be read at all: the
+// decoder's first step execs into a container that is not running, fails, and
+// retries until it gives up, with nothing on the stream to say why. A failover
+// is exactly the situation nobody wants to be debugging a change feed in.
+//
+// A variable for the lookup, so a test can say where "main" is without writing
+// to the state directory brand resolves once per process.
+var servingPrimary = primaryBranch
+
+func ServingBranch(name string) string {
+	if name == "" || name == "main" {
+		return servingPrimary()
+	}
+	return name
+}
+
 // RealtimeActive reports whether any subscriber is currently attached to a
 // branch, asked of Postgres rather than of this process.
 //
@@ -122,7 +143,7 @@ func sanitiseSlotPart(s string) string {
 // would be suspended out from under its subscribers. Postgres is the one thing
 // both can see.
 func RealtimeActive(name string) (bool, error) {
-	lines, err := LedgerQuery(name, `SELECT EXISTS (SELECT 1 FROM pg_replication_slots
+	lines, err := LedgerQuery(ServingBranch(name), `SELECT EXISTS (SELECT 1 FROM pg_replication_slots
 	  WHERE slot_name LIKE '`+SlotPrefix+`%' AND active)`)
 	if err != nil {
 		return false, err
@@ -151,7 +172,7 @@ func (s RealtimeSlot) Lost() bool { return s.Status == "lost" }
 // holding. `fox realtime slots` prints it and `fox check` warns on it: a slot
 // nobody is draining is the one failure of this design that costs disk.
 func RealtimeSlots(name string) ([]RealtimeSlot, error) {
-	lines, err := LedgerQuery(name, `SELECT slot_name || '|' || active::text || '|' ||
+	lines, err := LedgerQuery(ServingBranch(name), `SELECT slot_name || '|' || active::text || '|' ||
 	    coalesce(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint, 0)::text
 	    || '|' || coalesce(wal_status, '')
 	  FROM pg_replication_slots WHERE slot_name LIKE '`+SlotPrefix+`%' ORDER BY slot_name`)
@@ -183,7 +204,7 @@ func DropRealtimeSlot(name, slot string) error {
 	if !strings.HasPrefix(slot, SlotPrefix) {
 		return fmt.Errorf("%w: %q is not one of the change feed's slots", ErrInvalidRequest, slot)
 	}
-	_, err := LedgerQuery(name, "SELECT pg_drop_replication_slot("+QuoteLiteral(slot)+")")
+	_, err := LedgerQuery(ServingBranch(name), "SELECT pg_drop_replication_slot("+QuoteLiteral(slot)+")")
 	return err
 }
 
@@ -196,7 +217,7 @@ func DropRealtimeSlot(name, slot string) error {
 // the same answer haGuard gives for every other action that touches the
 // primary.
 func RealtimeHAGuard(action string) error {
-	if PrimaryContainer() != container("standby") {
+	if ServingBranch("main") != "standby" {
 		return nil
 	}
 	return fmt.Errorf("refusing `%s realtime %s`: 'main' is being served by the promoted standby "+
@@ -313,7 +334,7 @@ const RealtimeRole = "db_realtime"
 // refuses an RLS table: two independent reasons a policy cannot be sidestepped
 // are better than one.
 func EnsureRealtimeRole(name, password string) error {
-	return ExecSQL(name, fmt.Sprintf(`DO $$ BEGIN
+	return ExecSQL(ServingBranch(name), fmt.Sprintf(`DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN
     EXECUTE format('CREATE ROLE %%I LOGIN REPLICATION NOSUPERUSER NOBYPASSRLS NOINHERIT', %s);
   END IF;
@@ -347,7 +368,7 @@ func PublicationFor(events []string) string {
 // Publications lists the feed's publications on a branch, for a decoder that
 // has to subscribe to all of them.
 func Publications(name string) ([]string, error) {
-	return LedgerQuery(name, `SELECT pubname FROM pg_publication
+	return LedgerQuery(ServingBranch(name), `SELECT pubname FROM pg_publication
 	  WHERE pubname LIKE '`+PublicationPrefix+`%' ORDER BY pubname`)
 }
 
@@ -375,6 +396,6 @@ func RealtimeDSN(name, password string) (string, error) {
 
 // PublishedTables is what a branch's feed currently carries.
 func PublishedTables(name string) ([]string, error) {
-	return LedgerQuery(name, `SELECT DISTINCT schemaname || '.' || tablename FROM pg_publication_tables
+	return LedgerQuery(ServingBranch(name), `SELECT DISTINCT schemaname || '.' || tablename FROM pg_publication_tables
 	  WHERE pubname LIKE '`+PublicationPrefix+`%' ORDER BY 1`)
 }
