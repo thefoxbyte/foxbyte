@@ -6,11 +6,14 @@ package realtime
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
@@ -85,7 +88,26 @@ func Supervise(ctx context.Context, branchName, slot, password string, hub *Hub,
 }
 
 func runOnce(ctx context.Context, branchName, slot, password string, hub *Hub, since pglogrepl.LSN) error {
-	d, err := NewDecoder(ctx, branch.RealtimeDSN(branchName, password), slot, branch.PublicationName(), hub)
+	// A branch is a clone of main, so it has whatever roles main had when it was
+	// taken -- which for a branch older than `fox realtime setup` is not this
+	// one. Idempotent, and cheap next to opening a replication connection.
+	if err := branch.EnsureRealtimeRole(branchName, password); err != nil {
+		return fmt.Errorf("preparing the %s role on %q: %w", branch.RealtimeRole, branchName, err)
+	}
+	dsn, err := branch.RealtimeDSN(branchName, password)
+	if err != nil {
+		return err
+	}
+	// Every publication the feed owns, because each carries a different set of
+	// events and a subscriber wants all of them.
+	pubs, err := branch.Publications(branchName)
+	if err != nil {
+		return err
+	}
+	if len(pubs) == 0 {
+		return fmt.Errorf("nothing is being streamed on %q yet — enable a table first", branchName)
+	}
+	d, err := NewDecoder(ctx, dsn, slot, strings.Join(pubs, ","), hub)
 	if err != nil {
 		return err
 	}
@@ -103,21 +125,32 @@ func runOnce(ctx context.Context, branchName, slot, password string, hub *Hub, s
 	return d.Run(ctx, since)
 }
 
-// isSlotLost reports whether Postgres invalidated the slot, which is what
+// isSlotLost reports whether Postgres has invalidated the slot, which is what
 // exceeding max_slot_wal_keep_size looks like from here.
+//
+// Matched on SQLSTATE rather than on the message, which is how the first
+// version got it wrong: it looked for "can no longer get changes from
+// replication slot" and Postgres actually says "can no longer access
+// replication slot". The slot had been invalidated exactly as designed, and the
+// decoder treated it as a passing failure -- ten retries over nearly a minute,
+// and then "could not be read after repeated attempts" rather than the resync
+// that tells a subscriber to refetch. A client left retrying into a wall with
+// no idea it has to start again is the one outcome this design promises not to
+// produce, and prose is a poor thing to have promised it on.
+//
+// 55000 is object_not_in_prerequisite_state, which Postgres uses for several
+// things, so the message still has to mention a slot -- but the code does the
+// work and the wording only narrows it.
 func isSlotLost(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := err.Error()
-	for _, want := range []string{
-		"requested WAL segment", // ... has already been removed
-		"can no longer get changes from replication slot",
-		"invalidating slot",
-	} {
-		if strings.Contains(s, want) {
-			return true
-		}
+	var pge *pgconn.PgError
+	if errors.As(err, &pge) && pge.Code == "55000" &&
+		strings.Contains(strings.ToLower(pge.Message), "replication slot") {
+		return true
 	}
-	return false
+	// A segment that has been recycled says so differently, and is the same
+	// situation from the subscriber's point of view.
+	return strings.Contains(err.Error(), "requested WAL segment")
 }

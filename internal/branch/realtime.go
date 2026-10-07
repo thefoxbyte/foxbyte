@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -72,7 +73,11 @@ func SetRealtimeOn(on bool) error {
 // than a full disk.
 //
 // Tunable, because the right number depends on how much the database writes and
-// how long a subscriber may reasonably be away.
+// how long a subscriber may reasonably be away — but only through this variable
+// and `fox realtime setup`. The engine passes the setting on Postgres's command
+// line, and a command-line setting takes precedence over ALTER SYSTEM: an
+// operator who reaches for ALTER SYSTEM will have it accepted and then silently
+// ignored.
 func WALKeepSize() string {
 	if v := strings.TrimSpace(brand.Getenv("REALTIME_WAL_KEEP")); v != "" {
 		return v
@@ -131,7 +136,16 @@ type RealtimeSlot struct {
 	Branch   string `json:"branch"`
 	Active   bool   `json:"active"`
 	WALBytes int64  `json:"wal_bytes"` // held for this slot, and so unreclaimable
+	// Status is Postgres's own: reserved, extended, unreserved, or lost. `lost`
+	// means the slot fell further behind than max_slot_wal_keep_size allows and
+	// Postgres invalidated it rather than hold more — the budget doing its job.
+	// A lost slot can never be resumed from.
+	Status string `json:"status"`
 }
+
+// Lost reports whether this slot is past saving, so a subscriber must refetch
+// rather than resume.
+func (s RealtimeSlot) Lost() bool { return s.Status == "lost" }
 
 // RealtimeSlots lists the feed's slots on a branch, with how much WAL each is
 // holding. `fox realtime slots` prints it and `fox check` warns on it: a slot
@@ -139,6 +153,7 @@ type RealtimeSlot struct {
 func RealtimeSlots(name string) ([]RealtimeSlot, error) {
 	lines, err := LedgerQuery(name, `SELECT slot_name || '|' || active::text || '|' ||
 	    coalesce(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)::bigint, 0)::text
+	    || '|' || coalesce(wal_status, '')
 	  FROM pg_replication_slots WHERE slot_name LIKE '`+SlotPrefix+`%' ORDER BY slot_name`)
 	if err != nil {
 		return nil, err
@@ -146,7 +161,7 @@ func RealtimeSlots(name string) ([]RealtimeSlot, error) {
 	out := make([]RealtimeSlot, 0, len(lines))
 	for _, l := range lines {
 		parts := strings.Split(l, "|")
-		if len(parts) != 3 {
+		if len(parts) < 4 {
 			continue
 		}
 		n, _ := strconv.ParseInt(parts[2], 10, 64)
@@ -155,6 +170,7 @@ func RealtimeSlots(name string) ([]RealtimeSlot, error) {
 			Branch:   name,
 			Active:   strings.HasPrefix(strings.ToLower(parts[1]), "t"),
 			WALBytes: n,
+			Status:   parts[3],
 		})
 	}
 	return out, nil
@@ -218,16 +234,20 @@ func DropRealtimeObjects() error {
 	for _, n := range names {
 		slots, err := RealtimeSlots(n)
 		if err != nil {
-			failed = append(failed, n)
+			failed = append(failed, n+" (not reachable)")
 			continue
 		}
 		for _, s := range slots {
 			if err := DropRealtimeSlot(n, s.Name); err != nil {
-				failed = append(failed, n+"/"+s.Name)
+				why := "could not be dropped"
+				if s.Active {
+					why = "a subscriber is still attached"
+				}
+				failed = append(failed, fmt.Sprintf("%s on %s: %s", s.Name, n, why))
 			}
 		}
 		if _, err := LedgerQuery(n, `DO $$ DECLARE p record; BEGIN
-		  FOR p IN SELECT pubname FROM pg_publication WHERE pubname LIKE '`+SlotPrefix+`%' LOOP
+		  FOR p IN SELECT pubname FROM pg_publication WHERE pubname LIKE '`+PublicationPrefix+`%' LOOP
 		    EXECUTE format('DROP PUBLICATION %I', p.pubname);
 		  END LOOP; END $$`); err != nil {
 			failed = append(failed, n+"/publications")
@@ -239,10 +259,20 @@ func DropRealtimeObjects() error {
 	return nil
 }
 
-// SweepRealtimeSlots drops the feed's slots that no live subscriber holds, on
-// every running branch. Called from Up(), because a slot nobody is draining is
-// the one failure of this design that costs disk — and the engine coming up is
-// the moment nobody is subscribed yet.
+// SweepRealtimeSlots drops the feed's slots that can never be used again.
+//
+// Only the lost ones. An earlier version dropped every slot nobody was
+// currently holding, which was wrong in a way that quietly removed the feature
+// this design was chosen for: a durable slot is exactly what a subscriber
+// resumes from, and Up() runs on every engine start, so a restart between a
+// disconnect and a reconnect threw the subscriber's position away. There was
+// nothing to see — the next connection simply started from "now", with a silent
+// gap where the missed changes should have been.
+//
+// An idle slot does not need sweeping, because max_slot_wal_keep_size already
+// bounds what it can cost: past that budget Postgres invalidates it and marks
+// it lost, and *that* is the slot worth dropping — it holds a catalog entry and
+// can never be resumed from.
 func SweepRealtimeSlots() {
 	if !RealtimeOn() {
 		return
@@ -257,11 +287,14 @@ func SweepRealtimeSlots() {
 			continue
 		}
 		for _, s := range slots {
-			if s.Active {
+			if s.Active || !s.Lost() {
 				continue
 			}
 			if err := DropRealtimeSlot(n, s.Name); err != nil {
-				log.Printf("change feed: could not drop the idle slot %s on %s: %v", s.Name, n, err)
+				log.Printf("change feed: could not drop the lost slot %s on %s: %v", s.Name, n, err)
+			} else {
+				log.Printf("change feed: dropped %s on %s — it had fallen further behind than %s allows",
+					s.Name, n, WALKeepSize())
 			}
 		}
 	}
@@ -294,8 +327,29 @@ END $$`, QuoteLiteral(RealtimeRole), QuoteLiteral(RealtimeRole),
 // machine can always work it out while nothing off it can.
 func RealtimeRolePassword() string { return rolePassword("realtime", RealtimeRole) }
 
-// PublicationName is the one publication a branch's feed uses.
-func PublicationName() string { return SlotPrefix + "pub" }
+// PublicationPrefix is what every one of the feed's publications starts with.
+const PublicationPrefix = SlotPrefix + "pub"
+
+// PublicationFor is the publication that carries a given set of events.
+//
+// One per event set, not one per feed, because Postgres's `publish` option is a
+// property of the *publication* rather than of a table in it. A single
+// publication would mean the first table anyone enabled silently decided which
+// events every later table got — which is exactly what happened the first time
+// the integration suite ran: a table enabled with --events=insert made the next
+// table's updates and deletes disappear, with nothing to show for it.
+func PublicationFor(events []string) string {
+	sorted := append([]string(nil), events...)
+	sort.Strings(sorted)
+	return PublicationPrefix + "_" + strings.Join(sorted, "_")
+}
+
+// Publications lists the feed's publications on a branch, for a decoder that
+// has to subscribe to all of them.
+func Publications(name string) ([]string, error) {
+	return LedgerQuery(name, `SELECT pubname FROM pg_publication
+	  WHERE pubname LIKE '`+PublicationPrefix+`%' ORDER BY pubname`)
+}
 
 // RealtimeDSN is how a decoder reaches a branch: the replication connection
 // string, as the decode role.
@@ -305,13 +359,22 @@ func PublicationName() string { return SlotPrefix + "pub" }
 // through to the ordinary host line and authenticates with a password like any
 // other client — checked against a live database before the feed was designed,
 // because the alternative was widening pg_hba, which nobody wants to do.
-func RealtimeDSN(name, password string) string {
-	return fmt.Sprintf("postgres://%s:%s@%s:5432/%s?replication=database&sslmode=disable",
-		RealtimeRole, url.QueryEscape(password), container(name), pgDatabase)
+func RealtimeDSN(name, password string) (string, error) {
+	// BackendAddr, not the container's name: the control plane runs as a
+	// process on the host, where a docker container name does not resolve. It
+	// also knows that after a failover `main` is the promoted standby, which a
+	// name built from the branch would get wrong in exactly the situation
+	// nobody wants to debug.
+	addr, err := BackendAddr(name)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s/%s?replication=database&sslmode=disable",
+		RealtimeRole, url.QueryEscape(password), addr, pgDatabase), nil
 }
 
 // PublishedTables is what a branch's feed currently carries.
 func PublishedTables(name string) ([]string, error) {
-	return LedgerQuery(name, `SELECT schemaname || '.' || tablename FROM pg_publication_tables
-	  WHERE pubname = `+QuoteLiteral(PublicationName())+` ORDER BY 1`)
+	return LedgerQuery(name, `SELECT DISTINCT schemaname || '.' || tablename FROM pg_publication_tables
+	  WHERE pubname LIKE '`+PublicationPrefix+`%' ORDER BY 1`)
 }

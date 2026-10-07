@@ -92,6 +92,12 @@ func realtimeSetup(args []string) error {
 	if err := branch.SetRealtimeOn(true); err != nil {
 		return err
 	}
+	// The role a decoder connects as. Created here because this is the opt-in,
+	// and again before each connection in case a branch predates it.
+	if err := branch.EnsureRealtimeRole("main", branch.RealtimeRolePassword()); err != nil {
+		_ = branch.SetRealtimeOn(false)
+		return fmt.Errorf("creating the %s role: %w", branch.RealtimeRole, err)
+	}
 	fmt.Println("Restarting main…")
 	if err := branch.RestartPrimary(); err != nil {
 		// Put the marker back as it was: a half-done setup is worse than none,
@@ -120,8 +126,25 @@ func realtimeTeardown(args []string) error {
 			"Run again with --yes to go ahead.\n")
 		return nil
 	}
+	// Every slot has to go before wal_level is lowered, and that is not
+	// fussiness: Postgres refuses to start with a logical replication slot
+	// present and wal_level below logical. A teardown that lowered it with one
+	// left behind would take the database down and keep it down.
+	//
+	// So this refuses rather than proceeds — but it has to say which branch and
+	// what to do, because the first version reported
+	// "could not clean up on: main/fox_rt_main_stream" and left the feed on,
+	// which tells a person nothing they can act on.
 	if err := branch.DropRealtimeObjects(); err != nil {
-		return fmt.Errorf("removing the feed's publications and slots: %w", err)
+		fmt.Printf("Nothing was changed: the feed's replication slots could not all be removed.\n\n"+
+			"  %v\n\n"+
+			"Postgres will not start with wal_level below logical while a logical slot\n"+
+			"exists, so turning the feed off now would take the database down and keep\n"+
+			"it down. Usually this means a branch is stopped, or a subscriber is still\n"+
+			"attached.\n\n"+
+			"  %s up        start the branches, then run this again\n"+
+			"  %s realtime slots <branch>   see what is still holding one\n", err, brand.CLI, brand.CLI)
+		return fmt.Errorf("the change feed was left on")
 	}
 	if err := branch.SetRealtimeOn(false); err != nil {
 		return err
@@ -149,13 +172,18 @@ func realtimeSlots(args []string) error {
 	}
 	for _, s := range slots {
 		state := "idle"
-		if s.Active {
+		switch {
+		case s.Active:
 			state = "streaming"
+		case s.Lost():
+			state = "lost"
 		}
 		fmt.Printf("%-40s %-10s %s of WAL held\n", s.Name, state, humanBytes(s.WALBytes))
 	}
-	fmt.Printf("\nAn idle slot still holds WAL. Drop one with:\n  %s realtime slots %s --drop <name>\n",
-		brand.CLI, name)
+	fmt.Printf("\nAn idle slot is what a subscriber resumes from, and holds at most %s of WAL.\n"+
+		"A `lost` one fell further behind than that and cannot be resumed from; those are\n"+
+		"dropped on `%s up`. Drop one by hand with:\n  %s realtime slots %s --drop <name>\n",
+		branch.WALKeepSize(), brand.CLI, brand.CLI, name)
 	if drop := optValue(args, "--drop"); drop != "" {
 		if err := branch.DropRealtimeSlot(name, drop); err != nil {
 			return err
