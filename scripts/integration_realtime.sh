@@ -61,24 +61,25 @@ main_ready() {
 echo
 echo "0. a build and a licence to test with"
 cd "$REPO" || exit 2
-KEYDIR="$(mktemp -d)"
-trap 'rm -rf "$KEYDIR"' EXIT
-# Built once and then run from the key's own directory: `go run` needs the
-# module, and `generate` writes license-signing.key relative to where it runs.
-go build -o "$KEYDIR/licensesign" ./cmd/licensesign || { echo "  (could not build licensesign)"; exit 2; }
-PUB="$(cd "$KEYDIR" && ./licensesign generate 2>/dev/null | awk '/public key/{print $3}')"
-if [ -z "$PUB" ]; then echo "  (could not mint a test signing key)"; exit 2; fi
-LD="-X github.com/thefoxbyte/foxbyte/internal/license.licensePublicKey=$PUB"
 
-go build -tags enterprise -ldflags "$LD" -o "$S" ./cmd/fox || { bad "the Enterprise build"; exit 1; }
-go build -ldflags "$LD" -o "$STD" ./cmd/fox || { bad "the Standard build"; exit 1; }
-ok "both editions built with a throwaway licence key"
+# The Enterprise build and its throwaway licence come from the same helper every
+# other suite uses (scripts/build_test_fox.sh): it mints a signing key, pins the
+# public half in with -ldflags -X, issues a licence and activates it. This suite
+# had its own copy of that first; one place is better, and it is the place the
+# nightly fix put it.
+scripts/build_test_fox.sh "$S" >/dev/null || { bad "the Enterprise build"; exit 1; }
 
-go build -ldflags "$LD" -o "$KEYDIR/licensesign-trusting" ./cmd/licensesign
-FOX_LICENSE_SIGNING_KEY="$(cat "$KEYDIR/license-signing.key")" \
-  "$KEYDIR/licensesign-trusting" issue \
-    --customer "integration" --features all --months 1 --id FB-IT > "$KEYDIR/lic.json" 2>/dev/null
-"$S" license activate "$KEYDIR/lic.json" >/dev/null 2>&1
+# And a Standard build that trusts the *same* key, for the boundary checks
+# below. Deliberately given the licence rather than withheld from it: "a
+# Standard build with a valid licence activated still contains none of this" is
+# the property worth proving, and a build that was never offered one proves
+# less.
+PUB="$(cat "$S.licence.pub")"
+go build -ldflags "-X github.com/thefoxbyte/foxbyte/internal/license.licensePublicKey=$PUB" \
+  -o "$STD" ./cmd/fox || { bad "the Standard build"; exit 1; }
+"$STD" license activate "$S.licence.json" >/dev/null 2>&1
+ok "both editions built, and both given the same licence"
+
 assert_contains "the licence unlocks this build" "$("$S" version)" "features licensed"
 
 # Start from a known state. The suite has to be re-runnable: the first version
@@ -113,9 +114,15 @@ KEY="$("$S" apikey create "$USER_EMAIL" rt 2>/dev/null | grep -o 'key_[A-Za-z0-9
 
 # ── 1. The Standard boundary ────────────────────────────────────────────────
 echo
-echo "1. the Standard build has none of it"
+echo "1. the Standard build has none of it, licence or no licence"
 assert_eq "no pglogrepl symbols in the Standard binary" \
   "$(go tool nm "$STD" 2>/dev/null | grep -c pglogrepl)" "0"
+# The licence above was activated against this binary too, and it unlocks
+# nothing: the code is not in it. That is the property the edition split exists
+# for, and it is worth asserting against a build that was *offered* a licence
+# rather than one that never saw one.
+assert_missing "and a valid licence unlocks nothing in it" \
+  "$("$STD" version)" "features licensed"
 assert_contains "\`realtime enable\` is not a command there" \
   "$("$STD" realtime enable orders 2>&1 | head -1)" "unknown"
 # setup, teardown, status and slots stay, so somebody who goes back to Standard
