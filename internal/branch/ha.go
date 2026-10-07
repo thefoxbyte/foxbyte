@@ -169,6 +169,31 @@ func HAEnable() error {
 	return waitReady("standby")
 }
 
+// RestartStandby recreates the standby's container on its existing storage, so
+// it picks up a change to the arguments the primary runs with.
+//
+// A standby's command line is fixed when its container is made, and a standby
+// is a primary in waiting. Turning the change feed on after `fox ha enable`
+// therefore left the standby at wal_level=replica: it went on streaming,
+// nothing looked wrong, and a failover promoted a primary that could not
+// decode a thing -- with RealtimeHAGuard then refusing the `realtime setup`
+// that would fix it until a failback, so the feed was stuck off at the worst
+// possible moment.
+//
+// A restart rather than a rebuild: the recovery settings pg_basebackup -R wrote
+// live in PGDATA, so the standby resumes streaming from where it had got to. A
+// no-op when there is no standby.
+func RestartStandby() error {
+	if ContainerState("standby") == "absent" {
+		return nil
+	}
+	quiet("docker", "rm", "-f", container("standby"))
+	if err := startStandbyContainer(activeStorage()); err != nil {
+		return err
+	}
+	return waitReady("standby")
+}
+
 // HAStatus prints replication status from both the primary and the standby.
 func HAStatus() error {
 	switch ContainerState("standby") {

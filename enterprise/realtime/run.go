@@ -88,6 +88,17 @@ func Supervise(ctx context.Context, branchName, slot, password string, hub *Hub,
 }
 
 func runOnce(ctx context.Context, branchName, slot, password string, hub *Hub, since pglogrepl.LSN) error {
+	// A subscriber arriving at a suspended branch should be served, not told
+	// that the feed cannot be read. The reaper suspends a branch nobody is
+	// listening to, which is right and is why the slot outlives it -- so the
+	// first thing a decoder has to do is make sure there is something to
+	// connect to. Everything else here already assumes a running Postgres.
+	//
+	// For `main` this only resolves the current primary and starts nothing:
+	// reviving a stepped-down one is never this code's business.
+	if err := branch.Wake(branchName); err != nil {
+		return fmt.Errorf("starting %q for the feed: %w", branchName, err)
+	}
 	// A branch is a clone of main, so it has whatever roles main had when it was
 	// taken -- which for a branch older than `fox realtime setup` is not this
 	// one. Idempotent, and cheap next to opening a replication connection.

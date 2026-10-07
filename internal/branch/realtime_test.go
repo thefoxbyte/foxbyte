@@ -197,3 +197,55 @@ func TestTheStandbyGetsWhatThePrimaryGets(t *testing.T) {
 		}()
 	}
 }
+
+// After a failover the container serving "main" is the promoted standby, and
+// every realtime helper reaches Postgres by container name. RealtimeDSN
+// resolved that by address from the start; the rest did not, so a feed on
+// "main" after a failover could not be set up or read — the decoder's first
+// statement execs into a stopped container, fails, and retries until it gives
+// up, with nothing on the stream to say why.
+func TestServingBranchFollowsAFailover(t *testing.T) {
+	servingPrimary = func() string { return "standby" }
+	t.Cleanup(func() { servingPrimary = primaryBranch })
+
+	if got := ServingBranch("main"); got != "standby" {
+		t.Errorf(`ServingBranch("main") = %q, want the promoted standby`, got)
+	}
+	if got := ServingBranch(""); got != "standby" {
+		t.Errorf(`ServingBranch("") = %q: an empty name means main`, got)
+	}
+	// Any other branch is itself. A failover moves "main" and nothing else, and
+	// a helper that redirected an ordinary branch would read the wrong database.
+	if got := ServingBranch("reports"); got != "reports" {
+		t.Errorf(`ServingBranch("reports") = %q, want it untouched`, got)
+	}
+
+	servingPrimary = func() string { return "main" }
+	if got := ServingBranch("main"); got != "main" {
+		t.Errorf(`ServingBranch("main") = %q with no failover, want "main"`, got)
+	}
+}
+
+// Both commands restart whichever container is serving main, so both are
+// refused while that is a promoted standby — and the refusal has to name the
+// command that resolves it, because a person who has just failed over is not
+// in a position to guess.
+func TestRealtimeHAGuard(t *testing.T) {
+	servingPrimary = func() string { return "standby" }
+	t.Cleanup(func() { servingPrimary = primaryBranch })
+
+	for _, action := range []string{"setup", "teardown"} {
+		err := RealtimeHAGuard(action)
+		if err == nil {
+			t.Fatalf("RealtimeHAGuard(%q) allowed it while failed over", action)
+		}
+		if !strings.Contains(err.Error(), "ha failback") {
+			t.Errorf("RealtimeHAGuard(%q) = %q, want it to name `ha failback`", action, err)
+		}
+	}
+
+	servingPrimary = func() string { return "main" }
+	if err := RealtimeHAGuard("setup"); err != nil {
+		t.Errorf("RealtimeHAGuard refused with no failover: %v", err)
+	}
+}
