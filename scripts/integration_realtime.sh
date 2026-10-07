@@ -154,7 +154,7 @@ assert_contains "and holds a bounded amount of WAL" "$(pg pg-main 'SHOW max_slot
 # ── 3. The refusals, and the breakage they prevent ──────────────────────────
 echo
 echo "3. enable refuses what a feed cannot carry safely"
-ddl pg-main 'DROP TABLE IF EXISTS public.nokey, public.rls_t, public.ok_t CASCADE' >/dev/null
+ddl pg-main 'DROP TABLE IF EXISTS public.nokey, public.rls_t, public.ok_t, public.full_t CASCADE' >/dev/null
 pg pg-main 'CREATE TABLE public.ok_t (id bigint PRIMARY KEY, note text, body text)'
 # STORAGE EXTERNAL so `body` is stored out-of-line and uncompressed. Without it
 # the unchanged-TOAST case cannot be tested at all: a 12 kB run of one character
@@ -165,7 +165,11 @@ pg pg-main 'ALTER TABLE public.ok_t ALTER COLUMN body SET STORAGE EXTERNAL'
 pg pg-main 'CREATE TABLE public.nokey (a int, b text)'
 pg pg-main 'CREATE TABLE public.rls_t (id int PRIMARY KEY, who text)'
 pg pg-main 'ALTER TABLE public.rls_t ENABLE ROW LEVEL SECURITY'
-pg pg-main 'GRANT SELECT ON public.ok_t, public.nokey, public.rls_t TO db_client'
+# The same shape as ok_t but streamed under REPLICA IDENTITY FULL, so the two
+# halves of the promise about old rows can be compared side by side in one
+# capture rather than inferred from one table twice.
+pg pg-main 'CREATE TABLE public.full_t (id bigint PRIMARY KEY, a text, b text)'
+pg pg-main 'GRANT SELECT ON public.ok_t, public.nokey, public.rls_t, public.full_t TO db_client'
 assert_eq "the test tables start empty" "$(pg pg-main 'SELECT count(*) FROM public.nokey')" "0"
 assert_eq "and nokey starts at the default replica identity" \
   "$(pg pg-main "SELECT relreplident FROM pg_class WHERE relname='nokey'")" "d"
@@ -194,12 +198,18 @@ assert_eq "and the table really is FULL now" "$(pg pg-main "SELECT relreplident 
 echo
 echo "4. a feed carries what the wire format promises"
 "$S" realtime enable ok_t >/dev/null 2>&1
+# Both in the same publication (one per event set), so one capture carries a
+# table under each identity setting.
+assert_contains "a table can be streamed under FULL" \
+  "$("$S" realtime enable full_t --replica-identity=full 2>&1)" "Streaming"
+assert_eq "…and it really is FULL" \
+  "$(pg pg-main "SELECT relreplident FROM pg_class WHERE relname='full_t'")" "f"
 CAP=/tmp/rt-capture.ndjson
 : > "$CAP"
 # --max-time, not kill: the server holds a stream open for an hour by design, so
 # killing the pipeline left `wait` blocked on it. Letting curl end itself is
 # both simpler and what a client would actually do.
-( curl -skN --max-time 12 -H "Authorization: Bearer $KEY" \
+( curl -skN --max-time 16 -H "Authorization: Bearer $KEY" \
     "$API/api/branches/main/realtime" | sed -u -n 's/^data: //p' >> "$CAP" ) &
 STREAM=$!
 sleep 3
@@ -213,6 +223,11 @@ assert_eq "the test value really is stored out-of-line" "$TOASTED" "t"
 pg pg-main "UPDATE public.ok_t SET note = 'changed' WHERE id = 1"
 pg pg-main "INSERT INTO public.ok_t VALUES (2, NULL, 'small')"
 pg pg-main "DELETE FROM public.ok_t WHERE id = 2"
+# The same three statements against the FULL table, so one capture holds both
+# answers to "what does a subscriber learn about the row that was there".
+pg pg-main "INSERT INTO public.full_t VALUES (1, 'before', 'keep')"
+pg pg-main "UPDATE public.full_t SET a = 'after' WHERE id = 1"
+pg pg-main "DELETE FROM public.full_t WHERE id = 1"
 wait "$STREAM" 2>/dev/null
 
 have_in() { python3 - "$1" "$2" <<'PY' 2>/dev/null
@@ -253,6 +268,31 @@ assert_eq "a NULL arrives as null" \
 # Values are text, so a bigint survives.
 assert_eq "values are strings, not numbers" \
   "$(have "e.get('action')=='insert' and isinstance((e.get('identity') or {}).get('id'), str)")" "yes"
+
+# What a subscriber is told about the row that is no longer there, which is the
+# one question the two identity settings answer differently. Both halves, in one
+# capture: a client that assumes the FULL answer and is given the default one
+# has a deletion it cannot attribute to a row it holds.
+assert_eq "a delete under the default identity carries the key and nothing else" \
+  "$(have "e.get('action')=='delete' and e.get('table','').endswith('ok_t') and sorted((e.get('identity') or {}).keys())==['id'] and not e.get('old')")" "yes"
+assert_eq "a delete under FULL carries the whole old row" \
+  "$(have "e.get('action')=='delete' and e.get('table','').endswith('full_t') and (e.get('old') or {})=={'id':'1','a':'after','b':'keep'}")" "yes"
+# Under FULL, Postgres marks every column as part of the replica identity, so
+# the identity is the whole row too. Surprising, load-bearing for a client that
+# builds a key from it, and therefore asserted rather than left to be noticed.
+assert_eq "…and FULL makes every column part of the identity" \
+  "$(have "e.get('action')=='delete' and e.get('table','').endswith('full_t') and sorted((e.get('identity') or {}).keys())==['a','b','id']")" "yes"
+
+# And what an update says about the row as it was.
+assert_eq "an update under FULL names exactly the column that changed" \
+  "$(have "e.get('action')=='update' and e.get('table','').endswith('full_t') and e.get('changed')==['a']")" "yes"
+assert_eq "…and carries the row as it was before" \
+  "$(have "e.get('action')=='update' and e.get('table','').endswith('full_t') and (e.get('old') or {})=={'id':'1','a':'before','b':'keep'}")" "yes"
+# The other half of the same rule: under the default identity there is no old
+# row to compare against, so neither field is offered. A `changed` guessed from
+# the new row alone would be a client's silent licence to skip a write.
+assert_eq "an update under the default identity offers neither" \
+  "$(have "e.get('action')=='update' and e.get('table','').endswith('ok_t') and not e.get('old') and not e.get('changed')")" "yes"
 
 # ── 5. The scoped key reaches its branch and nothing else ───────────────────
 echo
