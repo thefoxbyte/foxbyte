@@ -69,26 +69,40 @@ jobs:
         if: ${{ (inputs.suite == '' || inputs.suite == matrix.suite) && matrix.suite != 'upgrade' }}
         run: |
           set -eux
-          # A fresh runner is often still running unattended-upgrades, which
-          # holds the dpkg lock. apt then waits for it with no output and no
-          # limit: five of the eight suites once sat on this step for sixteen
-          # minutes and would have held their runners for the full two hours.
-          #
-          # Lock::Timeout makes apt wait a bounded three minutes for the lock
-          # instead of forever, `timeout` turns a hang into a failure that says
-          # so, and the retry covers the mirror being briefly unavailable --
-          # which is the other way this step fails for reasons that have
-          # nothing to do with FoxByte.
+          # Everything but ZFS is already on a GitHub runner image -- psql, jq,
+          # python3, curl and openssl all answer `command -v` -- so the only
+          # package this step really needs is zfsutils-linux, and often not even
+          # that. An `apt-get update` nobody needed was this step's largest
+          # failure mode: five of the eight suites once sat on it for sixteen
+          # minutes, and after that was bounded it still burned 300s and exited
+          # 124 on two runners. What it waits on is the network and the lists
+          # lock, which no dpkg lock timeout covers, so the fix is to ask for
+          # nothing rather than to ask patiently.
           #
           # DEBIAN_FRONTEND goes through sudo explicitly: sudo resets the
           # environment, so setting it on the step would never reach apt-get.
           apt_get() {
             sudo DEBIAN_FRONTEND=noninteractive timeout 300 \
-              apt-get -o DPkg::Lock::Timeout=180 "$@"
+              apt-get -o DPkg::Lock::Timeout=180 -o Acquire::Retries=3 \
+                      -o Acquire::http::Timeout=30 "$@"
           }
-          apt_get update -qq || { sleep 20; apt_get update -qq; }
-          apt_get install -y -qq zfsutils-linux postgresql-client jq python3 curl openssl \
-            || { sleep 20; apt_get install -y -qq zfsutils-linux postgresql-client jq python3 curl openssl; }
+          need=""
+          command -v zfs     >/dev/null || need="$need zfsutils-linux"
+          command -v psql    >/dev/null || need="$need postgresql-client"
+          command -v jq      >/dev/null || need="$need jq"
+          command -v python3 >/dev/null || need="$need python3"
+          command -v curl    >/dev/null || need="$need curl"
+          command -v openssl >/dev/null || need="$need openssl"
+          if [ -n "$need" ]; then
+            echo "installing:$need"
+            # The image's package lists can be older than the archive, which is
+            # the one case an install really does need `update` first -- so it
+            # runs as a fallback rather than unconditionally.
+            apt_get install -y -qq $need \
+              || { apt_get update -qq && apt_get install -y -qq $need; }
+          else
+            echo "every tool this suite needs is already on the runner"
+          fi
           sudo modprobe zfs || {
             echo "::error::this runner's kernel has no ZFS module, so the suites cannot run here"
             exit 1
