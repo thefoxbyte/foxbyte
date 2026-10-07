@@ -81,7 +81,9 @@ func Enable(branchName string, req Request) error {
 			return fmt.Errorf("setting REPLICA IDENTITY FULL on %s: %w", t.Qualified(), err)
 		}
 	}
-	pub := branch.PublicationName()
+	// The publication that carries exactly these events. See PublicationFor:
+	// `publish` belongs to the publication, not to a table in it.
+	pub := branch.PublicationFor(req.EventList())
 	// Never FOR ALL TABLES: that would publish bb.schema_ledger, and with it the
 	// recorded text of every statement ever run.
 	if err := branch.ExecSQL(branchName, fmt.Sprintf(
@@ -99,8 +101,31 @@ func Enable(branchName string, req Request) error {
 // Disable takes a table back out of the publication. It does not undo a REPLICA
 // IDENTITY FULL: that is a schema change somebody asked for, it costs only WAL,
 // and reverting it silently would be a second change nobody asked for.
+// Disable takes a table out of whichever publication carries it. A table can
+// only be in one of them -- Enable adds it to the one for its event set -- but
+// the caller does not have to remember which, so this looks.
 func Disable(branchName, schema, table string) error {
-	return branch.ExecSQL(branchName, fmt.Sprintf("ALTER PUBLICATION %s DROP TABLE %s.%s",
-		branch.QuoteIdent(branch.PublicationName()),
-		branch.QuoteIdent(schema), branch.QuoteIdent(table)))
+	pubs, err := branch.Publications(branchName)
+	if err != nil {
+		return err
+	}
+	var last error
+	found := false
+	for _, pub := range pubs {
+		in, err := branch.LedgerQuery(branchName, fmt.Sprintf(
+			`SELECT 1 FROM pg_publication_tables WHERE pubname = %s AND schemaname = %s AND tablename = %s`,
+			branch.QuoteLiteral(pub), branch.QuoteLiteral(schema), branch.QuoteLiteral(table)))
+		if err != nil || len(in) == 0 {
+			continue
+		}
+		found = true
+		if err := branch.ExecSQL(branchName, fmt.Sprintf("ALTER PUBLICATION %s DROP TABLE %s.%s",
+			branch.QuoteIdent(pub), branch.QuoteIdent(schema), branch.QuoteIdent(table))); err != nil {
+			last = err
+		}
+	}
+	if !found {
+		return fmt.Errorf("%s.%s is not being streamed on %q", schema, table, branchName)
+	}
+	return last
 }

@@ -6,6 +6,7 @@ package realtime
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -85,7 +86,26 @@ func Supervise(ctx context.Context, branchName, slot, password string, hub *Hub,
 }
 
 func runOnce(ctx context.Context, branchName, slot, password string, hub *Hub, since pglogrepl.LSN) error {
-	d, err := NewDecoder(ctx, branch.RealtimeDSN(branchName, password), slot, branch.PublicationName(), hub)
+	// A branch is a clone of main, so it has whatever roles main had when it was
+	// taken -- which for a branch older than `fox realtime setup` is not this
+	// one. Idempotent, and cheap next to opening a replication connection.
+	if err := branch.EnsureRealtimeRole(branchName, password); err != nil {
+		return fmt.Errorf("preparing the %s role on %q: %w", branch.RealtimeRole, branchName, err)
+	}
+	dsn, err := branch.RealtimeDSN(branchName, password)
+	if err != nil {
+		return err
+	}
+	// Every publication the feed owns, because each carries a different set of
+	// events and a subscriber wants all of them.
+	pubs, err := branch.Publications(branchName)
+	if err != nil {
+		return err
+	}
+	if len(pubs) == 0 {
+		return fmt.Errorf("nothing is being streamed on %q yet — enable a table first", branchName)
+	}
+	d, err := NewDecoder(ctx, dsn, slot, strings.Join(pubs, ","), hub)
 	if err != nil {
 		return err
 	}

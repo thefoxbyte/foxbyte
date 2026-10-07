@@ -92,6 +92,12 @@ func realtimeSetup(args []string) error {
 	if err := branch.SetRealtimeOn(true); err != nil {
 		return err
 	}
+	// The role a decoder connects as. Created here because this is the opt-in,
+	// and again before each connection in case a branch predates it.
+	if err := branch.EnsureRealtimeRole("main", branch.RealtimeRolePassword()); err != nil {
+		_ = branch.SetRealtimeOn(false)
+		return fmt.Errorf("creating the %s role: %w", branch.RealtimeRole, err)
+	}
 	fmt.Println("Restarting main…")
 	if err := branch.RestartPrimary(); err != nil {
 		// Put the marker back as it was: a half-done setup is worse than none,

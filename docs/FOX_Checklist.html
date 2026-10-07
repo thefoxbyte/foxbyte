@@ -611,7 +611,7 @@
       <li class="ok">Realtime foundation: opt-in, container settings (byte-identical when off), slot naming and sweeping, the suspend probe, preflight refusals</li>
       <li class="ok">Realtime decoder: wire format, fan-out, pgoutput decoding — all in <code>enterprise/realtime</code></li>
       <li class="ok">SSE route on the outer mux, branch-scoped key (<code>UserForBranchStream</code>), decoder lifecycle, <code>realtime enable|disable|tables</code>, console page</li>
-      <li class="todo">The realtime integration suite against a live database (replay, resync, slot behaviour)</li>
+      <li class="ok">Realtime integration suite (<code>make integration-realtime</code>, in the nightly matrix): refusals, the wire format against a real WAL, scoped keys, slot sweeping, teardown</li>
   </table>
 </section>
 

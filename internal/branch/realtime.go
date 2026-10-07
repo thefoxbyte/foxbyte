@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -227,7 +228,7 @@ func DropRealtimeObjects() error {
 			}
 		}
 		if _, err := LedgerQuery(n, `DO $$ DECLARE p record; BEGIN
-		  FOR p IN SELECT pubname FROM pg_publication WHERE pubname LIKE '`+SlotPrefix+`%' LOOP
+		  FOR p IN SELECT pubname FROM pg_publication WHERE pubname LIKE '`+PublicationPrefix+`%' LOOP
 		    EXECUTE format('DROP PUBLICATION %I', p.pubname);
 		  END LOOP; END $$`); err != nil {
 			failed = append(failed, n+"/publications")
@@ -294,8 +295,29 @@ END $$`, QuoteLiteral(RealtimeRole), QuoteLiteral(RealtimeRole),
 // machine can always work it out while nothing off it can.
 func RealtimeRolePassword() string { return rolePassword("realtime", RealtimeRole) }
 
-// PublicationName is the one publication a branch's feed uses.
-func PublicationName() string { return SlotPrefix + "pub" }
+// PublicationPrefix is what every one of the feed's publications starts with.
+const PublicationPrefix = SlotPrefix + "pub"
+
+// PublicationFor is the publication that carries a given set of events.
+//
+// One per event set, not one per feed, because Postgres's `publish` option is a
+// property of the *publication* rather than of a table in it. A single
+// publication would mean the first table anyone enabled silently decided which
+// events every later table got — which is exactly what happened the first time
+// the integration suite ran: a table enabled with --events=insert made the next
+// table's updates and deletes disappear, with nothing to show for it.
+func PublicationFor(events []string) string {
+	sorted := append([]string(nil), events...)
+	sort.Strings(sorted)
+	return PublicationPrefix + "_" + strings.Join(sorted, "_")
+}
+
+// Publications lists the feed's publications on a branch, for a decoder that
+// has to subscribe to all of them.
+func Publications(name string) ([]string, error) {
+	return LedgerQuery(name, `SELECT pubname FROM pg_publication
+	  WHERE pubname LIKE '`+PublicationPrefix+`%' ORDER BY pubname`)
+}
 
 // RealtimeDSN is how a decoder reaches a branch: the replication connection
 // string, as the decode role.
@@ -305,13 +327,22 @@ func PublicationName() string { return SlotPrefix + "pub" }
 // through to the ordinary host line and authenticates with a password like any
 // other client — checked against a live database before the feed was designed,
 // because the alternative was widening pg_hba, which nobody wants to do.
-func RealtimeDSN(name, password string) string {
-	return fmt.Sprintf("postgres://%s:%s@%s:5432/%s?replication=database&sslmode=disable",
-		RealtimeRole, url.QueryEscape(password), container(name), pgDatabase)
+func RealtimeDSN(name, password string) (string, error) {
+	// BackendAddr, not the container's name: the control plane runs as a
+	// process on the host, where a docker container name does not resolve. It
+	// also knows that after a failover `main` is the promoted standby, which a
+	// name built from the branch would get wrong in exactly the situation
+	// nobody wants to debug.
+	addr, err := BackendAddr(name)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s/%s?replication=database&sslmode=disable",
+		RealtimeRole, url.QueryEscape(password), addr, pgDatabase), nil
 }
 
 // PublishedTables is what a branch's feed currently carries.
 func PublishedTables(name string) ([]string, error) {
-	return LedgerQuery(name, `SELECT schemaname || '.' || tablename FROM pg_publication_tables
-	  WHERE pubname = `+QuoteLiteral(PublicationName())+` ORDER BY 1`)
+	return LedgerQuery(name, `SELECT DISTINCT schemaname || '.' || tablename FROM pg_publication_tables
+	  WHERE pubname LIKE '`+PublicationPrefix+`%' ORDER BY 1`)
 }
