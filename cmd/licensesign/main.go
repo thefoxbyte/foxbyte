@@ -134,15 +134,18 @@ func generate(write, force bool) error {
   private key %s (mode 0600)
 
 Next:
-  1. Put the private key in your password manager.
-  2. Delete %s.
-  3. Commit %s, which now carries the public half.
+  1. Commit %[4]s, which now carries the public half.
+     A licence only verifies against builds made from that commit onwards.
+  2. Mint what you need now, while the key is still here: make license-samples,
+     or docs/evaluation-licences.md for a batch of your own.
+  3. Put the private key in your password manager, and only then delete
+     %[3]s. Signing reads that file, and there is no second copy.
 
 Do NOT put this key in CI. The release key lives there because every tag is
 signed there; this one is used by hand, a few times a year, and a copy in CI
 is a copy that mints Enterprise for anyone who reaches it — silently, because
 nothing calls home.
-`, pubB64, license.KeyID(pub), keyFile, keyFile, goKeyFile)
+`, pubB64, license.KeyID(pub), keyFile, goKeyFile)
 	return nil
 }
 
