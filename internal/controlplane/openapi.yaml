@@ -9,7 +9,7 @@ info:
   title: FoxByte API
   version: "0.7"
   description: >
-    Control-plane and Agent Branch APIs for FoxByte — serverless PostgreSQL
+    Control-plane and Agent Branch APIs for FoxByte — PostgreSQL
     with instant branching, time-travel, and Blackbox — a tamper-evident record of
     every schema change. Every `/api/branches/{name}/ledger…` path is also served
     at `/api/branches/{name}/blackbox…`.

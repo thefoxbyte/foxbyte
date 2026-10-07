@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # End-to-end integration test. Run inside the Linux dev VM (ZFS + Docker):
-#   lima bash "/Users/.../Distributed Database/scripts/integration_test.sh"
+#   lima bash "$PWD/scripts/integration_test.sh"
 # Exits non-zero if any assertion fails.
 set -uo pipefail
 

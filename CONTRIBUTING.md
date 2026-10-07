@@ -1,6 +1,6 @@
 # Contributing to FoxByte
 
-Thanks for your interest. FoxByte is a serverless-Postgres platform written in
+Thanks for your interest. FoxByte is a PostgreSQL branching platform written in
 Go, with a React/TypeScript web app. This guide covers how to build, test, and
 propose changes.
 

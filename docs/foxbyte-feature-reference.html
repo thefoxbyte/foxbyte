@@ -80,13 +80,13 @@
   <h1>Oxyn<span class="grad">DB</span></h1>
   <div class="rule"></div>
   <p>A complete, descriptive catalogue of every feature built into FoxByte — a
-  serverless PostgreSQL platform with instant branching, time-travel, and a
+  PostgreSQL platform with instant branching, time-travel, and a
   database-per-AI-agent model. For each feature: <b>what it is</b>, <b>why we
   built it</b>, <b>what it does</b>, and <b>how it works</b>.</p>
   <div class="meta">
-    <b>Product:</b> FoxByte &nbsp;·&nbsp; <b>Type:</b> Serverless PostgreSQL &nbsp;·&nbsp;
+    <b>Product:</b> FoxByte &nbsp;·&nbsp; <b>Type:</b> PostgreSQL with instant branching &nbsp;·&nbsp;
     <b>License:</b> AGPL-3.0 core / Apache-2.0 clients<br>
-    <b>Status:</b> MVP complete (branching, time-travel, serverless gateway, HA, auth, web app)<br>
+    <b>Status:</b> MVP complete (branching, time-travel, the gateway, HA, auth, web app)<br>
     <b>This document is editable</b> — the HTML source is designed to grow as new features ship.
   </div>
 </section>
@@ -108,7 +108,7 @@
     <li><span class="n">04</span><a class="nm" href="#f-storage">Object storage &amp; WAL archival</a><span class="ds">Durable, off-path backups</span></li>
   </ol>
 
-  <div class="group">Serverless front door</div>
+  <div class="group">The front door</div>
   <ol class="contents">
     <li><span class="n">05</span><a class="nm" href="#f-gateway">The Gateway — one smart endpoint</a><span class="ds">Route by database name</span></li>
     <li><span class="n">06</span><a class="nm" href="#f-suspend">Auto-suspend &amp; auto-resume</a><span class="ds">Idle branches stop &amp; wake</span></li>
@@ -149,10 +149,10 @@
     <p>The architectural stance of the whole product. FoxByte runs <b>stock PostgreSQL on local NVMe</b> for the hot read/write path, and moves durability, branching, and time-travel <b>off</b> the commit path entirely. It is the postgres.ai / Database Lab model, implemented in Go.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
-    <p>The non-negotiable requirement was that <b>transaction speed is never compromised</b>. The popular "serverless Postgres" approach separates compute from storage over the network, which adds latency to every commit and read. We deliberately rejected that trade-off: you should get instant branches and a rewind button <i>without</i> paying a tax on normal queries.</p></div>
+    <p>The non-negotiable requirement was that <b>transaction speed is never compromised</b>. The popular approach separates compute from storage over the network, which adds latency to every commit and read. We deliberately rejected that trade-off: you should get instant branches and a rewind button <i>without</i> paying a tax on normal queries.</p></div>
 
   <div class="block does"><h3>What it does</h3>
-    <p>Everyday reads and writes hit a normal Postgres on a local disk at native latency — nothing special sits in front of them on the data path. Meanwhile, three "superpowers" are layered on using systems that live outside the commit path: instant branches, time-travel, and a serverless front door.</p></div>
+    <p>Everyday reads and writes hit a normal Postgres on a local disk at native latency — nothing special sits in front of them on the data path. Meanwhile, three "superpowers" are layered on using systems that live outside the commit path: instant branches, time-travel, and a single front door.</p></div>
 
   <div class="block how"><h3>How it works</h3>
     <p>Each database is a normal <code>postgres:16</code> process with its data directory on a <b>ZFS</b> dataset on local storage. Write-ahead log (WAL) is shipped <b>asynchronously</b> to object storage, so archival never blocks a commit. Branches are created by <b>ZFS copy-on-write clones</b>, and the high-availability standby streams asynchronously. All the orchestration — routing, lifecycle, backups, branches — lives in a Go control layer beside Postgres, never in the query path.</p></div>
@@ -237,7 +237,7 @@
   <div class="frule"></div>
 
   <div class="block what"><h3>What it is</h3>
-    <p>The serverless front door: one wire-protocol endpoint (<code>:6432</code>) that every client connects to, which routes each connection to the correct branch based on the database name in the connection string.</p></div>
+    <p>The front door: one wire-protocol endpoint (<code>:6432</code>) that every client connects to, which routes each connection to the correct branch based on the database name in the connection string.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
     <p>Branches come and go and each runs its own Postgres on its own port — clients should not have to track that. A stable, single address that "just knows" where to send you is what makes branching usable in real applications and tooling.</p></div>
@@ -260,10 +260,10 @@
   <div class="frule"></div>
 
   <div class="block what"><h3>What it is</h3>
-    <p>The "serverless" behaviour: a branch that has been idle for long enough is automatically suspended, and is transparently resumed when someone connects to it again.</p></div>
+    <p>The scale-to-zero behaviour: a branch that has been idle for long enough is automatically suspended, and is transparently resumed when someone connects to it again.</p></div>
 
   <div class="block why"><h3>Why we built it</h3>
-    <p>If every branch (per developer, per PR, per agent) ran forever, resources would balloon. Serverless economics require idle databases to cost nothing — but suspension must be invisible, so users never think about it.</p></div>
+    <p>If every branch (per developer, per PR, per agent) ran forever, resources would balloon. Idle databases have to cost nothing — but suspension must be invisible, so users never think about it.</p></div>
 
   <div class="block does"><h3>What it does</h3>
     <p>A branch idle beyond a configurable window (<code>--idle</code>, default 2 minutes) with zero active connections is stopped; its data is fully preserved. The next connection through the Gateway brings it back in a couple of seconds. Suspension can also be triggered or reversed manually.</p></div>
