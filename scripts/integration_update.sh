@@ -198,7 +198,13 @@ assert_eq "main Blackbox history unchanged" "$(ledger_digest pg-main "$MAIN_MAX"
 assert_eq "branch Blackbox history unchanged" "$(ledger_digest pg-updb "$BR_MAX")" "$BR_HIST"
 contains "main Blackbox chain intact" "ledger intact" "$("$V" ledger verify main 2>&1)"
 contains "branch Blackbox chain intact" "ledger intact" "$("$V" ledger verify updb 2>&1)"
-assert_eq "blast radius present on the branch" "$(pg pg-updb "SELECT count(*) > 0 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'bb' AND p.proname = 'blast_radius'")" "t"
+# What `ledger upgrade` installs in *this* edition. blast_radius was the probe
+# here until the Blackbox schema split along the edition line and it became an
+# Enterprise object -- so on a Standard build it is correctly absent, and this
+# assertion broke a suite that has nothing to do with licensing. ledger_ext is
+# the free half of the same upgrade and proves the same thing: the branch was
+# upgraded by the new binary.
+assert_eq "the 2.0 capture table is present on the branch" "$(pg pg-updb "SELECT count(*) > 0 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'bb' AND c.relname = 'ledger_ext'")" "t"
 assert_eq "secrets.json unchanged" "$(md5sum "$HOME/.fox/secrets.json" 2>/dev/null)" "$SECRETS"
 assert_eq "TLS certificates unchanged" "$(cd "$HOME/.fox" && find tls -type f -exec md5sum {} + 2>/dev/null | sort)" "$TLS"
 assert_eq "previous engine kept" "$(fox_version "$HOME/.fox/updates/prev/fox")" "0.98.0"

@@ -82,14 +82,27 @@ jobs:
         if: ${{ (inputs.suite == '' || inputs.suite == matrix.suite) && matrix.suite != 'upgrade' }}
         run: |
           set -eux
-          if [ "${{ matrix.suite }}" = "ui" ]; then
+          # An Enterprise build with a throwaway licence. The suites test
+          # features, and seven of those need a licence now -- against a
+          # Standard build they test the refusal instead, which is what broke
+          # four of these suites the night the gating landed. The refusals have
+          # tests of their own (scripts/test_editions.sh, and section 1 of
+          # integration_realtime.sh).
+          if [ "${{ matrix.suite }}" = "update" ]; then
+            # The update mechanism is free and identical in both editions, and
+            # `fox update` keeps an install inside its own edition -- so an
+            # Enterprise build here would need the fake release to publish
+            # fox-enterprise-* assets as well, to test something that does not
+            # differ. Standard it is.
+            go build -o /tmp/fox ./cmd/fox
+          elif [ "${{ matrix.suite }}" = "ui" ]; then
             # `make web-build` builds it same-origin (VITE_API_URL=); a plain
             # `vite build` leaves the console calling http://localhost:8080,
             # and every request from the page fails.
             make web-build
-            go build -tags embedui -o /tmp/fox ./cmd/fox   # the console's tests need the UI embedded
+            scripts/build_test_fox.sh /tmp/fox embedui   # the console's tests need the UI embedded
           else
-            go build -o /tmp/fox ./cmd/fox
+            scripts/build_test_fox.sh /tmp/fox
           fi
           go build -o /tmp/fox-verify ./cmd/fox-verify
           sudo install -m 0755 /tmp/fox /usr/local/bin/fox  # `fox update` hands the stack back to this path
