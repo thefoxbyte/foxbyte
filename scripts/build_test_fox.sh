@@ -32,8 +32,19 @@ trap 'rm -rf "$KEYDIR"' EXIT
 
 # Built and run from the key's own directory: `go run` needs the module, and
 # `generate` writes license-signing.key relative to where it runs.
+#
+# --force is needed because `generate` refuses when the build already trusts a
+# licence key, and since the real public half was committed it always does. That
+# guard exists so nobody replaces the production key by accident, and nothing
+# here goes near it: this runs in a temp directory of its own, passes no --write
+# so internal/license/license.go is untouched, and the key it mints is pinned
+# into the test binary with -ldflags, which overrides whatever the tree carries.
+#
+# Without it every suite that builds its engine this way stopped at "fox already
+# has a licence key" -- six of the eight nightly suites, broken by a one-line
+# commit in a different file.
 go build -o "$KEYDIR/licensesign" ./cmd/licensesign
-PUB="$(cd "$KEYDIR" && ./licensesign generate | awk '/public key/{print $3}')"
+PUB="$(cd "$KEYDIR" && ./licensesign generate --force | awk '/public key/{print $3}')"
 [ -n "$PUB" ] || { echo "build_test_fox: could not mint a test signing key" >&2; exit 1; }
 LD="-X github.com/thefoxbyte/foxbyte/internal/license.licensePublicKey=$PUB"
 
