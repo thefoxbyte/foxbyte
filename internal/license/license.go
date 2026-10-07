@@ -121,7 +121,7 @@ var ErrNoKey = errors.New("this build of fox has no licence public key, so it ca
 // Empty until the first key is generated: a build with no key refuses every
 // licence, which is the right answer — it cannot tell a real one from a forged
 // one.
-var licensePublicKey = ""
+var licensePublicKey = "uWJ8FF6tY42QRbmUBhWO9y947DvpqF0ObxpWRhr5YVg="
 
 // PublicKey returns the key licences must be signed with.
 func PublicKey() (ed25519.PublicKey, error) {
