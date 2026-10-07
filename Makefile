@@ -104,14 +104,24 @@ test-vm-stop:     ## Stop the test VM (frees its memory; keeps it for next time)
 test-vm-delete:   ## Delete the test VM and everything in it
 	limactl delete --force $(TEST_VM)
 
+# The suites test features, and seven of those need a licence now. They run
+# against an Enterprise build with a throwaway one (scripts/build_test_fox.sh):
+# running them against Standard would test the refusal rather than the feature,
+# and the refusals have tests of their own in scripts/test_editions.sh.
 integration: test-vm      ## Run the full end-to-end integration test in the test VM
-	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_test.sh"
+	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && scripts/build_test_fox.sh /tmp/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_test.sh"
 
 integration-v2: test-vm   ## Run the Blackbox 2.0 checks (behaviour-unchanged + new) in the test VM
-	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox && go build -o /tmp/fox-verify ./cmd/fox-verify' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_ledger_v2.sh"
+	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && scripts/build_test_fox.sh /tmp/fox && go build -o /tmp/fox-verify ./cmd/fox-verify' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_ledger_v2.sh"
 
 # The update suite hands the stack back to /usr/local/bin/fox when it finishes,
 # so the test VM gets the current build installed there first.
+#
+# Standard, unlike the suites above: this one tests the update mechanism, which
+# is free and the same in both editions. Running it on Enterprise would mean
+# publishing fox-enterprise-* assets in the fake release too, since `fox update`
+# deliberately keeps an install inside its own edition -- a lot of machinery to
+# test something that does not differ.
 integration-update: test-vm ## Run the `fox update` / new-release notice checks against a fake GitHub in the test VM
 	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox && sudo install -m 0755 /tmp/fox /usr/local/bin/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_update.sh"
 
@@ -119,12 +129,12 @@ integration-update: test-vm ## Run the `fox update` / new-release notice checks 
 # major this fox ships, rolls back, upgrades again and finalizes. It uninstalls
 # the stack at both ends, so it runs on its own.
 integration-sdks: test-vm ## Run the Python and TypeScript client contract tests in the test VM
-	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_sdks.sh"
+	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && scripts/build_test_fox.sh /tmp/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_sdks.sh"
 
 # The console is only in a binary built with `embedui`, from web/dist — which
 # npm builds here on the host, since the repository is read-only in the VM.
 integration-ui: web-build test-vm ## Run the web console's Playwright tests in the test VM (first run downloads Chromium)
-	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && go build -tags embedui -o /tmp/fox ./cmd/fox' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_ui.sh"
+	$(IN_TEST_VM) bash -c 'cd "$(CURDIR)" && scripts/build_test_fox.sh /tmp/fox embedui' && $(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_ui.sh"
 
 # Host-side, no VM: builds both editions and looks inside them.
 integration-editions: ## Check the edition boundary against the built binaries
