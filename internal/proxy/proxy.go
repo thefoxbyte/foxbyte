@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package proxy is the foxbyte serverless front door: a single PostgreSQL
+// Package proxy is the foxbyte front door: a single PostgreSQL
 // wire-protocol endpoint that routes each connection to the right branch based
 // on the database name in the client's startup message, then pipes the rest of
 // the session through transparently.

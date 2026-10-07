@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "foxbyte"
 version = "0.6.0"
-description = "Python client for FoxByte — serverless Postgres with instant branching and Blackbox, a tamper-evident record of every schema change."
+description = "Python client for FoxByte — Postgres with instant branching and Blackbox, a tamper-evident record of every schema change."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "Apache-2.0" }

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Narrated feature tour of FoxByte. Run inside the Linux dev VM:
-#   lima bash "/Users/.../Distributed Database/scripts/demo.sh"
+#   lima bash "$PWD/scripts/demo.sh"
 set -uo pipefail
 
 S="${FOX_BIN:-/tmp/fox}"

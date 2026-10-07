@@ -7,7 +7,7 @@ const features: [string, string, string][] = [
   ['🚦', 'Refused, not regretted', 'A policy gate stops a destructive change before it runs. An unqualified DELETE or a DROP TABLE from an agent does not reach your data.'],
   ['🌿', 'Instant branches', 'Copy-on-write clones of your entire database in seconds — near-zero extra space.'],
   ['⏱️', 'Time-travel', 'Restore to any point within the archived WAL window. Undo mistakes.'],
-  ['💤', 'Serverless', 'Idle branches suspend automatically; the gateway wakes them on the next connection, at one stable address.'],
+  ['💤', 'Scale to zero', 'Idle branches suspend automatically; the gateway wakes them on the next connection, at one stable address.'],
 ]
 
 export default function Landing() {
@@ -16,7 +16,7 @@ export default function Landing() {
     <>
       <section className="hero fade-up">
         <div>
-          <span className="eyebrow"><span className="pip" /> Serverless PostgreSQL · open source</span>
+          <span className="eyebrow"><span className="pip" /> PostgreSQL that branches like code · open source</span>
           <h1>The database that <span className="gradient-text">branches like code</span>.</h1>
           <p className="sub">
             An AI agent gets a database of its own in seconds, and you get a tamper-evident

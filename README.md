@@ -9,8 +9,9 @@
   <b>Postgres for AI agents — instant branches, and a tamper-evident record of every schema change.</b>
 </p>
 
-FoxByte is **serverless PostgreSQL** for a situation that did not use to exist:
-code writing to your database without a person having read it first.
+FoxByte is **PostgreSQL with instant branching**, for a situation that did not
+use to exist: code writing to your database without a person having read it
+first.
 
 Branching is how an agent gets a database of its own — a full copy in seconds,
 thrown away when it is done. The **[Blackbox](#blackbox)** is why you can let it
@@ -54,8 +55,8 @@ separate dev server to run.
   seconds (copy-on-write), fully isolated; `main` is untouched. Plus
   `fox branch reset` (start over) and `fox branch diff` (what changed, from Blackbox).
 - **Time travel / PITR** — continuous WAL archival; restore to any point.
-- **One serverless endpoint** — connect to `:6432`; the database name *is* the
-  branch. Idle branches scale to zero and wake on connect. TLS on by default, so
+- **One endpoint** — connect to `:6432`; the database name *is* the branch.
+  Idle branches scale to zero and wake on connect. TLS on by default, so
   `sslmode=require` clients connect out of the box.
 - **A database per AI agent** — the Agent Branch API over HTTP, or the
   **Model Context Protocol** (`fox mcp`): an agent gets a database, runs SQL, sees
@@ -563,9 +564,10 @@ A fresh install exposes nothing it does not have to:
 
 ## What FoxByte is not
 
-- **Not distributed / not multi-host (yet).** Compute and storage are separated
-  *logically* (stateless containers over persistent storage, scale-to-zero) but
-  still run on one host. Networked storage disaggregation is on the roadmap.
+- **One machine, for now.** Compute and storage are separated *logically*
+  (stateless containers over persistent storage, scale-to-zero) but still run on
+  one host; there is no multi-host deployment. Networked storage disaggregation
+  is on the roadmap.
 - **HA is a single-VM demonstration**, not a production multi-host deployment.
 - **Not a vector database** — it is PostgreSQL (use `pgvector` on it if you like).
 - **One instance, shared** — accounts own their branches and share `main`; there

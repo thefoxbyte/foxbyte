@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Command fox is the control CLI for the FoxByte serverless-Postgres
+// Command fox is the control CLI for the FoxByte PostgreSQL branching
 // platform. It runs inside the Linux dev VM (ZFS + Docker) and manages the
 // unified stack: object storage (MinIO), the primary Postgres ("main") with WAL
 // archiving, point-in-time restore, and instant copy-on-write branches.
@@ -55,7 +55,7 @@ func listenAddr(port string) string {
 	return net.JoinHostPort(host, port)
 }
 
-const usage = `FoxByte — serverless Postgres control CLI
+const usage = `FoxByte — Postgres branching control CLI
 
 Usage:
   fox <command> [args]
@@ -169,7 +169,7 @@ High availability:
   ha disable           Remove the standby
   ha failback          After a failover: move 'main' back to its own container, keeping every write
 
-Serverless front door:
+Front door:
   gateway [--addr :6432] [--idle 2m]
                        Smart SQL gateway: reads dbname=<branch> and routes to it,
                        auto-resuming suspended branches, auto-suspending idle ones (--idle 0 = off)

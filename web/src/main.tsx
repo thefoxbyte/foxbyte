@@ -57,7 +57,7 @@ function PublicLayout() {
       <footer className="container" style={{ paddingTop: 0, paddingBottom: 0 }}>
         <div className="footer">
           <Link to="/" className="brand"><Mark size={20} /> <Wordmark /></Link>
-          <span className="muted">Serverless Postgres · branches · time-travel · agent DBs</span>
+          <span className="muted">Postgres · branches · time-travel · agent DBs</span>
           <span style={{ marginLeft: 'auto' }} className="muted">Open source — AGPL-3.0 core · Apache-2.0 clients</span>
         </div>
       </footer>
