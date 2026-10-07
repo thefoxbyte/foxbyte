@@ -21,6 +21,12 @@ password manager and keep it off CI.** Commit the public half: it is what every
 binary checks licences against, so a licence is only valid for builds made after
 this commit.
 
+**Mint before you delete the key file.** Signing reads `license-signing.key`,
+and there is no second copy: a key that is deleted before any licence has been
+issued against it leaves every binary built from that commit trusting a public
+half nothing can sign for, recoverable only with `--force` and a reissue of
+everything. The order `generate` prints is commit, mint, then put away.
+
 Running it twice is refused, by two separate checks — one for the key the build
 trusts, one for the key file itself. There is no recovering a lost private key:
 every licence it signed becomes unverifiable.
