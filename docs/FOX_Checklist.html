@@ -627,6 +627,7 @@
       <li class="ok">One decoder per branch in the control plane, started on the first subscriber and stopped after the last; it wakes a suspended branch</li>
       <li class="ok">Refusals that hold: row-level security (no override), no primary key (and <code>UPDATE</code> still works afterwards), anything outside <code>public</code>, the Blackbox's own tables, anything <code>db_client</code> cannot read</li>
       <li class="ok">Wire format: values as text, identity always, <code>old</code> only when sent, <code>changed</code> only under FULL, unchanged-TOAST named rather than nulled</li>
+      <li class="ok">Both answers to &ldquo;what was the row that is gone&rdquo;, in one capture against a live WAL: a delete under the default identity carries the key alone, and under FULL the whole old row &mdash; where every column is part of the identity too</li>
       <li class="ok">SSE on the outer mux so a branch-scoped key reaches its own branch and nothing else; somebody else's branch is 404, not 403</li>
       <li class="ok">Slots named, listed, accounted for and swept only once Postgres has marked them lost; <code>fox check</code> warns on one nothing is draining</li>
       <li class="ok">The reaper leaves a subscribed branch alone (asked of Postgres, not of memory), and a resumed branch gets a fresh idle window</li>
