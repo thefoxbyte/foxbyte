@@ -50,10 +50,14 @@ jobs:
           MAX_AGE_HOURS: '48'
         run: |
           set -euo pipefail
-          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?status=completed&per_page=1" \
+          # branch=main, and that matters: without it the newest *completed* run on
+          # any branch satisfies the gate. A green nightly on a side branch once
+          # cleared a release of main it had never built -- the ancestry warning
+          # below was the only hint, and a warning does not stop a release.
+          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?branch=main&status=completed&per_page=1" \
             --jq '.workflow_runs[0] // empty')"
           if [ -z "$run_json" ]; then
-            echo "::error::no completed nightly run to check. Run the nightly workflow (Actions -> nightly -> Run workflow), then tag."
+            echo "::error::no completed nightly run on main to check. Run the nightly workflow against main (Actions -> nightly -> Run workflow -> Branch: main), then tag."
             [ "$ALLOW_RED" = "true" ] || exit 1
           fi
           conclusion="$(jq -r '.conclusion // "none"' <<<"${run_json:-\{\}}")"
