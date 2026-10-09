@@ -171,6 +171,40 @@ export const prepareRealtimeTable = (
 ) => req('POST', `${API}/api/branches/${encodeURIComponent(name)}/realtime/prepare`, t) as
   Promise<{ applied: boolean; statements: RealtimeFix[]; table: RealtimeVerdict }>
 
+// --- what staying warm has cost (Enterprise) ---
+
+// A branch with a subscriber attached is never suspended — that is what makes
+// the feed continuous, and it is not free. This is where that bill is legible.
+//
+// `measured` is absent until two readings exist: the counters are cumulative,
+// so a single one cannot say how much work happened. `transactions` rather than
+// queries, because without pg_stat_statements loaded that is what Postgres
+// counts. `notes` carries the caveats a number would otherwise hide.
+export type RealtimeSlotLag = {
+  slot: string; active: boolean; status: string
+  held_bytes: number
+  // How much further the bookmark may fall behind before Postgres drops it.
+  safe_bytes: number
+}
+export type RealtimeMeasured = {
+  from: string; to: string; over: string
+  transactions: number; rows_returned: number
+  transactions_per_day: number; samples: number
+}
+export type RealtimeActivity = {
+  branch: string; warm: boolean
+  warm_since?: string; warm_for?: string
+  subscribers: number; events_delivered: number; peak_subscribers: number
+  tables_streaming: number
+  measured?: RealtimeMeasured
+  slots?: RealtimeSlotLag[]
+  notes?: string[]
+}
+
+export const getRealtimeActivity = (name: string, window = '24h') =>
+  req('GET', `${API}/api/branches/${encodeURIComponent(name)}/realtime/activity?window=${encodeURIComponent(window)}`) as
+    Promise<{ activity: RealtimeActivity; cost: string; max_subscribers: number }>
+
 // --- realtime keys (Enterprise) ---
 
 // A stream-only credential for one branch. `prefix` is the visible head of the

@@ -71,6 +71,7 @@ vi.mock('../api', async () => {
     disableRealtimeTable: vi.fn(),
     prepareRealtimeTable: vi.fn(),
     listRealtimeKeys: vi.fn(async () => ({ keys: [] })),
+    getRealtimeActivity: vi.fn(),
     createRealtimeKey: vi.fn(),
     revokeRealtimeKey: vi.fn(async () => ({ revoked: 'k1' })),
     streamChanges: vi.fn(() => () => {}),
@@ -79,9 +80,10 @@ vi.mock('../api', async () => {
 
 import Realtime from './Realtime'
 import {
-  createRealtimeKey, disableRealtimeTable, enableRealtimeTable,
-  listRealtimeKeys, listRealtimeTables, prepareRealtimeTable, revokeRealtimeKey,
+  createRealtimeKey, disableRealtimeTable, enableRealtimeTable, getRealtimeActivity,
+  getStatus, listRealtimeKeys, listRealtimeTables, prepareRealtimeTable, revokeRealtimeKey,
 } from '../api'
+import type { RealtimeActivity } from '../api'
 
 const mockTables = vi.mocked(listRealtimeTables)
 const mockEnable = vi.mocked(enableRealtimeTable)
@@ -90,6 +92,19 @@ const mockPrepare = vi.mocked(prepareRealtimeTable)
 const mockKeys = vi.mocked(listRealtimeKeys)
 const mockCreateKey = vi.mocked(createRealtimeKey)
 const mockRevokeKey = vi.mocked(revokeRealtimeKey)
+const mockActivity = vi.mocked(getRealtimeActivity)
+
+const ACTIVITY: RealtimeActivity = {
+  branch: 'main', warm: true,
+  warm_since: '2026-10-09T12:00:00Z', warm_for: '3h0m0s',
+  subscribers: 2, events_delivered: 1420, peak_subscribers: 3,
+  tables_streaming: 4,
+  measured: {
+    from: '2026-10-09T12:00:00Z', to: '2026-10-09T15:00:00Z', over: '3h0m0s',
+    transactions: 7200, rows_returned: 91000, transactions_per_day: 57600, samples: 36,
+  },
+  slots: [{ slot: 'fox_rt_main_stream', active: true, status: 'reserved', held_bytes: 5 << 20, safe_bytes: 1019 << 20 }],
+}
 
 const show = () => render(<ConfirmProvider><Realtime /></ConfirmProvider>)
 
@@ -104,12 +119,19 @@ const rowFor = async (name: string) => {
 }
 
 beforeEach(() => {
+  // clearAllMocks resets calls but keeps implementations, so a test that points
+  // getStatus at a Standard engine leaks that into every test after it — which
+  // is how six of these failed in file order while each passed alone. Every
+  // default a test might override is re-asserted here rather than relying on
+  // the module factory, which runs once.
   vi.clearAllMocks()
+  vi.mocked(getStatus).mockResolvedValue(STATUS)
   mockTables.mockResolvedValue({
     branch: 'main', withheld: 3,
     tables: [READY, STREAMING, FREE_FIX, COSTLY_FIX, IMPOSSIBLE],
   })
   mockKeys.mockResolvedValue({ keys: [] })
+  mockActivity.mockResolvedValue({ activity: ACTIVITY, cost: 'Warm for 3h0m0s with 2 subscriber(s) attached, holding 5 MB of write-ahead log.', max_subscribers: 8 })
 })
 afterEach(cleanup)
 
@@ -267,4 +289,89 @@ it('a standard install explains the lock instead of showing dead controls', asyn
   show()
   await screen.findByRole('button', { name: 'Watch (Enterprise)' })
   expect(screen.queryByText(/needs an Enterprise licence/)).toBeNull()
+})
+
+// --- what staying warm has cost -------------------------------------------
+
+it('says what being warm is costing, and for how long', async () => {
+  show()
+  expect((await screen.findByTestId('realtime-cost')).textContent)
+    .toMatch(/Warm for 3h0m0s with 2 subscriber\(s\) attached/)
+  // The cap alongside the count, so "2" reads as "2 of 8" rather than as a
+  // number with no scale.
+  expect((await screen.findByTestId('rt-subscribers')).textContent).toMatch(/^2 of 8 subscribers/)
+  // The high-water mark, which is what tells somebody a client is reconnecting
+  // more than it should.
+  expect(screen.getByTestId('rt-subscribers').textContent).toMatch(/3 at most so far/)
+  expect(screen.getByTestId('rt-tables').textContent).toMatch(/4 tables streaming/)
+})
+
+it('reports work as transactions, over a stated period', async () => {
+  show()
+  // Transactions, not queries. Without pg_stat_statements loaded that is what
+  // Postgres counts, and this is a number somebody may bill from.
+  const line = await screen.findByTestId('rt-measured')
+  expect(line.textContent).toMatch(/Over the last 3h0m0s/)
+  expect(line.textContent).toMatch(/7,200/)
+  expect(line.textContent).toMatch(/transactions/)
+  expect(line.textContent).toMatch(/57,600\/day/)
+  expect(line.textContent).toMatch(/91,000 rows returned/)
+  expect(line.textContent).not.toMatch(/quer/i)
+  // And how many readings are behind it, so the figure can be judged.
+  expect(line.textContent).toMatch(/36 readings/)
+})
+
+it('says so plainly when there are not yet two readings', async () => {
+  mockActivity.mockResolvedValue({
+    activity: { ...ACTIVITY, measured: undefined },
+    cost: 'Warm for 2m0s.', max_subscribers: 8,
+  })
+  show()
+  expect((await screen.findByTestId('rt-measured')).textContent).toMatch(/Not enough readings yet/)
+  // A rate is not invented from one reading.
+  expect(screen.getByTestId('rt-measured').textContent).not.toMatch(/\/day/)
+})
+
+it('shows what each bookmark holds and how much room is left', async () => {
+  show()
+  expect(await screen.findByText('fox_rt_main_stream')).toBeTruthy()
+  expect(screen.getByText('5 MB')).toBeTruthy()
+  // The number that turns "a subscriber went away" into something actionable
+  // before the disk decides for you.
+  expect(screen.getByText('1019 MB')).toBeTruthy()
+})
+
+it('passes on the caveats rather than hiding them behind a number', async () => {
+  mockActivity.mockResolvedValue({
+    activity: {
+      ...ACTIVITY,
+      notes: ['the branch was suspended and resumed during this period, so the rate above is averaged over time it was not running'],
+    },
+    cost: 'Warm for 3h0m0s.', max_subscribers: 8,
+  })
+  show()
+  expect(await screen.findByText(/suspended and resumed during this period/)).toBeTruthy()
+})
+
+it('a suspended branch is described as the cheap state, not as a fault', async () => {
+  mockActivity.mockResolvedValue({
+    activity: { ...ACTIVITY, warm: false, warm_since: undefined, warm_for: undefined, subscribers: 0, slots: [] },
+    cost: 'Not running. A suspended branch costs its disk and nothing else.', max_subscribers: 8,
+  })
+  show()
+  expect((await screen.findByTestId('realtime-cost')).textContent).toMatch(/Not running/)
+  // Nothing about subscribers or events, which would be zeroes dressed as data.
+  expect(screen.queryByTestId('rt-subscribers')).toBeNull()
+  expect(screen.queryByTestId('rt-events')).toBeNull()
+})
+
+// The panel disappears rather than repeating a refusal the page already
+// explains once below it.
+it('stays silent when the engine cannot answer', async () => {
+  const { ApiError } = await vi.importActual<typeof import('../api')>('../api')
+  mockActivity.mockRejectedValue(new ApiError(409, 'the change feed is not set up on this install'))
+  show()
+  await screen.findByRole('heading', { name: 'Tables' })
+  expect(screen.queryByTestId('realtime-cost')).toBeNull()
+  expect(screen.queryByRole('heading', { name: 'What this is costing' })).toBeNull()
 })

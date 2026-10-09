@@ -1019,9 +1019,160 @@ assert_eq "the slot goes idle once the last subscriber leaves" \
 
 "$S" branch delete rtdoorother >/dev/null 2>&1
 
-# ── 15. Teardown leaves the database working ─────────────────────────────────
+# ── 15. What staying warm costs, measured ───────────────────────────────────
 echo
-echo "15. teardown undoes it, and breaks nothing"
+echo "15. the meter"
+# The feed keeps a branch warm on purpose -- a subscribed branch is never
+# suspended, because a cold start defeats the point of realtime. That is the
+# right trade and it is not a free one, so this section proves the bill is
+# legible: how long it has been warm, what work went through it, and what the
+# bookmarks hold.
+#
+# Only a live database can check most of this. The subtraction's awkward cases
+# (a statistics reset, a counter that rewound, a suspension mid-period) are
+# table-tested in enterprise/realtime/activity_test.go, because reproducing a
+# statistics reset here would tell us less and cost a restart.
+
+ddl pg-main 'DROP TABLE IF EXISTS public.meter_t CASCADE' >/dev/null
+pg pg-main 'CREATE TABLE public.meter_t (id bigint PRIMARY KEY, note text)' >/dev/null
+pg pg-main 'GRANT SELECT ON public.meter_t TO db_client' >/dev/null
+"$S" realtime enable meter_t >/dev/null 2>&1
+
+# Warm for how long, read from the container rather than from anything we wrote
+# down: it is the truth, and it survives the control plane restarting.
+ACT="$("$S" realtime activity main 2>&1)"
+assert_contains "activity says the branch is warm" "$ACT" "Warm for"
+assert_contains "…and how many tables stream" "$ACT" "table(s) streaming"
+# Transactions, said as transactions. Without pg_stat_statements -- not loaded,
+# and loading it costs a restart -- that is what Postgres counts, and "queries"
+# would be a word that is not true about a number somebody may bill from.
+assert_missing  "…and never calls them queries" "$ACT" "queries"
+
+# One reading cannot be subtracted from itself, and a branch with no readings
+# at all says so rather than inventing a rate.
+#
+# Asserted on a branch the meter does not sample -- it reads only branches with
+# a published table or a feed slot -- because `activity` takes a reading each
+# time it runs, so by the second invocation on main there are two. The first
+# version asserted this on main's second call and failed for that reason.
+"$S" branch create rtnometer >/dev/null 2>&1
+FIRST="$("$S" realtime activity rtnometer --window 2m 2>&1)"
+assert_contains "a branch with no readings reports no rate, and says why" "$FIRST" "not enough readings"
+assert_missing  "…and invents no per-day figure" "$FIRST" "/day"
+"$S" branch delete rtnometer >/dev/null 2>&1
+
+# Do some work, take a second reading, and the period becomes measurable. The
+# command takes a reading each time it runs, which is what makes this possible
+# without waiting for the meter's timer.
+# Two minutes wide, deliberately: earlier sections stop and start containers,
+# and Postgres discards its statistics on an unclean shutdown, so a wider window
+# spans a restart and the report then measures only the part after it.
+pg pg-main "INSERT INTO public.meter_t SELECT g, 'x' FROM generate_series(1, 50) g" >/dev/null
+for i in $(seq 1 20); do pg pg-main "SELECT count(*) FROM public.meter_t" >/dev/null; done
+sleep 2
+SECOND="$("$S" realtime activity main --window 2m 2>&1)"
+assert_contains "two readings give a measured period" "$SECOND" "transactions"
+assert_contains "…with a per-day rate" "$SECOND" "/day"
+assert_contains "…over a stated window" "$SECOND" "over the last"
+# The work really is counted: the inserts and selects above are more than zero.
+COUNTED="$(printf '%s' "$SECOND" | sed -n 's/.*  \([0-9][0-9]*\) transactions.*/\1/p' | head -1)"
+assert_eq "…and the count is not zero" "$([ "${COUNTED:-0}" -gt 0 ] && echo yes)" "yes"
+
+# A subscriber attached is the expensive state, and the report says so while it
+# is happening.
+M=/tmp/rt-meter-feed.ndjson
+: > "$M"
+( curl -skN --max-time 20 -H "Authorization: Bearer $KEY" \
+    "$API/api/branches/main/realtime" | sed -u -n 's/^data: //p' >> "$M" ) &
+METERSTREAM=$!
+sleep 5
+LIVE="$("$S" realtime activity main 2>&1)"
+assert_contains "a subscriber shows in the report" "$LIVE" "subscribers attached"
+# The cap beside the count, so "1" reads as "1 of 8" rather than as a number
+# with no scale. 8 is the default; this suite does not override it here.
+assert_contains "…with the cap alongside the count" "$LIVE" "of 8 subscribers"
+# And the bookmark it holds, with the room left before Postgres drops it.
+assert_contains "the bookmark's slot is listed" "$LIVE" "fox_rt_main_stream"
+assert_contains "…with what it is holding" "$LIVE" "holding"
+assert_contains "…and how much room is left" "$LIVE" "before it is dropped"
+wait "$METERSTREAM" 2>/dev/null
+
+# The API says the same thing, so the console and the CLI cannot disagree.
+AJSON="$(curl -sk -H "Authorization: Bearer $KEY" "$API/api/branches/main/realtime/activity?window=2m")"
+assert_contains "the activity endpoint answers" "$AJSON" '"activity"'
+assert_contains "…with the cost sentence" "$AJSON" '"cost"'
+assert_contains "…the warm flag" "$AJSON" '"warm":true'
+assert_contains "…the subscriber cap" "$AJSON" '"max_subscribers"'
+assert_contains "…and a measured section" "$AJSON" '"transactions"'
+# A window that is not a duration is refused rather than defaulted: a report
+# over a period nobody asked for is worse than an error.
+CODE="$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" \
+  "$API/api/branches/main/realtime/activity?window=soon")"
+assert_eq "a nonsense window is refused" "$CODE" "400"
+# And a bad resume position on the stream itself, as a status code rather than
+# as an error object inside a response that already said 200. That was the
+# shape of the bug this section found in the subscriber cap, and the ?since=
+# check had it too.
+SCODE="$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" \
+  "$API/api/branches/main/realtime?since=not-a-log-position")"
+assert_eq "a bad resume position is 400, not a 200 with an error in it" "$SCODE" "400"
+
+# The cap. Eight by default; one here, so the second stream is refused with the
+# number rather than accepted until something runs out.
+#
+# The restart carries the setting because `fox start` launches the servers with
+# exec.Command and no Env, which inherits this shell's environment.
+FOX_REALTIME_MAX_SUBSCRIBERS=1 "$S" stop >/dev/null 2>&1
+FOX_REALTIME_MAX_SUBSCRIBERS=1 "$S" start >/dev/null 2>&1
+for _ in $(seq 60); do curl -sk "$API/api/status" >/dev/null 2>&1 && break; sleep 1; done
+C=/tmp/rt-cap-first.ndjson
+: > "$C"
+( curl -skN --max-time 30 -H "Authorization: Bearer $KEY" \
+    "$API/api/branches/main/realtime" | sed -u -n 's/^data: //p' >> "$C" ) &
+CAPSTREAM=$!
+# Wait for proof that the first subscriber is attached, rather than sleeping and
+# hoping. The first version slept six seconds and probed: the probe arrived
+# before the decoder had attached, so it was itself admitted as subscriber one
+# and answered 200 -- and the check that followed it then passed, which is how
+# a race reads as a contradiction.
+for i in $(seq 1 30); do
+  [ "$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND active")" = "1" ] && break
+  sleep 1
+done
+assert_eq "the first subscriber is attached" \
+  "$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND active")" "1"
+CAPBODY="$(curl -sk -w '\n%{http_code}' -H "Authorization: Bearer $KEY" "$API/api/branches/main/realtime")"
+assert_eq "a second subscriber is refused at a cap of one" "$(printf '%s' "$CAPBODY" | tail -1)" "429"
+assert_contains "…naming the count" "$CAPBODY" "already serving 1"
+assert_contains "…and how to raise it" "$CAPBODY" "MAX_SUBSCRIBERS"
+wait "$CAPSTREAM" 2>/dev/null
+# A place frees up when a subscriber leaves: the cap is concurrent streams, not
+# a quota on how many a branch may ever serve.
+for i in $(seq 1 30); do
+  [ "$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND active")" = "0" ] && break
+  sleep 1
+done
+# A streaming response answers 200 and then runs until --max-time cuts it off,
+# so the code is what matters here and the timeout is expected.
+AGAINCODE="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 -H "Authorization: Bearer $KEY" \
+  "$API/api/branches/main/realtime")"
+assert_eq "a place frees up once the stream ends" "$AGAINCODE" "200"
+
+# Back to the default cap for whatever runs next.
+"$S" stop >/dev/null 2>&1
+"$S" start >/dev/null 2>&1
+for _ in $(seq 60); do curl -sk "$API/api/status" >/dev/null 2>&1 && break; sleep 1; done
+
+"$S" realtime disable meter_t >/dev/null 2>&1
+ddl pg-main 'DROP TABLE IF EXISTS public.meter_t CASCADE' >/dev/null
+for i in $(seq 1 30); do
+  [ "$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND active")" = "0" ] && break
+  sleep 1
+done
+
+# ── 16. Teardown leaves the database working ─────────────────────────────────
+echo
+echo "16. teardown undoes it, and breaks nothing"
 # Output kept. It was discarded, so when this section failed with wal_level
 # still logical there was nothing to read but the assertion -- and teardown run
 # by hand afterwards worked, which is the least useful kind of evidence.

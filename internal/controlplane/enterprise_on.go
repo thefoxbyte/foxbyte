@@ -17,6 +17,7 @@ import (
 	_ "github.com/thefoxbyte/foxbyte/enterprise/promote"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/schema"
 
+	"github.com/thefoxbyte/foxbyte/enterprise/realtime"
 	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 )
@@ -35,4 +36,7 @@ func mountEnterprise(api, outer *http.ServeMux, store *auth.Store, acl *access.C
 	mountRealtimeStream(outer, store, acl)
 	mountRealtimeDoor(outer, store, acl)
 	registerRealtimeAdmin(api, store)
+	// The meter. Its readings are what make "how long has this been warm, and
+	// did anything use it" answerable about a period rather than an instant.
+	realtime.StartMeter(store, liveHub)
 }

@@ -231,3 +231,92 @@ func realtimeDSN(branchName, sslmode string) (realtime.DSN, error) {
 	}
 	return d, nil
 }
+
+// realtimeActivity is `fox realtime activity [branch] [--window 24h]`: what
+// staying warm has cost, and whether anything used it.
+//
+// The question this answers is one the product could not answer before. A
+// subscribed branch is never suspended — that is the promise the feed makes —
+// so it runs, and runs, and nothing anywhere said for how long or to what end.
+func realtimeActivity(args []string) error {
+	branchName, window := "main", 24*time.Hour
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--window" && i+1 < len(args):
+			d, err := time.ParseDuration(args[i+1])
+			if err != nil || d <= 0 {
+				return fmt.Errorf("--window %q is not a duration such as 1h or 24h", args[i+1])
+			}
+			window = d
+			i++
+		case strings.HasPrefix(args[i], "--window="):
+			d, err := time.ParseDuration(strings.TrimPrefix(args[i], "--window="))
+			if err != nil || d <= 0 {
+				return fmt.Errorf("--window %q is not a duration such as 1h or 24h", args[i])
+			}
+			window = d
+		case strings.HasPrefix(args[i], "--"):
+			return fmt.Errorf("unknown flag %q", args[i])
+		default:
+			branchName = args[i]
+		}
+	}
+	if !branch.Exists(branchName) {
+		return fmt.Errorf("no branch %q", branchName)
+	}
+
+	store := openStore()
+	defer store.Close()
+
+	// A reading is taken now, so a first run has something to say rather than
+	// only "wait five minutes". It is the same reading the meter takes.
+	realtime.MeterOnce(store, nil, 0)
+
+	rep, err := realtime.Activity(store, branchName, window, nil)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s\n\n", rep.Cost())
+	if m := rep.Measured; m != nil {
+		fmt.Printf("  over the last %s (%d readings)\n", m.Over, m.Samples)
+		// Transactions, said as transactions. Without pg_stat_statements —
+		// which is not loaded, and loading it costs a restart — this is what
+		// Postgres counts, and calling it "queries" would be a number somebody
+		// bills from and a word that is not true.
+		fmt.Printf("  %d transactions (%.0f/day), %d rows returned\n",
+			m.Transactions, m.PerDay, m.RowsReturned)
+	}
+	if rep.Warm {
+		fmt.Printf("  %d of %d subscribers attached", rep.Subscribers, realtime.MaxSubscribers())
+		if rep.PeakSubs > rep.Subscribers {
+			fmt.Printf(" (%d at most so far)", rep.PeakSubs)
+		}
+		fmt.Printf("\n  %d table(s) streaming, %d events delivered since the control plane started\n",
+			rep.Tables, rep.EventsNow)
+	}
+	for _, s := range rep.Slots {
+		state := "idle"
+		if s.Active {
+			state = "streaming"
+		}
+		if s.Status == "lost" {
+			state = "lost"
+		}
+		fmt.Printf("  %-34s %-9s holding %s", s.Slot, state, humanBytes(s.HeldBytes))
+		if s.SafeBytes > 0 {
+			fmt.Printf(", %s before it is dropped", humanBytes(s.SafeBytes))
+		}
+		fmt.Println()
+	}
+	for _, n := range rep.Notes {
+		fmt.Printf("\n  note: %s\n", n)
+	}
+	// The judgement, last and as a suggestion. The engine will not suspend a
+	// branch somebody is subscribed to, so this is a person's decision to make.
+	if rep.Idle(2 * time.Hour) {
+		fmt.Printf("\nNothing has used this branch in that time while it stayed warm. If that is a\n"+
+			"forgotten subscriber, `%s realtime slots %s` shows what is holding it.\n", brand.CLI, branchName)
+	}
+	return nil
+}

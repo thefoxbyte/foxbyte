@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/thefoxbyte/foxbyte/enterprise/realtime"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
@@ -48,6 +49,44 @@ func registerRealtimeAdmin(api *http.ServeMux, store *auth.Store) {
 	api.HandleFunc("GET /api/branches/{name}/realtime/keys", realtimeAdmin(realtimeKeysList(store)))
 	api.HandleFunc("POST /api/branches/{name}/realtime/keys", realtimeAdmin(realtimeKeysCreate(store)))
 	api.HandleFunc("DELETE /api/branches/{name}/realtime/keys/{id}", realtimeAdmin(realtimeKeysRevoke(store)))
+	// Manage, by the realtime/ prefix rule, like everything else here. It
+	// changes nothing and a case could be made for Use — but the rule's value
+	// is that it has no exceptions to remember, and the console's other
+	// realtime panels already need Manage, so an exception would buy nothing
+	// and cost the rule.
+	api.HandleFunc("GET /api/branches/{name}/realtime/activity", realtimeAdmin(realtimeActivity(store)))
+}
+
+// realtimeActivity answers how long a branch has been warm, what it did in
+// that time, and what the feed is holding.
+//
+// window defaults to a day. A shorter window than the meter's interval returns
+// a report with no measured section rather than a wrong one, which is the
+// intended behaviour: "not yet known" beats a rate divided by a period nobody
+// observed.
+func realtimeActivity(store *auth.Store) func(http.ResponseWriter, *http.Request, string) {
+	return func(w http.ResponseWriter, r *http.Request, name string) {
+		window := 24 * time.Hour
+		if v := r.URL.Query().Get("window"); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil || d <= 0 {
+				writeErr(w, 400, fmt.Errorf("window=%q is not a duration such as 1h or 24h", v))
+				return
+			}
+			window = d
+		}
+		rep, err := realtime.Activity(store, name, window, liveHub(name))
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"activity": rep,
+			"cost":     rep.Cost(),
+			// The cap, so a console can say "3 of 8" rather than just "3".
+			"max_subscribers": realtime.MaxSubscribers(),
+		})
+	}
 }
 
 // realtimeAdmin is the licence check and the engine check, which every route

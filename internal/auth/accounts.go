@@ -184,6 +184,13 @@ func (s *Store) ForgetBranch(branch string) error {
 	if _, err := s.db.Exec(`DELETE FROM branch_owners WHERE branch=?`, branch); err != nil {
 		return err
 	}
+	// Readings go with the branch, unlike decided requests, which are history
+	// and stay. A branch name can be reused, and a newly made branch that
+	// inherited the old one's readings would report work it never did —
+	// measured, attributed, and wrong. Lost history is the better failure.
+	if err := s.ForgetActivity(branch); err != nil {
+		return err
+	}
 	// Decided requests are history and stay; an open one points at nothing now.
 	return s.ForgetBranchRequests(branch)
 }
