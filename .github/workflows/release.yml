@@ -123,6 +123,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the image's cached one
 
       # A release is the one thing that cannot be taken back, so it must not go out
       # with the object store pinned by tag alone: a tag in our own registry can
