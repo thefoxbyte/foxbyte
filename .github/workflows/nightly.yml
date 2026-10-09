@@ -58,7 +58,13 @@ jobs:
           # anyway rather than something the tests forced.
           node-version: '22'
           cache: npm
-          cache-dependency-path: web/package-lock.json
+          # Both lockfiles, because both suites install: ui builds the console
+          # from web/, and sdks builds the published TypeScript client from
+          # clients/typescript/. Keyed on web/ alone, a change to the client's
+          # dependencies left the key untouched and the cache stale.
+          cache-dependency-path: |
+            web/package-lock.json
+            clients/typescript/package-lock.json
 
       # ZFS is the storage engine branches are clones on. The runner's kernel
       # needs its module; without it there is nothing to test, so say so plainly
