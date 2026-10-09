@@ -146,12 +146,18 @@ func TestDSNScheme(t *testing.T) {
 
 // Redacted is what goes in a log or a listing.
 func TestRedacted(t *testing.T) {
-	d := DSN{Host: "127.0.0.1:8080", Branch: "app", Key: "rtk_0123456789abcdef", SSL: SSLRequire}
+	// Deliberately low-entropy. A realistic-looking key here reads as a real
+	// one to secret scanning — the first version of this fixture failed the
+	// security job in CI — and an allowlist entry would weaken the scanner for
+	// a test's convenience. The repeated runs keep the prefix and the tail
+	// distinguishable, which is all this test needs.
+	const key = "rtk_aaaabbbbccccdddd"
+	d := DSN{Host: "127.0.0.1:8080", Branch: "app", Key: key, SSL: SSLRequire}
 	got := d.Redacted()
-	if strings.Contains(got, "9abcdef") {
+	if strings.Contains(got, "ccccdddd") {
 		t.Fatalf("Redacted() leaked the key: %q", got)
 	}
-	if !strings.Contains(got, "rtk_01234567") {
+	if !strings.Contains(got, "rtk_aaaabbbb") {
 		t.Fatalf("Redacted() = %q; want the visible prefix so a key can be identified", got)
 	}
 	// A keyless DSN redacts to itself rather than growing an empty userinfo.
