@@ -330,7 +330,7 @@ paths:
       summary: >-
         The row-level change feed, as server-sent events (Enterprise). Each event is a JSON
         object: schema (column names and type OIDs), change (identity, new, old, changed,
-        unchanged, commit_lsn), resync or error. Values are Postgres text as JSON strings,
+        unchanged, commit_lsn, xid, lsn), begin and commit when transactions=1, resync or error. Values are Postgres text as JSON strings,
         never numbers, so bigint and numeric survive. Resume with ?since=<commit_lsn>.
         Accepts an API key scoped to this branch, which no other /api route does.
       parameters:
@@ -338,8 +338,22 @@ paths:
         - name: since
           in: query
           required: false
-          description: The commit_lsn of the last change seen; the feed replays after it, within the WAL budget.
+          description: >-
+            The commit_lsn of the last transaction fully applied; the feed replays everything
+            committed after it, within the WAL budget. Every change in a transaction carries the
+            same commit_lsn, so it is a safe boundary — resuming from it cannot land a subscriber
+            halfway through a transaction it has already applied.
           schema: { type: string }
+        - name: transactions
+          in: query
+          required: false
+          description: >-
+            1 adds begin and commit frames around each transaction's changes, so a subscriber can
+            apply a commit as a unit. Off by default, because a client written against the
+            unframed feed would otherwise receive event types it has no case for. An empty
+            transaction — one that touched only tables nobody subscribed to — produces no frame.
+            A value other than 1 or 0 is refused rather than read as 0.
+          schema: { type: string, enum: ["0", "1", "true", "false"] }
       responses:
         "200": { description: An event stream, content: { text/event-stream: { schema: { type: string } } } }
         "400": { description: since is not a log position }

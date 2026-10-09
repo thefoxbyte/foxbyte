@@ -543,6 +543,10 @@ function Feed({ branch, licensed, edition }: {
       })
       if (e.type === 'resync' || e.type === 'error') setNote(e.detail || e.code || '')
     }, {
+      // Asked for, so the boundaries are visible here. A person checking that
+      // two rows moved together has no other way to see it, and the feed is
+      // where they would look.
+      transactions: true,
       onClose: reason => {
         setLive(false)
         if (reason) setNote(reason)
@@ -592,6 +596,36 @@ function EventRow({ e }: { e: RealtimeEvent }) {
         <td><code>{e.table}</code></td>
         <td colSpan={4} className="muted">
           shape: {e.columns.map(c => c.name + (c.key ? ' (key)' : '')).join(', ')}
+        </td>
+      </tr>
+    )
+  }
+  // The frames. Rendered as boundaries rather than as rows of data, because
+  // what they carry is "these changes belong together" — the one thing a list
+  // of changes cannot say on its own.
+  //
+  // No box-drawing characters, and the rule sits on the commit. This list is
+  // newest-first, so a transaction arrives as commit, then its changes, then
+  // its begin: a ┌ above and a └ below would have been upside down, and a rule
+  // on the begin would have separated a transaction from its own changes
+  // instead of from the newer ones above it. The xid ties the pair together
+  // without relying on their order.
+  if (e.type === 'commit') {
+    return (
+      <tr data-testid="tx-commit">
+        <td colSpan={5} className="muted" style={{ fontSize: 12, borderTop: '2px solid var(--border)' }}>
+          transaction {e.xid} committed {e.changes} change{e.changes === 1 ? '' : 's'}
+          {' '}· resume from <code>{e.commit_lsn}</code>
+          {e.at ? ` · ${new Date(e.at).toLocaleTimeString()}` : ''}
+        </td>
+      </tr>
+    )
+  }
+  if (e.type === 'begin') {
+    return (
+      <tr data-testid="tx-begin">
+        <td colSpan={5} className="muted" style={{ fontSize: 12 }}>
+          transaction {e.xid} began
         </td>
       </tr>
     )

@@ -90,6 +90,13 @@ func streamRealtime(w http.ResponseWriter, r *http.Request, name string) {
 		writeErr(w, 400, err)
 		return
 	}
+	// ?transactions=1 adds the begin and commit frames around each
+	// transaction's changes. Off by default: see realtime.Begin.
+	frames, err := parseFrames(r.URL.Query().Get("transactions"))
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
 
 	hub := hubFor(name, since)
 	// Capped. Every subscriber is a reason this branch cannot be suspended and
@@ -138,6 +145,16 @@ func streamRealtime(w http.ResponseWriter, r *http.Request, name string) {
 			}
 			return
 		case ev := <-sub.Events():
+			// One decoder serves every subscriber of a branch, so the frames
+			// are always produced and dropped here for subscribers that did
+			// not ask. A client written against the unframed feed must not
+			// start receiving event types it has no case for.
+			if !frames {
+				switch ev.(type) {
+				case realtime.Begin, realtime.Commit:
+					continue
+				}
+			}
 			send("message", ev)
 		}
 	}
@@ -202,4 +219,19 @@ func parseSince(raw string) (pglogrepl.LSN, error) {
 		return 0, fmt.Errorf("since=%q is not a log position: pass back the commit_lsn of the last change you saw", raw)
 	}
 	return lsn, nil
+}
+
+// parseFrames reads ?transactions=.
+//
+// A value nobody recognises is refused rather than read as "no": a subscriber
+// that asked for frames and silently did not get them would apply a
+// transaction in pieces and never know why.
+func parseFrames(raw string) (bool, error) {
+	switch raw {
+	case "", "0", "false":
+		return false, nil
+	case "1", "true":
+		return true, nil
+	}
+	return false, fmt.Errorf("transactions=%q is not 1 or 0", raw)
 }

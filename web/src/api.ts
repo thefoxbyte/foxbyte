@@ -117,9 +117,18 @@ export type RealtimeEvent =
   | { type: 'schema'; table: string; columns: { name: string; type_oid: number; key: boolean }[] }
   | {
       type: 'change'; table: string; action: 'insert' | 'update' | 'delete' | 'truncate'
-      commit_lsn: string; identity: RealtimeRow
+      // The transaction's commit position, shared by every change in it, and
+      // the only safe place to resume from. `lsn` is the record's own position,
+      // for ordering within the transaction.
+      commit_lsn: string; lsn?: string; xid?: number
+      identity: RealtimeRow
       new?: RealtimeRow; old?: RealtimeRow; changed?: string[]; unchanged?: string[]
     }
+  // The frames around a transaction, sent only when asked for with
+  // transactions: true. Without them a subscriber cannot tell two changes that
+  // belong to one commit from two unrelated ones.
+  | { type: 'begin'; xid: number; commit_lsn: string; at?: string }
+  | { type: 'commit'; xid: number; commit_lsn: string; at?: string; changes: number }
   | { type: 'resync' | 'error'; code?: string; detail?: string }
 
 // --- what can stream, and making it so (Enterprise) ---
@@ -233,11 +242,14 @@ export const revokeRealtimeKey = (name: string, id: string) =>
 export function streamChanges(
   name: string,
   onEvent: (e: RealtimeEvent) => void,
-  opts: { since?: string; onClose?: (reason?: string) => void } = {},
+  opts: { since?: string; transactions?: boolean; onClose?: (reason?: string) => void } = {},
 ): () => void {
   const ctrl = new AbortController()
+  const q = new URLSearchParams()
+  if (opts.since) q.set('since', opts.since)
+  if (opts.transactions) q.set('transactions', '1')
   const url = `${API}/api/branches/${encodeURIComponent(name)}/realtime`
-    + (opts.since ? `?since=${encodeURIComponent(opts.since)}` : '')
+    + (q.size ? `?${q}` : '')
   ;(async () => {
     let reason: string | undefined
     try {
