@@ -38,6 +38,10 @@ type Decoder struct {
 	hub         *Hub
 
 	relations map[uint32]Relation
+	// tx is the transaction being decoded. pgoutput with proto_version 1 and no
+	// streaming sends only complete transactions, in commit order, so there is
+	// exactly one of these at a time and no interleaving to untangle.
+	tx txState
 	// acked is the last position every subscriber has been given. Only this is
 	// reported to Postgres, so WAL behind it stays reclaimable and WAL ahead of
 	// it stays available for a subscriber that reconnects.
@@ -148,9 +152,34 @@ func (d *Decoder) handle(xld pglogrepl.XLogData) error {
 	return d.handleMessage(m, xld.WALStart.String())
 }
 
+// txState is what is known about the transaction being decoded.
+//
+// begun is whether a Begin frame has actually been published. It is held back
+// until the first visible change, so a transaction that touched only
+// unsubscribed tables produces no frame at all — Postgres reports those, and a
+// frame around nothing is noise every subscriber would have to learn to ignore.
+type txState struct {
+	xid       uint32
+	commitLSN string
+	at        string
+	changes   int
+	begun     bool
+}
+
 // handleMessage is the half worth testing: a parsed message in, events out.
 func (d *Decoder) handleMessage(m pglogrepl.Message, lsn string) error {
 	switch msg := m.(type) {
+	case *pglogrepl.BeginMessage:
+		// Remembered, not published. FinalLSN is where this transaction will
+		// commit, which pgoutput announces up front — so every change in it can
+		// carry the boundary a subscriber resumes from, rather than that only
+		// becoming known at the end.
+		d.tx = txState{
+			xid:       msg.Xid,
+			commitLSN: msg.FinalLSN.String(),
+			at:        msg.CommitTime.UTC().Format(time.RFC3339Nano),
+		}
+
 	case *pglogrepl.RelationMessage:
 		rel := relationFrom(msg)
 		// Re-announce only when the shape actually changed, or every
@@ -162,31 +191,69 @@ func (d *Decoder) handleMessage(m pglogrepl.Message, lsn string) error {
 
 	case *pglogrepl.InsertMessage:
 		if rel, ok := d.relations[msg.RelationID]; ok {
-			d.hub.Publish(BuildChange(rel, "insert", lsn, nil, tupleFrom(msg.Tuple)))
+			d.publishChange(BuildChange(rel, "insert", d.commitLSN(lsn), nil, tupleFrom(msg.Tuple)), lsn)
 		}
 	case *pglogrepl.UpdateMessage:
 		if rel, ok := d.relations[msg.RelationID]; ok {
-			d.hub.Publish(BuildChange(rel, "update", lsn, tupleFrom(msg.OldTuple), tupleFrom(msg.NewTuple)))
+			d.publishChange(BuildChange(rel, "update", d.commitLSN(lsn),
+				tupleFrom(msg.OldTuple), tupleFrom(msg.NewTuple)), lsn)
 		}
 	case *pglogrepl.DeleteMessage:
 		if rel, ok := d.relations[msg.RelationID]; ok {
-			d.hub.Publish(BuildChange(rel, "delete", lsn, tupleFrom(msg.OldTuple), nil))
+			d.publishChange(BuildChange(rel, "delete", d.commitLSN(lsn), tupleFrom(msg.OldTuple), nil), lsn)
 		}
 	case *pglogrepl.TruncateMessage:
 		// One event per relation, with no row data — there is none to send. It
 		// almost never fires: datachanges.sql blocks TRUNCATE by default.
 		for _, id := range msg.RelationIDs {
 			if rel, ok := d.relations[id]; ok {
-				d.hub.Publish(Change{Type: "change", Table: rel.Qualified(),
-					Action: "truncate", CommitLSN: lsn, Identity: map[string]Value{}})
+				d.publishChange(Change{Type: "change", Table: rel.Qualified(),
+					Action: "truncate", CommitLSN: d.commitLSN(lsn), Identity: map[string]Value{}}, lsn)
 			}
 		}
 	case *pglogrepl.CommitMessage:
+		// Close the frame, but only if one was opened: a transaction whose
+		// changes were all on tables nobody subscribed to published no Begin,
+		// and a lone Commit would be a frame around nothing.
+		if d.tx.begun {
+			d.hub.Publish(Commit{Type: "commit", Xid: d.tx.xid,
+				CommitLSN: msg.CommitLSN.String(),
+				At:        msg.CommitTime.UTC().Format(time.RFC3339Nano),
+				Changes:   d.tx.changes})
+		}
+		d.tx = txState{}
 		// Everything in this transaction has been handed to the hub, so the
 		// position is now safe to acknowledge.
 		d.acked = msg.CommitLSN
 	}
 	return nil
+}
+
+// publishChange sends one change, opening the transaction's frame if this is
+// the first visible change in it.
+func (d *Decoder) publishChange(c Change, recordLSN string) {
+	if d.tx.commitLSN != "" && !d.tx.begun {
+		d.hub.Publish(Begin{Type: "begin", Xid: d.tx.xid, CommitLSN: d.tx.commitLSN, At: d.tx.at})
+		d.tx.begun = true
+	}
+	c.Xid = d.tx.xid
+	c.LSN = recordLSN
+	d.tx.changes++
+	d.hub.Publish(c)
+}
+
+// commitLSN is the boundary to stamp on a change: the transaction's commit
+// position when one is known, and otherwise the record's own.
+//
+// The fallback should never be reached — pgoutput wraps every DML message in
+// BEGIN and COMMIT — but a change with no resume position at all would be worse
+// than one with an imprecise one, and silently writing an empty string would
+// turn a decoder bug into a subscriber that cannot resume.
+func (d *Decoder) commitLSN(recordLSN string) string {
+	if d.tx.commitLSN != "" {
+		return d.tx.commitLSN
+	}
+	return recordLSN
 }
 
 // relationFrom converts pglogrepl's description of a table into ours.

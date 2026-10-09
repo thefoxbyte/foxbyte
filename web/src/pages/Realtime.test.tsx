@@ -83,7 +83,7 @@ import {
   createRealtimeKey, disableRealtimeTable, enableRealtimeTable, getRealtimeActivity,
   getStatus, listRealtimeKeys, listRealtimeTables, prepareRealtimeTable, revokeRealtimeKey,
 } from '../api'
-import type { RealtimeActivity } from '../api'
+import type { RealtimeActivity, RealtimeEvent } from '../api'
 
 const mockTables = vi.mocked(listRealtimeTables)
 const mockEnable = vi.mocked(enableRealtimeTable)
@@ -374,4 +374,58 @@ it('stays silent when the engine cannot answer', async () => {
   await screen.findByRole('heading', { name: 'Tables' })
   expect(screen.queryByTestId('realtime-cost')).toBeNull()
   expect(screen.queryByRole('heading', { name: 'What this is costing' })).toBeNull()
+})
+
+// --- transaction framing ---------------------------------------------------
+
+it('asks for transaction frames, so boundaries are visible', async () => {
+  const { streamChanges } = await import('../api')
+  show()
+  fireEvent.click(await screen.findByRole('button', { name: 'Watch' }))
+  // Without this the feed cannot show that two rows moved together, which is
+  // the only place a person can see framing working at all.
+  expect(vi.mocked(streamChanges).mock.calls[0]?.[2]).toMatchObject({ transactions: true })
+})
+
+it('renders a transaction as a boundary around its changes', async () => {
+  const { streamChanges } = await import('../api')
+  let emit: ((e: RealtimeEvent) => void) | undefined
+  vi.mocked(streamChanges).mockImplementation((_n, onEvent) => { emit = onEvent; return () => {} })
+
+  show()
+  fireEvent.click(await screen.findByRole('button', { name: 'Watch' }))
+
+  // The sequence a framed subscriber receives for one commit that moved two
+  // rows — the case framing exists for.
+  const change = (id: string): RealtimeEvent => ({
+    type: 'change', table: 'public.accounts', action: 'update',
+    commit_lsn: '0/ABCDEF', lsn: '0/AB0001', xid: 4242,
+    identity: { id }, new: { id, balance: '10' },
+  })
+  await waitFor(() => expect(emit).toBeDefined())
+  emit!({ type: 'begin', xid: 4242, commit_lsn: '0/ABCDEF', at: '2026-10-09T12:00:00Z' })
+  emit!(change('1'))
+  emit!(change('2'))
+  emit!({ type: 'commit', xid: 4242, commit_lsn: '0/ABCDEF', changes: 2, at: '2026-10-09T12:00:00Z' })
+
+  const commit = await screen.findByTestId('tx-commit')
+  expect(commit.textContent).toMatch(/transaction 4242 committed 2 changes/)
+  // The boundary a subscriber resumes from, said where it is useful.
+  expect(commit.textContent).toMatch(/resume from/)
+  expect(commit.textContent).toMatch(/0\/ABCDEF/)
+  expect((await screen.findByTestId('tx-begin')).textContent).toMatch(/transaction 4242 began/)
+
+  // And the changes themselves are still rows.
+  expect(screen.getAllByText('public.accounts')).toHaveLength(2)
+})
+
+it('a commit of one change is not pluralised', async () => {
+  const { streamChanges } = await import('../api')
+  let emit: ((e: RealtimeEvent) => void) | undefined
+  vi.mocked(streamChanges).mockImplementation((_n, onEvent) => { emit = onEvent; return () => {} })
+  show()
+  fireEvent.click(await screen.findByRole('button', { name: 'Watch' }))
+  await waitFor(() => expect(emit).toBeDefined())
+  emit!({ type: 'commit', xid: 7, commit_lsn: '0/1', changes: 1 })
+  expect((await screen.findByTestId('tx-commit')).textContent).toMatch(/1 change · /)
 })

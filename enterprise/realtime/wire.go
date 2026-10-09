@@ -75,9 +75,28 @@ type Change struct {
 	Type   string `json:"type"`   // "change"
 	Table  string `json:"table"`  // schema-qualified
 	Action string `json:"action"` // insert | update | delete | truncate
-	// CommitLSN is where to resume from: pass it back as ?since= and the feed
-	// replays everything after it, within the WAL budget.
+	// CommitLSN is the commit position of the transaction this change belongs
+	// to, and is where to resume from: pass it back as ?since= and the feed
+	// replays everything committed after it, within the WAL budget.
+	//
+	// Every change in a transaction carries the same value, which is what makes
+	// it a safe boundary — resuming from it cannot land a subscriber halfway
+	// through a transaction it has already applied. It is known at BEGIN, from
+	// pgoutput's FinalLSN, so it is stamped on the first change rather than
+	// discovered at the end.
+	//
+	// This used to hold the individual record's position, which is a different
+	// number: resuming from one of those replays the whole transaction that
+	// contained it. Never losing anything, but duplicating — and the field is
+	// named for the boundary, so it now holds the boundary. The record position
+	// is still available, as LSN below.
 	CommitLSN string `json:"commit_lsn"`
+	// Xid is the transaction this change belongs to, so changes can be grouped
+	// without relying on the begin and commit frames having been asked for.
+	Xid uint32 `json:"xid,omitempty"`
+	// LSN is this record's own position in the log. Useful for ordering within
+	// a transaction; not a resume position — see CommitLSN.
+	LSN string `json:"lsn,omitempty"`
 	// Identity is always present: the replica-identity columns, which are the
 	// only row locator that can be promised across every identity setting.
 	Identity map[string]Value `json:"identity"`
@@ -230,4 +249,52 @@ func changedColumns(rel Relation, oldVals, newVals map[string]Value, unchanged [
 	}
 	sort.Strings(out)
 	return out
+}
+
+// Begin and Commit frame a transaction.
+//
+// Why this matters, in one case: an application moves money between two rows,
+// in one transaction. Without frames a subscriber sees two independent changes
+// and has no way to know they belong together — so anything it derives from the
+// feed passes through a state where one side moved and the other had not. For a
+// cache that is a glitch; for a ledger or a search index it is a wrong answer
+// somebody acts on.
+//
+// With frames the subscriber can apply a commit as a unit, or discard it whole,
+// because it knows where the unit begins and ends.
+//
+// Asked for with ?transactions=1 rather than sent to everyone, because a client
+// written against the unframed feed would otherwise start receiving event types
+// it has no case for. One decoder serves every subscriber of a branch, so the
+// frames are always produced and the route drops them for subscribers that did
+// not ask.
+//
+// An empty transaction produces neither. Postgres reports a transaction that
+// touched only tables nobody subscribed to, and a frame around no changes is
+// noise that a subscriber would have to learn to ignore — so Begin is held
+// until the transaction's first visible change, and Commit is sent only if a
+// Begin was.
+type Begin struct {
+	Type string `json:"type"` // "begin"
+	Xid  uint32 `json:"xid"`
+	// CommitLSN is where this transaction will commit, known in advance because
+	// pgoutput announces it at BEGIN. It is also the resume boundary, so a
+	// subscriber can record it before applying anything.
+	CommitLSN string `json:"commit_lsn"`
+	// At is the commit timestamp Postgres recorded, which is when the change
+	// happened rather than when it was decoded or delivered.
+	At string `json:"at,omitempty"`
+}
+
+// Commit closes the frame.
+type Commit struct {
+	Type      string `json:"type"` // "commit"
+	Xid       uint32 `json:"xid"`
+	CommitLSN string `json:"commit_lsn"`
+	At        string `json:"at,omitempty"`
+	// Changes is how many change events this transaction carried, so a
+	// subscriber can tell a frame it received in full from one it did not —
+	// a dropped subscriber is told it was dropped, but a count costs nothing
+	// and makes the check local.
+	Changes int `json:"changes"`
 }

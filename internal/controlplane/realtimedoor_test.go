@@ -212,3 +212,43 @@ func TestStreamRefusalsCarryTheirStatusCode(t *testing.T) {
 		t.Errorf("Content-Type is %q — the refusal was sent as a stream", ct)
 	}
 }
+
+// ?transactions= is read strictly, and a value nobody recognises is refused.
+//
+// Read as "no" instead, a subscriber that asked for frames and silently did not
+// get them would apply a transaction in pieces and never learn why — the exact
+// failure framing exists to prevent.
+func TestParseFrames(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		want bool
+	}{{"", false}, {"0", false}, {"false", false}, {"1", true}, {"true", true}} {
+		got, err := parseFrames(c.in)
+		if err != nil {
+			t.Errorf("transactions=%q: %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("transactions=%q = %v, want %v", c.in, got, c.want)
+		}
+	}
+	for _, bad := range []string{"yes", "on", "2", "-1", "sure", "True "} {
+		if _, err := parseFrames(bad); err == nil {
+			t.Errorf("transactions=%q was accepted", bad)
+		}
+	}
+}
+
+// And it is refused with a status code, before the stream opens — the same
+// defect the cap refusal had.
+func TestBadFramesValueIsRefusedWithAStatus(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/branches/main/realtime?transactions=yes", nil)
+	rec := httptest.NewRecorder()
+	streamRealtime(rec, r, "main")
+	if rec.Code != 400 {
+		t.Fatalf("status %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "transactions") {
+		t.Errorf("the refusal does not name the parameter: %s", rec.Body.String())
+	}
+}

@@ -1170,9 +1170,147 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# ── 16. Teardown leaves the database working ─────────────────────────────────
+# ── 16. Transaction framing ─────────────────────────────────────────────────
 echo
-echo "16. teardown undoes it, and breaks nothing"
+echo "16. transaction framing"
+# The case this exists for: an application moves money between two rows in one
+# transaction. Without frames a subscriber sees two independent changes and
+# cannot tell they belong together, so anything it derives from the feed passes
+# through a state where one side moved and the other had not.
+#
+# The sequences are unit-tested against a parsed message stream. What only a
+# real WAL can show is that Postgres actually groups the changes this way, that
+# the boundary is the same on every change in a transaction, and that an
+# unframed subscriber is unaffected.
+
+ddl pg-main 'DROP TABLE IF EXISTS public.tx_t CASCADE' >/dev/null
+pg pg-main 'CREATE TABLE public.tx_t (id bigint PRIMARY KEY, balance bigint)' >/dev/null
+pg pg-main 'GRANT SELECT ON public.tx_t TO db_client' >/dev/null
+"$S" realtime enable tx_t >/dev/null 2>&1
+pg pg-main "INSERT INTO public.tx_t VALUES (1, 100), (2, 100)" >/dev/null
+
+# A framed subscriber, and the transfer it is watching for.
+TXF=/tmp/rt-tx-framed.ndjson
+: > "$TXF"
+( curl -skN --max-time 20 -H "Authorization: Bearer $KEY" \
+    "$API/api/branches/main/realtime?transactions=1" | sed -u -n 's/^data: //p' >> "$TXF" ) &
+TXSTREAM=$!
+sleep 4
+# One transaction, two rows. This is the whole point.
+pg pg-main "BEGIN; UPDATE public.tx_t SET balance = balance - 10 WHERE id = 1; UPDATE public.tx_t SET balance = balance + 10 WHERE id = 2; COMMIT;" >/dev/null
+wait "$TXSTREAM" 2>/dev/null
+
+assert_eq "a begin frame arrives" "$(have_in "$TXF" "e.get('type')=='begin'")" "yes"
+assert_eq "a commit frame arrives" "$(have_in "$TXF" "e.get('type')=='commit'")" "yes"
+# A commit carries a count, so a subscriber can tell a frame it received whole
+# from one it did not. Only that it is present and positive here — a commit
+# event names no table, so this cannot be tied to one transaction; the exact
+# count for the transfer is checked in the frame assertion below.
+assert_eq "a commit carries a change count" \
+  "$(have_in "$TXF" "e.get('type')=='commit' and e.get('changes',0)>0")" "yes"
+# Every change carries the transaction it belongs to.
+assert_eq "changes carry an xid" "$(have_in "$TXF" "e.get('type')=='change' and e.get('xid',0)>0")" "yes"
+# And its own record position, which is a different number from the boundary.
+assert_eq "changes carry their own log position" \
+  "$(have_in "$TXF" "e.get('type')=='change' and e.get('lsn') and e.get('lsn')!=e.get('commit_lsn')")" "yes"
+
+# The property the whole feature rests on: both halves of the transfer share one
+# boundary, and it is the boundary the commit announced. Checked across events
+# rather than within one, which have_in cannot do.
+#
+# The frame is selected by table, not by being first in the capture. A durable
+# slot replays what it retained, so the first frame here was section 15's
+# 50-row insert -- one xid, one boundary, 50 changes, which is framing working
+# and not the transfer this section wrote.
+FRAMING="$(python3 - "$TXF" <<'PYEOF' 2>/dev/null
+import json, sys
+
+frames, cur = [], None
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    t = e.get("type")
+    if t == "begin":
+        cur = {"begin": e, "changes": []}
+    elif t == "change" and cur is not None:
+        cur["changes"].append(e)
+    elif t == "commit" and cur is not None:
+        cur["commit"] = e
+        frames.append(cur)
+        cur = None
+
+# The transfer: a frame whose changes are all updates to public.tx_t.
+want = [
+    f for f in frames
+    if f["changes"]
+    and all(c.get("table") == "public.tx_t" and c.get("action") == "update" for c in f["changes"])
+]
+if not want:
+    print("no-frame")
+    sys.exit()
+f = want[-1]
+b, c, changes = f["begin"], f["commit"], f["changes"]
+if len(changes) != 2:
+    print("wrong-count:%d" % len(changes))
+    sys.exit()
+xids = {b.get("xid"), c.get("xid")} | {ch.get("xid") for ch in changes}
+lsns = {b.get("commit_lsn"), c.get("commit_lsn")} | {ch.get("commit_lsn") for ch in changes}
+ids = sorted(str((ch.get("identity") or {}).get("id")) for ch in changes)
+problems = []
+if len(xids) != 1:
+    problems.append("xids=%s" % sorted(map(str, xids)))
+if len(lsns) != 1:
+    problems.append("boundaries=%s" % sorted(map(str, lsns)))
+if ids != ["1", "2"]:
+    problems.append("rows=%s" % ids)
+if c.get("changes") != 2:
+    problems.append("commit-count=%s" % c.get("changes"))
+print("ok" if not problems else ";".join(problems))
+PYEOF
+)"
+assert_eq "both halves of one transaction share its xid and boundary" "$FRAMING" "ok"
+
+# An unframed subscriber sees exactly what it always did. One decoder serves
+# every subscriber of a branch, so the frames are produced either way and
+# dropped per subscriber -- this is the assertion that the dropping works.
+TXU=/tmp/rt-tx-unframed.ndjson
+: > "$TXU"
+( curl -skN --max-time 18 -H "Authorization: Bearer $KEY" \
+    "$API/api/branches/main/realtime" | sed -u -n 's/^data: //p' >> "$TXU" ) &
+TXU_PID=$!
+sleep 4
+pg pg-main "BEGIN; UPDATE public.tx_t SET balance = balance + 1 WHERE id = 1; COMMIT;" >/dev/null
+wait "$TXU_PID" 2>/dev/null
+assert_eq "an unframed subscriber still receives the change" \
+  "$(have_in "$TXU" "e.get('type')=='change'")" "yes"
+assert_missing "…and no begin frame" "$(cat "$TXU")" '"type":"begin"'
+assert_missing "…and no commit frame" "$(cat "$TXU")" '"type":"commit"'
+# It still gets a usable resume position, which is now the transaction's.
+assert_eq "…and still a resume position" \
+  "$(have_in "$TXU" "e.get('type')=='change' and e.get('commit_lsn')")" "yes"
+
+# A value nobody recognises is refused rather than read as "no": a subscriber
+# that asked for frames and silently did not get them would apply a transaction
+# in pieces and never learn why.
+CODE="$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" \
+  "$API/api/branches/main/realtime?transactions=yes")"
+assert_eq "transactions=yes is refused, not assumed" "$CODE" "400"
+
+"$S" realtime disable tx_t >/dev/null 2>&1
+ddl pg-main 'DROP TABLE IF EXISTS public.tx_t CASCADE' >/dev/null
+for i in $(seq 1 30); do
+  [ "$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND active")" = "0" ] && break
+  sleep 1
+done
+
+# ── 17. Teardown leaves the database working ─────────────────────────────────
+echo
+echo "17. teardown undoes it, and breaks nothing"
 # Output kept. It was discarded, so when this section failed with wal_level
 # still logical there was nothing to read but the assertion -- and teardown run
 # by hand afterwards worked, which is the least useful kind of evidence.
