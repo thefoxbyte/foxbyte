@@ -639,6 +639,9 @@
       <li class="ok"><code>setup</code>, <code>teardown</code>, <code>status</code> and <code>slots</code> stay in the free build, so a downgrade can still undo it</li>
       <li class="lim">Console and REST only this release; the published SDKs get the feed once the wire format has survived real use</li>
       <li class="lim">No per-subscriber row filters, which is why an RLS table is refused rather than filtered</li>
+      <li class="ok">Console: Tables, Connecting an application, and Feed &mdash; verdicts become buttons, and the one fix with an ongoing cost asks first with the measured figure in the dialog</li>
+      <li class="ok">Console routes on the inner <code>/api/</code> mux (<code>enable</code>, <code>disable</code>, <code>prepare</code>, realtime keys), all <code>Manage</code> by prefix; reading verdicts reuses the front door so the console cannot drift from what an application sees</li>
+      <li class="ok">Covered in a browser: <code>web/tests/realtime.spec.ts</code> classifies a real branch, applies a free fix, declines a costly one, publishes and unpublishes a table, and mints then revokes a key</li>
       <li class="ok">Front door: <code>/realtime/v1/branches/{name}/{hello,tables,stream}</code> on the console's port, and a <code>fox-realtime://</code> connection string that keeps the key in userinfo, never in a URL</li>
       <li class="ok">A <code>realtime</code> key kind (<code>rtk_</code>, <code>fox realtime key create|ls|revoke</code>): streams one branch, refused at the control plane and <b>refused at the Gateway by kind</b> &mdash; asserted against a real psql connection</li>
       <li class="ok">Only an application's tables over HTTP: one shared <code>realtime.Application()</code> withholds <code>bb</code>, Postgres and extension-owned tables and reports how many &mdash; the first version served the Blackbox's shape to a stream-only key</li>

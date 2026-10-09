@@ -100,6 +100,15 @@ func needFor(method, tail string) access.Level {
 		return access.Manage
 	case tail == "replication/cutover", tail == "ledger/checkpoint", tail == "blackbox/checkpoint":
 		return access.Manage
+	// Realtime: choosing what streams, running the DDL that makes a table
+	// ready, and minting the credential an application subscribes with are all
+	// the owner's decisions, not a user's. Reading the verdicts is not —
+	// that is Use, and it is served by the realtime front door.
+	//
+	// A prefix rather than exact tails, so realtime/keys/<id> is covered and a
+	// route added later cannot default to Use by being forgotten here.
+	case strings.HasPrefix(tail, "realtime/"):
+		return access.Manage
 	}
 	return access.Use
 }

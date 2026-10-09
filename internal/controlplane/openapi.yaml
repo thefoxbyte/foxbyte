@@ -85,6 +85,171 @@ paths:
         "200": { description: OK, content: { application/json: { schema: { type: object } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/realtime/enable:
+    post:
+      tags: [branches]
+      summary: >-
+        Start streaming one table (Enterprise). Refused, rather than half-done, when the table
+        cannot carry a feed safely: row-level security, a system or extension-owned table, or no
+        way to identify a row. Needs Manage on the branch.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [table]
+              properties:
+                schema: { type: string, default: public }
+                table: { type: string }
+                events:
+                  type: array
+                  description: insert, update, delete. Empty means all three.
+                  items: { type: string }
+                full_identity:
+                  type: boolean
+                  description: >-
+                    REPLICA IDENTITY FULL, for a table with nothing unique about it. Doubles the
+                    WAL that table writes per update, for as long as it exists, so it is never
+                    inferred — a caller asks for it having been shown the cost.
+      responses:
+        "200": { description: Enabled; the table's verdict as it now stands. }
+        "400": { description: No table named }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: No licence covers the change feed, or Manage is required }
+        "404": { description: No such branch, or not yours }
+        "409": { description: Refused by the preflight, or the feed is not set up on this install }
+
+  /api/branches/{name}/realtime/disable:
+    post:
+      tags: [branches]
+      summary: Stop streaming one table (Enterprise). Needs Manage on the branch.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [table]
+              properties:
+                schema: { type: string, default: public }
+                table: { type: string }
+      responses:
+        "200": { description: Disabled; the table's verdict as it now stands. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: No licence covers the change feed, or Manage is required }
+        "404": { description: No such branch, or not yours }
+        "409": { description: The change feed is not set up on this install }
+
+  /api/branches/{name}/realtime/prepare:
+    post:
+      tags: [branches]
+      summary: >-
+        Make one table ready to stream (Enterprise). apply defaults to false, so the statements
+        come back without running — they are DDL, and a reader should see them first. Everything
+        it runs lands in the Blackbox, attributed. Needs Manage on the branch.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [table]
+              properties:
+                schema: { type: string, default: public }
+                table: { type: string }
+                apply: { type: boolean, default: false }
+      responses:
+        "200":
+          description: The statements, and whether they were run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  applied: { type: boolean }
+                  statements:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        sql: { type: string }
+                        why: { type: string }
+                        cost:
+                          type: string
+                          description: Present only when the change has an ongoing price rather than a one-off one.
+                  table: { type: object, description: The verdict, re-read after applying. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an application table, no licence, or Manage is required }
+        "404": { description: No such branch, or not yours }
+        "409": { description: A statement failed, or the feed is not set up on this install }
+
+  /api/branches/{name}/realtime/keys:
+    get:
+      tags: [branches]
+      summary: >-
+        The realtime keys that may subscribe to this branch (Enterprise). Secrets are hashed, so
+        only the visible prefix is listed. Needs Manage on the branch.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: No licence covers the change feed, or Manage is required }
+        "404": { description: No such branch, or not yours }
+    post:
+      tags: [branches]
+      summary: >-
+        Mint a stream-only key for this branch (Enterprise). It subscribes to this branch's change
+        feed and does nothing else: the control plane refuses it, and the Gateway refuses it by
+        kind, so it cannot run SQL. The response carries the whole connection string, key included,
+        and is the only place that secret exists. Needs Manage on the branch.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, description: A label, so the key can be told apart later. }
+      responses:
+        "201":
+          description: Created. Shown once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: object }
+                  url:
+                    type: string
+                    example: fox-realtime://rtk_xxx@127.0.0.1:8080/main?sslmode=require
+                    description: >-
+                      The connection string. The key sits in userinfo, where a Postgres URL puts
+                      its password, and a client turns it into an Authorization header — never a
+                      path segment or a query parameter, both of which reach access logs.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: No licence covers the change feed, or Manage is required }
+        "404": { description: No such branch, or not yours }
+
+  /api/branches/{name}/realtime/keys/{id}:
+    delete:
+      tags: [branches]
+      summary: >-
+        Revoke one realtime key (Enterprise). Scoped to this branch, so it is not a way to revoke
+        another branch's subscriber by id. Needs Manage on the branch.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Revoked. Anything using it is refused on its next connection. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: No licence covers the change feed, or Manage is required }
+        "404": { description: No such key on this branch }
+
   /api/branches/{name}/realtime:
     get:
       tags: [branches]
