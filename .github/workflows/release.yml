@@ -123,6 +123,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the image's cached one
 
       # A release is the one thing that cannot be taken back, so it must not go out
       # with the object store pinned by tag alone: a tag in our own registry can
@@ -262,8 +263,21 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          gh release view "$TAG" >/dev/null 2>&1 ||
-            gh release create "$TAG" --prerelease --generate-notes --title "$TAG"
+          # Notes composed by scripts/release_notes.sh rather than by
+          # --generate-notes: .github/release.yml never grouped anything on this
+          # repository, however it was written, so the grouping lives somewhere
+          # it can be read and run. The script says what was tried.
+          #
+          # A release that already exists keeps the notes it has. Adopting one is
+          # the normal path for a re-dispatch, and overwriting a body somebody
+          # wrote by hand would be a poor way to repeat a build.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists; keeping its notes"
+          else
+            bash scripts/release_notes.sh "$TAG" > /tmp/release-notes.md
+            cat /tmp/release-notes.md
+            gh release create "$TAG" --prerelease --notes-file /tmp/release-notes.md --title "$TAG"
+          fi
           gh release edit "$TAG" --prerelease
           echo "$TAG is held as a prerelease; release-verify promotes it."
 
