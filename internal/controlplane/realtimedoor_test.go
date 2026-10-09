@@ -182,3 +182,33 @@ func TestTheOriginalStreamRouteStillMounts(t *testing.T) {
 		t.Fatalf("GET /api/branches/main/realtime: status %d, want 401 (the route must still exist)", rec.Code)
 	}
 }
+
+// A refusal has to arrive as a status code, not as a JSON body inside a
+// response that already said 200.
+//
+// newSSE writes 200 and flushes the headers; anything that refuses after that
+// cannot change the status, so the client sees success and then fails to parse
+// an event stream that is really an error object. The integration suite caught
+// this on the subscriber cap — body naming the limit, code 200 — and the same
+// defect had been in the ?since= check since the route was written. Both are
+// now validated before the stream opens, and this is the test that keeps them
+// there: httptest.ResponseRecorder is a Flusher, so a regression would open the
+// stream and the code would silently become 200 again.
+func TestStreamRefusalsCarryTheirStatusCode(t *testing.T) {
+	r := httptest.NewRequest("GET", "/api/branches/main/realtime?since=not-a-log-position", nil)
+	rec := httptest.NewRecorder()
+	streamRealtime(rec, r, "main")
+
+	if rec.Code != 400 {
+		t.Fatalf("status %d, want 400 — a refusal after newSSE cannot set a status, so this means the check moved back after it", rec.Code)
+	}
+	// And it says what to send instead, since a client holding a bad resume
+	// position needs to know where a good one comes from.
+	if !strings.Contains(rec.Body.String(), "commit_lsn") {
+		t.Errorf("the refusal does not say where a log position comes from: %s", rec.Body.String())
+	}
+	// Not an event stream: this is an error, and it must not be dressed as one.
+	if ct := rec.Header().Get("Content-Type"); strings.Contains(ct, "event-stream") {
+		t.Errorf("Content-Type is %q — the refusal was sent as a stream", ct)
+	}
+}

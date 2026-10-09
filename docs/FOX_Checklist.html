@@ -639,6 +639,9 @@
       <li class="ok"><code>setup</code>, <code>teardown</code>, <code>status</code> and <code>slots</code> stay in the free build, so a downgrade can still undo it</li>
       <li class="lim">Console and REST only this release; the published SDKs get the feed once the wire format has survived real use</li>
       <li class="lim">No per-subscriber row filters, which is why an RLS table is refused rather than filtered</li>
+      <li class="ok">What staying warm costs: <code>realtime activity</code>, an API route and a console panel &mdash; warm-since from the container, work from <code>pg_stat_database</code> sampled on a timer, and the bookmarks' held WAL against the budget</li>
+      <li class="ok">Transactions rather than queries, because that is what Postgres counts without <code>pg_stat_statements</code>; and five cases where subtracting two readings would lie are each answered with a note instead of a figure</li>
+      <li class="ok">A cap of 8 subscribers per branch (<code>FOX_REALTIME_MAX_SUBSCRIBERS</code>), refused with the count, so a client reconnecting on a bug cannot add streams until something runs out</li>
       <li class="ok">Console: Tables, Connecting an application, and Feed &mdash; verdicts become buttons, and the one fix with an ongoing cost asks first with the measured figure in the dialog</li>
       <li class="ok">Console routes on the inner <code>/api/</code> mux (<code>enable</code>, <code>disable</code>, <code>prepare</code>, realtime keys), all <code>Manage</code> by prefix; reading verdicts reuses the front door so the console cannot drift from what an application sees</li>
       <li class="ok">Covered in a browser: <code>web/tests/realtime.spec.ts</code> classifies a real branch, applies a free fix, declines a costly one, publishes and unpublishes a table, and mints then revokes a key</li>

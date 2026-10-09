@@ -2,9 +2,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ApiError, createRealtimeKey, disableRealtimeTable, enableRealtimeTable,
-  listRealtimeKeys, listRealtimeTables, prepareRealtimeTable, revokeRealtimeKey,
-  streamChanges,
-  type RealtimeEvent, type RealtimeKey, type RealtimeVerdict,
+  getRealtimeActivity, listRealtimeKeys, listRealtimeTables, prepareRealtimeTable,
+  revokeRealtimeKey, streamChanges,
+  type RealtimeActivity, type RealtimeEvent, type RealtimeKey, type RealtimeVerdict,
 } from '../api'
 import { useBranches } from '../useBranches'
 import { useFeatures, why } from '../features'
@@ -58,11 +58,129 @@ export default function Realtime() {
         </select>
       </div>
 
+      <Activity branch={branch} licensed={licensed} />
       <Tables branch={branch} licensed={licensed} edition={edition} />
       <Keys branch={branch} licensed={licensed} />
       <Feed branch={branch} licensed={licensed} edition={edition} />
     </div>
   )
+}
+
+// ---------------------------------------------------------------- activity
+
+// What staying warm has cost.
+//
+// The feed chose the warm model over a cold start, because a cold start defeats
+// the point of realtime — a subscribed branch is therefore never suspended. That
+// was the right trade and it is not a free one, and until now nothing in the
+// product said for how long a branch had been up or whether anything had used
+// it in that time. A forgotten tab and a busy application looked identical.
+function Activity({ branch, licensed }: { branch: string; licensed: boolean }) {
+  const [a, setA] = useState<RealtimeActivity | null>(null)
+  const [cost, setCost] = useState('')
+  const [maxSubs, setMaxSubs] = useState(0)
+  const [missing, setMissing] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const r = await getRealtimeActivity(branch)
+      setA(r.activity)
+      setCost(r.cost)
+      setMaxSubs(r.max_subscribers)
+      setMissing(false)
+    } catch {
+      // Quiet on purpose. The licence and the not-set-up cases are already
+      // explained by the Tables panel below, and a second copy of the same
+      // sentence on the same screen is noise.
+      setA(null)
+      setMissing(true)
+    }
+  }, [branch])
+
+  useEffect(() => { if (licensed) void load() }, [load, licensed])
+
+  if (!licensed || missing || !a) return null
+
+  return (
+    <section className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <h2 style={{ marginTop: 0, marginBottom: 6 }}>What this is costing</h2>
+        <button className="ghost" onClick={() => void load()}>Refresh</button>
+      </div>
+
+      <p style={{ marginTop: 0 }} data-testid="realtime-cost">{cost}</p>
+
+      {/* Each figure is one text node rather than a number wrapped in <strong>
+          inside a sentence. Splitting a sentence across elements for emphasis
+          makes it unreadable to anything that reads text — a screen reader, a
+          test — for the sake of a bold digit. */}
+      <div className="row" style={{ gap: 24, flexWrap: 'wrap', fontSize: 13 }}>
+        {a.warm && <span data-testid="rt-subscribers">{subscriberLine(a, maxSubs)}</span>}
+        <span data-testid="rt-tables">
+          {a.tables_streaming} table{a.tables_streaming === 1 ? '' : 's'} streaming
+        </span>
+        {a.warm && <span data-testid="rt-events">{a.events_delivered.toLocaleString()} events delivered</span>}
+      </div>
+
+      {/* Transactions, said as transactions. Without pg_stat_statements — not
+          loaded, and loading it costs a restart — this is what Postgres counts,
+          and calling it "queries" would be a word that is not true about a
+          number somebody may bill from. */}
+      <p className="muted" data-testid="rt-measured" style={{ marginBottom: 0, marginTop: 10, fontSize: 13 }}>
+        {a.measured
+          ? measuredLine(a.measured)
+          : 'Not enough readings yet to say how much work happened — they are taken on a timer.'}
+      </p>
+
+      {a.slots && a.slots.length > 0 && (
+        <div className="table-wrap" style={{ marginTop: 14 }}>
+          <table>
+            <thead><tr><th>Bookmark</th><th>State</th><th>Holding</th><th>Before it is dropped</th></tr></thead>
+            <tbody>
+              {a.slots.map(s => (
+                <tr key={s.slot}>
+                  <td><code>{s.slot}</code></td>
+                  <td>{s.status === 'lost' ? 'lost' : s.active ? 'streaming' : 'idle'}</td>
+                  <td>{bytes(s.held_bytes)}</td>
+                  {/* The number that turns "a subscriber went away" into
+                      something to act on before the disk does it for you. */}
+                  <td>{s.safe_bytes > 0 ? bytes(s.safe_bytes) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {a.notes?.map((n, i) => (
+        <p key={i} className="muted" style={{ marginBottom: 0, marginTop: 8, fontSize: 13 }}>Note: {n}</p>
+      ))}
+    </section>
+  )
+}
+
+function subscriberLine(a: RealtimeActivity, maxSubs: number) {
+  const of = maxSubs ? ` of ${maxSubs}` : ''
+  const peak = a.peak_subscribers > a.subscribers ? ` (${a.peak_subscribers} at most so far)` : ''
+  return `${a.subscribers}${of} subscribers${peak}`
+}
+
+// Transactions, said as transactions. Without pg_stat_statements — not loaded,
+// and loading it costs a restart — this is what Postgres counts, and calling it
+// "queries" would be a word that is not true about a number somebody may bill
+// from.
+function measuredLine(m: NonNullable<RealtimeActivity['measured']>) {
+  return `Over the last ${m.over} (${m.samples} readings): `
+    + `${m.transactions.toLocaleString()} transactions `
+    + `(${Math.round(m.transactions_per_day).toLocaleString()}/day), `
+    + `${m.rows_returned.toLocaleString()} rows returned.`
+}
+
+function bytes(n: number) {
+  if (n >= 1 << 30) return `${(n / (1 << 30)).toFixed(1)} GB`
+  if (n >= 1 << 20) return `${Math.round(n / (1 << 20))} MB`
+  if (n >= 1 << 10) return `${Math.round(n / (1 << 10))} kB`
+  return `${n} B`
 }
 
 // ---------------------------------------------------------------- tables

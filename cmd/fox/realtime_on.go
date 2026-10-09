@@ -46,6 +46,9 @@ func realtimeEnterpriseCmd(args []string) bool {
 	case "url":
 		requireFeature(edition.Realtime)
 		must(realtimeURL(args[1:]))
+	case "activity":
+		requireFeature(edition.Realtime)
+		must(realtimeActivity(args[1:]))
 	default:
 		return false
 	}
@@ -62,7 +65,8 @@ func realtimeEnterpriseUsage() string {
 %[1]s realtime url [branch]                  the connection string for an application
 %[1]s realtime key create <branch>           mint a stream-only key, shown once
 %[1]s realtime key ls [branch]
-%[1]s realtime key revoke <id>`, brand.CLI)
+%[1]s realtime key revoke <id>
+%[1]s realtime activity [branch] [--window 24h]  what staying warm has cost`, brand.CLI)
 }
 
 func realtimeEnable(args []string) error {

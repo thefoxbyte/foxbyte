@@ -84,6 +84,14 @@ CREATE TABLE IF NOT EXISTS oauth_identities (
   provider TEXT NOT NULL, subject TEXT NOT NULL, user_id INTEGER NOT NULL,
   PRIMARY KEY (provider, subject)
 );
+CREATE TABLE IF NOT EXISTS realtime_activity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, branch TEXT NOT NULL, at INTEGER NOT NULL,
+  warm_since INTEGER NOT NULL DEFAULT 0, transactions INTEGER NOT NULL DEFAULT 0,
+  rows_returned INTEGER NOT NULL DEFAULT 0, stats_reset INTEGER NOT NULL DEFAULT 0,
+  subscribers INTEGER NOT NULL DEFAULT 0, events INTEGER NOT NULL DEFAULT 0,
+  wal_held INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS realtime_activity_branch_at ON realtime_activity(branch, at);
 CREATE TABLE IF NOT EXISTS pipelines (
   id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, name TEXT NOT NULL,
   spec TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL

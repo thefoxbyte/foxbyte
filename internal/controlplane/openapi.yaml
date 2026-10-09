@@ -187,6 +187,80 @@ paths:
         "404": { description: No such branch, or not yours }
         "409": { description: A statement failed, or the feed is not set up on this install }
 
+  /api/branches/{name}/realtime/activity:
+    get:
+      tags: [branches]
+      summary: >-
+        What the change feed has cost on this branch (Enterprise): how long it has been warm,
+        the work measured over a period, the subscribers attached, and the write-ahead log its
+        bookmarks hold. A branch with a subscriber is never suspended — that is what makes the
+        feed continuous — so this is where that bill is legible. Needs Manage on the branch.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - name: window
+          in: query
+          required: false
+          description: >-
+            How far back to measure, such as 1h or 24h (default 24h). Readings are taken on a
+            timer, so a window shorter than that interval returns no measured section rather than
+            a rate divided by a period nobody observed.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The report, a sentence summarising it, and the per-branch subscriber cap.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cost: { type: string }
+                  max_subscribers: { type: integer }
+                  activity:
+                    type: object
+                    properties:
+                      branch: { type: string }
+                      warm: { type: boolean }
+                      warm_since: { type: string }
+                      warm_for: { type: string }
+                      subscribers: { type: integer }
+                      events_delivered: { type: integer }
+                      peak_subscribers: { type: integer }
+                      tables_streaming: { type: integer }
+                      measured:
+                        type: object
+                        description: >-
+                          Absent until two readings exist. Transactions rather than statements:
+                          without pg_stat_statements loaded, which costs a restart, that is what
+                          Postgres counts.
+                        properties:
+                          from: { type: string }
+                          to: { type: string }
+                          over: { type: string }
+                          transactions: { type: integer }
+                          rows_returned: { type: integer }
+                          transactions_per_day: { type: number }
+                          samples: { type: integer }
+                      slots:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            slot: { type: string }
+                            active: { type: boolean }
+                            status: { type: string }
+                            held_bytes: { type: integer }
+                            safe_bytes:
+                              type: integer
+                              description: How much further it may fall behind before Postgres drops it.
+                      notes:
+                        type: array
+                        description: Said when a number needs a caveat rather than a footnote.
+                        items: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: No licence covers the change feed, or Manage is required }
+        "404": { description: No such branch, or not yours }
+        "409": { description: The change feed is not set up on this install }
+
   /api/branches/{name}/realtime/keys:
     get:
       tags: [branches]

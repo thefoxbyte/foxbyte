@@ -75,19 +75,44 @@ func mountRealtimeStream(outer *http.ServeMux, store *auth.Store, acl *access.Ch
 }
 
 func streamRealtime(w http.ResponseWriter, r *http.Request, name string) {
-	send, _, ok := newSSE(w)
-	if !ok {
-		writeErr(w, 500, fmt.Errorf("this server cannot stream"))
-		return
-	}
-
+	// Everything that can refuse runs before the stream is opened.
+	//
+	// newSSE writes 200 and flushes the headers, and after that the status
+	// cannot be changed: a writeErr following it appends a JSON body to a
+	// response that has already said 200 and text/event-stream. The subscriber
+	// cap did exactly that — the integration suite caught a refusal whose body
+	// named the limit while the code was 200 — and an unparseable ?since= had
+	// been doing the same since this route was written. A client that checks
+	// status codes would have treated both as success and then failed to parse
+	// an event stream that was really an error.
 	since, err := parseSince(r.URL.Query().Get("since"))
 	if err != nil {
 		writeErr(w, 400, err)
 		return
 	}
+
 	hub := hubFor(name, since)
-	sub := hub.Subscribe()
+	// Capped. Every subscriber is a reason this branch cannot be suspended and
+	// a share of one decoder's fan-out, and a client that reconnects on error
+	// with a bug would otherwise add a stream per attempt until the process ran
+	// out of something. 429 rather than 503: the request is well-formed and the
+	// caller is being asked to hold off, which is what that code means.
+	sub, err := hub.TrySubscribe()
+	if err != nil {
+		// Released here because hubFor may have just started a decoder for a
+		// subscriber that is not going to attach.
+		releaseHub(name)
+		writeErr(w, 429, err)
+		return
+	}
+
+	send, _, ok := newSSE(w)
+	if !ok {
+		sub.Close()
+		releaseHub(name)
+		writeErr(w, 500, fmt.Errorf("this server cannot stream"))
+		return
+	}
 	defer func() {
 		sub.Close()
 		releaseHub(name)
@@ -134,6 +159,17 @@ func hubFor(name string, since pglogrepl.LSN) *realtime.Hub {
 	go realtime.Supervise(ctx, name, branch.SlotName(name, "stream"),
 		branch.RealtimeRolePassword(), h, since)
 	return h
+}
+
+// liveHub is the fan-out for a branch if one exists, and nil otherwise.
+//
+// Deliberately not hubFor: that starts a decoder, which would mean the meter
+// taking a reading opened a replication slot on a branch nobody was
+// subscribed to. A meter must not change what it measures.
+func liveHub(name string) *realtime.Hub {
+	hubs.mu.Lock()
+	defer hubs.mu.Unlock()
+	return hubs.m[name]
 }
 
 // releaseHub stops the decoder once nobody is listening. The slot stays: it is
