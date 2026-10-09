@@ -252,3 +252,16 @@ func TestBadFramesValueIsRefusedWithAStatus(t *testing.T) {
 		t.Errorf("the refusal does not name the parameter: %s", rec.Body.String())
 	}
 }
+
+// The core's idea of the realtime namespace and the enterprise package's must
+// not drift.
+//
+// The core needs the prefix to tell an API path from a console page address,
+// and a Standard build cannot import enterprise/ to ask. So the constant is
+// declared twice, and this holds them equal — in the build where both exist.
+func TestRealtimePrefixesAgree(t *testing.T) {
+	if realtimeAPIPrefix != realtime.APIPrefix {
+		t.Fatalf("the core says %q and enterprise says %q; an API path would be served the console's HTML",
+			realtimeAPIPrefix, realtime.APIPrefix)
+	}
+}

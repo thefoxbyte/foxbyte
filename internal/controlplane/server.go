@@ -1123,6 +1123,19 @@ func serveUI(mux *http.ServeMux, ui fs.FS) {
 				return
 			}
 		}
+		// An API path that reached here matched no route, so it does not exist
+		// on this build — the paid routes are not compiled into a Standard
+		// binary at all. Answering with the console's HTML gives every client a
+		// 200 that is not JSON, and a client then reports whatever its parser
+		// says instead of "no such route": the console turned one into an empty
+		// object and crashed reading a field out of it, and the error named a
+		// property rather than the missing endpoint.
+		//
+		// A caller that asked for JSON gets JSON.
+		if isAPIPath(r.URL.Path) {
+			writeErr(w, 404, fmt.Errorf("no such endpoint on this build: %s %s", r.Method, r.URL.Path))
+			return
+		}
 		b, err := fs.ReadFile(ui, "index.html")
 		if err != nil {
 			http.NotFound(w, r)
@@ -1131,6 +1144,24 @@ func serveUI(mux *http.ServeMux, ui fs.FS) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(b)
 	})
+}
+
+// realtimeAPIPrefix is the realtime front door's namespace.
+//
+// Declared here, in the core, because a Standard build must know which paths
+// are API paths even though it compiles none of the realtime routes — that is
+// exactly the build where this matters. enterprise/realtime owns the public
+// constant, and an enterprise-tagged test holds the two equal.
+const realtimeAPIPrefix = "/realtime/v1"
+
+// isAPIPath reports whether a path was meant for a machine rather than for the
+// console's router.
+//
+// /api/ and the realtime front door are the two namespaces a client calls. The
+// console's own routes — /dashboard, /realtime, /console — are page addresses
+// and must keep returning index.html so a reload of a deep link works.
+func isAPIPath(p string) bool {
+	return strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, realtimeAPIPrefix+"/")
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -80,13 +80,39 @@ async function req(method: string, url: string, body?: unknown) {
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
   })
-  const data = await r.json().catch(() => ({}))
+  const text = await r.text()
+  let data: unknown = {}
+  let parsed = true
+  if (text) {
+    try {
+      data = JSON.parse(text)
+    } catch {
+      parsed = false
+    }
+  }
   if (!r.ok) {
     // Session expired mid-use → bounce to login (except when probing /auth/me).
     if (r.status === 401 && !url.endsWith('/auth/me')) {
       if (location.pathname !== '/login') location.assign('/login')
     }
     throw new ApiError(r.status, (data && (data as any).error) || `HTTP ${r.status}`)
+  }
+  // A 200 whose body is not JSON is not a success, and must not be handed back
+  // as an empty object.
+  //
+  // This used to be `r.json().catch(() => ({}))`, and the empty object it
+  // produced was indistinguishable from a real response with missing fields.
+  // When a route is absent — a Standard build, where the paid routes are not
+  // compiled in — the request falls through to the console's own catch-all and
+  // comes back as index.html with status 200. Every caller then read undefined
+  // out of `{}`: the Realtime page crashed on `rows.length`, having been handed
+  // `undefined` where an array was promised, and the error named a property
+  // rather than the missing route.
+  //
+  // An empty body stays `{}`, which is what a handler that writes nothing
+  // means. Only a non-empty body that is not JSON is an error.
+  if (!parsed) {
+    throw new ApiError(r.status, `${url} did not return JSON — the route may not exist on this engine`)
   }
   return data
 }

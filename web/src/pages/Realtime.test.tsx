@@ -429,3 +429,45 @@ it('a commit of one change is not pluralised', async () => {
   emit!({ type: 'commit', xid: 7, commit_lsn: '0/1', changes: 1 })
   expect((await screen.findByTestId('tx-commit')).textContent).toMatch(/1 change · /)
 })
+
+// --- the shape of what the engine answers with ------------------------------
+
+// The crash this page actually suffered, as a test.
+//
+// On a Standard build the paid routes are not compiled in, so the request fell
+// through to the console's own catch-all and came back as index.html with
+// status 200. req() turned that into `{}`, so `r.tables` was undefined and the
+// page died on `rows.length` — a blank "Unexpected Application Error" naming a
+// property rather than the missing route.
+//
+// req() now refuses a non-JSON 200, and these assert the second line of
+// defence: whatever arrives, the page renders.
+it('survives a response with no tables in it', async () => {
+  mockTables.mockResolvedValue({} as never)
+  show()
+  // The page renders, and says what it found rather than dying.
+  expect(await screen.findByRole('heading', { name: 'Tables' })).toBeTruthy()
+  expect(await screen.findByText(/No application tables/)).toBeTruthy()
+})
+
+it('survives tables being something other than an array', async () => {
+  mockTables.mockResolvedValue({ branch: 'main', tables: 'nope', withheld: 'lots' } as never)
+  show()
+  expect(await screen.findByRole('heading', { name: 'Tables' })).toBeTruthy()
+  // And a withheld count that is not a number does not reach the sentence.
+  expect(screen.queryByText(/not shown/)).toBeNull()
+})
+
+it('survives a keys response with no keys in it', async () => {
+  mockKeys.mockResolvedValue({} as never)
+  show()
+  expect(await screen.findByRole('heading', { name: 'Connecting an application' })).toBeTruthy()
+})
+
+it('survives an activity response with no activity in it', async () => {
+  mockActivity.mockResolvedValue({} as never)
+  show()
+  // The panel hides rather than rendering half a report.
+  await screen.findByRole('heading', { name: 'Tables' })
+  expect(screen.queryByTestId('realtime-cost')).toBeNull()
+})
