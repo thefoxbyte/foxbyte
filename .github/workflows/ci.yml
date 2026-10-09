@@ -18,6 +18,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the image's cached one
       - name: Build
         run: go build ./...
       - name: Vet
@@ -78,6 +79,14 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the image's cached one
+      # check-latest above is load-bearing here, not tidiness. On 9 Oct 2026 the
+      # ubuntu-latest image still cached 1.26.8 while 1.26.9 was out, and
+      # govulncheck failed every run — on main as well as every PR — with ten
+      # advisories in net/http, net/textproto and crypto/tls, all of them
+      # "Fixed in: go1.26.9". Resolving the newest patch of the pinned minor is
+      # what a vulnerability scan wants: the next stdlib CVE should not need a
+      # commit here before CI can go green again.
       # The files as they are now, not the history: the key committed on 18 Sep
       # is still in history, and has to be revoked where it was trusted, not
       # scanned for on every run.
