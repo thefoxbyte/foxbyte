@@ -297,10 +297,21 @@ func handle(client net.Conn) {
 			log.Printf("gateway auth: %v", err)
 			return
 		}
-		u, scope, ok := authStore.VerifyKey(key)
+		u, scope, kind, ok := authStore.VerifyKeyKind(key)
 		if !ok {
 			authStore.Audit(auth.EvGatewayRefused, "", params["database"], remoteHost(client), "invalid API key")
 			sendError(client, "28P01", "invalid API key — use a key_ key as the password")
+			return
+		}
+		// A realtime key subscribes to a change feed and does not open SQL.
+		// This refusal is the whole reason that kind exists: without it a
+		// stream-only credential would still reach every table on its branch
+		// as db_client, which is exactly the reach it was minted to avoid.
+		// Refused before the branch is resolved, so such a key cannot even
+		// wake one.
+		if kind == auth.KindRealtime {
+			authStore.Audit(auth.EvGatewayRefused, u.Email, params["database"], remoteHost(client), "realtime key at the gateway")
+			sendError(client, "28P01", "this is a realtime key: it subscribes to the change feed and cannot run SQL — use a key_ key as the password")
 			return
 		}
 		actor, keyScope, account = u.Email, scope, u

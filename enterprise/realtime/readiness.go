@@ -95,8 +95,13 @@ func (v Verdict) Costly() bool {
 // price as a primary key and with no schema change — so "no primary key" almost
 // never has to mean "pay double". It only does when a table has nothing unique
 // about it at all.
-func Assess(t Table, events []string, published bool) Verdict {
-	v := Verdict{Table: t}
+// The result is named so that the deferred Status assignment below lands on
+// the value actually returned. With an unnamed result it wrote to a local that
+// had already been copied, so every Verdict carried an empty Status — invisible
+// while only the CLI read verdicts (it prints State directly), and found the
+// moment stage 2 served them as JSON.
+func Assess(t Table, events []string, published bool) (v Verdict) {
+	v = Verdict{Table: t}
 	defer func() { v.Status = v.State.String() }()
 
 	// The refusals, in the order that gives the most useful answer first.
@@ -220,3 +225,27 @@ func needsIdentity(events []string) bool {
 // quoteIdent is the local half of branch.QuoteIdent, kept here so the pure
 // decisions in this file need nothing from the engine.
 func quoteIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+
+// Application splits a survey into the tables an application may stream and a
+// count of the ones withheld.
+//
+// Withheld means the table belongs to FoxByte, to Postgres, or to an extension.
+// That rule is a boundary rather than a tidy-up — streaming bb would hand a
+// subscriber the hash-chained ledger and the statement text in it — so it lives
+// here once, and both the CLI and the realtime API ask this function rather
+// than each testing the two fields and hoping they agree.
+//
+// The count is returned instead of being dropped because "nothing else is
+// here" and "nine tables are here and you may not have them" are different
+// answers, and a reader of either surface deserves the second one.
+func Application(vs []Verdict) (app []Verdict, withheld int) {
+	app = make([]Verdict, 0, len(vs))
+	for _, v := range vs {
+		if v.Table.IsSystem || v.Table.IsExtensionOwned {
+			withheld++
+			continue
+		}
+		app = append(app, v)
+	}
+	return app, withheld
+}

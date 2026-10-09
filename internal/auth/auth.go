@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS api_keys (
   id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, name TEXT NOT NULL,
   key_hash TEXT NOT NULL, prefix TEXT NOT NULL, created INTEGER NOT NULL, last_used INTEGER,
-  scope TEXT NOT NULL DEFAULT ''
+  scope TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, expires INTEGER NOT NULL
@@ -200,6 +200,19 @@ func migrate(ctx context.Context, db *sql.Conn) error {
 	if !has {
 		// Existing keys are unscoped, which is what the empty default means.
 		if _, err := db.ExecContext(ctx, `ALTER TABLE api_keys ADD COLUMN scope TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	// Realtime keys (kind 'realtime') can subscribe to one branch's change feed
+	// and do nothing else. The empty default is what every key issued before
+	// this column existed is, and it is the kind that behaves exactly as it
+	// always did — so an install that migrates loses no access.
+	has, err = hasColumn(ctx, db, "api_keys", "kind")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := db.ExecContext(ctx, `ALTER TABLE api_keys ADD COLUMN kind TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
 	}
@@ -436,6 +449,9 @@ type KeyInfo struct {
 	// one branch the key may open through the Gateway, and such a key is
 	// refused everywhere else (see Authn).
 	Scope string `json:"scope,omitempty"`
+	// Kind is empty for every key the control plane and Gateway have always
+	// accepted. KindRealtime marks a stream-only key — see realtimekey.go.
+	Kind string `json:"kind,omitempty"`
 }
 
 func hashKey(k string) string { h := sha256.Sum256([]byte(k)); return hex.EncodeToString(h[:]) }
@@ -498,15 +514,29 @@ func (s *Store) RevokeScopeKeys(scope string) error {
 // branch the key may open through the Gateway: callers must honour it — Authn
 // refuses such a key outright, and the Gateway allows it only for that branch.
 func (s *Store) VerifyKey(key string) (User, string, bool) {
+	u, scope, _, ok := s.VerifyKeyKind(key)
+	return u, scope, ok
+}
+
+// VerifyKeyKind is VerifyKey plus the key's kind, for the two callers that must
+// tell a stream-only key from one that may run SQL. It is separate rather than a
+// changed signature so that every existing caller keeps the behaviour it was
+// written against: a caller that does not ask about kind cannot accidentally
+// start honouring one.
+//
+// An empty kind is every key issued before realtime keys existed, and is the
+// kind the control plane and Gateway have always accepted. KindRealtime is
+// refused by the Gateway — see internal/proxy.
+func (s *Store) VerifyKeyKind(key string) (User, string, string, bool) {
 	h := hashKey(key)
 	var uid int64
-	var scope string
-	switch err := s.db.QueryRow(`SELECT user_id, scope FROM api_keys WHERE key_hash=?`, h).Scan(&uid, &scope); {
+	var scope, kind string
+	switch err := s.db.QueryRow(`SELECT user_id, scope, kind FROM api_keys WHERE key_hash=?`, h).Scan(&uid, &scope, &kind); {
 	case errors.Is(err, sql.ErrNoRows):
-		return User{}, "", false // no such key — an ordinary auth failure
+		return User{}, "", "", false // no such key — an ordinary auth failure
 	case err != nil:
 		log.Printf("auth: VerifyKey store error (client will see this as unauthenticated): %v", err)
-		return User{}, "", false
+		return User{}, "", "", false
 	}
 	// Best-effort, throttled last_used bump: only when stale (>60s), so a burst of
 	// concurrent auth checks doesn't turn into a burst of writes on the store.
@@ -516,11 +546,11 @@ func (s *Store) VerifyKey(key string) (User, string, bool) {
 	_, _ = s.db.Exec(`UPDATE api_keys SET last_used=? WHERE key_hash=? AND (last_used IS NULL OR last_used < ?)`,
 		now, h, now-60)
 	u, err := s.userByID(uid)
-	return u, scope, err == nil
+	return u, scope, kind, err == nil
 }
 
 func (s *Store) listAPIKeys(userID int64) ([]KeyInfo, error) {
-	rows, err := s.db.Query(`SELECT id,name,prefix,created,scope FROM api_keys WHERE user_id=? ORDER BY created DESC`, userID)
+	rows, err := s.db.Query(`SELECT id,name,prefix,created,scope,kind FROM api_keys WHERE user_id=? ORDER BY created DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -528,7 +558,7 @@ func (s *Store) listAPIKeys(userID int64) ([]KeyInfo, error) {
 	var out []KeyInfo
 	for rows.Next() {
 		var k KeyInfo
-		_ = rows.Scan(&k.ID, &k.Name, &k.Prefix, &k.Created, &k.Scope)
+		_ = rows.Scan(&k.ID, &k.Name, &k.Prefix, &k.Created, &k.Scope, &k.Kind)
 		out = append(out, k)
 	}
 	return out, nil

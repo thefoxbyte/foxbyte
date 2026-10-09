@@ -845,12 +845,193 @@ assert_eq "prepare's statements are recorded in the Blackbox" \
 ddl pg-main 'DROP TABLE IF EXISTS public.rdy_grant, public.rdy_uix, public.rdy_nokey CASCADE' >/dev/null
 ddl pg-main 'DROP SCHEMA IF EXISTS rdyapp CASCADE' >/dev/null
 
-# ── 14. Teardown leaves the database working ─────────────────────────────────
+# ── 14. The front door: /realtime/v1, and a key that only streams ───────────
 echo
-echo "14. teardown undoes it, and breaks nothing"
-"$S" realtime teardown --yes >/dev/null 2>&1
+echo "14. the front door"
+# Stage 2 of Realtime Fox. Until now a subscriber reached the feed with a
+# branch-scoped gateway key, defended as a strict subset: that key already
+# opened all SQL on the branch, so a read-only feed of tables somebody had
+# explicitly enabled widened nothing. True, and still a poor trade -- an
+# application that only wants to know when a row changed had to hold a
+# credential that could also read every table and drop them.
+#
+# So this section's central assertion is a negative one: a realtime key is
+# refused at the Gateway. Everything else here is ergonomics; that one is the
+# security claim, and it is the only place a real connection can prove it.
+
+# The connection string, with no key in it -- what goes in documentation or a
+# deployment template.
+URL="$("$S" realtime url main 2>&1 | head -1)"
+assert_contains "\`realtime url\` prints a connection string" "$URL" "fox-realtime://"
+assert_contains "…naming the branch" "$URL" "/main"
+assert_missing  "…and carrying no secret" "$URL" "rtk_"
+
+# A key, shown once, inside a DSN an application can use as-is.
+CREATE="$("$S" realtime key create main --name ci 2>&1)"
+RTK="$(printf '%s' "$CREATE" | grep -o 'rtk_[A-Za-z0-9_-]*' | head -1)"
+assert_eq "\`key create\` mints a realtime key" "$([ -n "$RTK" ] && echo yes)" "yes"
+assert_contains "…printed as a connection string" "$CREATE" "fox-realtime://$RTK@"
+assert_contains "…said to be shown only once" "$CREATE" "only time"
+# The refusals are told to whoever holds the key, not just to the test suite:
+# a credential whose limits are undocumented gets used outside them.
+assert_contains "…and what it cannot do" "$CREATE" "not SQL through the Gateway"
+RTID="$(printf '%s' "$CREATE" | sed -n 's/^Realtime key \([A-Za-z0-9_-]*\) .*/\1/p' | head -1)"
+
+# ---- The whole point: this key does not open SQL. --------------------------
+nohup "$S" gateway --addr :6505 --idle 10m >/tmp/rt-door-gateway.log 2>&1 &
+DOORGW=$!
+sleep 3
+GWOUT="$(PGPASSWORD="$RTK" psql "postgresql://dbadmin@127.0.0.1:6505/main" -tAc 'SELECT 1' 2>&1)"
+assert_contains "a realtime key is refused at the Gateway" "$GWOUT" "realtime key"
+assert_missing  "…and runs no SQL at all" "$GWOUT" "1 row"
+# Said in a way that points somewhere, rather than just failing.
+assert_contains "…naming what to use instead" "$GWOUT" "key_"
+# An ordinary account key still opens SQL through the same gateway on the same
+# connection: the refusal is by kind, not a gateway that stopped working.
+assert_eq "an account key still opens SQL there" \
+  "$(PGPASSWORD="$KEY" psql "postgresql://dbadmin@127.0.0.1:6505/main" -tAc 'SELECT 1' 2>/dev/null)" "1"
+kill "$DOORGW" >/dev/null 2>&1; wait "$DOORGW" 2>/dev/null
+sudo pkill -f "gateway --addr :6505" >/dev/null 2>&1
+
+# ---- Nor the control plane. ------------------------------------------------
+for P in /api/status /api/branches /api/license; do
+  CODE="$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $RTK" "$API$P")"
+  assert_eq "a realtime key is refused at $P" "$CODE" "401"
+done
+
+# ---- What it can do: the three routes behind the front door. ---------------
+HELLO="$(curl -sk -H "Authorization: Bearer $RTK" "$API/realtime/v1/branches/main/hello")"
+assert_contains "hello confirms the branch" "$HELLO" '"branch":"main"'
+assert_contains "…and the feed is set up" "$HELLO" '"realtime":"ok"'
+
+# The feed itself, on the new route, with the new kind of key.
+#
+# On a table of this section's own. The first version read public.ok_t, enabled
+# back in section 4 -- but by here no publication survives sections 10 to 13, so
+# the stream delivered a replayed rdy_uix change from the slot's backlog and the
+# assertion failed for a reason that had nothing to do with the front door. The
+# same trap the teardown section already carries a note about.
+ddl pg-main 'DROP TABLE IF EXISTS public.door_t CASCADE' >/dev/null
+pg pg-main 'CREATE TABLE public.door_t (id bigint PRIMARY KEY, note text)' >/dev/null
+pg pg-main 'GRANT SELECT ON public.door_t TO db_client' >/dev/null
+"$S" realtime enable door_t >/dev/null 2>&1
+assert_eq "the section's own table is published" \
+  "$(pg pg-main "SELECT count(*) FROM pg_publication_tables WHERE tablename='door_t'")" "1"
+
+TABLES="$(curl -sk -H "Authorization: Bearer $RTK" "$API/realtime/v1/branches/main/tables")"
+assert_contains "tables answers over the front door" "$TABLES" '"tables"'
+# Stage 1's verdicts, over HTTP: the same ladder the CLI prints. Asserted as a
+# non-empty status rather than the presence of the key -- the first version of
+# this check looked for '"status"' and passed while every value on the wire was
+# the empty string, which is how Assess's unnamed result went unnoticed.
+assert_missing  "…with a readiness status that is not empty" "$TABLES" '"status":""'
+# Never the Blackbox. An application holds this key; the names, row counts and
+# column shapes of bb are the hash-chained ledger's, and none of its business.
+assert_missing  "…and never the Blackbox" "$TABLES" '"schema":"bb"'
+assert_missing  "…nor a Postgres catalog" "$TABLES" '"schema":"pg_catalog"'
+# Withheld rather than silently absent: "nothing else is here" and "tables are
+# here and you may not have them" are different answers.
+assert_contains "…saying how many it withheld" "$TABLES" '"withheld":'
+# And this branch's own table is in it, streaming, which is what makes the
+# assertions above mean something: an empty list would satisfy every one of
+# them. Earlier sections drop most of their tables, so the list is only
+# reliably non-empty once this section has made one.
+assert_contains "…listing this section's table" "$TABLES" '"name":"door_t"'
+assert_contains "…as streaming" "$TABLES" '"status":"streaming"'
+
+D=/tmp/rt-door-feed.ndjson
+: > "$D"
+# --max-time and `wait`, never kill. `kill` ends the subshell and leaves curl
+# attached to the stream, which holds the replication slot open -- the suite
+# already learned this at section 4, and ignoring that note here cost two runs:
+# teardown refused, correctly, because a subscriber was still attached.
+( curl -skN --max-time 18 -H "Authorization: Bearer $RTK" \
+    "$API/realtime/v1/branches/main/stream" | sed -u -n 's/^data: //p' >> "$D" ) &
+DOORSTREAM=$!
+sleep 4
+pg pg-main "INSERT INTO public.door_t VALUES (940, 'door')" >/dev/null
+wait "$DOORSTREAM" 2>/dev/null
+assert_contains "the feed streams on /realtime/v1" "$(cat "$D")" '"type":"change"'
+assert_contains "…carrying the row that changed" "$(cat "$D")" '"door"'
+assert_contains "…from the table this section enabled" "$(cat "$D")" 'public.door_t'
+
+# ---- And nowhere else. -----------------------------------------------------
+"$S" branch create rtdoorother >/dev/null 2>&1
+for R in hello tables stream; do
+  CODE="$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $RTK" \
+    "$API/realtime/v1/branches/rtdoorother/$R")"
+  # 401: this key is not authenticated for that branch at all, so the question
+  # of whether the branch exists never arises.
+  assert_eq "a key for main cannot reach another branch's $R" "$CODE" "401"
+done
+# A key in the query string is not a credential. A URL reaches access logs,
+# browser history and Referer, so accepting one there would turn every
+# subscriber's URL into a disclosed secret.
+CODE="$(curl -sk -o /dev/null -w '%{http_code}' "$API/realtime/v1/branches/main/stream?key=$RTK")"
+assert_eq "a key in the query string does not authenticate" "$CODE" "401"
+CODE="$(curl -sk -o /dev/null -w '%{http_code}' "$API/realtime/v1/branches/main/stream?access_token=$RTK")"
+assert_eq "…nor as access_token" "$CODE" "401"
+
+# ---- Listing, revoking, and the audit trail. ------------------------------
+assert_contains "\`key ls\` shows it" "$("$S" realtime key ls main 2>&1)" "$RTID"
+assert_missing  "…without the secret" "$("$S" realtime key ls main 2>&1)" "$RTK"
+assert_contains "it is recorded in the security log" \
+  "$("$S" audit --limit 200 2>&1 | grep realtime.key_created | tail -1)" "realtime.key_created"
+
+"$S" realtime key revoke "$RTID" >/dev/null 2>&1
+CODE="$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $RTK" \
+  "$API/realtime/v1/branches/main/hello")"
+assert_eq "a revoked key is refused" "$CODE" "401"
+assert_contains "…and the revocation is recorded" \
+  "$("$S" audit --limit 200 2>&1 | grep realtime.key_revoked | tail -1)" "realtime.key_revoked"
+
+# ---- The old door still opens. --------------------------------------------
+# This is the additive claim, and the only assertion here that protects
+# somebody already running: /api/branches/{name}/realtime is unchanged.
+O=/tmp/rt-door-old.ndjson
+: > "$O"
+( curl -skN --max-time 18 -H "Authorization: Bearer $KEY" \
+    "$API/api/branches/main/realtime" | sed -u -n 's/^data: //p' >> "$O" ) &
+OLDSTREAM=$!
+sleep 4
+pg pg-main "INSERT INTO public.door_t VALUES (941, 'oldroute')" >/dev/null
+wait "$OLDSTREAM" 2>/dev/null
+assert_contains "the original route still streams" "$(cat "$O")" '"oldroute"'
+
+"$S" realtime disable door_t >/dev/null 2>&1
+ddl pg-main 'DROP TABLE IF EXISTS public.door_t CASCADE' >/dev/null
+
+# Wait for the slot to go idle before the next section tears the feed down.
+#
+# This section is the first to stream `main` immediately before teardown --
+# sections 9 and 10 stream rtfeed -- and Postgres keeps a slot marked active for
+# a few seconds after the subscriber's connection drops. Teardown then refuses,
+# correctly: it will not lower wal_level while a logical slot is attached,
+# because Postgres would not start again. A blind sleep raced that; this waits
+# for the condition the engine actually requires, and the refusal itself is
+# proved in section 8.
+for i in $(seq 1 30); do
+  [ "$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND active")" = "0" ] && break
+  sleep 1
+done
+assert_eq "the slot goes idle once the last subscriber leaves" \
+  "$(pg pg-main "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND active")" "0"
+
+"$S" branch delete rtdoorother >/dev/null 2>&1
+
+# ── 15. Teardown leaves the database working ─────────────────────────────────
+echo
+echo "15. teardown undoes it, and breaks nothing"
+# Output kept. It was discarded, so when this section failed with wal_level
+# still logical there was nothing to read but the assertion -- and teardown run
+# by hand afterwards worked, which is the least useful kind of evidence.
+TD="$("$S" realtime teardown --yes 2>&1)"
 main_ready
-assert_eq "main is back to replica" "$(pg pg-main 'SHOW wal_level')" "replica"
+WL="$(pg pg-main 'SHOW wal_level')"
+if [ "$WL" != "replica" ]; then
+  echo "    (teardown said: $(printf '%s' "$TD" | tr '\n' ' '))"
+fi
+assert_eq "main is back to replica" "$WL" "replica"
 assert_eq "no publications are left" \
   "$(pg pg-main "SELECT count(*) FROM pg_publication WHERE pubname LIKE 'fox_rt_%'")" "0"
 # The point of the whole exercise: nothing it touched is worse off.

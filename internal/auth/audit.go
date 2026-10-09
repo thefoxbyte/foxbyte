@@ -45,6 +45,13 @@ const (
 	EvOwnerChanged   = "branch.owner_changed"
 	EvDenied         = "access.denied"
 	EvGatewayRefused = "gateway.refused"
+	// Realtime keys are recorded separately from EvKeyCreated so that the
+	// question "who was given the change feed, and when was it taken away" has
+	// an answer that does not have to be inferred from a key's scope. They are
+	// also the credential most likely to be handed to something other than a
+	// person, which is exactly the kind an audit asks about.
+	EvRealtimeKeyCreated = "realtime.key_created"
+	EvRealtimeKeyRevoked = "realtime.key_revoked"
 	// Promotion: who asked for a branch's changes to be applied elsewhere, and who
 	// decided. The statements themselves are in the target's Blackbox; this is the
 	// door they came through.

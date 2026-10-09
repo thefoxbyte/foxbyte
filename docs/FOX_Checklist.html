@@ -639,6 +639,10 @@
       <li class="ok"><code>setup</code>, <code>teardown</code>, <code>status</code> and <code>slots</code> stay in the free build, so a downgrade can still undo it</li>
       <li class="lim">Console and REST only this release; the published SDKs get the feed once the wire format has survived real use</li>
       <li class="lim">No per-subscriber row filters, which is why an RLS table is refused rather than filtered</li>
+      <li class="ok">Front door: <code>/realtime/v1/branches/{name}/{hello,tables,stream}</code> on the console's port, and a <code>fox-realtime://</code> connection string that keeps the key in userinfo, never in a URL</li>
+      <li class="ok">A <code>realtime</code> key kind (<code>rtk_</code>, <code>fox realtime key create|ls|revoke</code>): streams one branch, refused at the control plane and <b>refused at the Gateway by kind</b> &mdash; asserted against a real psql connection</li>
+      <li class="ok">Only an application's tables over HTTP: one shared <code>realtime.Application()</code> withholds <code>bb</code>, Postgres and extension-owned tables and reports how many &mdash; the first version served the Blackbox's shape to a stream-only key</li>
+      <li class="ok">Additive: the original <code>/api/branches/{name}/realtime</code> route is unchanged, and every key issued before kinds existed keeps the empty kind and its old behaviour (migration covered from a pre-<code>kind</code> store)</li>
       <li class="lim">A delete under the default replica identity carries the primary key and nothing else</li></ul></td><td class="tb">enterprise/realtime, scripts/integration_realtime.sh</td></tr>
   </table>
   <div class="foot">FOX_Checklist &middot; area N</div>
