@@ -131,7 +131,166 @@ say("deleteBranch removes it", (await db.branches()).some(b => b.name === "sdkts
 	fi
 fi
 
+# ── 3. the change-feed subscribers ──────────────────────────────────────────
+echo "### 3. the clients' change-feed subscribers"
+# What a subscriber written against these clients actually receives. The
+# parsing, the resume rule and the unchanged-column trap are unit-tested in
+# each client; what only a live engine can show is that the wire format they
+# were written against is the one the engine sends.
+#
+# One UPDATE touching two rows, deliberately: that is a single statement — the
+# query endpoint runs one per call — and a single transaction with two changes,
+# which is the case transaction framing exists for.
+"$S" realtime setup --yes >/dev/null 2>&1
+RTSQL() { sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -q -c "$1" >/dev/null 2>&1; }
+RTQ() { sudo docker exec pg-main psql -U dbadmin -d appdb -tAc "$1" 2>/dev/null; }
+RTSQL "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.sdk_rt CASCADE"
+RTSQL "CREATE TABLE public.sdk_rt (id bigint PRIMARY KEY, bal bigint)"
+RTSQL "GRANT SELECT ON public.sdk_rt TO db_client"
+RTSQL "INSERT INTO public.sdk_rt VALUES (1, 100), (2, 100)"
+"$S" realtime enable sdk_rt >/dev/null 2>&1
+assert_eq "the table is published for the SDKs" \
+  "$(RTQ "SELECT count(*) FROM pg_publication_tables WHERE tablename='sdk_rt'")" "1"
+
+# A realtime key: the credential an application should be given, which cannot
+# reach the control plane and cannot run SQL.
+RTKEY="$("$S" realtime key create main --name sdk 2>/dev/null | grep -o 'rtk_[A-Za-z0-9_-]*' | head -1)"
+assert_eq "a realtime key for the SDKs" "$([ -n "$RTKEY" ] && echo yes)" "yes"
+RTURL="fox-realtime://${RTKEY}@127.0.0.1:8080/main"
+
+PYRT_OUT="$(FOX_RT_URL="$RTURL" FOX_KEY="$KEY" FOX_API="$API" python3 - "$ROOT/clients/python" <<'PYRT' 2>&1
+import os, sys, threading
+sys.path.insert(0, sys.argv[1])
+from foxbyte import FoxByte, Transaction, parse_realtime_url, subscribe
+
+say = lambda name, got, want: print(f"{'PASS' if got == want else 'FAIL'}|{name}|{got}|{want}")
+
+# The connection string the CLI printed parses, and the key is in it rather
+# than in any URL this client will request.
+dsn = parse_realtime_url(os.environ["FOX_RT_URL"])
+say("the printed connection string parses", dsn.branch, "main")
+say("the key is in userinfo", dsn.key.startswith("rtk_"), True)
+
+# on_error matters here: without it the retry loop swallows a refused stream,
+# and the only symptom is a transaction that never arrives. The first run of
+# this test reported "got 0, want 1" and nothing else.
+errs = []
+sub = subscribe(os.environ["FOX_RT_URL"], transactions=True, verify_tls=False,
+                on_error=errs.append)
+got = []
+
+def read():
+    for item in sub:
+        if isinstance(item, Transaction) and any(c.table == "public.sdk_rt" for c in item.changes):
+            got.append(item)
+            return
+
+t = threading.Thread(target=read, daemon=True)
+t.start()
+threading.Event().wait(4)  # let the stream attach before anything is written
+
+db = FoxByte(api_key=os.environ["FOX_KEY"], base_url=os.environ["FOX_API"], verify_tls=False)
+# One statement, one transaction, two rows. Asserted, so a guardrail refusing
+# the write does not read as a feed that failed to deliver it.
+res = db.query("main", "UPDATE public.sdk_rt SET bal = bal + 1 WHERE id IN (1, 2)")
+say("the write the feed should carry succeeded", (res or {}).get("error"), None)
+t.join(timeout=30)
+position = sub.position
+sub.close()
+
+if errs:
+    print("|".join(["FAIL", "the subscription reported no error", str(errs[0])[:120], "none"]))
+say("a transaction reaches the Python client", len(got), 1)
+if got:
+    tx = got[0]
+    say("it carries both rows", len(tx.changes), 2)
+    say("under one transaction id", len({c.xid for c in tx.changes}), 1)
+    # The boundary is the same on the frame and on every change in it, which is
+    # what makes it safe to resume from.
+    say("and one boundary", len({tx.commit_lsn} | {c.commit_lsn for c in tx.changes}), 1)
+    say("which becomes the resume position", position, tx.commit_lsn)
+    # Values are Postgres text: a bigint does not survive a float.
+    say("with values as strings", isinstance(tx.changes[0].new["bal"], str), True)
+    # apply() against the real payload, not a fixture.
+    row = tx.changes[0].apply({"id": tx.changes[0].identity["id"], "bal": "100"})
+    say("and apply() produces the new row", row["bal"], tx.changes[0].new["bal"])
+PYRT
+)"
+while IFS='|' read -r st name got want; do
+	case "$st" in
+	PASS) ok "python realtime: $name" ;;
+	FAIL) bad "python realtime: $name (got '$got', want '$want')" ;;
+	esac
+done <<<"$PYRT_OUT"
+if ! grep -q '^PASS|' <<<"$PYRT_OUT" && ! grep -q '^FAIL|' <<<"$PYRT_OUT"; then
+	bad "python realtime: the client stopped part way"
+	sed 's/^/      /' <<<"$PYRT_OUT" | tail -6
+fi
+
+if [ -d "$TS" ]; then
+	TSRT_OUT="$(cd "$TS" && FOX_RT_URL="$RTURL" FOX_KEY="$KEY" FOX_API="$API" \
+		NODE_TLS_REJECT_UNAUTHORIZED=0 node --input-type=module -e '
+import { FoxByte, subscribe, parseRealtimeUrl, applyChange } from "./dist/index.js"
+const say = (name, got, want) =>
+  console.log(`${JSON.stringify(got) === JSON.stringify(want) ? "PASS" : "FAIL"}|${name}|${got}|${want}`)
+
+const dsn = parseRealtimeUrl(process.env.FOX_RT_URL)
+say("the printed connection string parses", dsn.branch, "main")
+say("the key is in userinfo", dsn.key.startsWith("rtk_"), true)
+
+const txs = []
+const errs = []
+const sub = subscribe(process.env.FOX_RT_URL, {
+  onTransaction: tx => { if (tx.changes.some(c => c.table === "public.sdk_rt")) txs.push(tx) },
+  onError: e => errs.push(e),
+})
+await new Promise(r => setTimeout(r, 4000))
+
+const db = new FoxByte(process.env.FOX_KEY, process.env.FOX_API)
+const res = await db.query("main", "UPDATE public.sdk_rt SET bal = bal + 1 WHERE id IN (1, 2)")
+say("the write the feed should carry succeeded", res?.error ?? null, null)
+
+const until = Date.now() + 30000
+while (Date.now() < until && txs.length === 0) await new Promise(r => setTimeout(r, 100))
+const position = sub.position()
+sub.close()
+
+if (errs.length) say("the subscription reported no error", String(errs[0]).slice(0, 120), "none")
+say("a transaction reaches the TypeScript client", txs.length, 1)
+if (txs.length) {
+  const tx = txs[0]
+  say("it carries both rows", tx.changes.length, 2)
+  say("under one transaction id", new Set(tx.changes.map(c => c.xid)).size, 1)
+  say("and one boundary", new Set([tx.commitLsn, ...tx.changes.map(c => c.commit_lsn)]).size, 1)
+  say("which becomes the resume position", position, tx.commitLsn)
+  say("with values as strings", typeof tx.changes[0].new.bal, "string")
+  const row = applyChange({ id: tx.changes[0].identity.id, bal: "100" }, tx.changes[0])
+  say("and applyChange produces the new row", row.bal, tx.changes[0].new.bal)
+}
+' 2>&1)"
+	while IFS='|' read -r st name got want; do
+		case "$st" in
+		PASS) ok "typescript realtime: $name" ;;
+		FAIL) bad "typescript realtime: $name (got '$got', want '$want')" ;;
+		esac
+	done <<<"$TSRT_OUT"
+	if ! grep -q '^PASS|' <<<"$TSRT_OUT" && ! grep -q '^FAIL|' <<<"$TSRT_OUT"; then
+		bad "typescript realtime: the client stopped part way"
+		sed 's/^/      /' <<<"$TSRT_OUT" | tail -6
+	fi
+fi
+
 echo "### cleanup"
+"$S" realtime disable sdk_rt >/dev/null 2>&1
+RTSQL "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.sdk_rt CASCADE"
+# Realtime is an engine-wide setting, and a later suite asserts main's container
+# arguments are byte-identical with the feed off. Teardown refuses while a slot
+# is still attached, so wait for the subscribers' slots to go idle first.
+for i in $(seq 1 30); do
+	[ "$(RTQ "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'fox_rt_%' AND active")" = "0" ] && break
+	sleep 1
+done
+"$S" realtime teardown --yes >/dev/null 2>&1
 for b in sdkpy sdkts; do "$S" branch delete "$b" >/dev/null 2>&1; done
 rm -rf "$TS"
 

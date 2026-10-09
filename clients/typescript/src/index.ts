@@ -18,6 +18,11 @@ export interface Branch {
   connections?: number
 }
 
+/** The change feed. See ./realtime.ts — a subscriber has several details to
+ * get right, and they are handled there rather than left to the caller. */
+export * from "./realtime.js"
+import { subscribe, type SubscribeOptions, type Subscription } from "./realtime.js"
+
 export class FoxByteError extends Error {}
 
 export class FoxByte {
@@ -83,5 +88,19 @@ export class FoxByte {
   /** Recompute the Blackbox hash chain. Same as verifyLedger(). */
   verifyBlackbox(branch = "main"): Promise<QueryResult> {
     return this.verifyLedger(branch)
+  }
+
+  /** Subscribe to a branch's change feed using this client's credentials.
+   *
+   * For a program that already holds an API key. An application that should
+   * only ever read the feed is better given a realtime key — `fox realtime key
+   * create <branch>` — which cannot reach the control plane and cannot run
+   * SQL; pass its connection string to `subscribe()` directly. */
+  subscribe(branch: string, opts: SubscribeOptions = {}): Subscription {
+    const u = new URL(this.baseUrl)
+    return subscribe(
+      { host: u.host, branch, key: this.apiKey, sslmode: u.protocol === "http:" ? "disable" : "require" },
+      opts,
+    )
   }
 }

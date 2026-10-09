@@ -639,6 +639,8 @@
       <li class="ok"><code>setup</code>, <code>teardown</code>, <code>status</code> and <code>slots</code> stay in the free build, so a downgrade can still undo it</li>
       <li class="lim">Console and REST only this release; the published SDKs get the feed once the wire format has survived real use</li>
       <li class="lim">No per-subscriber row filters, which is why an RLS table is refused rather than filtered</li>
+      <li class="ok">Published clients subscribe: <code>clients/typescript</code> and <code>clients/python</code>, dependency-free, with whole-transaction delivery, resume only at a commit boundary, reconnection, and an <code>apply</code> that leaves an unchanged TOASTed column alone</li>
+      <li class="ok">41 client unit tests (18 TypeScript via <code>node --test</code>, 23 Python via <code>unittest</code>) plus contract tests driving both against a live engine with a real <code>rtk_</code> key</li>
       <li class="ok">Transaction framing (<code>?transactions=1</code>): <code>begin</code>/<code>commit</code> around each transaction, every change carrying its <code>xid</code> and the transaction's <code>commit_lsn</code> as the resume boundary, with the record's own position as <code>lsn</code></li>
       <li class="ok">Off by default and dropped per subscriber, so an unframed client is unaffected; an empty transaction produces no frame; a value other than 1 or 0 is refused rather than assumed</li>
       <li class="ok">What staying warm costs: <code>realtime activity</code>, an API route and a console panel &mdash; warm-since from the container, work from <code>pg_stat_database</code> sampled on a timer, and the bookmarks' held WAL against the budget</li>
