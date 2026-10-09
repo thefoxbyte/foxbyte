@@ -20,47 +20,18 @@ import (
 
 // Facts asks the catalog everything Preflight needs about one table.
 //
-// One query rather than several, because the answers have to describe the same
-// moment: a table that gains RLS between two of them would pass a check that
-// was true a second ago.
+// One query, shared with Survey. There used to be a second one here, and
+// keeping two in step lasted exactly as long as the first new column: a field
+// this one did not select defaulted to false, and every ordinary table was
+// told it needed a grant it already had. The rules live in Assess and the
+// facts live in factsSQL, and neither has a second opinion.
 func Facts(branchName, schema, table string) (Table, error) {
-	q := fmt.Sprintf(`SELECT
-	  c.relkind::text
-	  || '|' || (c.relreplident)::text
-	  || '|' || c.relrowsecurity::text
-	  || '|' || EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)::text
-	  || '|' || has_table_privilege('db_client', c.oid, 'SELECT')::text
-	  || '|' || coalesce((
-	       SELECT string_agg(a.attname, ',' ORDER BY a.attname)
-	       FROM pg_attribute a
-	       WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-	         AND NOT has_column_privilege('db_client', c.oid, a.attnum, 'SELECT')), '')
-	FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-	WHERE n.nspname = %s AND c.relname = %s`, branch.QuoteLiteral(schema), branch.QuoteLiteral(table))
-
-	lines, err := branch.LedgerQuery(branch.ServingBranch(branchName), q)
+	v, err := Look(branchName, schema, table, nil)
 	if err != nil {
 		return Table{}, err
 	}
-	if len(lines) == 0 {
-		return Table{}, fmt.Errorf("there is no table %s.%s on %q", schema, table, branchName)
-	}
-	f := strings.Split(lines[0], "|")
-	if len(f) < 6 {
-		return Table{}, fmt.Errorf("could not read the catalog for %s.%s", schema, table)
-	}
-	t := Table{Schema: schema, Name: table, Kind: f[0], RLSEnabled: isTrue(f[2]),
-		HasPrimaryKey: isTrue(f[3]), ClientCanSelect: isTrue(f[4])}
-	if f[1] != "" {
-		t.ReplicaIdentity = f[1][0]
-	}
-	if f[5] != "" {
-		t.ColumnsHidden = strings.Split(f[5], ",")
-	}
-	return t, nil
+	return v.Table, nil
 }
-
-func isTrue(s string) bool { return strings.HasPrefix(strings.ToLower(s), "t") }
 
 // Enable adds a table to the branch's publication, after the preflight.
 func Enable(branchName string, req Request) error {

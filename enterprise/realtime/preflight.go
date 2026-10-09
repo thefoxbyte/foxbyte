@@ -6,9 +6,12 @@
 package realtime
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/thefoxbyte/foxbyte/internal/brand"
 )
 
 // What a table has to be before it may be streamed.
@@ -25,14 +28,76 @@ import (
 
 // Table is what the catalog says about one relation.
 type Table struct {
-	Schema          string
-	Name            string
-	Kind            string   // pg_class.relkind: r ordinary, p partitioned, v view, m matview
-	HasPrimaryKey   bool     //
-	ReplicaIdentity byte     // pg_class.relreplident: d default, f full, n nothing, i index
-	RLSEnabled      bool     // relrowsecurity
-	ClientCanSelect bool     // db_client has SELECT on the relation
-	ColumnsHidden   []string // columns db_client may not read
+	Schema          string `json:"schema"`
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`              // pg_class.relkind: r ordinary, p partitioned, v view, m matview
+	HasPrimaryKey   bool   `json:"has_primary_key"`   //
+	ReplicaIdentity byte   `json:"-"`                 // pg_class.relreplident: d default, f full, n nothing, i index
+	RLSEnabled      bool   `json:"rls_enabled"`       // relrowsecurity
+	ClientCanSelect bool   `json:"client_can_select"` // db_client has SELECT on the relation
+	// ClientCanUseSchema is separate from the table grant and easy to miss:
+	// has_table_privilege answers about the table's own ACL and says nothing
+	// about reaching it. A table in a schema db_client has no USAGE on reports
+	// SELECT and is unreadable, which would only show up once the feed was on.
+	ClientCanUseSchema bool     `json:"client_can_use_schema"`
+	ColumnsHidden      []string `json:"columns_hidden,omitempty"` // columns db_client may not read
+
+	// IsSystem is FoxByte's own schema or Postgres's. Only tables an
+	// application made are streamable: bb holds the recorded text of every
+	// statement, and a subscriber has no business reading the catalog.
+	IsSystem bool `json:"is_system"`
+	// IsExtensionOwned catches what the schema test cannot — an extension may
+	// create its tables anywhere, including in public, where the old
+	// public-only rule let them through.
+	IsExtensionOwned bool `json:"is_extension_owned"`
+
+	// UniqueIndex is an index Postgres would accept as the replica identity:
+	// unique, valid, not partial, every column NOT NULL. Empty when there is
+	// none, which is the only case that has to pay for REPLICA IDENTITY FULL.
+	UniqueIndex string `json:"unique_index,omitempty"`
+
+	// What the table has done since statistics were last reset, from
+	// pg_stat_user_tables. Postgres counts these already, so the cost of a
+	// change can be stated as a measured number rather than an adjective.
+	Inserts     int64   `json:"inserts"`
+	Updates     int64   `json:"updates"`
+	Deletes     int64   `json:"deletes"`
+	StatsDays   float64 `json:"stats_days"`    // how long those counts cover
+	AvgRowBytes int64   `json:"avg_row_bytes"` // total size / live rows
+}
+
+// FullCost is what REPLICA IDENTITY FULL would add, in the user's own numbers.
+//
+// FULL writes the whole old row to the WAL on every UPDATE, so the extra is
+// roughly one row per update. Measured rather than guessed, and said as an
+// estimate because the average row size is exactly that.
+func (t Table) FullCost() string {
+	if t.StatsDays <= 0 || t.Updates <= 0 || t.AvgRowBytes <= 0 {
+		return "every UPDATE would write the whole old row to the WAL as well as the new one"
+	}
+	perDay := float64(t.Updates) / t.StatsDays * float64(t.AvgRowBytes)
+	return fmt.Sprintf("about %s of extra WAL a day at this table's current rate (%s updates/day), "+
+		"and the same again in your backup archive", humanBytes(int64(perDay)),
+		humanCount(float64(t.Updates)/t.StatsDays))
+}
+
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.0f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f kB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%d B", n)
+}
+
+func humanCount(n float64) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.0fk", n/1000)
+	}
+	return fmt.Sprintf("%.0f", n)
 }
 
 // Request is one `fox realtime enable`.
@@ -72,8 +137,6 @@ func (r Request) PublishesChanges() bool {
 // otherwise. Every reason names what to do instead, because every one of them
 // has a way forward and a refusal that does not say so reads as a bug.
 func Preflight(r Request) error {
-	t := r.Table
-
 	for _, e := range r.EventList() {
 		switch e {
 		case "insert", "update", "delete":
@@ -82,68 +145,42 @@ func Preflight(r Request) error {
 		}
 	}
 
-	// Row-level security is the one case where a feed would widen access.
-	//
-	// Everyone who can reach a branch can already SELECT every public table —
-	// ledger.sql grants db_client exactly that — so a feed over those tables
-	// gives away nothing new. RLS is the exception: db_client is NOBYPASSRLS
-	// and the gateway logs clients in so their sessions obey policies, but
-	// decoded WAL has had no policy applied to it. Every subscriber would see
-	// every row.
-	//
-	// There is no --force for this, and that is deliberate: an override here is
-	// a data breach with an audit trail. Per-subscriber row filters are a
-	// separate feature with their own security argument to make.
-	if t.RLSEnabled {
-		return fmt.Errorf("%s has row-level security, and a change feed cannot apply it: "+
-			"decoded WAL has had no policy evaluated against it, so every subscriber would "+
-			"receive every row. There is no override — this one is a data breach rather than "+
-			"an inconvenience", t.Qualified())
+	// One source of truth. Assess decides; this turns a verdict into the
+	// refusal a command prints. They used to be separate implementations of the
+	// same rules, which is two places to forget the same thing.
+	t := r.Table
+	if r.FullIdentity {
+		// The caller has asked for the identity this check would otherwise
+		// demand, and Enable sets it moments from now.
+		t.ReplicaIdentity = 'f'
+	}
+	v := Assess(t, r.Events, false)
+	switch v.State {
+	case Ready, Streaming:
+		return nil
+	case Impossible:
+		return errors.New(v.Reason)
 	}
 
-	// Anything db_client cannot already read is not ours to stream.
-	if !t.ClientCanSelect {
-		return fmt.Errorf("db_client cannot SELECT %s, so a change feed would hand out rows "+
-			"nobody could otherwise read. Grant SELECT first, or leave it out", t.Qualified())
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s is not ready to stream:\n", t.Qualified())
+	identity := false
+	for _, f := range v.Fixes {
+		fmt.Fprintf(&b, "  %s\n      %s\n", f.Why, f.SQL)
+		if f.Cost != "" {
+			fmt.Fprintf(&b, "      %s\n", f.Cost)
+		}
+		if strings.Contains(f.SQL, "REPLICA IDENTITY") {
+			identity = true
+		}
 	}
-	if len(t.ColumnsHidden) > 0 {
-		return fmt.Errorf("db_client cannot read %s on %s, and a change feed carries whole rows: "+
-			"grant SELECT on those columns, or leave this table out",
-			strings.Join(t.ColumnsHidden, ", "), t.Qualified())
+	fmt.Fprintf(&b, "\n%s realtime prepare %s   makes these changes, recorded in the Blackbox",
+		brand.CLI, t.Qualified())
+	if identity {
+		// Named explicitly because they are the two answers a person reaches
+		// for, and a refusal that does not say the way out reads as a bug.
+		fmt.Fprintf(&b, "\n--replica-identity=full   accept it here instead"+
+			"\n--events=insert           stream inserts only; no identity needed")
 	}
-
-	// Only ordinary and partitioned tables have a WAL story worth decoding.
-	switch t.Kind {
-	case "r", "p":
-	case "v", "m":
-		return fmt.Errorf("%s is a view: a change feed streams the tables a view reads, "+
-			"so enable those instead", t.Qualified())
-	default:
-		return fmt.Errorf("%s is not a table", t.Qualified())
-	}
-
-	// Only public, and never the Blackbox.
-	//
-	// bb.schema_ledger holds the recorded text of every statement, so streaming
-	// it would hand a subscriber the DDL history of the database. The feed is
-	// never FOR ALL TABLES for the same reason.
-	if t.Schema != "public" {
-		return fmt.Errorf("only tables in the public schema can be streamed; %s is in %s",
-			t.Qualified(), t.Schema)
-	}
-
-	// The trap this function exists for.
-	//
-	// Adding a table with no replica identity to a publication that publishes
-	// updates makes every later UPDATE and DELETE on it *fail* — "cannot update
-	// table … because it does not have a replica identity". Enabling a feed
-	// would break queries that work today, which is exactly what the additive
-	// rule forbids. So it is refused, and both ways forward are named.
-	if r.PublishesChanges() && !t.HasPrimaryKey && t.ReplicaIdentity != 'f' && !r.FullIdentity {
-		return fmt.Errorf("%s has no primary key, and publishing updates or deletes for a table "+
-			"without one makes every later UPDATE and DELETE on it fail. Either "+
-			"--replica-identity=full (more WAL per update, and the change is recorded in the "+
-			"Blackbox like any other DDL) or --events=insert", t.Qualified())
-	}
-	return nil
+	return errors.New(strings.TrimRight(b.String(), "\n"))
 }

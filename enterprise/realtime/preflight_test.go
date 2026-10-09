@@ -13,7 +13,7 @@ import (
 // key, no RLS, readable by db_client.
 func ok() Table {
 	return Table{Schema: "public", Name: "orders", Kind: "r",
-		HasPrimaryKey: true, ReplicaIdentity: 'd', ClientCanSelect: true}
+		HasPrimaryKey: true, ReplicaIdentity: 'd', ClientCanSelect: true, ClientCanUseSchema: true}
 }
 
 func TestPreflightAcceptsAnOrdinaryTable(t *testing.T) {
@@ -98,13 +98,15 @@ func TestPreflightRefusesWhatTheClientCannotRead(t *testing.T) {
 	}
 }
 
-func TestPreflightRefusesWhatIsNotAPublicTable(t *testing.T) {
+func TestPreflightRefusesWhatIsNotAnApplicationTable(t *testing.T) {
 	for name, mutate := range map[string]func(*Table){
 		"a view":              func(t *Table) { t.Kind = "v" },
 		"a materialised view": func(t *Table) { t.Kind = "m" },
 		"a sequence":          func(t *Table) { t.Kind = "S" },
 		"the Blackbox":        func(t *Table) { t.Schema = "bb"; t.Name = "schema_ledger" },
-		"another schema":      func(t *Table) { t.Schema = "private" },
+		"a Postgres schema":   func(t *Table) { t.Schema = "pg_catalog"; t.Name = "pg_class" },
+		"an extension's own":  func(t *Table) { t.IsExtensionOwned = true },
+		"something the catalog called a system table": func(t *Table) { t.IsSystem = true },
 	} {
 		tbl := ok()
 		mutate(&tbl)
@@ -112,6 +114,17 @@ func TestPreflightRefusesWhatIsNotAPublicTable(t *testing.T) {
 			t.Errorf("%s was accepted", name)
 		}
 	}
+	// A table in the application's own schema is now allowed. The rule used to
+	// be "public only", which refused this and — because an extension may
+	// create its tables anywhere, including in public — let an extension's
+	// table through. It is "any schema the application made" now, which is both
+	// more permissive and stricter.
+	other := ok()
+	other.Schema = "billing"
+	if err := Preflight(Request{Table: other}); err != nil {
+		t.Errorf("a table in the application's own schema was refused: %v", err)
+	}
+
 	// A partitioned table is an ordinary case, not an exclusion.
 	part := ok()
 	part.Kind = "p"
