@@ -84,9 +84,10 @@ function Activity({ branch, licensed }: { branch: string; licensed: boolean }) {
   const load = useCallback(async () => {
     try {
       const r = await getRealtimeActivity(branch)
+      if (!r?.activity) throw new Error('no activity in the response')
       setA(r.activity)
-      setCost(r.cost)
-      setMaxSubs(r.max_subscribers)
+      setCost(r.cost ?? '')
+      setMaxSubs(typeof r.max_subscribers === 'number' ? r.max_subscribers : 0)
       setMissing(false)
     } catch {
       // Quiet on purpose. The licence and the not-set-up cases are already
@@ -202,8 +203,14 @@ function Tables({ branch, licensed, edition }: {
     setSetup('')
     try {
       const r = await listRealtimeTables(branch)
-      setRows(r.tables)
-      setWithheld(r.withheld)
+      // Checked rather than trusted. `rows` is rendered with `rows.length`, so
+      // anything that is not an array crashes the page — and the engine is not
+      // the only thing that can answer: a route missing from this build falls
+      // through to the console's own catch-all. req() now refuses that, and
+      // this is the second line of defence, because a page that cannot render
+      // is a worse failure than a page that says it found nothing.
+      setRows(Array.isArray(r?.tables) ? r.tables : [])
+      setWithheld(typeof r?.withheld === 'number' ? r.withheld : 0)
     } catch (e) {
       setRows([])
       if (e instanceof ApiError && e.status === 409) {
@@ -419,7 +426,10 @@ function Keys({ branch, licensed }: { branch: string; licensed: boolean }) {
   const [copied, setCopied] = useState(false)
 
   const load = useCallback(async () => {
-    try { setKeys((await listRealtimeKeys(branch)).keys) } catch { setKeys([]) }
+    try {
+      const r = await listRealtimeKeys(branch)
+      setKeys(Array.isArray(r?.keys) ? r.keys : [])
+    } catch { setKeys([]) }
   }, [branch])
 
   // A branch change must not leave the previous branch's connection string on
