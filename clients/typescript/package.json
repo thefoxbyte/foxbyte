@@ -1,16 +1,23 @@
 {
   "name": "@foxbyte/client",
   "version": "0.6.0",
-  "description": "TypeScript client for FoxByte — Postgres with instant branching and Blackbox, a tamper-evident record of every schema change.",
+  "description": "TypeScript client for FoxByte \u2014 Postgres with instant branching and Blackbox, a tamper-evident record of every schema change.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src"
+  ],
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "tsc && node --test --test-timeout 20000 \"test/*.test.js\""
   },
-  "repository": { "type": "git", "url": "https://github.com/thefoxbyte/foxbyte" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thefoxbyte/foxbyte"
+  },
   "devDependencies": {
     "typescript": "^5.4.0"
   }

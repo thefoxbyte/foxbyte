@@ -18,6 +18,21 @@ import urllib.request
 __version__ = "0.6.0"
 
 
+# The change feed. See foxbyte/realtime.py — a subscriber has several details
+# to get right, and they are handled there rather than left to the caller.
+from foxbyte.realtime import (  # noqa: E402,F401
+    Change,
+    Notice,
+    RealtimeError,
+    RealtimeUrl,
+    Schema,
+    Subscription,
+    Transaction,
+    parse_realtime_url,
+    subscribe,
+)
+
+
 class FoxByteError(Exception):
     """An API request failed (non-2xx response)."""
 
@@ -93,3 +108,24 @@ class FoxByte:
     def verify_blackbox(self, branch: str = "main"):
         """Recompute the Blackbox hash chain. Same as verify_ledger()."""
         return self.verify_ledger(branch)
+
+    # --- the change feed ---
+    def subscribe(self, branch: str, **kw) -> Subscription:
+        """Subscribe to a branch's change feed using this client's credentials.
+
+        For a program that already holds an API key. An application that should
+        only ever read the feed is better given a realtime key — ``fox realtime
+        key create <branch>`` — which cannot reach the control plane and cannot
+        run SQL; pass its connection string to ``subscribe()`` directly.
+        """
+        host = urllib.parse.urlsplit(self.base_url)
+        kw.setdefault("verify_tls", self._ctx.verify_mode is not ssl.CERT_NONE)
+        return subscribe(
+            RealtimeUrl(
+                host=host.netloc,
+                branch=branch,
+                key=self.api_key,
+                sslmode="disable" if host.scheme == "http" else "require",
+            ),
+            **kw,
+        )

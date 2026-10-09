@@ -31,6 +31,14 @@ coverage.*
 web/node_modules/
 web/dist/
 /dist/
+# The published clients build the same way. node_modules and dist were not
+# covered here, and a `npm install` run to execute the client tests put the
+# whole TypeScript compiler into a commit.
+clients/typescript/node_modules/
+clients/typescript/dist/
+# Python build and test artefacts beside the client.
+clients/python/**/__pycache__/
+clients/python/*.egg-info/
 __pycache__/
 *.pyc
 
