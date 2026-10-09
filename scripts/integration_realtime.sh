@@ -255,7 +255,10 @@ assert_eq "an update arrives" "$(have "e.get('type')=='change' and e.get('action
 assert_eq "a delete arrives"  "$(have "e.get('type')=='change' and e.get('action')=='delete'")" "yes"
 assert_eq "no change arrives without an identity" \
   "$(have "e.get('type')=='change' and not e.get('identity')")" ""
-CHANGES="$(grep -c '"type":"change"' "$CAP" 2>/dev/null || echo 0)"
+# grep -c prints 0 and exits 1 when nothing matches, so `|| echo 0` appends a
+# second line and the arithmetic below dies with "integer expected" rather than
+# failing as a test. Take the count and default it if empty.
+CHANGES="$(grep -c '"type":"change"' "$CAP" 2>/dev/null)"; CHANGES="${CHANGES:-0}"
 if [ "$CHANGES" -gt 0 ]; then ok "the feed delivered $CHANGES changes"; else bad "the feed delivered nothing at all"; fi
 # The one that silently corrupts a subscriber's copy if it is got wrong.
 assert_eq "an unchanged TOASTed column is named, not nulled" \
@@ -741,9 +744,110 @@ assert_eq "and the feed comes back with it" \
 "$S" ha disable >/dev/null 2>&1
 
 
-# ── 13. Teardown leaves the database working ─────────────────────────────────
+# ── 13. Readiness: what can stream, and what it takes ───────────────────────
 echo
-echo "13. teardown undoes it, and breaks nothing"
+echo "13. doctor and prepare, against a real catalog"
+
+# Back to a working feed for this section.
+"$S" up >/dev/null 2>&1
+"$S" realtime teardown --yes >/dev/null 2>&1
+"$S" realtime setup --yes >/dev/null 2>&1
+main_ready
+
+ddl pg-main 'DROP TABLE IF EXISTS public.rdy_grant, public.rdy_uix, public.rdy_nokey CASCADE' >/dev/null
+ddl pg-main 'DROP SCHEMA IF EXISTS rdyapp CASCADE' >/dev/null
+
+# One table per rung of the ladder.
+pg pg-main 'CREATE TABLE public.rdy_grant (id bigint PRIMARY KEY, v text)'
+pg pg-main 'REVOKE SELECT ON public.rdy_grant FROM db_client'
+# No primary key, but a unique NOT NULL index: the rung that costs what a key
+# costs. If this one falls through to FULL the whole cost argument is lost.
+pg pg-main 'CREATE TABLE public.rdy_uix (ref text NOT NULL, v text)'
+pg pg-main 'CREATE UNIQUE INDEX ix_rdy_uix_ref ON public.rdy_uix (ref)'
+# Nothing unique at all: the only table that has to pay.
+pg pg-main 'CREATE TABLE public.rdy_nokey (a int, b text)'
+# An application schema, which the old public-only rule refused outright.
+pg pg-main 'CREATE SCHEMA rdyapp'
+pg pg-main 'CREATE TABLE rdyapp.t (id bigint PRIMARY KEY, v text)'
+
+DOC="$("$S" realtime doctor 2>&1)"
+assert_contains "doctor lists an application table" "$DOC" "public.rdy_uix"
+assert_contains "…and one in the application's own schema" "$DOC" "rdyapp.t"
+# The rule that protects the Blackbox, seen from the outside.
+assert_missing "…and never the Blackbox" "$DOC" "bb.schema_ledger"
+assert_contains "…while saying how many it hid" "$DOC" "system tables not listed"
+
+# A dry run has to change nothing. This is the assertion that makes --yes
+# meaningful; without it "dry run" is a label on the same behaviour.
+BEFORE="$(pg pg-main "SELECT has_table_privilege('db_client','public.rdy_grant','SELECT')")"
+PREP="$("$S" realtime prepare rdy_grant 2>&1)"
+assert_contains "prepare names the exact statement" "$PREP" "GRANT SELECT ON public.rdy_grant TO db_client"
+assert_contains "…and says nothing was changed" "$PREP" "Nothing was changed"
+assert_eq "…and nothing was" \
+  "$(pg pg-main "SELECT has_table_privilege('db_client','public.rdy_grant','SELECT')")" "$BEFORE"
+
+"$S" realtime prepare rdy_grant --yes >/dev/null 2>&1
+assert_eq "with --yes the grant is made" \
+  "$(pg pg-main "SELECT has_table_privilege('db_client','public.rdy_grant','SELECT')")" "t"
+
+# The rung that matters. A unique index must be used instead of FULL, and the
+# table must end at relreplident 'i' rather than 'f'.
+PREP="$("$S" realtime prepare rdy_uix 2>&1)"
+assert_contains "a unique index is offered before FULL" "$PREP" "REPLICA IDENTITY USING INDEX"
+assert_missing "…and FULL is not mentioned at all" "$PREP" "REPLICA IDENTITY FULL"
+"$S" realtime prepare rdy_uix --yes >/dev/null 2>&1
+assert_eq "…and the table ends at index identity, not full" \
+  "$(pg pg-main "SELECT relreplident FROM pg_class WHERE relname='rdy_uix'")" "i"
+
+# A table outside public needs the schema grant as well, which a table grant
+# alone does not give — has_table_privilege answers about the table's own ACL
+# and says nothing about reaching it. Checked before `prepare --all`, which
+# would otherwise have fixed it: a free fix on another schema is exactly what
+# --all is for, and asserting afterwards tests nothing.
+PREP="$("$S" realtime prepare rdyapp.t 2>&1)"
+assert_contains "a table outside public needs schema usage" "$PREP" "GRANT USAGE ON SCHEMA"
+assert_eq "…and db_client cannot read it until that is granted" \
+  "$(pgx pg-main "SET ROLE db_client; SELECT count(*) FROM rdyapp.t" | grep -c 'permission denied')" "1"
+
+# The expensive rung: offered with a measured cost, and never applied in bulk.
+PREP="$("$S" realtime prepare rdy_nokey 2>&1)"
+assert_contains "a table with nothing unique is offered FULL" "$PREP" "REPLICA IDENTITY FULL"
+assert_contains "…with the cost stated" "$PREP" "cost:"
+"$S" realtime prepare --all --yes >/dev/null 2>&1
+assert_eq "\`prepare --all\` leaves the costly one alone" \
+  "$(pg pg-main "SELECT relreplident FROM pg_class WHERE relname='rdy_nokey'")" "d"
+assert_contains "…and says which it skipped" "$("$S" realtime prepare --all 2>&1)" "rdy_nokey"
+
+# …while the free fix on the other schema was applied, which is the other half
+# of what `--all` promises: everything cheap, nothing costly.
+assert_eq "\`prepare --all\` did make the free fix on another schema" \
+  "$(pg pg-main "SET ROLE db_client; SELECT count(*) FROM rdyapp.t" 2>&1 | tail -1)" "0"
+
+# End to end: a prepared table enables and streams.
+assert_contains "a prepared table enables" "$("$S" realtime enable rdy_uix 2>&1)" "Streaming"
+R=/tmp/rt-ready.ndjson
+: > "$R"
+( curl -skN --max-time 14 -H "Authorization: Bearer $KEY" \
+    "$API/api/branches/main/realtime" | sed -u -n 's/^data: //p' >> "$R" ) &
+STREAM=$!
+sleep 4
+pg pg-main "INSERT INTO public.rdy_uix VALUES ('r1','one')"
+pg pg-main "UPDATE public.rdy_uix SET v='two' WHERE ref='r1'"
+wait "$STREAM" 2>/dev/null
+assert_eq "…and an update on it streams with its index identity" \
+  "$(have_in "$R" "e.get('action')=='update' and (e.get('identity') or {}).get('ref')=='r1'")" "yes"
+
+# The changes prepare made are in the Blackbox, attributed, like any other DDL.
+assert_eq "prepare's statements are recorded in the Blackbox" \
+  "$(pg pg-main "SELECT count(*) > 0 FROM bb.schema_ledger WHERE statement ILIKE '%REPLICA IDENTITY USING INDEX%'")" "t"
+
+"$S" realtime disable rdy_uix >/dev/null 2>&1
+ddl pg-main 'DROP TABLE IF EXISTS public.rdy_grant, public.rdy_uix, public.rdy_nokey CASCADE' >/dev/null
+ddl pg-main 'DROP SCHEMA IF EXISTS rdyapp CASCADE' >/dev/null
+
+# ── 14. Teardown leaves the database working ─────────────────────────────────
+echo
+echo "14. teardown undoes it, and breaks nothing"
 "$S" realtime teardown --yes >/dev/null 2>&1
 main_ready
 assert_eq "main is back to replica" "$(pg pg-main 'SHOW wal_level')" "replica"

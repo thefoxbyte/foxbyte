@@ -622,6 +622,9 @@
   <table>
     <tr><th></th><th>ID</th><th>Item &middot; scope</th><th>Tested by</th></tr>
     <tr data-id="N1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">N1</td><td><b>Realtime change feed</b><ul class="subs">
+      <li class="ok">Readiness as a verdict, not a refusal: <code>realtime doctor</code> classifies every table, <code>realtime prepare</code> makes the changes and prints them first</li>
+      <li class="ok">The cost ladder &mdash; primary key, then a unique index as the identity (same price, no schema change), then inserts-only, and <code>REPLICA IDENTITY FULL</code> last; <code>--all</code> never applies a costly fix</li>
+      <li class="ok">Only application tables stream: not <code>bb</code>, not Postgres&rsquo;s, not an extension&rsquo;s &mdash; and the application&rsquo;s own schemas now do</li>
       <li class="ok">Opt-in: <code>fox realtime setup --yes</code> says what it will restart; with the feed off, a primary's arguments are byte-identical to before and a branch gets none</li>
       <li class="ok">Durable replay through <code>?since=&lt;commit_lsn&gt;</code>, bounded by <code>max_slot_wal_keep_size</code>; past it the subscriber is told to <code>resync</code> rather than left waiting</li>
       <li class="ok">One decoder per branch in the control plane, started on the first subscriber and stopped after the last; it wakes a suspended branch</li>
