@@ -33,4 +33,5 @@ import (
 // compiled out of the Standard build.
 func mountEnterprise(api, outer *http.ServeMux, store *auth.Store, acl *access.Checker) {
 	mountRealtimeStream(outer, store, acl)
+	mountRealtimeDoor(outer, store, acl)
 }

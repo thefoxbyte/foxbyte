@@ -40,6 +40,12 @@ func realtimeEnterpriseCmd(args []string) bool {
 	case "prepare":
 		requireFeature(edition.Realtime)
 		must(realtimePrepare(args[1:]))
+	case "key":
+		requireFeature(edition.Realtime)
+		must(realtimeKey(args[1:]))
+	case "url":
+		requireFeature(edition.Realtime)
+		must(realtimeURL(args[1:]))
 	default:
 		return false
 	}
@@ -52,7 +58,11 @@ func realtimeEnterpriseUsage() string {
 %[1]s realtime disable <table> [--branch b]
 %[1]s realtime tables [--branch b]
 %[1]s realtime doctor [--branch b]            what can stream, what needs changing, what cannot
-%[1]s realtime prepare <table>|--all [--yes]  make a table ready, recorded in the Blackbox`, brand.CLI)
+%[1]s realtime prepare <table>|--all [--yes]  make a table ready, recorded in the Blackbox
+%[1]s realtime url [branch]                  the connection string for an application
+%[1]s realtime key create <branch>           mint a stream-only key, shown once
+%[1]s realtime key ls [branch]
+%[1]s realtime key revoke <id>`, brand.CLI)
 }
 
 func realtimeEnable(args []string) error {
@@ -143,13 +153,12 @@ func realtimeDoctor(args []string) error {
 	if err != nil {
 		return err
 	}
-	var streaming, ready, fixable, impossible, system int
-	var rows []realtime.Verdict
-	for _, v := range verdicts {
-		if v.Table.IsSystem || v.Table.IsExtensionOwned {
-			system++
-			continue
-		}
+	var streaming, ready, fixable, impossible int
+	// One rule for what belongs to an application, shared with the realtime
+	// API: two copies of a boundary drift, and this one decides whether a
+	// subscriber can be offered the Blackbox.
+	rows, system := realtime.Application(verdicts)
+	for _, v := range rows {
 		switch v.State {
 		case realtime.Streaming:
 			streaming++
@@ -160,7 +169,6 @@ func realtimeDoctor(args []string) error {
 		default:
 			impossible++
 		}
-		rows = append(rows, v)
 	}
 	if len(rows) == 0 {
 		fmt.Printf("No application tables on %q.\n", name)

@@ -222,3 +222,75 @@ func TestAssessGrantsSchemaUsageBeforeTheTableGrant(t *testing.T) {
 		}
 	}
 }
+
+// Every verdict carries its status as text.
+//
+// It did not. Assess had an unnamed result and set Status in a defer, which
+// wrote to a local the return value had already been copied from — so Status
+// was always "". Nothing noticed while verdicts were only printed by the CLI,
+// which renders State itself; serving them as JSON put 229 empty statuses on
+// the wire. The bug is one word (a named result); this is the test that would
+// have caught it.
+func TestVerdictCarriesItsStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		in   Table
+		want string
+	}{
+		{"streaming", Table{Schema: "public", Name: "t", Kind: "r", HasPrimaryKey: true,
+			ClientCanSelect: true, ClientCanUseSchema: true}, "streaming"},
+		{"ready", Table{Schema: "public", Name: "t", Kind: "r", HasPrimaryKey: true,
+			ClientCanSelect: true, ClientCanUseSchema: true}, "ready"},
+		{"needs changes", Table{Schema: "public", Name: "t", Kind: "r", HasPrimaryKey: true,
+			ClientCanSelect: false, ClientCanUseSchema: true}, "needs changes"},
+		{"cannot stream", Table{Schema: "bb", Name: "schema_ledger", Kind: "r"}, "cannot stream"},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// The first case is the published one, so it reads "streaming".
+			v := Assess(c.in, nil, i == 0)
+			if v.Status == "" {
+				t.Fatal("Status is empty — a JSON client would see no verdict at all")
+			}
+			if v.Status != c.want {
+				t.Fatalf("Status = %q, want %q", v.Status, c.want)
+			}
+			if v.Status != v.State.String() {
+				t.Fatalf("Status %q disagrees with State %q", v.Status, v.State)
+			}
+		})
+	}
+}
+
+// What belongs to an application, and what is withheld. This is a boundary,
+// not presentation: the realtime API serves exactly what this function keeps.
+func TestApplicationWithholdsSystemTables(t *testing.T) {
+	in := []Verdict{
+		{Table: Table{Schema: "public", Name: "orders"}},
+		{Table: Table{Schema: "bb", Name: "schema_ledger", IsSystem: true}},
+		{Table: Table{Schema: "app", Name: "customers"}},
+		{Table: Table{Schema: "public", Name: "spatial_ref_sys", IsExtensionOwned: true}},
+		{Table: Table{Schema: "pg_catalog", Name: "pg_class", IsSystem: true}},
+	}
+	app, withheld := Application(in)
+	if withheld != 3 {
+		t.Errorf("withheld = %d, want 3", withheld)
+	}
+	if len(app) != 2 {
+		t.Fatalf("kept %d tables, want 2: %+v", len(app), app)
+	}
+	for _, v := range app {
+		if v.Table.IsSystem || v.Table.IsExtensionOwned {
+			t.Errorf("%s was kept and must not be", v.Table.Qualified())
+		}
+		if v.Table.Schema == "bb" {
+			t.Errorf("the Blackbox reached an application: %s", v.Table.Qualified())
+		}
+	}
+	// An empty survey is not a nil slice: the API serves this as JSON, and
+	// `"tables": null` is a different answer from `"tables": []`.
+	empty, n := Application(nil)
+	if empty == nil || len(empty) != 0 || n != 0 {
+		t.Errorf("Application(nil) = (%v, %d), want an empty slice and 0", empty, n)
+	}
+}
