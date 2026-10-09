@@ -4,6 +4,7 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -104,4 +105,51 @@ func bearerKey(r *http.Request) string {
 		return strings.TrimPrefix(h, "Bearer ")
 	}
 	return r.Header.Get("X-API-Key")
+}
+
+// RealtimeKeysFor lists one branch's realtime keys, without their secrets —
+// those are not stored.
+//
+// By branch rather than by owner, because that is the question the console
+// asks: "what can subscribe to this branch?". A key's owner decides only who
+// can see and revoke it, so listing by owner would hide a key minted by an
+// admin from the person whose branch it opens.
+func (s *Store) RealtimeKeysFor(branchName string) ([]KeyInfo, error) {
+	rows, err := s.db.Query(
+		`SELECT id,name,prefix,created,scope,kind FROM api_keys WHERE scope=? AND kind=? ORDER BY created DESC`,
+		strings.TrimSpace(branchName), KindRealtime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []KeyInfo{}
+	for rows.Next() {
+		var k KeyInfo
+		if err := rows.Scan(&k.ID, &k.Name, &k.Prefix, &k.Created, &k.Scope, &k.Kind); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// RevokeRealtimeKey deletes one realtime key, and only if it belongs to the
+// branch named.
+//
+// The branch is part of the query rather than checked afterwards because the
+// caller was authorized against that branch: without it, the owner of one
+// branch could revoke another branch's subscriber by id. It also refuses to
+// touch an account or gateway key, which is `fox key revoke`'s business.
+func (s *Store) RevokeRealtimeKey(branchName, id string) error {
+	res, err := s.db.Exec(`DELETE FROM api_keys WHERE id=? AND scope=? AND kind=?`,
+		id, strings.TrimSpace(branchName), KindRealtime)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		// Said as "no such key on this branch" rather than "not yours": the
+		// caller may not learn whether the id exists somewhere else.
+		return fmt.Errorf("%w: no realtime key %q on branch %q", ErrNoSuchKey, id, branchName)
+	}
+	return nil
 }

@@ -53,6 +53,41 @@ done
 sudo docker exec -e PGPASSWORD=foxbyte "pg-main" psql -U dbadmin -d appdb -q -c \
 	"SET bb.allow_destructive=on; DROP TABLE IF EXISTS $TABLE" >/dev/null 2>&1
 
+# ── Realtime, set up before Chromium exists ─────────────────────────────────
+#
+# `realtime setup` turns on logical decoding and restarts main, and a container
+# coming up changes the host's network interfaces — which makes Chromium abort
+# every request in flight. So it happens here, for the same reason
+# $TARGET_BRANCH is made here rather than by a test.
+#
+# The branch's own tables are made here too, in the three states the page has a
+# different answer for: ready, fixable for free, and fixable only at a cost.
+# A test that created them would be creating them through SQL it also has to
+# wait for, and would still be measuring the console afterwards.
+"$S" realtime setup --yes >/dev/null 2>&1
+RT_BRANCH_PG="pg-$BRANCH"
+rtsql() { sudo docker exec -e PGPASSWORD=foxbyte "$RT_BRANCH_PG" psql -U dbadmin -d appdb -q -c "$1" >/dev/null 2>&1; }
+rtsql "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.rt_ready, public.rt_grant, public.rt_keyless CASCADE"
+# Ready: a primary key, and the role a subscriber reads as can already see it.
+rtsql "CREATE TABLE public.rt_ready (id bigint PRIMARY KEY, note text)"
+rtsql "GRANT SELECT ON public.rt_ready TO db_client"
+# Needs one free change: the grant is missing, and nothing else is.
+rtsql "CREATE TABLE public.rt_grant (id bigint PRIMARY KEY, note text)"
+rtsql "REVOKE SELECT ON public.rt_grant FROM db_client"
+# Needs a change with a price: nothing unique identifies a row, so the only way
+# is REPLICA IDENTITY FULL. This is the row whose button must ask first.
+#
+# With rows and updates behind it, deliberately. The cost is measured from
+# pg_stat_user_tables, and a table created seconds ago has no statistics — so
+# the dialog can only say what FULL does rather than what it would cost here,
+# which is the engine being honest and a weaker thing to put in front of a
+# person. 200 updates over 200 rows gives it something real to quote.
+rtsql "CREATE TABLE public.rt_keyless (a text, b text)"
+rtsql "GRANT SELECT ON public.rt_keyless TO db_client"
+rtsql "INSERT INTO public.rt_keyless SELECT 'row-'||g, repeat('x', 200) FROM generate_series(1, 200) g"
+rtsql "UPDATE public.rt_keyless SET b = repeat('y', 200)"
+rtsql "ANALYZE public.rt_keyless"
+
 # The console has to be there: a binary built without `-tags embedui` serves
 # the API but no UI, and every test below would fail on a blank page.
 if ! curl -sk "$API/login" | grep -qi '<div id="root"\|<title'; then
@@ -79,10 +114,14 @@ FOX_E2E_URL="$API" FOX_E2E_EMAIL="$EMAIL" FOX_E2E_PASSWORD="$PASSWORD" \
 	# Chromium aborts requests in flight when they do. web/playwright.config.ts
 	# has the detail. A test that fails twice running is a real failure.
 	FOX_E2E_BRANCH="$BRANCH" FOX_E2E_NEW_BRANCH="$NEW_BRANCH" FOX_E2E_TABLE="$TABLE" \
-	FOX_E2E_TARGET_BRANCH="$TARGET_BRANCH" npx playwright test
+	FOX_E2E_TARGET_BRANCH="$TARGET_BRANCH" FOX_E2E_RT_BRANCH="$BRANCH" npx playwright test
 rc=$?
 
 echo "### cleanup"
+# Realtime is an engine-wide setting, so it is turned off again: a later suite
+# that asserts main's container arguments are byte-identical to a build with
+# the feed off would otherwise fail for a reason this suite caused.
+"$S" realtime teardown --yes >/dev/null 2>&1
 for b in "$BRANCH" "$NEW_BRANCH" e2eui3; do "$S" branch delete "$b" >/dev/null 2>&1; done
 cd "$ROOT" || exit 1
 # A failure leaves the screenshots and traces where CI can collect them.

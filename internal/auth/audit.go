@@ -52,6 +52,13 @@ const (
 	// person, which is exactly the kind an audit asks about.
 	EvRealtimeKeyCreated = "realtime.key_created"
 	EvRealtimeKeyRevoked = "realtime.key_revoked"
+	// Which tables stream, and who decided. The DDL that `prepare` runs is
+	// already in the Blackbox with the login behind it; this is the decision
+	// that asked for it, which the Blackbox cannot show because adding a table
+	// to a publication is not a change to anyone's data.
+	EvRealtimeEnabled  = "realtime.enabled"
+	EvRealtimeDisabled = "realtime.disabled"
+	EvRealtimePrepared = "realtime.prepared"
 	// Promotion: who asked for a branch's changes to be applied elsewhere, and who
 	// decided. The statements themselves are in the target's Blackbox; this is the
 	// door they came through.

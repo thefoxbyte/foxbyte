@@ -122,6 +122,74 @@ export type RealtimeEvent =
     }
   | { type: 'resync' | 'error'; code?: string; detail?: string }
 
+// --- what can stream, and making it so (Enterprise) ---
+
+// A table as the catalog describes it, and what that means for streaming.
+//
+// `status` is the verdict in words — streaming, ready, needs changes, cannot
+// stream — and is what the console renders. `fixes` are exact statements; a
+// fix with a `cost` has an ongoing price rather than a one-off one, and is the
+// only kind a person must be shown before it runs.
+export type RealtimeTable = {
+  schema: string; name: string; kind: string
+  has_primary_key: boolean; rls_enabled: boolean
+  client_can_select: boolean; client_can_use_schema: boolean
+  is_system: boolean; is_extension_owned: boolean
+  unique_index?: string
+  inserts: number; updates: number; deletes: number
+  stats_days: number; avg_row_bytes: number
+}
+export type RealtimeFix = { sql: string; why: string; cost?: string }
+export type RealtimeVerdict = {
+  table: RealtimeTable
+  status: 'streaming' | 'ready' | 'needs changes' | 'cannot stream'
+  fixes?: RealtimeFix[]
+  alternatives?: string[]
+  reason?: string
+}
+
+// The front door, not /api/ — the same endpoint an application calls, so the
+// console cannot drift from what a subscriber is told. A session is accepted
+// there; reading verdicts needs only Use.
+export const listRealtimeTables = (name: string) =>
+  req('GET', `${API}/realtime/v1/branches/${encodeURIComponent(name)}/tables`) as
+    Promise<{ branch: string; tables: RealtimeVerdict[]; withheld: number }>
+
+export const enableRealtimeTable = (
+  name: string, t: { schema: string; table: string; events?: string[]; full_identity?: boolean },
+) => req('POST', `${API}/api/branches/${encodeURIComponent(name)}/realtime/enable`, t) as
+  Promise<{ table?: RealtimeVerdict; ok?: boolean }>
+
+export const disableRealtimeTable = (name: string, t: { schema: string; table: string }) =>
+  req('POST', `${API}/api/branches/${encodeURIComponent(name)}/realtime/disable`, t) as
+    Promise<{ table?: RealtimeVerdict; ok?: boolean }>
+
+// apply defaults to false on the server, so calling this without it shows the
+// statements instead of running them.
+export const prepareRealtimeTable = (
+  name: string, t: { schema: string; table: string; apply?: boolean },
+) => req('POST', `${API}/api/branches/${encodeURIComponent(name)}/realtime/prepare`, t) as
+  Promise<{ applied: boolean; statements: RealtimeFix[]; table: RealtimeVerdict }>
+
+// --- realtime keys (Enterprise) ---
+
+// A stream-only credential for one branch. `prefix` is the visible head of the
+// key, which is all that is kept — the secret is hashed, and `url` below is the
+// only time it exists outside the subscriber's own configuration.
+export type RealtimeKey = { id: string; name: string; prefix: string; created: number; scope: string; kind: string }
+
+export const listRealtimeKeys = (name: string) =>
+  req('GET', `${API}/api/branches/${encodeURIComponent(name)}/realtime/keys`) as Promise<{ keys: RealtimeKey[] }>
+
+// The response carries the whole connection string, key included, once.
+export const createRealtimeKey = (name: string, label: string) =>
+  req('POST', `${API}/api/branches/${encodeURIComponent(name)}/realtime/keys`, { name: label }) as
+    Promise<{ key: RealtimeKey; url: string }>
+
+export const revokeRealtimeKey = (name: string, id: string) =>
+  req('DELETE', `${API}/api/branches/${encodeURIComponent(name)}/realtime/keys/${encodeURIComponent(id)}`) as
+    Promise<{ revoked: string }>
+
 // streamChanges opens the feed and calls onEvent for each one, until the
 // returned function is called or the stream ends.
 //

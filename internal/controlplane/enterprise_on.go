@@ -34,4 +34,5 @@ import (
 func mountEnterprise(api, outer *http.ServeMux, store *auth.Store, acl *access.Checker) {
 	mountRealtimeStream(outer, store, acl)
 	mountRealtimeDoor(outer, store, acl)
+	registerRealtimeAdmin(api, store)
 }
