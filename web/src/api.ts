@@ -335,6 +335,25 @@ export type License = {
   rebinds?: number
 }
 export const getLicense = () => req('GET', `${API}/api/license`) as Promise<License>
+
+// What came back from activating one. `notes` is what is still left to do and
+// is empty when there is nothing — the Gateway and Agent API read the
+// entitlement at startup, and on macOS or Windows only the VM's copy was
+// written.
+export type LicenseActivation = {
+  activated: string
+  customer: string
+  edition: 'standard' | 'enterprise'
+  state: License['state']
+  unlocks: boolean
+  reason: string
+  action: string
+  notes?: string[]
+}
+
+/** Activate a licence. Admin only; the engine refuses a forgery outright. */
+export const activateLicense = (text: string) =>
+  req('POST', `${API}/api/license`, { license: text }) as Promise<LicenseActivation>
 export const getBranches = () => req('GET', `${API}/api/branches`) as Promise<Branch[]>
 // from: the branch to copy (default main).
 export const createBranch = (name: string, from?: string) =>

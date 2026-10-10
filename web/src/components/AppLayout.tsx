@@ -38,7 +38,15 @@ export const APP_NAV: NavSection[] = [
       { to: '/policies', label: 'Policies', icon: I.IconPolicies },
     ],
   },
-  { label: 'Account', items: [{ to: '/keys', label: 'API keys', icon: I.IconKey }] },
+  {
+    label: 'Account',
+    items: [
+      { to: '/keys', label: 'API keys', icon: I.IconKey },
+      // Where a locked feature sends somebody. Activating used to mean a
+      // terminal, a file on disk and a command they had to be told about.
+      { to: '/license', label: 'Licence', icon: I.IconKey },
+    ],
+  },
   {
     label: 'Help',
     items: [

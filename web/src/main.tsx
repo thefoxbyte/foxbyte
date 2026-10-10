@@ -23,6 +23,7 @@ import Dashboard from './pages/Dashboard'
 import Console from './pages/Console'
 import Login from './pages/Login'
 import ApiKeys from './pages/ApiKeys'
+import LicensePage from './pages/License'
 
 // The page title follows the brand, so a rename does not leave the old name
 // in the browser tab (index.html carries it too, for the first paint).
@@ -112,6 +113,7 @@ const router = createBrowserRouter([
       { path: 'pipelines/:id', element: <PipelineEditor /> },
       { path: 'console', element: <Console /> },
       { path: 'keys', element: <ApiKeys /> },
+      { path: 'license', element: <LicensePage /> },
     ],
   },
 ])
