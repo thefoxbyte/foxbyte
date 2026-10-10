@@ -39,6 +39,10 @@ clients/typescript/dist/
 # Python build and test artefacts beside the client.
 clients/python/**/__pycache__/
 clients/python/*.egg-info/
+clients/python/dist/
+clients/python/build/
+# npm pack leaves one of these behind.
+clients/typescript/*.tgz
 __pycache__/
 *.pyc
 
