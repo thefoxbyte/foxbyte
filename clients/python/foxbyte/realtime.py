@@ -38,12 +38,20 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Dict, Iterator, Optional
 
 SCHEME = "fox-realtime"
 
 # Row values are Postgres text, or None for SQL NULL.
-Row = dict[str, str | None]
+#
+# Written with typing.Dict and typing.Optional rather than `dict[str, str |
+# None]`, because this line is a module-level assignment and is therefore
+# evaluated when the package is imported — `from __future__ import
+# annotations` defers annotations, not assignments. PEP 604 unions are 3.10+,
+# so the modern spelling made `import foxbyte` fail on 3.9 with a TypeError,
+# while the packaging metadata claimed 3.8. macOS still ships 3.9 as its system
+# Python, so that was not a hypothetical user.
+Row = Dict[str, Optional[str]]
 
 
 class RealtimeError(Exception):

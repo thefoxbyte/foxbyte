@@ -3,6 +3,12 @@
 A thin, dependency-free client for the FoxByte control-plane REST API (uses the
 built-in `fetch`). Apache-2.0.
 
+```bash
+npm install @foxbyte/client
+```
+
+Node 18 or newer, a browser, Deno or Bun — anything with `fetch`.
+
 ```ts
 import { FoxByte } from "@foxbyte/client"
 

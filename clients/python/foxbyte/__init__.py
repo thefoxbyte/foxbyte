@@ -15,7 +15,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-__version__ = "0.6.0"
+# The one place this package's version is written. pyproject.toml reads it from
+# here, so a release cannot ship a wheel whose metadata disagrees with what the
+# package reports about itself.
+__version__ = "0.7.0"
 
 
 # The change feed. See foxbyte/realtime.py — a subscriber has several details

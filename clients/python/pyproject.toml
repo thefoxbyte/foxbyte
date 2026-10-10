@@ -1,16 +1,36 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]  # PEP 639: the SPDX `license` string below
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "foxbyte"
-version = "0.6.0"
+dynamic = ["version"]
 description = "Python client for FoxByte — Postgres with instant branching and Blackbox, a tamper-evident record of every schema change."
 readme = "README.md"
-requires-python = ">=3.8"
-license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "FoxByte" }]
-urls = { Homepage = "https://github.com/thefoxbyte/foxbyte" }
+urls = { Homepage = "https://github.com/thefoxbyte/foxbyte", Source = "https://github.com/thefoxbyte/foxbyte/tree/main/clients/python" }
+keywords = ["postgres", "postgresql", "database", "branching", "cdc", "change-data-capture", "replication"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Database :: Front-Ends",
+]
 
 [tool.setuptools]
 packages = ["foxbyte"]
+
+# The version lives in foxbyte/__init__.py and the build reads it from there.
+# It used to be written in both places, and they had already drifted: the wheel
+# said 0.7.0 while `foxbyte.__version__` still said 0.6.0.
+[tool.setuptools.dynamic]
+version = { attr = "foxbyte.__version__" }

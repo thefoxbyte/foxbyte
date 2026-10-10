@@ -1,6 +1,6 @@
 {
   "name": "@foxbyte/client",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "TypeScript client for FoxByte \u2014 Postgres with instant branching and Blackbox, a tamper-evident record of every schema change.",
   "license": "Apache-2.0",
   "type": "module",
@@ -8,11 +8,13 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "src"
+    "src",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node --test --test-timeout 20000 \"test/*.test.js\""
+    "test": "tsc && node --test --test-timeout 20000 \"test/*.test.js\"",
+    "prepublishOnly": "npm run build"
   },
   "repository": {
     "type": "git",
@@ -20,5 +22,26 @@
   },
   "devDependencies": {
     "typescript": "^5.4.0"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "postgres",
+    "postgresql",
+    "database",
+    "branching",
+    "cdc",
+    "change-data-capture",
+    "replication"
+  ]
 }
