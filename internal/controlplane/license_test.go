@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,4 +146,116 @@ func TestLicenseEndpointNeedsAuth(t *testing.T) {
 	if rec.Code != 401 {
 		t.Errorf("an unauthenticated request got %d, want 401", rec.Code)
 	}
+}
+
+// postLicense activates as a user and returns the recorder, so a test can see
+// the status as well as the body.
+func postLicense(t *testing.T, s *auth.Store, u auth.User, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	registerLicense(mux)
+	key, _, err := s.CreateAPIKey(u.ID, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/api/license", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+key)
+	rec := httptest.NewRecorder()
+	s.Authn(mux).ServeHTTP(rec, req)
+	return rec
+}
+
+// Activating is an admin's decision: it changes what the whole engine serves,
+// which is not something a branch's user settles.
+func TestActivateNeedsAnAdmin(t *testing.T) {
+	s, _, alice, _ := withACL(t)
+	rec := postLicense(t, s, alice, `{"license":"{}"}`)
+	if rec.Code != 403 {
+		t.Fatalf("status %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "admin") {
+		t.Errorf("the refusal does not say who may: %s", rec.Body.String())
+	}
+}
+
+// A forgery is refused and nothing is written.
+//
+// The same rule as `fox license activate`, and it has to be: two ways in that
+// disagreed about what is acceptable would be a way around one of them. An
+// unsigned object is the cheapest forgery there is.
+func TestActivateRefusesAnUnsignedLicence(t *testing.T) {
+	s, admin, _, _ := withACL(t)
+	l := license.License{
+		Format: license.Format, ID: "FB-FORGED", Customer: "Nobody",
+		Edition: "enterprise", Features: []string{"realtime"},
+	}
+	raw, err := json.Marshal(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]string{"license": string(raw)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := postLicense(t, s, admin, string(body))
+	if rec.Code != 400 {
+		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	// And it says nothing was installed, because the next question is always
+	// "did that half-work?".
+	if !strings.Contains(rec.Body.String(), "nothing was installed") {
+		t.Errorf("the refusal does not say the engine is unchanged: %s", rec.Body.String())
+	}
+}
+
+// What a person pastes is rarely perfect. Each of these is refused with a
+// sentence that says what to do, rather than a parser's complaint.
+func TestActivateRefusesWhatIsNotALicence(t *testing.T) {
+	s, admin, _, _ := withACL(t)
+	for _, c := range []struct{ name, body, want string }{
+		{"nothing at all", `{"license":""}`, "paste the licence"},
+		{"only whitespace", `{"license":"  \n "}`, "paste the licence"},
+		{"not JSON", `{"license":"my licence key please"}`, "pasted whole"},
+		{"half a file", `{"license":"{\"id\": \"FB-1\""}`, "pasted whole"},
+		{"not even a request", `nonsense`, "could not read the request"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rec := postLicense(t, s, admin, c.body)
+			if rec.Code != 400 {
+				t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(strings.ToLower(rec.Body.String()), c.want) {
+				t.Errorf("body %q does not contain %q", rec.Body.String(), c.want)
+			}
+		})
+	}
+}
+
+// The notes are what is left to do, and appear only when there is something.
+//
+// The Gateway and the Agent API read the entitlement when they start, so a
+// licence the control plane is already honouring is not yet honoured by them.
+// Saying so is the difference between "it worked" and "it worked, and here is
+// why one thing still refuses you".
+func TestActivationNotes(t *testing.T) {
+	t.Run("a licence that unlocks mentions the other processes", func(t *testing.T) {
+		notes := activationNotes(license.Status{State: license.Active,
+			License: license.License{Features: []string{"realtime"}}})
+		var found bool
+		for _, n := range notes {
+			if strings.Contains(n, "Restart") && strings.Contains(n, "Gateway") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("notes do not mention restarting the other processes: %v", notes)
+		}
+	})
+	t.Run("one that does not unlock does not promise a restart will help", func(t *testing.T) {
+		for _, n := range activationNotes(license.Status{State: license.Invalid}) {
+			if strings.Contains(n, "Restart") {
+				t.Errorf("an unusable licence was told a restart would help: %q", n)
+			}
+		}
+	})
 }

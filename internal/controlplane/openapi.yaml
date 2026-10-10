@@ -84,7 +84,47 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { type: object } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
-
+    post:
+      tags: [license]
+      summary: >-
+        Activate a licence (admin only). The body is the licence file's JSON, pasted whole. A
+        forgery is refused outright and nothing is written; expired or bound elsewhere installs
+        with the state saying so, because those are states a real customer is in and each has a
+        different way out — the same rule as `fox license activate`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license]
+              properties:
+                license: { type: string, description: The licence file's contents. }
+      responses:
+        "200":
+          description: Activated. The control plane honours it at once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  activated: { type: string }
+                  customer: { type: string }
+                  edition: { type: string }
+                  state: { type: string }
+                  unlocks: { type: boolean }
+                  reason: { type: string }
+                  action: { type: string }
+                  notes:
+                    type: array
+                    description: >-
+                      What is still left to do, and empty when there is nothing. The Gateway and
+                      the Agent API read the entitlement when they start, so they need a restart;
+                      and inside a VM only the VM's copy was written, so the host needs its own.
+                    items: { type: string }
+        "400": { description: Not a licence, or not signed by the key this build trusts }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Only an admin may activate a licence }
   /api/branches/{name}/realtime/enable:
     post:
       tags: [branches]
