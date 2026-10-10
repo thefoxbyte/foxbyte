@@ -182,6 +182,9 @@ brand-check:      ## Fail if anything generated from brand.json is out of date
 	go run ./cmd/brandgen -root . -check
 
 # browser binary if it isn't found automatically.
+screenshots: web-build ## Retake docs/screenshots/*.png from a canned control plane
+	@node scripts/screenshots.mjs
+
 feature-doc:      ## Render docs/FOX_Feature_Implemented.pdf and docs/FOX_Checklist.pdf from their HTML sources
 	@chrome="$${CHROME:-}"; \
 	for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" google-chrome chromium chromium-browser; do \

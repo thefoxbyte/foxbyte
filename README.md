@@ -39,9 +39,11 @@ separate dev server to run.
 
 ![The FoxByte landing page](docs/screenshots/landing.png)
 
-| Ops dashboard | Blackbox | SQL console |
-| --- | --- | --- |
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Blackbox](docs/screenshots/ledger.png) | ![Console](docs/screenshots/console.png) |
+| Ops dashboard | Blackbox |
+| --- | --- |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Blackbox](docs/screenshots/ledger.png) |
+| **SQL console** | **Realtime** |
+| ![Console](docs/screenshots/console.png) | ![Realtime](docs/screenshots/realtime.png) |
 
 ---
 
