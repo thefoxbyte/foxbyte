@@ -351,6 +351,14 @@ fox blackbox revert --to <ts>   # point-in-time restore of main on :5433 (like f
 
 **Durability / time travel**
 
+> **Send the backups off the machine before you rely on them.** By default the
+> write-ahead-log archive and every base backup go to the object store beside
+> `main`, on the same disk — so one disk or host failure takes the database and
+> every backup of it at the same moment, and there is nothing left to restore
+> from. `fox check` says so until a remote target is set. One command fixes it,
+> and a bucket with Object Lock means nothing written there can be deleted
+> before its retention ends.
+
 ```bash
 fox backup create               # base backup -> object storage
 fox backup list

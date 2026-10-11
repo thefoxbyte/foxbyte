@@ -175,16 +175,25 @@ credible on-prem answer, and the VIP is the customer's infrastructure.
 Ordered by value for effort, not by the document's order. My sizing, as the
 document asks for.
 
-### Phase 0 — move the backup target off the box (hours, no code)
+### Phase 0 — move the backup target off the box — **done**
 
 The default sends the WAL archive and every base backup to the object store
 beside main, on the same disk. One disk failure takes the database and every
 backup of it.
 
-`fox backup target set` already exists and already supports Object Lock. This
-is a documentation and default-advice change, plus a line in `fox check` that
-warns when the target is still local. **Largest RPO improvement available for
-the least work, and it is available today.**
+`fox backup target set` already exists and already supports Object Lock, so
+this needed no new machinery: a **backup target** line in `fox check` that
+warns while the archive is still local, and the advice to match in the README.
+**Largest RPO improvement available for the least work.**
+
+The warning is deliberately not a failure — needing no bucket is the right
+default for a fresh install — and it does not probe the bucket, because
+`check` is run often and reaching a bucket means a container and a network
+call under a ten-minute deadline. `fox backup target show` does that.
+
+**What is still a decision, not a task:** nothing in the product can choose a
+bucket for an operator. The check now tells every install that its backups are
+one disk failure from gone; acting on it is theirs.
 
 ### Phase 1 — a standby on another machine (large)
 

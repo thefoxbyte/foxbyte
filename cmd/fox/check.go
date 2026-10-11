@@ -66,7 +66,8 @@ func checkCmd(args []string) {
 	}
 	lines = append(lines, checkServers()...)
 	lines = append(lines, checkPorts()...)
-	lines = append(lines, checkAPI(), checkAPIClosed(), checkBlackbox(), checkAnchors(), checkRealtime(), checkBackups(), checkRestore(), checkSampleData())
+	lines = append(lines, checkAPI(), checkAPIClosed(), checkBlackbox(), checkAnchors(), checkRealtime(),
+		checkBackupTarget(), checkBackups(), checkRestore(), checkSampleData())
 
 	failed, warned := 0, 0
 	for _, l := range lines {
@@ -368,6 +369,44 @@ func checkRealtime() checkLine {
 		return ok("change feed", fmt.Sprintf("streaming on %s (at most %s of WAL per slot)", strings.Join(live, ", "), keep))
 	}
 	return ok("change feed", fmt.Sprintf("on (wal_level=logical, at most %s of WAL per slot); nothing streaming", keep))
+}
+
+// Where the backups go, which is a different question from whether they are
+// current — and the one with the larger consequence.
+//
+// By default the WAL archive and every base backup go to the object store the
+// engine runs beside main, on the same disk. That is fine for a laptop and
+// wrong for anything holding data somebody would miss: one disk or host
+// failure takes the database and every backup of it at the same moment, and
+// point-in-time restore has nothing to replay from.
+//
+// A warning rather than a failure. It is the right default for a fresh install
+// to need no bucket, and a new user should not meet a red line before they
+// have put anything in the database. It is also the single largest reduction
+// in how much data an incident can cost, and it needs no new code to fix —
+// which is why it is said on every `check` until it is done.
+func checkBackupTarget() checkLine { return backupTargetLine(branch.CurrentTarget()) }
+
+// backupTargetLine is the judgement, separated from reading the file so it can
+// be table-tested: the state directory is resolved once per process, so a test
+// cannot redirect it, and the decision is the part worth holding still anyway.
+func backupTargetLine(t branch.Target, err error) checkLine {
+	if err != nil {
+		return fail("backup target", err.Error(),
+			fmt.Sprintf("%s backup target show", brand.CLI))
+	}
+	if !t.Remote() {
+		return warn("backup target",
+			"the local object store, on the same disk as main — one disk or host failure would take the database and every backup of it",
+			fmt.Sprintf("%s backup target set s3://bucket --endpoint <https-url> --access-key <key>", brand.CLI))
+	}
+	// Whether that bucket has Object Lock is the next question and is not asked
+	// here: answering it means starting a container and reaching the bucket
+	// over the network, under a ten-minute deadline. `check` is run often and
+	// should stay quick, and a hang in it would make every other line
+	// untrustworthy. `backup target show` reaches the bucket and reports both
+	// its reachability and its retention.
+	return ok("backup target", t.Describe())
 }
 
 func checkBackups() checkLine {
