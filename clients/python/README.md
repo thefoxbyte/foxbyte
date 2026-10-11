@@ -5,12 +5,11 @@ A thin, dependency-free client for the FoxByte control-plane REST API. Apache-2.
 ## Install
 
 ```bash
-pip install foxbyte                 # from PyPI
-pip install ./clients/python        # or from a checkout
+pip install ./clients/python        # from a checkout
 ```
 
 Python 3.9 or newer, and nothing else — the client uses only the standard
-library.
+library. Not on PyPI: install it from the repository.
 
 ## Get a branch in three lines
 
