@@ -51,7 +51,7 @@ A sub-point is ✅ only when all of these hold:
 |---|---|---|---|---|
 | 1.1 Copy cells, rows or a whole result as CSV, TSV, Markdown, JSON or `INSERT`s | ✅ `fox sql --format csv\|tsv\|markdown\|json\|insert` (§11j) | ✅ Copy menu, ticked rows, ⌘C on a cell (Playwright) | ✅ | #149 |
 | 1.2 Export what is on screen to CSV, JSON or Excel | ✅ `fox sql --format csv\|json\|xlsx > file` (§11j) | ✅ Export menu: CSV, JSON, Excel workbook (Playwright) | ✅ | #151 |
-| 1.3 Export the full result, streamed, as the user's own role; formula injection escaped in text cells; every export in the security log | ✅ `fox export [--format csv\|tsv\|json\|xlsx] "<sql>" > file`: every row, read only, one statement (§11k) | ✅ Export menu → "Everything the query returns" (Playwright) | ✅ | #PR |
+| 1.3 Export the full result, streamed, as the user's own role; formula injection escaped in text cells; every export in the security log | ✅ `fox export [--format csv\|tsv\|json\|xlsx] "<sql>" > file`: every row, read only, one statement (§11k) | ✅ Export menu → "Everything the query returns" (Playwright) | ✅ | #153 |
 
 ### 2. ETL: full and incremental load; Lakeflow (Enterprise)
 
