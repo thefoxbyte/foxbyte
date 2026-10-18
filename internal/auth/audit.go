@@ -90,6 +90,10 @@ const (
 	// readable on the machine that took over as well as the one that did not.
 	EvFailoverPromoted = "ha.promoted"
 	EvFailoverRefused  = "ha.promotion_refused"
+	// A whole query result taken out of the database (point 1.3): who, which
+	// branch, the format, how many rows, and a fingerprint of the query, never
+	// its text, which can hold personal data.
+	EvDataExport = "data.export"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

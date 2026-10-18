@@ -63,6 +63,8 @@ export default function Console() {
   const [sql, setSql] = useState('SELECT version();')
   const [queryRes, setQueryRes] = useState<QueryResult | null>(null)
   const [ranSql, setRanSql] = useState('')
+  // The branch the result came from, which an export of the whole of it reads.
+  const [ranBranch, setRanBranch] = useState('main')
   // Workbench state. The rail and the divider are remembered per browser: both
   // are a choice about this person's screen, and re-making it on every visit is
   // the kind of small friction that makes a tool feel borrowed.
@@ -211,6 +213,7 @@ export default function Console() {
     // query is in flight, so it should not be able to change underneath — this
     // is the belt to that pair of braces, and it costs one assignment.
     setRanSql(sql)
+    setRanBranch(branch)
     try {
       const r = await runQuery(branch, sql, override)
       setQueryRes(r)
@@ -399,7 +402,7 @@ export default function Console() {
               {expand !== 'editor' && (
               <section className="wb-pane wb-res">
                 {queryRes
-                  ? <QueryOutput res={queryRes} sql={ranSql}
+                  ? <QueryOutput res={queryRes} sql={ranSql} branch={ranBranch}
                       expanded={expand === 'results'}
                       onExpand={() => setExpand(x => (x === 'results' ? 'none' : 'results'))} />
                   : <div className="wb-empty">Results appear here. ⌘↵ runs what is in the editor.</div>}
@@ -513,8 +516,8 @@ function labelsFor(sql: string, n: number): string[] | null {
 // What a run produced. One statement looks exactly as it always did; a script
 // shows a result per statement, labelled with the SQL it came from where that
 // can be worked out safely, and numbered where it cannot.
-function QueryOutput({ res, sql, expanded, onExpand }:
-  { res: QueryResult; sql: string; expanded: boolean; onExpand: () => void }) {
+function QueryOutput({ res, sql, branch, expanded, onExpand }:
+  { res: QueryResult; sql: string; branch: string; expanded: boolean; onExpand: () => void }) {
   const all = res.results && res.results.length > 1 ? res.results : null
   const labels = all ? labelsFor(sql, all.length) : null
   // Which statement's result is on screen. A script that failed opens on the
@@ -540,7 +543,7 @@ function QueryOutput({ res, sql, expanded, onExpand }:
       <div className="wb-out">
         <div className="res-tabs"><span className="pane-t">Result</span><span className="wb-sp" />{expander}</div>
         {res.note && <div className="err-hint wb-note">{res.note}</div>}
-        <div className="res-body"><Grid res={res} showCommand sql={sql} /></div>
+        <div className="res-body"><Grid res={res} showCommand sql={sql} branch={branch} /></div>
       </div>
     )
   }
@@ -567,12 +570,16 @@ function QueryOutput({ res, sql, expanded, onExpand }:
         <span className="wb-sp" />{expander}
       </div>
       {res.note && <div className="err-hint wb-note">{res.note}</div>}
-      <div className="res-body"><Grid res={shown} showCommand sql={sql} /></div>
+      <div className="res-body"><Grid res={shown} showCommand sql={sql} branch={branch} script /></div>
     </div>
   )
 }
 
-function Grid({ res, showCommand, sql }: { res: StatementResult; showCommand?: boolean; sql?: string }) {
+// branch is set where the whole result can be exported again from the server:
+// a statement someone ran, not a page of a table they browsed. script marks a
+// result that is one of several, which cannot be.
+function Grid({ res, showCommand, sql, branch, script }:
+  { res: StatementResult; showCommand?: boolean; sql?: string; branch?: string; script?: boolean }) {
   const [expanded, setExpanded] = useState<number | null>(null)
   // Rows ticked for copying, and one cell picked to copy on its own (⌘C).
   const [picked, setPicked] = useState<Set<number>>(new Set())
@@ -625,7 +632,7 @@ function Grid({ res, showCommand, sql }: { res: StatementResult; showCommand?: b
       {cellCopied && <span className="ok">Cell copied ✓</span>}
       {cellAt && !cellCopied && <span className="muted">Cell selected: press {/Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘C' : 'Ctrl+C'} to copy it</span>}
       <CopyMenu cols={cols} rows={toCopy} selected={picked.size} sql={sql} />
-      <ExportMenu cols={cols} rows={toCopy} selected={picked.size} sql={sql} />
+      <ExportMenu cols={cols} rows={toCopy} selected={picked.size} sql={sql} branch={branch} script={script} />
     </span>
   )
   return (

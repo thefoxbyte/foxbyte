@@ -329,6 +329,9 @@ func registerAPI(mux *http.ServeMux) {
 		writeJSON(w, 200, map[string]string{"status": "resumed"})
 	})
 
+	// The whole result of one statement, streamed as a file (point 1.3).
+	mux.HandleFunc("POST /api/branches/{name}/export", handleExport)
+
 	// Run SQL against a branch (powers the web SQL console).
 	mux.HandleFunc("POST /api/branches/{name}/query", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
@@ -616,61 +619,11 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/%s", addr, branch.Database))
-	if err != nil {
-		return map[string]any{"error": err.Error()}
-	}
-	// The non-superuser client role, so the web console is bound by the same
-	// rules as any other client (RLS, and the append-only ledger).
-	cfg.User, cfg.Password = branch.ClientRole, branch.ClientRolePassword()
-	if err := branch.EnsureAppRole(as.Branch); err != nil {
-		log.Printf("console: client role on %s: %v", as.Branch, err)
-	}
-	if as.Actor != "" && as.Branch != "" {
-		// The signed-in user's own role: a member of db_client that acts as
-		// db_client, so data access and object ownership are unchanged, but
-		// session_user is the user. Every console session used to be db_client,
-		// which is never in db_admin — so no one, not even an admin, could
-		// override the guardrail from the console.
-		if err := branch.EnsureUserRole(as.Branch, as.Actor); err != nil {
-			log.Printf("console: per-user role %q on %s: %v (using db_client)", as.Actor, as.Branch, err)
-		} else {
-			cfg.User, cfg.Password = as.Actor, branch.UserRolePassword(as.Actor)
-		}
-	}
-	conn, err := pgx.ConnectConfig(ctx, cfg)
+	conn, err := openSession(ctx, addr, as)
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 	defer conn.Close(ctx)
-
-	// Attribute console DDL in the Blackbox to the signed-in user — our own
-	// tool should not be the blind spot. The engine's reads skip this.
-	if as.Actor != "" {
-		if _, err := conn.Exec(ctx,
-			"SELECT set_config('bb.actor',$1,false), set_config('bb.actor_kind','human',false), set_config('application_name','console',false)",
-			as.Actor); err != nil {
-			return map[string]any{"error": err.Error()}
-		}
-	}
-	if as.Actor == "" && as.Label != "" {
-		if _, err := conn.Exec(ctx, "SELECT set_config('bb.actor',$1,false), set_config('application_name',$2,false)",
-			as.Label, as.App); err != nil {
-			return map[string]any{"error": err.Error()}
-		}
-	}
-	// Each console run is its own connection, so a SET typed in one run is gone
-	// by the next; the override has to travel with the query it is meant for.
-	if len(as.AllowRules) > 0 {
-		if _, err := conn.Exec(ctx, "SELECT set_config('bb.policy_allow',$1,false)", strings.Join(as.AllowRules, ",")); err != nil {
-			return map[string]any{"error": err.Error()}
-		}
-	}
-	if as.AllowDestructive {
-		if _, err := conn.Exec(ctx, "SELECT set_config('bb.allow_destructive','on',false)"); err != nil {
-			return map[string]any{"error": err.Error()}
-		}
-	}
 
 	rows, err := conn.Query(ctx, sql)
 	if err != nil {
@@ -719,6 +672,71 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	// every one of them for a feature they did not ask for.
 	one["results"] = []map[string]any{{"columns": cols, "rows": out, "command": rows.CommandTag().String()}}
 	return one
+}
+
+// openSession connects to a branch the way the console does: as the signed-in
+// user's own role when there is one (a member of db_client that acts as it),
+// else as the shared client role, labelled for the Blackbox, with the session
+// settings this run asked for. Shared by a query and an export, so the two log
+// in identically.
+func openSession(ctx context.Context, addr string, as queryAs) (*pgx.Conn, error) {
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/%s", addr, branch.Database))
+	if err != nil {
+		return nil, err
+	}
+	// The non-superuser client role, so the web console is bound by the same
+	// rules as any other client (RLS, and the append-only ledger).
+	cfg.User, cfg.Password = branch.ClientRole, branch.ClientRolePassword()
+	if err := branch.EnsureAppRole(as.Branch); err != nil {
+		log.Printf("console: client role on %s: %v", as.Branch, err)
+	}
+	if as.Actor != "" && as.Branch != "" {
+		// The signed-in user's own role: a member of db_client that acts as
+		// db_client, so data access and object ownership are unchanged, but
+		// session_user is the user. Every console session used to be db_client,
+		// which is never in db_admin — so no one, not even an admin, could
+		// override the guardrail from the console.
+		if err := branch.EnsureUserRole(as.Branch, as.Actor); err != nil {
+			log.Printf("console: per-user role %q on %s: %v (using db_client)", as.Actor, as.Branch, err)
+		} else {
+			cfg.User, cfg.Password = as.Actor, branch.UserRolePassword(as.Actor)
+		}
+	}
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	fail := func(err error) (*pgx.Conn, error) { conn.Close(ctx); return nil, err }
+
+	// Attribute console DDL in the Blackbox to the signed-in user — our own
+	// tool should not be the blind spot. The engine's reads skip this.
+	if as.Actor != "" {
+		if _, err := conn.Exec(ctx,
+			"SELECT set_config('bb.actor',$1,false), set_config('bb.actor_kind','human',false), set_config('application_name','console',false)",
+			as.Actor); err != nil {
+			return fail(err)
+		}
+	}
+	if as.Actor == "" && as.Label != "" {
+		if _, err := conn.Exec(ctx, "SELECT set_config('bb.actor',$1,false), set_config('application_name',$2,false)",
+			as.Label, as.App); err != nil {
+			return fail(err)
+		}
+	}
+	// Each console run is its own connection, so a SET typed in one run is gone
+	// by the next; the override has to travel with the query it is meant for.
+	if len(as.AllowRules) > 0 {
+		if _, err := conn.Exec(ctx, "SELECT set_config('bb.policy_allow',$1,false)", strings.Join(as.AllowRules, ",")); err != nil {
+			return fail(err)
+		}
+	}
+	if as.AllowDestructive {
+		if _, err := conn.Exec(ctx, "SELECT set_config('bb.allow_destructive','on',false)"); err != nil {
+			return fail(err)
+		}
+	}
+
+	return conn, nil
 }
 
 // queryErr renders a failed query for the console: the message, and where

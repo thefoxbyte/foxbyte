@@ -83,6 +83,8 @@ Stack:
   psql [branch]        Open a psql shell on a branch (default 'main')
   sql [--branch b] [--format table|csv|tsv|markdown|json|insert|xlsx] "<sql>" | -
                        Run SQL and print the result, to read or to paste (--no-header, --raw, --table <t>)
+  export [--branch b] [--format csv|tsv|json|xlsx] "<sql>" | - > file
+                       Every row a query returns, streamed to a file; read only, and recorded in the security log
   demo seed|drop|sql [branch]
                        The sample tables (users, projects, events). A first start
                        seeds main; FOX_NO_DEMO=1 starts empty
@@ -353,6 +355,8 @@ func main() {
 		must(branch.PsqlShell(argOr(os.Args[2:], "main")))
 	case "sql":
 		sqlCmd(os.Args[2:])
+	case "export":
+		resultExportCmd(os.Args[2:])
 	case "check":
 		checkCmd(os.Args[2:])
 	case "connect":

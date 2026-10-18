@@ -547,6 +547,7 @@
       <li class="ok">Runs a script, not just one statement: a result per statement, and one transaction unless it opens its own</li>
       <li class="ok">Copy a result, ticked rows or a cell as TSV, CSV, Markdown, JSON or INSERTs; spreadsheet-safe; <code>fox sql --format</code> writes the same (point 1.1)</li>
       <li class="ok">Export what is on screen as CSV, JSON or an Excel workbook; <code>fox sql --format xlsx</code> (point 1.2)</li>
+      <li class="ok">Export a whole result, every row, streamed, read only, as the caller, recorded in the security log; <code>fox export</code> (point 1.3)</li>
       <li class="ok">Each result says which statement produced it; labelling is dropped rather than guessed when a split is unsafe</li>
       <li class="ok">Editor is read-only while a query runs, and ⌘/Ctrl+↵ no longer starts a second one</li>
       <li class="ok">Workbench layout: fills the window, schema rail folds away, results in tabs, either pane expands</li>
