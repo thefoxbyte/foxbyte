@@ -146,10 +146,12 @@ for _ in $(seq 45); do
 done
 [ -n "$ready" ] || echo "  the engine did not report an admin with no licence within 45s: $lic"
 FOX_E2E_URL="$API" FOX_E2E_EMAIL="$EMAIL" FOX_E2E_PASSWORD="$PASSWORD" FOX_E2E_LICENCE="$LICENCE" \
-	npx playwright test --grep "licence file uploaded"
+	npx playwright test --grep "licence file uploaded" --output test-results-upgrade
 urc=$?
 "$S" license activate "$LICENCE" >/dev/null 2>&1   # back, for whatever runs next
 [ "$rc" = 0 ] && rc=$urc
+
+vm_pause_report
 
 echo "### cleanup"
 # Realtime is an engine-wide setting, so it is turned off again: a later suite
@@ -162,6 +164,6 @@ cd "$ROOT" || exit 1
 if [ "$rc" = 0 ]; then
 	rm -rf "$UI"
 else
-	echo "the screenshots and traces of the failures are in $UI/test-results"
+	echo "the screenshots and traces of the failures are in $UI/test-results and $UI/test-results-upgrade"
 fi
 exit "$rc"

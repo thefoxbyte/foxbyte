@@ -30,3 +30,7 @@ export FOX_NO_DEMO=1
 
 # Nothing here should open a browser: a suite is not a person at a keyboard.
 export FOX_NO_BROWSER=1
+
+# Whether the VM was frozen during the run, which makes every timeout in it
+# meaningless (lib/vm_pause.sh). Suites call vm_pause_report with their summary.
+. "$(dirname "${BASH_SOURCE[0]}")/vm_pause.sh"

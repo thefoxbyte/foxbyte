@@ -93,7 +93,14 @@ test-enterprise:  ## Run unit tests with the enterprise code compiled in
 # main to an earlier point, fail HA over), so they run in a throwaway VM of
 # their own — never the VM holding your install. See scripts/test_vm.sh.
 TEST_VM ?= fox-test
-IN_TEST_VM = LIMA_INSTANCE=$(TEST_VM) lima
+# A suite in the VM keeps this computer from sleeping while it runs: a VM stops
+# when its host sleeps, and on waking every wait in flight has expired at once,
+# so a run fails in batches of "timeouts" that say nothing about the code
+# (scripts/lib/vm_pause.sh, which also reports it when it happens anyway).
+# caffeinate -i holds off idle sleep, and -s system sleep while on power; on
+# battery, closing the lid still sleeps a Mac, which nothing here can prevent.
+KEEP_AWAKE := $(if $(filter Darwin,$(shell uname -s)),caffeinate -i -s,)
+IN_TEST_VM = $(KEEP_AWAKE) env LIMA_INSTANCE=$(TEST_VM) lima
 
 test-vm:          ## Create or start the throwaway VM the integration suites run in
 	FOX_TEST_VM=$(TEST_VM) bash scripts/test_vm.sh
