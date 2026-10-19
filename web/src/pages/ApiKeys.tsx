@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { listKeys, createKey, revokeKey, changePassword, type ApiKey } from '../api'
 import { useConfirm } from '../confirm'
+import QueryHistoryPanel from '../components/QueryHistoryPanel'
 
 // The gateway listens beside the control plane, so the host the console was
 // opened on is the host to connect to.
@@ -101,6 +102,7 @@ export default function ApiKeys() {
       </div>
 
       <PasswordPanel />
+      <QueryHistoryPanel />
     </div>
   )
 }

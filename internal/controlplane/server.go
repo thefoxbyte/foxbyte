@@ -94,6 +94,7 @@ func Serve(addr string) error {
 	registerAccounts(api, store)      // /api/account*, /api/users* (admins)
 	registerRequests(api, store)      // /api/branches/{name}/request, /api/requests*
 	registerLicense(api)              // /api/license
+	registerHistory(api, store)       // /api/history* (the caller's own query history)
 	registerEditionSwitch(api, store) // /api/edition/switch (the Upgrade modal's Install button)
 	// The paid edition's routes. Compiled out of the Standard build entirely,
 	// where this call does nothing (internal/controlplane/enterprise_off.go).
@@ -344,6 +345,10 @@ func registerAPI(mux *http.ServeMux) {
 			// per-rule override for a Blackbox policy block (BBX01), which
 			// allow_destructive does not cover. Also honoured only for admins.
 			AllowRules []string `json:"allow_rules"`
+			// History false keeps this query out of the caller's history
+			// (point 8.1): the console's own reads of a table, which nobody
+			// typed. Anything else is kept, so the SDKs record without asking.
+			History *bool `json:"history"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if strings.TrimSpace(body.SQL) == "" {
@@ -362,7 +367,14 @@ func registerAPI(mux *http.ServeMux) {
 				return
 			}
 		}
-		writeJSON(w, 200, runQuery(addr, body.SQL, queryAs{Branch: name, Actor: u.Email, AllowDestructive: body.AllowDestructive, AllowRules: body.AllowRules}))
+		start := time.Now()
+		res := runQuery(addr, body.SQL, queryAs{Branch: name, Actor: u.Email, AllowDestructive: body.AllowDestructive, AllowRules: body.AllowRules})
+		if body.History == nil || *body.History {
+			rows, errText := queryOutcome(res)
+			recordQuery(auth.HistoryEntry{Actor: u.Email, Branch: name, Source: auth.RequestSource(r), SQL: body.SQL,
+				At: start.UnixMilli(), DurationMS: time.Since(start).Milliseconds(), Rows: rows, OK: errText == "", Error: errText})
+		}
+		writeJSON(w, 200, res)
 	})
 
 	// Migration: import a source database into a new instance from a connection

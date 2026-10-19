@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/controlplane"
@@ -52,8 +53,14 @@ func sqlCmd(args []string) {
 		fmt.Fprintf(os.Stderr, "%s sql --format xlsx writes a workbook: send it to a file, e.g. > result.xlsx\n", brand.CLI)
 		os.Exit(2)
 	}
+	start := time.Now()
 	out, err := controlplane.RunSQL(b, sql, cliActor())
 	must(err)
+	rows, failed := out.Outcome()
+	if hs := historyStore(); hs != nil {
+		controlplane.RecordCLIQuery(hs, cliActor(), b, sql, "query", start, rows, failed)
+		hs.Close()
+	}
 	os.Exit(printSQL(os.Stdout, os.Stderr, out, format, sqlOpts(args)))
 }
 

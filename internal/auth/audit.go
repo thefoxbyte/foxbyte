@@ -94,6 +94,14 @@ const (
 	// branch, the format, how many rows, and a fingerprint of the query, never
 	// its text, which can hold personal data.
 	EvDataExport = "data.export"
+	// Query history (points 8.1, 8.3): someone's history deleted, by them or
+	// for them, and the install's settings changed. Who acted, on whose
+	// history and how many entries; never the SQL itself.
+	EvHistoryPurged   = "history.purged"
+	EvHistorySettings = "history.settings_changed"
+	// Somebody's history read by whoever runs the machine, for a request about
+	// that person's own data. Reading your own is not an event.
+	EvHistoryRead = "history.read"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

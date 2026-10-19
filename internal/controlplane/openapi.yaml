@@ -543,6 +543,14 @@ paths:
                     Apply SET bb.policy_allow to this query: the per-rule override
                     for a Blackbox policy block (BBX01), which allow_destructive
                     does not cover. Counts only for db_admin members.
+                history:
+                  type: boolean
+                  default: true
+                  description: >-
+                    false keeps this query out of the caller's query history (the
+                    console's own reads of a table send it). History keeps the
+                    SQL, branch, time, duration, row count and outcome, never a
+                    result; see /api/history.
       responses:
         "200":
           description: Columns and rows, or an error message.
@@ -1357,6 +1365,100 @@ paths:
       summary: Revoke an API key.
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses: { "200": { description: Revoked }, "401": { $ref: "#/components/responses/Unauthorized" } }
+
+  /api/history:
+    get:
+      tags: [accounts]
+      summary: Your own query history, newest first.
+      description: >-
+        The SQL you ran from the console and the API (and fox export), with the
+        branch, when, how long, how many rows and whether it worked. Never a
+        result. Only your own: there is no way to read someone else's history
+        over the API, admins included. Kept for the install's retention (90
+        days by default).
+      parameters:
+        - { name: branch, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { name: before, in: query, description: "Entries older than this id, for the next page.", schema: { type: integer } }
+      responses:
+        "200":
+          description: Your entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        branch: { type: string }
+                        source: { type: string, enum: [console, api, cli] }
+                        kind: { type: string, enum: [query, export] }
+                        sql: { type: string }
+                        truncated: { type: boolean, description: "The statement was longer than 64 KB and is kept cut." }
+                        at: { type: integer, description: Unix milliseconds }
+                        duration_ms: { type: integer }
+                        rows: { type: integer }
+                        ok: { type: boolean }
+                        error: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [accounts]
+      summary: Delete all of your query history. Recorded in the security log (history.purged).
+      responses:
+        "200": { description: "How many entries were deleted: {\"deleted\": n}." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/history/{id}:
+    delete:
+      tags: [accounts]
+      summary: Delete one entry of your own history.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: No such entry in your history. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/history/settings:
+    get:
+      tags: [accounts]
+      summary: Whether history is on for the install and for you, how long it is kept, and how many entries you have.
+      responses:
+        "200":
+          description: The settings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean, description: The install's switch. }
+                  retention_days: { type: integer }
+                  mine: { type: boolean, description: Whether your own queries are kept. }
+                  count: { type: integer }
+                  admin: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [accounts]
+      summary: Turn your own history on or off; admins can also switch the install's and set its retention.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mine: { type: boolean }
+                enabled: { type: boolean, description: Admins only. }
+                retention_days: { type: integer, minimum: 1, maximum: 3650, description: Admins only. Shortening it deletes what is now too old. }
+      responses:
+        "200": { description: The settings after the change, as GET returns them. }
+        "400": { description: A retention out of range. }
+        "403": { description: Not an admin, for enabled or retention_days. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/account:
     get:

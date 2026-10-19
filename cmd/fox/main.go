@@ -85,6 +85,8 @@ Stack:
                        Run SQL and print the result, to read or to paste (--no-header, --raw, --table <t>)
   export [--branch b] [--format csv|tsv|json|xlsx] "<sql>" | - > file
                        Every row a query returns, streamed to a file; read only, and recorded in the security log
+  history [--branch b] [--limit n] [--json] [--user <email>] | purge | status | on | off | retention <days>
+                       The SQL people ran (console, API, fox sql, fox export), never results; kept 90 days
   demo seed|drop|sql [branch]
                        The sample tables (users, projects, events). A first start
                        seeds main; FOX_NO_DEMO=1 starts empty
@@ -357,6 +359,8 @@ func main() {
 		sqlCmd(os.Args[2:])
 	case "export":
 		resultExportCmd(os.Args[2:])
+	case "history":
+		historyCmd(os.Args[2:])
 	case "check":
 		checkCmd(os.Args[2:])
 	case "connect":

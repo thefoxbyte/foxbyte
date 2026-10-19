@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -231,6 +232,7 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close(context.Background())
 
 	started := false
+	start := time.Now()
 	n, err := exportRows(r.Context(), conn, body.SQL, o, func(cols []string) (io.Writer, error) {
 		w.Header().Set("Content-Type", mime[0])
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-export.%s"`, name, mime[1]))
@@ -242,6 +244,13 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 	if secLog != nil {
 		secLog.Audit(auth.EvDataExport, u.Email, name, remoteIP(r), ExportDetail(name, body.SQL, o.Format, n, err))
 	}
+	h := auth.HistoryEntry{Actor: u.Email, Branch: name, Source: auth.RequestSource(r), Kind: "export", SQL: body.SQL,
+		At: start.UnixMilli(), DurationMS: time.Since(start).Milliseconds(), Rows: n,
+		OK: err == nil || errors.Is(err, resultfmt.ErrExcelFull)}
+	if !h.OK {
+		h.Error = err.Error()
+	}
+	recordQuery(h)
 	if err == nil || errors.Is(err, resultfmt.ErrExcelFull) {
 		if err != nil {
 			log.Printf("export on %s for %s: %v", name, u.Email, err)
