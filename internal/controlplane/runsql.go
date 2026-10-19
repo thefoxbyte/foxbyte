@@ -16,16 +16,20 @@ type SQLResult struct {
 	Error   string
 	Detail  string
 	Hint    string
+	// Suggestion is the name probably meant, when the error is a table or a
+	// column that does not exist (point 9.2).
+	Suggestion *Suggestion
 }
 
 // SQLOutput is what running some SQL gave: a result per statement, and a note
 // when a script failed and nothing it did was kept.
 type SQLOutput struct {
-	Results []SQLResult
-	Error   string // a failure that is not one statement's
-	Hint    string
-	Detail  string
-	Note    string
+	Results    []SQLResult
+	Error      string // a failure that is not one statement's
+	Hint       string
+	Detail     string
+	Note       string
+	Suggestion *Suggestion
 }
 
 // RowCap is how many rows one statement returns, here as in the console.
@@ -65,6 +69,7 @@ func sqlOutput(m map[string]any) SQLOutput {
 	str := func(m map[string]any, k string) string { s, _ := m[k].(string); return s }
 	one := func(m map[string]any) SQLResult {
 		r := SQLResult{Command: str(m, "command"), Error: str(m, "error"), Detail: str(m, "detail"), Hint: str(m, "hint")}
+		r.Suggestion, _ = m["suggestion"].(*Suggestion)
 		if c, ok := m["columns"].([]string); ok {
 			r.Columns = c
 		}
@@ -74,6 +79,7 @@ func sqlOutput(m map[string]any) SQLOutput {
 		return r
 	}
 	out := SQLOutput{Note: str(m, "note")}
+	out.Suggestion, _ = m["suggestion"].(*Suggestion)
 	if rs, ok := m["results"].([]map[string]any); ok {
 		for _, r := range rs {
 			out.Results = append(out.Results, one(r))

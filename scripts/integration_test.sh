@@ -1695,6 +1695,32 @@ assert_contains "erasing a person's history at the machine takes their saved que
 assert_eq "…which are gone" "$(as "$KA" "$SQ" | hjson 'print(len(d["queries"]))')" "0"
 for n in "first $N" "comment $N"; do $S history unsave "$n" >/dev/null 2>&1; done
 
+echo "### 11n. query suggestions: did you mean (point 9.2)"
+# A table or column that does not exist gets the name probably meant, when one
+# the caller can read is clearly closest. Autocomplete and snippets (9.1, 9.3)
+# are the console's, and are in the Playwright suite.
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS sg_customers, \"SgProducts\", sg_hidden_tbl;
+  CREATE TABLE sg_customers (id int PRIMARY KEY, full_name text); CREATE TABLE \"SgProducts\" (id int);
+  CREATE TABLE sg_hidden_tbl (id int); REVOKE ALL ON sg_hidden_tbl FROM PUBLIC, db_client;
+  GRANT SELECT ON sg_customers, \"SgProducts\" TO db_client;" >/dev/null
+OUT="$($S sql "SELECT * FROM sg_custmers" 2>&1)"; RC=$?
+assert_eq "fox sql: a misspelt table gets the name meant, and still fails" "$RC|$(grep -c '^Did you mean sg_customers?$' <<<"$OUT")" "1|1"
+assert_eq "…a misspelt column too" "$($S sql "SELECT ful_name FROM sg_customers" 2>&1 | grep -c '^Did you mean full_name?$')" "1"
+assert_eq "…written as it must be, quoted when it must" "$($S sql "SELECT * FROM sgproduct" 2>&1 | grep -c '^Did you mean \"SgProducts\"?$')" "1"
+assert_eq "…nothing when nothing is close" "$($S sql "SELECT * FROM zz_nothing_like_this" 2>&1 | grep -c 'Did you mean')" "0"
+assert_eq "…and never a table the caller cannot read" "$($S sql "SELECT * FROM sg_hiden_tbl" 2>&1 | grep -c 'Did you mean')" "0"
+assert_eq "…once, for a failed script" "$($S sql "SELECT 1; SELECT * FROM sg_custmers" 2>&1 | grep -c '^Did you mean sg_customers?$')" "1"
+QU=https://localhost:8080/api/branches/main
+assert_eq "the API answers it as data, with where Postgres pointed" \
+  "$(as "$KEY" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM sg_custmers"}' "$QU/query" | hjson 'print(d["suggestion"]["kind"], d["suggestion"]["wrong"], d["suggestion"]["insert"], d["position"])')" "table sg_custmers sg_customers 15"
+# (A statement Postgres refuses while parsing never gets a result of its own,
+# so the script carries it.)
+assert_eq "…on a failed script" \
+  "$(as "$KEY" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT 1; SELECT * FROM sg_custmers"}' "$QU/query" | hjson 'print(d["suggestion"]["insert"])')" "sg_customers"
+assert_eq "…and on an export refused before its first row" \
+  "$(as "$KEY" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM sg_custmers"}' "$QU/export" | hjson 'print(d["suggestion"]["insert"])')" "sg_customers"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS sg_customers, \"SgProducts\", sg_hidden_tbl" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

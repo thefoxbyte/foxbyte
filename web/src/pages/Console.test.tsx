@@ -15,7 +15,7 @@
 // names — in a jsdom render that needs no stack and finishes in a second. If a
 // rename or a restructure breaks the contract, it breaks here, on the pull
 // request, with the reason attached.
-import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, cleanup, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { QueryResult } from '../api'
@@ -39,11 +39,17 @@ const mockQuery = vi.mocked(runQuery)
 // deliberate answer set by the test.
 const SCHEMA: QueryResult = { columns: ['table_schema', 'table_name', 'table_type'], rows: [['public', 'invoices', 'BASE TABLE']], command: 'SELECT 1' }
 
-function answer(...results: QueryResult[]) {
+// The branch's columns, which the console reads beside its table list for
+// suggestions (point 9), are answered by what is asked rather than by turn, so
+// the answers queued here still go to the statements a test runs.
+let COLUMNS: QueryResult = { columns: [], rows: [], command: 'SELECT 0' }
+function answer(...results: (QueryResult | Promise<QueryResult>)[]) {
+  const queue = [SCHEMA, ...results]
   mockQuery.mockReset()
-  mockQuery.mockResolvedValueOnce(SCHEMA)
-  for (const r of results) mockQuery.mockResolvedValueOnce(r)
-  mockQuery.mockResolvedValue({ columns: [], rows: [], command: 'SELECT 0' })
+  mockQuery.mockImplementation(async (_branch: string, sql: string) => {
+    if (sql.includes('pg_attribute')) return COLUMNS
+    return queue.length ? queue.shift()! : { columns: [], rows: [], command: 'SELECT 0' }
+  })
 }
 
 async function open() {
@@ -55,7 +61,7 @@ const editor = () => document.querySelector('textarea.editor') as HTMLTextAreaEl
 const type = (sql: string) => fireEvent.change(editor(), { target: { value: sql } })
 const run = () => fireEvent.click(screen.getByRole('button', { name: /^run/i }))
 
-beforeEach(() => answer())
+beforeEach(() => { COLUMNS = { columns: [], rows: [], command: 'SELECT 0' }; answer() })
 afterEach(cleanup)
 
 describe('what the end-to-end suite reaches for', () => {
@@ -101,10 +107,7 @@ describe('what the end-to-end suite reaches for', () => {
 
   it('stops taking edits while a query is in flight', async () => {
     let release: (r: QueryResult) => void = () => {}
-    answer()
-    mockQuery.mockReset()
-    mockQuery.mockResolvedValueOnce(SCHEMA)
-    mockQuery.mockImplementationOnce(() => new Promise(r => { release = r }))
+    answer(new Promise<QueryResult>(r => { release = r }))
     await open()
     type('SELECT pg_sleep(2)')
     run()
@@ -140,5 +143,95 @@ describe('what the end-to-end suite reaches for', () => {
       expect(bad[0].textContent).toBe('3')
     })
     expect(document.querySelector('.err-at')!.textContent).toMatch(/line 3/)
+  })
+})
+
+// Point 9: suggestions in the editor, as the page wires them.
+describe('query suggestions', () => {
+  const invoices: QueryResult = {
+    columns: ['nspname', 'relname', 'kind', 'attname', 'type', 'pk'],
+    rows: [['public', 'invoices', 'table', 'id', 'integer', true], ['public', 'invoices', 'table', 'amount', 'numeric', false]],
+    command: 'SELECT 2',
+  }
+  // Typing as a person does: the text so far, the caret at its end, and the
+  // character just typed.
+  // React keeps its own copy of the value, so a test sets it through the
+  // element's native setter, as typing does, before the input event.
+  const setNative = (ed: HTMLTextAreaElement, v: string) =>
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(ed, v)
+  const typeChar = (before: string, ch: string) => {
+    const ed = editor()
+    setNative(ed, before + ch)
+    ed.setSelectionRange(ed.value.length, ed.value.length)
+    ed.dispatchEvent(new InputEvent('input', { bubbles: true, data: ch, inputType: 'insertText' }))
+  }
+
+  it('offers the table after FROM and its columns after the alias, and Enter takes one', async () => {
+    COLUMNS = invoices
+    answer()
+    await open()
+    await waitFor(() => expect(mockQuery.mock.calls.some(c => String(c[1]).includes('pg_attribute'))).toBe(true))
+    typeChar('SELECT * FROM in', 'v')
+    const list = await screen.findByRole('listbox', { name: 'Suggestions' })
+    expect(within(list).getAllByRole('option').map(o => o.textContent)).toEqual(['tinvoicestable'])
+    fireEvent.keyDown(editor(), { key: 'Enter' })
+    expect(editor().value).toBe('SELECT * FROM invoices')
+    expect(screen.queryByRole('listbox')).toBeNull()
+
+    typeChar('SELECT i', '.')
+    // Nothing named i: no columns, and nothing offered.
+    expect(screen.queryByRole('listbox')).toBeNull()
+    setNative(editor(), 'SELECT i. FROM invoices i')
+    fireEvent.change(editor(), { target: { value: 'SELECT i. FROM invoices i' } })
+    editor().setSelectionRange(9, 9)
+    fireEvent.keyDown(editor(), { key: ' ', ctrlKey: true })
+    const cols = await screen.findByRole('listbox', { name: 'Suggestions' })
+    expect(within(cols).getAllByRole('option').map(o => o.querySelector('.l')?.textContent)).toEqual(['id', 'amount'])
+    fireEvent.keyDown(editor(), { key: 'ArrowDown' })
+    fireEvent.keyDown(editor(), { key: 'Tab' })
+    expect(editor().value).toBe('SELECT i.amount FROM invoices i')
+  })
+
+  it('Escape closes the list, and ⌘↵ still runs', async () => {
+    COLUMNS = invoices
+    answer({ columns: ['n'], rows: [[1]], command: 'SELECT 1' })
+    await open()
+    await waitFor(() => expect(mockQuery.mock.calls.some(c => String(c[1]).includes('pg_attribute'))).toBe(true))
+    fireEvent.change(editor(), { target: { value: 'SELECT * FROM ' } })
+    editor().setSelectionRange(14, 14)
+    fireEvent.keyDown(editor(), { key: ' ', ctrlKey: true })
+    await screen.findByRole('listbox', { name: 'Suggestions' })
+    fireEvent.keyDown(editor(), { key: 'Escape' })
+    expect(screen.queryByRole('listbox')).toBeNull()
+    type('SELECT 1')
+    fireEvent.keyDown(editor(), { key: 'Enter', metaKey: true })
+    await waitFor(() => expect(mockQuery.mock.calls.some(c => c[1] === 'SELECT 1')).toBe(true))
+  })
+
+  it('offers "did you mean" under an error, and fixes it where Postgres pointed', async () => {
+    answer(
+      { error: 'relation "invoces" does not exist', position: 15, suggestion: { kind: 'table', wrong: 'invoces', right: 'invoices', insert: 'invoices' } },
+      { columns: ['n'], rows: [[3]], command: 'SELECT 1' },
+    )
+    await open()
+    type('SELECT * FROM invoces')
+    run()
+    expect(await screen.findByText(/did you mean/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Fix and run' }))
+    expect(editor().value).toBe('SELECT * FROM invoices')
+    await waitFor(() => expect(mockQuery.mock.calls.some(c => c[1] === 'SELECT * FROM invoices')).toBe(true))
+  })
+
+  it('puts a table\'s snippet in the editor', async () => {
+    COLUMNS = invoices
+    answer()
+    await open()
+    await waitFor(() => expect(mockQuery.mock.calls.some(c => String(c[1]).includes('pg_attribute'))).toBe(true))
+    fireEvent.click(await screen.findByRole('button', { name: /invoices/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /snippets/i }))
+    const menu = screen.getByRole('menu', { name: 'Snippets for invoices' })
+    expect(within(menu).getAllByRole('menuitem').map(m => m.textContent)).toEqual(['Select rows', 'Count rows', 'Insert a row', 'Update a row', 'Delete a row'])
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Delete a row' }))
+    expect(editor().value).toBe('DELETE FROM invoices\nWHERE id = NULL;')
   })
 })

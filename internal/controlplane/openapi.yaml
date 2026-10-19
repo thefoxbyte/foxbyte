@@ -1896,3 +1896,15 @@ components:
         columns: { type: array, items: { type: string } }
         rows: { type: array, items: { type: array } }
         error: { type: string }
+        suggestion:
+          type: object
+          description: >-
+            When the error is a table or a column that does not exist, the name
+            probably meant: one the caller can read, and clearly the closest.
+            insert is how to write it (quoted when it must be). Also on a failed
+            statement of a script.
+          properties:
+            kind: { type: string, enum: [table, column] }
+            wrong: { type: string }
+            right: { type: string }
+            insert: { type: string }

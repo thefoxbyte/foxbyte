@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdmins, getBranches, runQuery, API, type Branch, type BranchAdmins, type QueryResult, type StatementResult } from '../api'
+import { getAdmins, getBranches, runQuery, API, type Branch, type BranchAdmins, type QueryResult, type StatementResult, type Suggestion } from '../api'
 import { BRAND } from '../brand'
 import { hintFor } from '../errhint'
 import CopyMenu, { cellText } from '../components/CopyMenu'
 import ExportMenu from '../components/ExportMenu'
 import HistoryPanel from '../components/HistoryPanel'
+import { useCompletion } from '../components/Completion'
+import { applySuggestion, schemaFrom, snippets, SCHEMA_SQL, type Rel } from '../sqlcomplete'
 
 type DbObject = { schema: string; name: string; type: 'table' | 'view' }
 type Tab = 'rows' | 'structure' | 'indexes'
 
 const PAGE = 100
 const HISTORY_KEY = 'fox.history.open'
+
+type FixFn = (s: Suggestion, position: number | undefined, run: boolean) => void
 
 const lit = (s: string) => "'" + s.replace(/'/g, "''") + "'"
 const qid = (s: string) => '"' + s.replace(/"/g, '""') + '"'
@@ -47,6 +51,9 @@ export default function Console() {
   const [branch, setBranch] = useState('main')
   const [offline, setOffline] = useState(false)
   const [objects, setObjects] = useState<DbObject[]>([])
+  // Every column the caller can see on this branch, with its type and whether
+  // it is in the key: what autocomplete and the snippets read (point 9).
+  const [rels, setRels] = useState<Rel[]>([])
   const [listing, setListing] = useState(false)
   const [listErr, setListErr] = useState('')
   const [reloadTick, setReloadTick] = useState(0)
@@ -116,6 +123,7 @@ export default function Console() {
     window.addEventListener('mouseup', up)
   }
   const [busy, setBusy] = useState(false)
+  const assist = useCompletion({ editor: editorRef, text: sql, setText: setSql, schema: rels, busy })
 
   // The branch list is what the picker is made of, and it used to be fetched once:
   // a single failed call — the engine still coming up, a slow answer from the
@@ -156,6 +164,11 @@ export default function Console() {
         schema: String(row[0]), name: String(row[1]),
         type: /view/i.test(String(row[2])) ? 'view' : 'table',
       })))
+      // The columns, for suggestions. Not worth an error of its own: without
+      // them the editor still offers tables and keywords.
+      runQuery(b, SCHEMA_SQL, { history: false })
+        .then(c => setRels(c.error ? [] : schemaFrom(c.rows || [])))
+        .catch(() => setRels([]))
     } catch (e) {
       setListErr((e as Error).message)
     } finally {
@@ -165,7 +178,7 @@ export default function Console() {
 
   // Reset when the branch changes.
   useEffect(() => {
-    setObjects([]); loadObjects(branch); setSel(null); setMode('query'); setBrowseRes(null); setAllowDestructive(false)
+    setObjects([]); setRels([]); loadObjects(branch); setSel(null); setMode('query'); setBrowseRes(null); setAllowDestructive(false)
     setAdmins(null)
     getAdmins(branch).then(setAdmins).catch(() => setAdmins(null))
   }, [branch, loadObjects])
@@ -243,6 +256,18 @@ export default function Console() {
     } finally {
       setBusy(false); setAllowDestructive(false); setHistoryTick(t => t + 1)
     }
+  }
+
+  // A "did you mean" fix (point 9.2): the name written into the SQL that ran,
+  // where Postgres pointed, and run again on the branch it ran on when asked.
+  const [fixNote, setFixNote] = useState('')
+  const fix: FixFn = (sg, position, run) => {
+    const fixed = applySuggestion(ranSql, sg, position)
+    if (fixed === null) { setFixNote(`Couldn’t find ${sg.wrong} in the query: change it by hand.`); return }
+    setFixNote('')
+    if (run) { runSql({}, fixed, ranBranch); return }
+    setSql(fixed); setMode('query')
+    requestAnimationFrame(() => editorRef.current?.focus())
   }
 
   if (offline) {
@@ -395,7 +420,7 @@ export default function Console() {
                   </div>
                 <textarea
                   ref={editorRef}
-                  onScroll={e => { if (gutterRef.current) gutterRef.current.scrollTop = e.currentTarget.scrollTop }}
+                  onScroll={e => { if (gutterRef.current) gutterRef.current.scrollTop = e.currentTarget.scrollTop; assist.close() }}
                   className={'editor' + (busy ? ' running' : '')}
                   value={sql}
                   spellCheck={false}
@@ -408,12 +433,23 @@ export default function Console() {
                   // statements they came from, and editing mid-run would leave
                   // those labels disagreeing with what is on screen.
                   readOnly={busy}
-                  onChange={e => setSql(e.target.value)}
+                  onChange={e => {
+                    setSql(e.target.value)
+                    const ne = e.nativeEvent as InputEvent
+                    assist.onChange(e.target.value, e.target.selectionStart, ne.inputType === 'insertText' ? ne.data : null)
+                  }}
+                  onBlur={assist.close}
+                  onClick={assist.close}
+                  {...assist.aria}
                   // The shortcut needs the same guard the Run button has. Without
                   // it, ⌘↵ during a run started a second query against the same
                   // branch while the first was still going.
-                  onKeyDown={e => { if (!busy && (e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql() }}
+                  onKeyDown={e => {
+                    if (assist.onKeyDown(e)) return
+                    if (!busy && (e.metaKey || e.ctrlKey) && e.key === 'Enter') runSql()
+                  }}
                 />
+                {assist.popup}
                 </div>
               </section>
               )}
@@ -423,8 +459,9 @@ export default function Console() {
               )}
               {expand !== 'editor' && (
               <section className="wb-pane wb-res">
+                {fixNote && <div className="err-hint wb-note" role="status">{fixNote}</div>}
                 {queryRes
-                  ? <QueryOutput res={queryRes} sql={ranSql} branch={ranBranch}
+                  ? <QueryOutput res={queryRes} sql={ranSql} branch={ranBranch} onFix={fix}
                       expanded={expand === 'results'}
                       onExpand={() => setExpand(x => (x === 'results' ? 'none' : 'results'))} />
                   : <div className="wb-empty">Results appear here. ⌘↵ runs what is in the editor.</div>}
@@ -461,6 +498,13 @@ export default function Console() {
               <div className="obj-view-head">
                 <h2>{sel.name}</h2>
                 <span className="path">{sel.schema} · {sel.type}</span>
+                <span className="wb-sp" />
+                <SnippetMenu rel={rels.find(r => r.schema === sel.schema && r.name === sel.name)
+                  ?? { schema: sel.schema, name: sel.name, kind: sel.type === 'view' ? 'view' : 'table', cols: [] }}
+                  onPick={text => {
+                    setSql(text); setMode('query')
+                    requestAnimationFrame(() => editorRef.current?.focus())
+                  }} />
               </div>
               <div className="db-tabs">
                 {(['rows', 'structure', 'indexes'] as Tab[]).map(t => (
@@ -543,8 +587,37 @@ function labelsFor(sql: string, n: number): string[] | null {
 // What a run produced. One statement looks exactly as it always did; a script
 // shows a result per statement, labelled with the SQL it came from where that
 // can be worked out safely, and numbered where it cannot.
-function QueryOutput({ res, sql, branch, expanded, onExpand }:
-  { res: QueryResult; sql: string; branch: string; expanded: boolean; onExpand: () => void }) {
+// The statements for a table, written out with its columns and key (point
+// 9.3). Picking one puts it in the editor to finish; nothing runs on its own.
+function SnippetMenu({ rel, onPick }: { rel: Rel; onPick: (sql: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    window.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey) }
+  }, [open])
+  return (
+    <div className="copy-menu" ref={box}>
+      <button type="button" className="ghost" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(o => !o)}>Snippets ▾</button>
+      {open && (
+        <div className="copy-pop snippet-pop" role="menu" aria-label={`Snippets for ${rel.name}`}>
+          {snippets(rel).map(sn => (
+            <button key={sn.label} type="button" role="menuitem" className="ghost snippet-item"
+              title={sn.sql} onClick={() => { setOpen(false); onPick(sn.sql) }}>{sn.label}</button>
+          ))}
+          <p className="muted">Opens in the editor, to finish and run.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function QueryOutput({ res, sql, branch, expanded, onExpand, onFix }:
+  { res: QueryResult; sql: string; branch: string; expanded: boolean; onExpand: () => void; onFix?: FixFn }) {
   const all = res.results && res.results.length > 1 ? res.results : null
   const labels = all ? labelsFor(sql, all.length) : null
   // Which statement's result is on screen. A script that failed opens on the
@@ -570,7 +643,7 @@ function QueryOutput({ res, sql, branch, expanded, onExpand }:
       <div className="wb-out">
         <div className="res-tabs"><span className="pane-t">Result</span><span className="wb-sp" />{expander}</div>
         {res.note && <div className="err-hint wb-note">{res.note}</div>}
-        <div className="res-body"><Grid res={res} showCommand sql={sql} branch={branch} /></div>
+        <div className="res-body"><Grid res={res} showCommand sql={sql} branch={branch} onFix={onFix} /></div>
       </div>
     )
   }
@@ -597,7 +670,7 @@ function QueryOutput({ res, sql, branch, expanded, onExpand }:
         <span className="wb-sp" />{expander}
       </div>
       {res.note && <div className="err-hint wb-note">{res.note}</div>}
-      <div className="res-body"><Grid res={shown} showCommand sql={sql} branch={branch} script /></div>
+      <div className="res-body"><Grid res={shown} showCommand sql={sql} branch={branch} script onFix={onFix} /></div>
     </div>
   )
 }
@@ -605,8 +678,8 @@ function QueryOutput({ res, sql, branch, expanded, onExpand }:
 // branch is set where the whole result can be exported again from the server:
 // a statement someone ran, not a page of a table they browsed. script marks a
 // result that is one of several, which cannot be.
-function Grid({ res, showCommand, sql, branch, script }:
-  { res: StatementResult; showCommand?: boolean; sql?: string; branch?: string; script?: boolean }) {
+function Grid({ res, showCommand, sql, branch, script, onFix }:
+  { res: StatementResult; showCommand?: boolean; sql?: string; branch?: string; script?: boolean; onFix?: FixFn }) {
   const [expanded, setExpanded] = useState<number | null>(null)
   // Rows ticked for copying, and one cell picked to copy on its own (⌘C).
   const [picked, setPicked] = useState<Set<number>>(new Set())
@@ -645,6 +718,15 @@ function Grid({ res, showCommand, sql, branch, script }:
         {res.hint && <div className="err-hint">{res.hint}</div>}
         {res.detail && <div className="err-hint">{res.detail}</div>}
         {hint && <div className="err-hint">{hint}</div>}
+        {res.suggestion && onFix && (
+          // Point 9.2: the name probably meant, put in the editor where
+          // Postgres pointed, with or without running it again.
+          <div className="err-fix">
+            <span>Did you mean <code>{res.suggestion.insert}</code>?</span>
+            <button className="ghost sm" onClick={() => onFix(res.suggestion!, res.position, false)}>Fix</button>
+            <button className="primary sm" onClick={() => onFix(res.suggestion!, res.position, true)}>Fix and run</button>
+          </div>
+        )}
       </div>
     )
   }

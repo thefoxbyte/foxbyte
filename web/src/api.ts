@@ -55,7 +55,11 @@ export type StatementResult = {
   position?: number
   detail?: string
   hint?: string
+  // The name probably meant, when the error is a table or a column that does
+  // not exist (point 9.2): insert is how to write it.
+  suggestion?: Suggestion
 }
+export type Suggestion = { kind: 'table' | 'column'; wrong: string; right: string; insert: string }
 export type QueryResult = StatementResult & {
   results?: StatementResult[]
   // Set when a script failed: Postgres runs one in a single transaction unless

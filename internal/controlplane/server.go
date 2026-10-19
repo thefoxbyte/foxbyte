@@ -650,7 +650,11 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 		if strings.Contains(err.Error(), "cannot insert multiple commands") {
 			return runScript(ctx, conn, sql)
 		}
-		return queryErr(err)
+		out := queryErr(err)
+		if sg := suggestFor(ctx, conn, sql, err); sg != nil {
+			out["suggestion"] = sg // "did you mean" (point 9.2)
+		}
+		return out
 	}
 	defer rows.Close()
 
@@ -836,6 +840,16 @@ func runScript(ctx context.Context, conn *pgx.Conn, sql string) map[string]any {
 		out := queryErr(err)
 		out["results"] = results
 		out["note"] = "nothing was applied: Postgres runs a multi-statement script in one transaction unless the script opens its own"
+		// Asked only now: while the script's results were being read, the
+		// connection could not run anything else.
+		if sg := suggestFor(ctx, conn, sql, err); sg != nil {
+			out["suggestion"] = sg
+			for _, r := range results {
+				if _, bad := r["error"]; bad {
+					r["suggestion"] = sg
+				}
+			}
+		}
 		return out
 	}
 	if len(results) == 0 {

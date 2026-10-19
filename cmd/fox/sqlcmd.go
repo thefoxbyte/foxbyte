@@ -85,13 +85,20 @@ func sqlOpts(args []string) resultfmt.Options {
 // every statement ran, 1 when one failed, 2 for a format it cannot write.
 func printSQL(w, ew io.Writer, out controlplane.SQLOutput, format string, o resultfmt.Options) int {
 	failed := false
-	report := func(msg, detail, hint string) {
+	suggested := false
+	report := func(msg, detail, hint string, sg *controlplane.Suggestion) {
 		fmt.Fprintln(ew, "ERROR:", msg)
 		if detail != "" {
 			fmt.Fprintln(ew, "DETAIL:", detail)
 		}
 		if hint != "" {
 			fmt.Fprintln(ew, "HINT:", hint)
+		}
+		// Point 9.2: the name probably meant, as it must be written. Once: a
+		// failed script carries it on the statement and on the whole.
+		if sg != nil && !suggested {
+			fmt.Fprintf(ew, "Did you mean %s?\n", sg.Insert)
+			suggested = true
 		}
 		failed = true
 	}
@@ -110,7 +117,7 @@ func printSQL(w, ew io.Writer, out controlplane.SQLOutput, format string, o resu
 				fmt.Fprintf(w, "-- statement %d: %s\n", i+1, r.Command)
 			}
 			if r.Error != "" {
-				report(r.Error, r.Detail, r.Hint)
+				report(r.Error, r.Detail, r.Hint, r.Suggestion)
 				continue
 			}
 			if len(r.Columns) == 0 {
@@ -136,7 +143,7 @@ func printSQL(w, ew io.Writer, out controlplane.SQLOutput, format string, o resu
 		for i := range out.Results {
 			r := &out.Results[i]
 			if r.Error != "" {
-				report(r.Error, r.Detail, r.Hint)
+				report(r.Error, r.Detail, r.Hint, r.Suggestion)
 			} else if len(r.Columns) > 0 {
 				pick = r
 			}
@@ -163,7 +170,7 @@ func printSQL(w, ew io.Writer, out controlplane.SQLOutput, format string, o resu
 		}
 	}
 	if out.Error != "" {
-		report(out.Error, out.Detail, out.Hint)
+		report(out.Error, out.Detail, out.Hint, out.Suggestion)
 	}
 	if out.Note != "" {
 		fmt.Fprintln(ew, out.Note)

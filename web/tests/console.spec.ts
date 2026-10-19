@@ -609,3 +609,57 @@ test('the history panel finds, opens, runs again, copies and saves a query', asy
   await page.getByRole('button', { name: /^delete$/i }).click()
   await expect(saved).toHaveCount(0)
 })
+
+// Point 9: suggestions in the editor. Typed key by key, as a person does:
+// filling the editor at once is a paste, and a paste is not offered names.
+test('the editor suggests names as you type, offers a fix for a misspelt one, and writes snippets', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const t = `e2e_sg_${Date.now().toString().slice(-6)}`
+  const ed = page.locator('textarea.editor')
+  await ed.fill(`CREATE TABLE ${t} (id int PRIMARY KEY, label text)`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.obj-item', { hasText: t })).toBeVisible({ timeout: 30_000 })
+
+  // 9.1: the table after FROM, and Enter takes it.
+  await ed.fill(`SELECT * FROM ${t.slice(0, -2)}`)
+  await ed.press('End')
+  await ed.pressSequentially(t.slice(-2, -1))
+  const list = page.getByRole('listbox', { name: 'Suggestions' })
+  await expect(list.getByRole('option', { name: new RegExp(t) })).toBeVisible()
+  await ed.press('Enter')
+  await expect(ed).toHaveValue(`SELECT * FROM ${t}`)
+  await expect(list).toHaveCount(0)
+
+  // …and a table's columns after its alias and a dot.
+  await ed.fill(`SELECT x FROM ${t} x`)
+  await ed.press('Home')
+  for (let i = 0; i < 'SELECT x'.length; i++) await ed.press('ArrowRight')
+  await ed.pressSequentially('.')
+  await expect(list.getByRole('option')).toHaveCount(2)
+  await ed.press('ArrowDown')
+  await ed.press('Enter')
+  await expect(ed).toHaveValue(`SELECT x.label FROM ${t} x`)
+
+  // 9.2: a misspelt table gets the name meant, fixed where Postgres pointed.
+  const typo = t.slice(0, -1)
+  await ed.fill(`SELECT count(*) FROM ${typo}`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.getByText(/did you mean/i)).toBeVisible({ timeout: 30_000 })
+  await page.getByRole('button', { name: 'Fix and run' }).click()
+  await expect(ed).toHaveValue(`SELECT count(*) FROM ${t}`)
+  await expect(page.locator('.grid-wrap td:not(.expand-col)').first()).toHaveText('0', { timeout: 30_000 })
+
+  // 9.3: a table's snippet, put in the editor to finish and run.
+  await page.locator('.obj-item', { hasText: t }).click()
+  await page.getByRole('button', { name: /snippets/i }).click()
+  await page.getByRole('menu', { name: `Snippets for ${t}` }).getByRole('menuitem', { name: 'Delete a row' }).click()
+  await expect(ed).toHaveValue(`DELETE FROM ${t}\nWHERE id = NULL;`)
+  await page.locator('.obj-item', { hasText: t }).click()
+  await page.getByRole('button', { name: /snippets/i }).click()
+  await page.getByRole('menuitem', { name: 'Count rows' }).click()
+  await expect(ed).toHaveValue(`SELECT count(*) FROM ${t};`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.grid-wrap td:not(.expand-col)').first()).toHaveText('0', { timeout: 30_000 })
+})
