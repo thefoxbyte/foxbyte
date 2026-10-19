@@ -27,11 +27,13 @@ vi.mock('../api', async () => {
     getBranches: vi.fn(async () => [{ name: 'main', primary: true, agent: false, state: 'running', used: '1G', refer: '1G', connections: 1, port: '5432' }]),
     getAdmins: vi.fn(async () => ({ admins: ['a@b.c'], you: 'a@b.c', you_are_admin: true })),
     runQuery: vi.fn(async () => ({ columns: [], rows: [], command: 'SELECT 0' }) as QueryResult),
+    getCatalog: vi.fn(async () => ({ objects: [] })),
+    getObject: vi.fn(async () => ({ kind: 'table', oid: 0, name: '', ddl: '' })),
   }
 })
 
 import Console from './Console'
-import { runQuery } from '../api'
+import { getCatalog, getObject, runQuery } from '../api'
 
 const mockQuery = vi.mocked(runQuery)
 
@@ -233,5 +235,69 @@ describe('query suggestions', () => {
     expect(within(menu).getAllByRole('menuitem').map(m => m.textContent)).toEqual(['Select rows', 'Count rows', 'Insert a row', 'Update a row', 'Delete a row'])
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Delete a row' }))
     expect(editor().value).toBe('DELETE FROM invoices\nWHERE id = NULL;')
+  })
+})
+
+// Point 12.1: the rest of what a branch holds, and each object's CREATE script.
+describe('the object browser', () => {
+  const objects = [
+    { kind: 'table', oid: 10, schema: 'public', name: 'invoices' },
+    { kind: 'function', oid: 20, schema: 'public', name: 'total', args: 'id integer' },
+    { kind: 'function', oid: 21, schema: 'bb', name: 'record_dml', args: '', system: true },
+    { kind: 'sequence', oid: 30, schema: 'shop', name: 'invoice_no' },
+    { kind: 'type', oid: 40, schema: 'public', name: 'status', sub: 'enum' },
+    { kind: 'schema', oid: 50, name: 'public' },
+    { kind: 'extension', oid: 60, schema: 'public', name: 'dblink', sub: '1.2' },
+  ] as const
+  const detail = (kind: string, oid: number) => {
+    if (oid === 20) return { ...objects[1], facts: [['returns', 'numeric']], ddl: 'CREATE OR REPLACE FUNCTION public.total(id integer) …;\n' }
+    if (oid === 40) return { ...objects[4], values: ['new', 'paid'], ddl: "CREATE TYPE public.status AS ENUM ('new', 'paid');\n" }
+    return { ...objects[0], kind, oid, constraints: [{ name: 'invoices_pkey', kind: 'primary key', def: 'PRIMARY KEY (id)' }],
+      triggers: [{ name: 'bb_record_dml', def: 'CREATE TRIGGER bb_record_dml …', system: true }],
+      ddl: 'CREATE TABLE public.invoices (\n    id integer NOT NULL\n);\n' }
+  }
+  beforeEach(() => {
+    vi.mocked(getCatalog).mockResolvedValue({ objects: objects.map(o => ({ ...o })) } as never)
+    vi.mocked(getObject).mockImplementation(async (_b, kind, oid) => detail(kind, oid) as never)
+  })
+
+  it("lists the other kinds, folded, with FoxByte's own left out", async () => {
+    await open()
+    const fn = await screen.findByRole('button', { name: /^Functions 1$/ })
+    expect(fn.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByText('total(id integer)')).toBeNull()
+    fireEvent.click(fn)
+    expect(screen.getByText('total(id integer)')).toBeTruthy()
+    expect(screen.queryByText(/record_dml/)).toBeNull()
+    for (const g of [/^Sequences 1$/, /^Types 1$/, /^Schemas 1$/, /^Extensions 1$/]) expect(screen.getByRole('button', { name: g })).toBeTruthy()
+  })
+
+  it('a search opens the groups it matches', async () => {
+    await open()
+    await screen.findByRole('button', { name: /^Functions 1$/ })
+    fireEvent.change(screen.getByPlaceholderText(/filter tables/i), { target: { value: 'invoice' } })
+    expect(screen.getByText('shop.invoice_no')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Functions/ })).toBeNull()
+  })
+
+  it('opens an object: what it is, and its CREATE script into the editor', async () => {
+    await open()
+    fireEvent.click(await screen.findByRole('button', { name: /^Types 1$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /status/ }))
+    expect(await screen.findByText('paid')).toBeTruthy()
+    expect(screen.getByLabelText('CREATE script').textContent).toBe("CREATE TYPE public.status AS ENUM ('new', 'paid');\n")
+    fireEvent.click(screen.getByRole('button', { name: 'Open in editor' }))
+    expect(editor().value).toBe("CREATE TYPE public.status AS ENUM ('new', 'paid');\n")
+  })
+
+  it('gives a table its constraints, triggers and CREATE script', async () => {
+    await open()
+    fireEvent.click(await screen.findByRole('button', { name: /invoices/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Constraints' }))
+    expect(await screen.findByText('PRIMARY KEY (id)')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Triggers' }))
+    expect(await screen.findByText('FoxByte')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'CREATE script' }))
+    expect((await screen.findByLabelText('CREATE script')).textContent).toMatch(/^CREATE TABLE public.invoices/)
   })
 })

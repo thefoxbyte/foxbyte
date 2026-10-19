@@ -421,6 +421,23 @@ export const setHistorySettings = (p: { mine?: boolean; enabled?: boolean; reten
   req('PUT', `${API}/api/history/settings`, p) as Promise<HistorySettings>
 export const deleteMyHistory = () => req('DELETE', `${API}/api/history`) as Promise<{ deleted: number }>
 export const deleteHistoryEntry = (id: number) => req('DELETE', `${API}/api/history/${id}`)
+// The object browser (point 12.1): what a branch holds, read as you, and each
+// object's CREATE script.
+export type CatalogKind = 'schema' | 'table' | 'view' | 'sequence' | 'function' | 'procedure' | 'type' | 'extension'
+export type CatalogObject = {
+  kind: CatalogKind; oid: number; schema?: string; name: string; args?: string; sub?: string; system?: boolean
+}
+export type CatalogPart = { name: string; kind?: string; def: string; constraint?: boolean; system?: boolean; disabled?: boolean }
+export type CatalogCol = { name: string; type: string; not_null?: boolean; default?: string; identity?: string; generated?: string; comment?: string }
+export type ObjectDetail = CatalogObject & {
+  comment?: string; columns?: CatalogCol[]; constraints?: CatalogPart[]; indexes?: CatalogPart[]; triggers?: CatalogPart[]
+  facts?: [string, string][]; values?: string[]; members?: { Kind: string; Name: string }[]; ddl: string
+}
+export const getCatalog = (branch: string) =>
+  req('GET', `${API}/api/branches/${branch}/schema`) as Promise<{ objects: CatalogObject[] | null }>
+export const getObject = (branch: string, kind: CatalogKind, oid: number) =>
+  req('GET', `${API}/api/branches/${branch}/schema/${kind}/${oid}`) as Promise<ObjectDetail>
+
 // Saved queries (point 8.2): a statement kept under a name until you delete it.
 export type SavedQuery = { id: number; name: string; sql: string; created: number; updated: number }
 export const listSaved = (q = '') =>

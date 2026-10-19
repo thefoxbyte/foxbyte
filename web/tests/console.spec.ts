@@ -663,3 +663,41 @@ test('the editor suggests names as you type, offers a fix for a misspelt one, an
   await page.getByRole('button', { name: /^run/i }).click()
   await expect(page.locator('.grid-wrap td:not(.expand-col)').first()).toHaveText('0', { timeout: 30_000 })
 })
+
+// Point 12.1: the object browser. The rest of what a branch holds, found in
+// the rail, and each object's CREATE script.
+test('the object browser shows functions, types and a table\'s parts, with their CREATE scripts', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const t = `e2e_ob_${Date.now().toString().slice(-6)}`
+  const ed = page.locator('textarea.editor')
+  await ed.fill(`CREATE TABLE ${t} (id int PRIMARY KEY, n int CHECK (n > 0)); CREATE TYPE ${t}_mood AS ENUM ('ok', 'meh'); CREATE FUNCTION ${t}_f(x int) RETURNS int LANGUAGE sql IMMUTABLE AS 'SELECT x + 1'`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.res-tab')).toHaveCount(3, { timeout: 30_000 })
+  // The rail reloads after DDL; a search opens the groups that hold a match.
+  await page.locator('.obj-filter').fill(t)
+  const fn = page.locator('.obj-item', { hasText: `${t}_f(x integer)` })
+  await expect(fn).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('.obj-item', { hasText: `${t}_mood` })).toBeVisible()
+
+  // A function: what it is, and its script into the editor.
+  await fn.click()
+  const view = page.getByRole('region', { name: new RegExp(`function ${t}_f`) })
+  await expect(view.getByRole('cell', { name: 'immutable', exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(view.getByLabel('CREATE script')).toContainText(`CREATE OR REPLACE FUNCTION public.${t}_f(x integer)`)
+  await view.getByRole('button', { name: 'Open in editor' }).click()
+  await expect(ed).toHaveValue(new RegExp(`^CREATE OR REPLACE FUNCTION public\\.${t}_f\\(x integer\\)`))
+
+  // A type: its values.
+  await page.locator('.obj-item', { hasText: `${t}_mood` }).click()
+  await expect(page.getByLabel('CREATE script')).toContainText(`CREATE TYPE public.${t}_mood AS ENUM ('ok', 'meh');`)
+
+  // A table: its constraints and its CREATE script.
+  await page.locator('.obj-item', { hasText: t }).filter({ hasNotText: '(' }).filter({ hasNotText: 'mood' }).first().click()
+  await page.getByRole('button', { name: 'Constraints' }).click()
+  await expect(page.getByText('PRIMARY KEY (id)')).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText('CHECK (n > 0)')).toBeVisible()
+  await page.getByRole('button', { name: 'CREATE script' }).click()
+  await expect(page.getByLabel('CREATE script')).toContainText(`CREATE TABLE public.${t} (`)
+})

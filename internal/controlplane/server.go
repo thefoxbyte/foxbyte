@@ -334,6 +334,11 @@ func registerAPI(mux *http.ServeMux) {
 	// The whole result of one statement, streamed as a file (point 1.3).
 	mux.HandleFunc("POST /api/branches/{name}/export", handleExport)
 
+	// The object browser (point 12.1): what the branch holds, and each
+	// object's CREATE script.
+	mux.HandleFunc("GET /api/branches/{name}/schema", handleCatalog)
+	mux.HandleFunc("GET /api/branches/{name}/schema/{kind}/{oid}", handleCatalogObject)
+
 	// Run SQL against a branch (powers the web SQL console).
 	mux.HandleFunc("POST /api/branches/{name}/query", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")

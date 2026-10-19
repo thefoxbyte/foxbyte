@@ -607,6 +607,67 @@ paths:
               schema: { $ref: "#/components/schemas/QueryResult" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/schema:
+    get:
+      tags: [branches]
+      summary: What the branch holds, for the object browser.
+      description: >-
+        Schemas, tables, views, functions, procedures, sequences, types and
+        extensions, read as the signed-in user in a read-only transaction. The
+        system schemas are left out; FoxByte's own (bb) are marked system. What
+        an extension installed, and what Postgres made as part of something
+        else (an identity column's sequence), is not listed on its own. Tables
+        and views are the ones the caller holds a privilege on.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200":
+          description: The objects.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  objects: { type: array, items: { $ref: "#/components/schemas/CatalogObject" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/schema/{kind}/{oid}:
+    get:
+      tags: [branches]
+      summary: One object, what it is made of, and its CREATE script.
+      description: >-
+        Columns, constraints, indexes and triggers for a table (FoxByte's own
+        triggers marked system and left out of the script); a view's definition;
+        a function's arguments, result and language; a sequence's range; a
+        type's values or fields; what an extension installed. ddl is what it
+        would take to make the object again, without grants or ownership. An
+        object the caller's list does not hold answers 404.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: kind, in: path, required: true, schema: { type: string, enum: [schema, table, view, sequence, function, procedure, type, extension] } }
+        - { name: oid, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: The object.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/CatalogObject" }
+                  - type: object
+                    properties:
+                      comment: { type: string }
+                      columns: { type: array, items: { type: object } }
+                      constraints: { type: array, items: { type: object } }
+                      indexes: { type: array, items: { type: object } }
+                      triggers: { type: array, items: { type: object } }
+                      facts: { type: array, items: { type: array, items: { type: string } } }
+                      values: { type: array, items: { type: string } }
+                      members: { type: array, items: { type: object } }
+                      ddl: { type: string }
+        "400": { description: The oid is not a number. }
+        "404": { description: No such object, or not one the caller's list holds. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches/{name}/ledger:
     get:
       tags: [ledger]
@@ -1882,6 +1943,16 @@ components:
         tables_ready: { type: integer, description: "Tables whose initial copy is done and that now stream changes. Cut over once it equals tables." }
         last_message_at: { type: string, format: date-time, description: When the source last sent anything. }
         received_lsn: { type: string }
+    CatalogObject:
+      type: object
+      properties:
+        kind: { type: string, enum: [schema, table, view, sequence, function, procedure, type, extension] }
+        oid: { type: integer }
+        schema: { type: string }
+        name: { type: string }
+        args: { type: string, description: "A function's or procedure's arguments, which tell overloads apart." }
+        sub: { type: string, description: "partitioned, foreign, materialized; enum, composite, domain, range; or an extension's version." }
+        system: { type: boolean, description: "FoxByte's own (the bb schemas)." }
     SavedQuery:
       type: object
       properties:
