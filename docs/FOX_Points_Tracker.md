@@ -114,9 +114,9 @@ A sub-point is ✅ only when all of these hold:
 
 | Sub-point | CLI | UI | Status | PR |
 |---|---|---|---|---|
-| 8.1 Record console and API queries per user: SQL, branch, time, duration, rows, outcome | ✅ `fox history [--branch] [--limit] [--json]`; console, API, `fox sql`, `fox export` recorded (§11l) | ➖ (recorded from the console; seen on the account page) | ✅ | #PR |
+| 8.1 Record console and API queries per user: SQL, branch, time, duration, rows, outcome | ✅ `fox history [--branch] [--limit] [--json]`; console, API, `fox sql`, `fox export` recorded (§11l) | ➖ (recorded from the console; seen on the account page) | ✅ | #155 |
 | 8.2 History panel: search, re-run, copy, saved queries | `fox history --search` | History panel | ⬜ | |
-| 8.3 Privacy: no results kept, 90-day retention, can be off, own history only, searchable and purgeable for a person | ✅ `fox history purge [--user]`, `--user`, `--people`, `on\|off`, `retention <days>` (§11l) | ✅ Account page: count, my switch, delete mine; install switch and retention for admins (Playwright) | ✅ | #PR |
+| 8.3 Privacy: no results kept, 90-day retention, can be off, own history only, searchable and purgeable for a person | ✅ `fox history purge [--user]`, `--user`, `--people`, `on\|off`, `retention <days>` (§11l) | ✅ Account page: count, my switch, delete mine; install switch and retention for admins (Playwright) | ✅ | #155 |
 
 ### 9. Query suggestions (Standard)
 
