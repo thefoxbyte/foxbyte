@@ -124,7 +124,8 @@ func (s *Store) ListAccounts() ([]Account, error) {
 // and its pipelines. The branches it owned stay, with no owner, so only an
 // admin can reach them; nothing in a database is deleted.
 //
-// Its query history goes with it, and its choice to keep none: an email
+// Its query history and saved queries go with it, and its choice to keep
+// none: an email
 // address used again later is a different person, who must not inherit the
 // SQL the last one typed.
 func (s *Store) DeleteAccount(userID int64) error {
@@ -141,6 +142,7 @@ func (s *Store) DeleteAccount(userID int64) error {
 		`DELETE FROM branch_owners WHERE user_id=?`,
 		`DELETE FROM query_history WHERE actor=(SELECT email FROM users WHERE id=?)`,
 		`DELETE FROM history_optout WHERE actor=(SELECT email FROM users WHERE id=?)`,
+		`DELETE FROM saved_queries WHERE actor=(SELECT email FROM users WHERE id=?)`,
 	} {
 		if _, err := tx.Exec(q, userID); err != nil {
 			return err

@@ -1380,6 +1380,8 @@ paths:
         - { name: branch, in: query, schema: { type: string } }
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
         - { name: before, in: query, description: "Entries older than this id, for the next page.", schema: { type: integer } }
+        - { name: q, in: query, description: "Only entries whose SQL contains this text, ignoring case; % and _ match themselves.", schema: { type: string } }
+        - { name: failed, in: query, description: "1 for only the statements that failed.", schema: { type: string, enum: ["1", "true"] } }
       responses:
         "200":
           description: Your entries.
@@ -1410,6 +1412,75 @@ paths:
       summary: Delete all of your query history. Recorded in the security log (history.purged).
       responses:
         "200": { description: "How many entries were deleted: {\"deleted\": n}." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/saved-queries:
+    get:
+      tags: [accounts]
+      summary: Your saved queries, by name.
+      description: >-
+        A statement kept under a name, until you delete it (history's retention
+        does not apply). Only your own. Gone with your account.
+      parameters:
+        - { name: q, in: query, description: "Only those whose name or SQL contains this text, ignoring case.", schema: { type: string } }
+      responses:
+        "200":
+          description: Your saved queries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queries: { type: array, items: { $ref: "#/components/schemas/SavedQuery" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [accounts]
+      summary: Save a query under a name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, sql]
+              properties:
+                name: { type: string, maxLength: 100 }
+                sql: { type: string, description: At most 64 KB; a longer one is refused rather than cut. }
+      responses:
+        "201": { description: Saved., content: { application/json: { schema: { $ref: "#/components/schemas/SavedQuery" } } } }
+        "400": { description: "No name, no SQL, too long, or 1,000 saved already." }
+        "409": { description: You already have a saved query with that name. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/saved-queries/{id}:
+    put:
+      tags: [accounts]
+      summary: Rename one of your saved queries, or change its SQL.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, description: Left as it is when empty. }
+                sql: { type: string, description: Left as it is when empty. }
+      responses:
+        "200": { description: Changed., content: { application/json: { schema: { $ref: "#/components/schemas/SavedQuery" } } } }
+        "400": { description: Too long, or not JSON. }
+        "404": { description: No such saved query of yours. }
+        "409": { description: You already have a saved query with that name. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [accounts]
+      summary: Delete one of your saved queries.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: No such saved query of yours. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/history/{id}:
@@ -1811,6 +1882,14 @@ components:
         tables_ready: { type: integer, description: "Tables whose initial copy is done and that now stream changes. Cut over once it equals tables." }
         last_message_at: { type: string, format: date-time, description: When the source last sent anything. }
         received_lsn: { type: string }
+    SavedQuery:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        sql: { type: string }
+        created: { type: integer, description: Unix milliseconds }
+        updated: { type: integer, description: Unix milliseconds }
     QueryResult:
       type: object
       properties:

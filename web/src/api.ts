@@ -402,11 +402,13 @@ export type HistoryEntry = {
   sql: string; truncated?: boolean; at: number; duration_ms: number; rows: number; ok: boolean; error?: string
 }
 export type HistorySettings = { enabled: boolean; retention_days: number; mine: boolean; count: number; admin: boolean }
-export const listHistory = (opts: { branch?: string; limit?: number; before?: number } = {}) => {
+export const listHistory = (opts: { branch?: string; limit?: number; before?: number; q?: string; failed?: boolean } = {}) => {
   const q = new URLSearchParams()
   if (opts.branch) q.set('branch', opts.branch)
   if (opts.limit) q.set('limit', String(opts.limit))
   if (opts.before) q.set('before', String(opts.before))
+  if (opts.q) q.set('q', opts.q)
+  if (opts.failed) q.set('failed', '1')
   const qs = q.toString()
   return req('GET', `${API}/api/history${qs ? `?${qs}` : ''}`) as Promise<{ entries: HistoryEntry[] }>
 }
@@ -414,6 +416,15 @@ export const historySettings = () => req('GET', `${API}/api/history/settings`) a
 export const setHistorySettings = (p: { mine?: boolean; enabled?: boolean; retention_days?: number }) =>
   req('PUT', `${API}/api/history/settings`, p) as Promise<HistorySettings>
 export const deleteMyHistory = () => req('DELETE', `${API}/api/history`) as Promise<{ deleted: number }>
+export const deleteHistoryEntry = (id: number) => req('DELETE', `${API}/api/history/${id}`)
+// Saved queries (point 8.2): a statement kept under a name until you delete it.
+export type SavedQuery = { id: number; name: string; sql: string; created: number; updated: number }
+export const listSaved = (q = '') =>
+  req('GET', `${API}/api/saved-queries${q ? `?q=${encodeURIComponent(q)}` : ''}`) as Promise<{ queries: SavedQuery[] }>
+export const saveQuery = (name: string, sql: string) => req('POST', `${API}/api/saved-queries`, { name, sql }) as Promise<SavedQuery>
+export const updateSaved = (id: number, p: { name?: string; sql?: string }) =>
+  req('PUT', `${API}/api/saved-queries/${id}`, p) as Promise<SavedQuery>
+export const deleteSaved = (id: number) => req('DELETE', `${API}/api/saved-queries/${id}`)
 // exportQuery is the whole result of one statement as a file (point 1.3), not
 // the 1,000 rows a run holds. The server streams it as the signed-in user, read
 // only, and records it in the security log. A failure before the first row is

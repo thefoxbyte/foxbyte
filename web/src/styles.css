@@ -963,6 +963,40 @@ th.expand-col, td.expand-col { width: 58px; padding-left: 8px; padding-right: 0;
 .wb-rail .obj-list { flex: 1; min-height: 0; overflow: auto; }
 
 .wb-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* The history panel (point 8.2): the schema rail's twin on the other side. */
+.wb-history {
+  flex: none; width: 320px; border-left: 1px solid var(--border); background: var(--panel);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.hist-tabs { display: flex; border-bottom: 1px solid var(--border); background: var(--panel-2); }
+.hist-tabs button {
+  flex: 1; background: none; border: 0; border-bottom: 2px solid transparent; padding: var(--s-2) var(--s-3);
+  font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em; font-weight: 650; color: var(--muted); cursor: pointer;
+}
+.hist-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.hist-filters { padding: var(--s-3) var(--s-3) var(--s-2); display: flex; flex-direction: column; gap: var(--s-2); }
+.hist-checks { display: flex; gap: var(--s-3); flex-wrap: wrap; font-size: var(--t-sm); }
+.hist-checks .check-row { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.hist-checks input { width: auto; }
+.hist-note { margin: 0 var(--s-3) var(--s-2); font-size: var(--t-sm); }
+.hist-list { list-style: none; margin: 0; padding: 0 0 var(--s-3); flex: 1; min-height: 0; overflow: auto; }
+.hist-item { padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--border); }
+.hist-item.bad { border-left: 3px solid var(--red); }
+.hist-sql {
+  display: block; font-family: var(--font-mono); font-size: var(--t-xs, 12px); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; background: none; padding: 0;
+}
+.hist-meta { display: flex; flex-wrap: wrap; gap: var(--s-2); font-size: 11px; color: var(--muted); margin-top: 2px; }
+.hist-meta .n-bad { color: var(--red); }
+.hist-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: var(--s-1); }
+.hist-actions button.sm, .hist-name button.sm, .hist-more, .hist-save-current button.sm { padding: 2px 8px; font-size: 12px; }
+.hist-name { display: flex; gap: 4px; margin-top: var(--s-1); }
+.hist-name input { flex: 1; min-width: 0; font-size: var(--t-sm); padding: 2px 6px; }
+.hist-empty { padding: var(--s-3); color: var(--muted); font-size: var(--t-sm); }
+.hist-save-current { padding: var(--s-1) var(--s-3) var(--s-2); }
+.hist-more { margin: var(--s-2) var(--s-3); }
+@media (max-width: 900px) { .wb-history { width: 260px; } }
 .wb-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .wb-pane.wb-ed { flex: 0 0 auto; }
 .wb-pane.wb-res { flex: 1; }

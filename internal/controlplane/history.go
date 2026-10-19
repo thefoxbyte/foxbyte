@@ -4,6 +4,7 @@ package controlplane
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -70,11 +71,15 @@ func RecordCLIQuery(store *auth.Store, actor, branchName, sql, kind string, star
 
 // registerHistory mounts the caller's own history and the switches:
 //
-//	GET    /api/history               your entries, newest first (?branch, ?limit, ?before)
+//	GET    /api/history               your entries, newest first (?branch, ?limit, ?before, ?q, ?failed)
 //	DELETE /api/history               delete all of yours
 //	DELETE /api/history/{id}          delete one of yours
 //	GET    /api/history/settings      the install's settings, yours, and how many you have
 //	PUT    /api/history/settings      {"mine": bool} for you; {"enabled", "retention_days"} for admins
+//	GET    /api/saved-queries         your saved queries by name (?q)
+//	POST   /api/saved-queries         {"name", "sql"}: save one
+//	PUT    /api/saved-queries/{id}    {"name"?, "sql"?}: rename or change one
+//	DELETE /api/saved-queries/{id}    delete one
 //
 // There is no route to read or delete somebody else's history, admins
 // included: that is `fox history --user` at the machine, recorded in the
@@ -82,7 +87,8 @@ func RecordCLIQuery(store *auth.Store, actor, branchName, sql, kind string, star
 func registerHistory(mux *http.ServeMux, store *auth.Store) {
 	mux.HandleFunc("GET /api/history", func(w http.ResponseWriter, r *http.Request) {
 		u, _ := auth.UserFrom(r.Context())
-		q := auth.HistoryQuery{Branch: r.URL.Query().Get("branch")}
+		q := auth.HistoryQuery{Branch: r.URL.Query().Get("branch"), Search: r.URL.Query().Get("q"),
+			Failed: r.URL.Query().Get("failed") == "1" || r.URL.Query().Get("failed") == "true"}
 		q.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
 		q.Before, _ = strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
 		h, err := store.History(u.Email, q)
@@ -160,6 +166,77 @@ func registerHistory(mux *http.ServeMux, store *auth.Store) {
 		}
 		writeHistorySettings(w, r, store, u)
 	})
+}
+
+// The saved queries (point 8.2): the caller's own, by name.
+func registerSavedQueries(mux *http.ServeMux, store *auth.Store) {
+	mux.HandleFunc("GET /api/saved-queries", func(w http.ResponseWriter, r *http.Request) {
+		u, _ := auth.UserFrom(r.Context())
+		qs, err := store.SavedQueries(u.Email, r.URL.Query().Get("q"))
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"queries": qs})
+	})
+	mux.HandleFunc("POST /api/saved-queries", func(w http.ResponseWriter, r *http.Request) {
+		u, _ := auth.UserFrom(r.Context())
+		var body struct{ Name, SQL string }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, 400, fmt.Errorf("the body must be JSON: {\"name\": …, \"sql\": …}"))
+			return
+		}
+		q, err := store.SaveQuery(u.Email, body.Name, body.SQL)
+		if err != nil {
+			writeErr(w, savedStatus(err), err)
+			return
+		}
+		writeJSON(w, 201, q)
+	})
+	mux.HandleFunc("PUT /api/saved-queries/{id}", func(w http.ResponseWriter, r *http.Request) {
+		u, _ := auth.UserFrom(r.Context())
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			writeErr(w, 400, fmt.Errorf("id must be a number"))
+			return
+		}
+		var body struct{ Name, SQL string }
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, 400, fmt.Errorf("the body must be JSON"))
+			return
+		}
+		q, err := store.UpdateSavedQuery(u.Email, id, body.Name, body.SQL)
+		if err != nil {
+			writeErr(w, savedStatus(err), err)
+			return
+		}
+		writeJSON(w, 200, q)
+	})
+	mux.HandleFunc("DELETE /api/saved-queries/{id}", func(w http.ResponseWriter, r *http.Request) {
+		u, _ := auth.UserFrom(r.Context())
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			writeErr(w, 400, fmt.Errorf("id must be a number"))
+			return
+		}
+		if err := store.DeleteSavedQuery(u.Email, id); err != nil {
+			writeErr(w, savedStatus(err), err)
+			return
+		}
+		w.WriteHeader(204)
+	})
+}
+
+// savedStatus is the answer for a saved query refused: not found, a name
+// already taken, or something wrong with what was sent.
+func savedStatus(err error) int {
+	switch {
+	case errors.Is(err, auth.ErrNoSavedQuery):
+		return 404
+	case errors.Is(err, auth.ErrSavedNameTaken):
+		return 409
+	}
+	return 400
 }
 
 func writeHistorySettings(w http.ResponseWriter, r *http.Request, store *auth.Store, u auth.User) {

@@ -38,3 +38,16 @@ func TestPrintHistory(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+func TestPrintSaved(t *testing.T) {
+	var b bytes.Buffer
+	printSaved(&b, nil)
+	if !strings.Contains(b.String(), "No saved queries") {
+		t.Fatalf("%q", b.String())
+	}
+	b.Reset()
+	printSaved(&b, []auth.SavedQuery{{ID: 1, Name: "big orders", SQL: "SELECT *\nFROM orders", Updated: time.Now().UnixMilli()}})
+	if out := b.String(); !strings.Contains(out, "big orders") || !strings.Contains(out, "SELECT * FROM orders") {
+		t.Fatalf("%q", out)
+	}
+}
