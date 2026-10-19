@@ -4,7 +4,7 @@ What is done and what is left of the 13 points (the expert's 12, plus the
 Aadhaar vault mode), sub-point by sub-point. The sub-points are the phases in
 `docs/FOX_Expert_Review_Plan.md`, section 6. Updated with every PR.
 
-**Last updated:** 19 October 2026: 8.2 done (the history panel and saved queries). Point 8 is complete.
+**Last updated:** 19 October 2026: 8.2 done (the history panel and saved queries); point 8 is complete. Every open sub-point checked against the code: none already complete, four partly there (◐).
 
 ## How a sub-point counts as done
 
@@ -21,8 +21,8 @@ A sub-point is ✅ only when all of these hold:
    `integration-realtime`, `integration-update`, `integration-pg-upgrade`).
 4. **Docs:** the feature doc and checklist are updated, and so is this file.
 
-**Key:** ✅ done · 🟡 in progress · ⬜ not started · ⏸ waiting on a decision ·
-➖ not applicable
+**Key:** ✅ done · 🟡 in progress · ◐ partly there already (see "Checked against the code") ·
+⬜ not started · ⏸ waiting on a decision · ➖ not applicable
 
 ## Summary
 
@@ -60,7 +60,7 @@ A sub-point is ✅ only when all of these hold:
 | 2.1 Full load | `fox pipeline run` | Pipelines page | ✅ (existing) | |
 | 2.2 Incremental by the source's own watermark column, merged by primary key | `fox pipeline … --mode incremental` | Load mode per table | ⬜ | |
 | 2.3 Change data capture from Postgres sources, reusing continuous import | `fox pipeline … --mode cdc` | Load mode per table | ⬜ | |
-| 2.4 Incremental transformations; per-run inserted, updated and deleted counts | `fox pipeline runs` | Run history | ⬜ | |
+| 2.4 Incremental transformations; per-run inserted, updated and deleted counts | `fox pipeline runs` | Run history | ◐ | |
 | 2.5 Lakeflow: the Gateway replication test, then the sovereignty decision | ➖ | ➖ | ⏸ customer demand, and a founders' decision | |
 
 ### 3. CIS benchmark, hardening, pgAudit (pgAudit Standard; CIS edition ⏸ founders)
@@ -83,7 +83,7 @@ A sub-point is ✅ only when all of these hold:
 | 4.5 Aadhaar exposure report: outside the vault, including pgAudit logs and query history | `fox pii aadhaar` | Exposure report | ⏸ first customers to confirm | |
 | 4.6 Verify and mark: suggested, then confirmed or rejected from masked samples, recorded; marks travel with branches | `fox pii mark …` | Review queue | ⬜ | |
 | 4.7 Keep it current: re-scans; new columns and paths unclassified until reviewed | `fox pii scan --since` | "Unclassified" list | ⬜ | |
-| 4.8 Access review report: accounts, roles, admin grants, keys (age, last use, kind), unmask rights, dormant accounts; PDF/CSV | `fox access review` | Access review page | ⬜ | |
+| 4.8 Access review report: accounts, roles, admin grants, keys (age, last use, kind), unmask rights, dormant accounts; PDF/CSV | `fox access review` | Access review page | ◐ | |
 | 4.9 Review campaigns: periodic approve or revoke, signed off | `fox access campaign …` | Campaigns page | ⬜ | |
 
 ### 5. "Last modified": who changed each row (Standard)
@@ -149,8 +149,8 @@ A sub-point is ✅ only when all of these hold:
 
 | Sub-point | CLI | UI | Status | PR |
 |---|---|---|---|---|
-| 12.1 Object browser (read-only): schemas, tables with columns, constraints, indexes, triggers; views; functions, procedures, sequences, types, extensions; each object's `CREATE` script; search | `fox schema [object]` | Object browser | ⬜ | |
-| 12.2 Data grid: sort, filter, page; add, edit and delete rows on tables with a primary key, in one transaction; honours masking | ➖ (`fox sql`) | Data grid | ⬜ | |
+| 12.1 Object browser (read-only): schemas, tables with columns, constraints, indexes, triggers; views; functions, procedures, sequences, types, extensions; each object's `CREATE` script; search | `fox schema [object]` | Object browser | ◐ | |
+| 12.2 Data grid: sort, filter, page; add, edit and delete rows on tables with a primary key, in one transaction; honours masking | ➖ (`fox sql`) | Data grid | ◐ | |
 | 12.3 Create and edit dialogs for tables, functions, procedures, triggers | ➖ | Dialogs | ⏸ customer demand | |
 | 12.4 Run, toggle and plan views | ➖ | ➖ | ⏸ customer demand | |
 | 12.5 Maintenance and sessions | `fox sessions` | Sessions page | ⏸ customer demand | |
@@ -164,6 +164,26 @@ A sub-point is ✅ only when all of these hold:
 | 13.2 Reference tokens: random, never hashes; detokenising a separate, audited permission | same | same | ⏸ | |
 | 13.3 Migration: move exposed Aadhaar into the vault, tokens left behind, on a branch first | same | same | ⏸ | |
 | 13.4 Evidence for UIDAI audits | same | same | ⏸ | |
+
+## Checked against the code (19 October 2026)
+
+Every sub-point not done was checked against what FoxByte already does, CLI
+and console, by the same rule as above. **None is already complete.** 2.1
+(full load) was the only one, and it was marked when this table was made.
+Four have parts in place, which makes them smaller than they look:
+
+| Sub-point | Already there | Still needed |
+|---|---|---|
+| 2.4 | Pipeline runs recorded (status, start and finish, tables, test results, log), `GET /api/pipelines/{id}/runs`, and a run history on the pipeline page | Incremental transformations (models are rebuilt in full), inserted/updated/deleted counts, `fox pipeline runs` |
+| 4.8 | `fox user list` (keys and branches per account), `fox apikey list`, `fox admin list`; each key's last use is stored; `GET /api/users` | One report, key age and last use shown, dormant accounts, unmask rights (after point 7), PDF/CSV, `fox access review`, a page |
+| 12.1 | The console's schema rail: tables and views, a filter, system tables on request; per table its rows, columns (type, nullable, default) and indexes | Schemas, constraints, triggers, functions, procedures, sequences, types, extensions, `CREATE` scripts, `fox schema` |
+| 12.2 | Rows paged with a total; copy and export of what is shown (1.1–1.3) | Sorting, filtering, adding, editing and deleting rows in one transaction, masking (after point 7) |
+
+Next to a point but not part of it: 2.3 can reuse `fox import --continuous`
+(logical replication, with status and cutover); 3.1's `fox audit` today is
+FoxByte's own signed security log, not pgAudit; 10's only schedulers are the
+fixed-interval backup and checkpoint timers; 11.3's only retention is query
+history's (8.3).
 
 ## Groundwork already done
 
