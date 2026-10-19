@@ -259,6 +259,9 @@ func handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	if !started {
 		out := queryErr(err)
+		if sg := suggestFor(r.Context(), conn, body.SQL, err); sg != nil {
+			out["suggestion"] = sg
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
 		_ = json.NewEncoder(w).Encode(out)

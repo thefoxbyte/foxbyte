@@ -87,3 +87,16 @@ func TestPrintSQLXLSX(t *testing.T) {
 		t.Fatalf("not a workbook: %v", err)
 	}
 }
+
+// Point 9.2: fox sql says what was probably meant, once, under the error.
+func TestPrintSQLSuggestion(t *testing.T) {
+	sg := &controlplane.Suggestion{Kind: "table", Wrong: "custmers", Right: "Customers", Insert: `"Customers"`}
+	var w, ew bytes.Buffer
+	out := controlplane.SQLOutput{Error: "x", Suggestion: sg, Results: []controlplane.SQLResult{{Error: "x", Suggestion: sg}}}
+	if code := printSQL(&w, &ew, out, "table", sqlOpts(nil)); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	if n := strings.Count(ew.String(), `Did you mean "Customers"?`); n != 1 {
+		t.Fatalf("printed %d times:\n%s", n, ew.String())
+	}
+}

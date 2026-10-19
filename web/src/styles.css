@@ -1085,7 +1085,30 @@ body.row-resizing { cursor: row-resize; user-select: none; }
    which is worse than no numbers, because the point of them is to be able to
    trust "line 7". So the editor scrolls sideways instead, as a code editor
    does. --wb-line is the one place the two agree on a height. */
-.wb-edit { --wb-line: 21px; flex: 1; display: flex; min-height: 0; }
+.wb-edit { --wb-line: 21px; flex: 1; display: flex; min-height: 0; position: relative; }
+
+/* Autocomplete (point 9.1): a list under the caret, inside the editor. */
+.sql-complete {
+  position: absolute; z-index: 40; margin: 2px 0 0; padding: 4px 0; list-style: none; min-width: 220px; max-width: 420px;
+  max-height: 240px; overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18); font-family: var(--font-mono); font-size: var(--t-xs, 12px);
+}
+.sql-complete li { display: flex; align-items: center; gap: 8px; padding: 3px 10px; cursor: pointer; white-space: nowrap; }
+.sql-complete li.on { background: var(--accent); color: var(--accent-ink, #fff); }
+.sql-complete .k { flex: none; width: 16px; height: 16px; border-radius: 4px; display: inline-grid; place-items: center;
+  font-size: 10px; font-weight: 700; background: var(--panel-2); color: var(--muted); }
+.sql-complete li.on .k { background: rgba(255, 255, 255, .2); color: inherit; }
+.sql-complete .l { overflow: hidden; text-overflow: ellipsis; }
+.sql-complete .d { margin-left: auto; padding-left: 12px; color: var(--muted); font-size: 11px; }
+.sql-complete li.on .d { color: inherit; opacity: .8; }
+
+/* "Did you mean" (point 9.2), under an error. */
+.err-fix { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-2); }
+.err-fix button.sm { padding: 2px 10px; font-size: 12px; }
+
+/* Snippets for a table (point 9.3). */
+.snippet-pop { width: 220px; gap: 2px; }
+.snippet-item { text-align: left; justify-content: flex-start; padding: 4px 8px; }
 .wb-gutter {
   flex: none; overflow: hidden; user-select: none; text-align: right;
   padding: var(--s-3) 8px var(--s-3) 10px;
