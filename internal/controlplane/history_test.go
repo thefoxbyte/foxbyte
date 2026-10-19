@@ -26,13 +26,7 @@ func historyServer(t *testing.T) (*auth.Store, func(key, method, path, body stri
 		keys[name] = k
 	}
 	call := func(key, method, path, body string) (int, map[string]any) {
-		r := httptest.NewRequest(method, path, strings.NewReader(body))
-		r.Header.Set("Authorization", "Bearer "+key)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		out := map[string]any{}
-		_ = json.Unmarshal(w.Body.Bytes(), &out)
-		return w.Code, out
+		return serve(t, h, key, method, path, body)
 	}
 	return s, call, keys
 }
@@ -154,6 +148,18 @@ func TestRequestSource(t *testing.T) {
 	if auth.RequestSource(r) != "console" {
 		t.Fatal("a session is the console")
 	}
+}
+
+// serve sends one request with a key and reads the JSON answer.
+func serve(t *testing.T, h http.Handler, key, method, path, body string) (int, map[string]any) {
+	t.Helper()
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer "+key)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	out := map[string]any{}
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, out
 }
 
 func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }

@@ -97,6 +97,10 @@ type HistoryQuery struct {
 	Branch string
 	Limit  int
 	Before int64 // entries older than this id, for the next page
+	// Search keeps entries whose SQL contains this text, ignoring case
+	// (point 8.2). Matched literally: % and _ are themselves, not wildcards.
+	Search string
+	Failed bool // only the statements that failed
 }
 
 // HistorySettings returns the install's settings, defaults filled in.
@@ -267,6 +271,13 @@ func (s *Store) History(actor string, q HistoryQuery) ([]HistoryEntry, error) {
 		where += ` AND id<?`
 		args = append(args, q.Before)
 	}
+	if q.Search != "" {
+		where += ` AND sql LIKE ? ESCAPE '\'`
+		args = append(args, likeContains(q.Search))
+	}
+	if q.Failed {
+		where += ` AND ok=0`
+	}
 	rows, err := s.db.Query(`SELECT id, actor, branch, source, kind, sql, truncated, at, duration_ms, rows, ok, error
 		FROM query_history WHERE `+where+` ORDER BY id DESC LIMIT ?`, append(args, q.Limit)...)
 	if err != nil {
@@ -285,6 +296,25 @@ func (s *Store) History(actor string, q HistoryQuery) ([]HistoryEntry, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// HistoryEntryByID returns one of a person's own entries, within the
+// retention: to show it again or run it again (point 8.2).
+func (s *Store) HistoryEntryByID(actor string, id int64) (HistoryEntry, error) {
+	set, err := s.HistorySettings()
+	if err != nil {
+		return HistoryEntry{}, err
+	}
+	var e HistoryEntry
+	var trunc, ok int
+	err = s.db.QueryRow(`SELECT id, actor, branch, source, kind, sql, truncated, at, duration_ms, rows, ok, error
+		FROM query_history WHERE actor=? AND id=? AND at>=?`, actor, id, retentionCutoff(set)).Scan(
+		&e.ID, &e.Actor, &e.Branch, &e.Source, &e.Kind, &e.SQL, &trunc, &e.At, &e.DurationMS, &e.Rows, &ok, &e.Error)
+	if err != nil {
+		return e, fmt.Errorf("no entry %d in your history", id)
+	}
+	e.Truncated, e.OK = trunc != 0, ok != 0
+	return e, nil
 }
 
 // HistoryCount is how many entries a person has, within the retention.
@@ -347,6 +377,14 @@ func (s *Store) deleteHistory(q string, args ...any) (int64, error) {
 		return nil
 	})
 	return n, err
+}
+
+// likeContains is a LIKE pattern that finds s anywhere, with LIKE's own
+// wildcards escaped so they match themselves. SQLite's LIKE ignores the case of
+// ASCII letters, which is what a search box should do.
+func likeContains(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(s) + "%"
 }
 
 // cutText keeps at most max bytes of s, on a character boundary.

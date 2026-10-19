@@ -43,9 +43,9 @@ import (
 //   - pipeline_runs, realtime_activity: deliberately not. Both are append-only
 //     logs that grow without bound, and this mechanism carries a whole document
 //     each time it changes. Neither is needed to sign in or to serve a client.
-//   - query_history, history_optout, history_settings: deliberately not. The
-//     SQL people type is the last thing to replicate (history.go), and the
-//     settings are this node's.
+//   - query_history, saved_queries, history_optout, history_settings:
+//     deliberately not. The SQL people type is the last thing to replicate
+//     (history.go, saved.go), and the settings are this node's.
 //   - security_events: deliberately not. It is a hash chain, and a chain is a
 //     per-writer structure — two nodes' chains cannot be merged into one, and
 //     overwriting one node's chain with another's would destroy the evidence

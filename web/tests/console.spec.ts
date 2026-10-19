@@ -543,3 +543,69 @@ test('the queries you run are kept in your history, which you can turn off and d
   await expect(page.getByText(/^Deleted \d+ entr(y|ies)\.$/)).toBeVisible()
   await expect(page.getByTestId('history-count')).toHaveText(/^0 queries/)
 })
+
+// Point 8.2: the console's history panel. What you ran is there to find, open,
+// run again and copy, and to keep under a name.
+test('the history panel finds, opens, runs again, copies and saves a query', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await signIn(page)
+  // History on for this account, whatever an earlier run left.
+  await page.goto('/keys', { waitUntil: 'domcontentloaded' })
+  const mine = page.getByLabel(/keep a history of my queries/i)
+  await expect(page.getByTestId('history-count')).toBeVisible({ timeout: 30_000 })
+  if (!(await mine.isChecked())) await mine.check()
+
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const m = `e2e_h82_${Date.now().toString().slice(-6)}`
+  const sql = `SELECT 41 + 1 AS ${m}`
+  await page.locator('textarea.editor').fill(sql)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.grid-wrap td:not(.expand-col)').first()).toHaveText('42', { timeout: 30_000 })
+
+  // The panel shows the run, and finds it by a word in it.
+  if ((await page.getByRole('button', { name: 'History', exact: true }).getAttribute('aria-pressed')) !== 'true') {
+    await page.getByRole('button', { name: 'History', exact: true }).click()
+  }
+  const panel = page.getByRole('complementary', { name: 'Query history' })
+  await panel.getByLabel('Search history').fill(m)
+  const item = panel.locator('.hist-item', { hasText: m })
+  await expect(item).toHaveCount(1, { timeout: 30_000 })
+  await expect(item).toContainText(branch)
+  await expect(item).toContainText('1 row')
+
+  // Open puts it in the editor; Run runs it again and the panel shows that too.
+  await page.locator('textarea.editor').fill('SELECT 0')
+  await item.getByRole('button', { name: 'Open' }).click()
+  await expect(page.locator('textarea.editor')).toHaveValue(sql)
+  await page.locator('textarea.editor').fill('SELECT 0')
+  await item.first().getByRole('button', { name: 'Run' }).click()
+  await expect(page.locator('textarea.editor')).toHaveValue(sql)
+  await expect(page.locator('.grid-wrap td:not(.expand-col)').first()).toHaveText('42', { timeout: 30_000 })
+  await expect(panel.locator('.hist-item', { hasText: m })).toHaveCount(2, { timeout: 30_000 })
+
+  // Copy.
+  await panel.locator('.hist-item', { hasText: m }).first().getByRole('button', { name: 'Copy' }).click()
+  await expect(panel.getByText('Copied ✓')).toBeVisible()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(sql)
+
+  // Save under a name, and run it from Saved.
+  const first = panel.locator('.hist-item', { hasText: m }).first()
+  await first.getByRole('button', { name: 'Save' }).click()
+  await first.getByLabel('Name for the saved query').fill(`answer ${m}`)
+  await first.locator('form').getByRole('button', { name: /^save$/i }).click()
+  await expect(panel.getByText(`Saved as “answer ${m}”`)).toBeVisible()
+  await panel.getByRole('tab', { name: 'Saved' }).click()
+  await panel.getByLabel('Search saved queries').fill(m)
+  const saved = panel.locator('.hist-item', { hasText: `answer ${m}` })
+  await expect(saved).toHaveCount(1, { timeout: 30_000 })
+  await page.locator('textarea.editor').fill('SELECT 0')
+  await saved.getByRole('button', { name: 'Run' }).click()
+  await expect(page.locator('textarea.editor')).toHaveValue(sql)
+  await expect(page.locator('.grid-wrap td:not(.expand-col)').first()).toHaveText('42', { timeout: 30_000 })
+
+  // Deleted after asking.
+  await saved.getByRole('button', { name: `Delete answer ${m}` }).click()
+  await page.getByRole('button', { name: /^delete$/i }).click()
+  await expect(saved).toHaveCount(0)
+})

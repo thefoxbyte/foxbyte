@@ -5,11 +5,13 @@ import { BRAND } from '../brand'
 import { hintFor } from '../errhint'
 import CopyMenu, { cellText } from '../components/CopyMenu'
 import ExportMenu from '../components/ExportMenu'
+import HistoryPanel from '../components/HistoryPanel'
 
 type DbObject = { schema: string; name: string; type: 'table' | 'view' }
 type Tab = 'rows' | 'structure' | 'indexes'
 
 const PAGE = 100
+const HISTORY_KEY = 'fox.history.open'
 
 const lit = (s: string) => "'" + s.replace(/'/g, "''") + "'"
 const qid = (s: string) => '"' + s.replace(/"/g, '""') + '"'
@@ -63,6 +65,14 @@ export default function Console() {
   const [sql, setSql] = useState('SELECT version();')
   const [queryRes, setQueryRes] = useState<QueryResult | null>(null)
   const [ranSql, setRanSql] = useState('')
+  // The history panel (point 8.2): open or shut, remembered in this browser,
+  // and a count of runs so it can show each new one.
+  const [historyOpen, setHistoryOpen] = useState(() => { try { return localStorage.getItem(HISTORY_KEY) === '1' } catch { return false } })
+  const [historyTick, setHistoryTick] = useState(0)
+  const toggleHistory = () => setHistoryOpen(v => {
+    try { localStorage.setItem(HISTORY_KEY, v ? '0' : '1') } catch { /* not kept */ }
+    return !v
+  })
   // The branch the result came from, which an export of the whole of it reads.
   const [ranBranch, setRanBranch] = useState('main')
   // Workbench state. The rail and the divider are remembered per browser: both
@@ -209,21 +219,29 @@ export default function Console() {
 
   // The override applies to one run and then switches itself off, so a later
   // run can't drop something by accident.
-  const runSql = async (override: { allowDestructive?: boolean; allowRules?: string[] } = { allowDestructive }) => {
+  //
+  // text and on run something other than the editor on another branch: the
+  // history panel's Run (point 8.2), which puts the statement in the editor and
+  // moves to its branch first, so what is on screen is what ran.
+  const runSql = async (override: { allowDestructive?: boolean; allowRules?: string[] } = { allowDestructive }, text?: string, on?: string) => {
+    const q = text ?? sql
+    const b = on ?? branch
+    if (text !== undefined) setSql(text)
+    if (b !== branch) setBranch(b)
     setBusy(true); setQueryRes(null); setMode('query')
     // The SQL this run is labelled against. The editor is read-only while a
     // query is in flight, so it should not be able to change underneath — this
     // is the belt to that pair of braces, and it costs one assignment.
-    setRanSql(sql)
-    setRanBranch(branch)
+    setRanSql(q)
+    setRanBranch(b)
     try {
-      const r = await runQuery(branch, sql, override)
+      const r = await runQuery(b, q, override)
       setQueryRes(r)
-      if (!r.error && DDL.test(sql)) loadObjects(branch)
+      if (!r.error && DDL.test(q)) loadObjects(b)
     } catch (e) {
       setQueryRes({ error: (e as Error).message })
     } finally {
-      setBusy(false); setAllowDestructive(false)
+      setBusy(false); setAllowDestructive(false); setHistoryTick(t => t + 1)
     }
   }
 
@@ -306,6 +324,8 @@ export default function Console() {
           Allow destructive <span className="muted">(next run)</span>
         </label>
         <span className="wb-sp" />
+        <button className={'ghost' + (historyOpen ? ' on' : '')} aria-pressed={historyOpen} onClick={toggleHistory}
+          title="Your query history and saved queries">History</button>
         <span className="wb-meta">{BRAND.product} · {branch}</span>
       </div>
 
@@ -464,6 +484,11 @@ export default function Console() {
             </section>
           )}
         </div>
+        {historyOpen && (
+          <HistoryPanel branch={branch} branches={options.map(o => o.name)} tick={historyTick} busy={busy} current={sql}
+            onOpen={text => { setSql(text); setMode('query') }}
+            onRun={(text, on) => runSql({}, text, on)} />
+        )}
       </div>
 
       {/* The numbers worth glancing at, where a desktop app puts them: out of the

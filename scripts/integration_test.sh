@@ -1645,6 +1645,56 @@ assert_eq "anyone deletes their own over the API" \
 assert_eq "…and purge --everyone asks first" "$($S history purge --everyone >/dev/null 2>&1; echo $?)" "2"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS hist_t" >/dev/null
 
+echo "### 11m. history: search, run again, copy, saved queries (point 8.2)"
+N="h82_$RANDOM$RANDOM"
+$S history purge >/dev/null 2>&1
+$S sql "SELECT 1 AS ${N}_a" >/dev/null 2>&1
+$S sql "SELECT * FROM no_tbl_${N}" >/dev/null 2>&1
+$S sql "SELECT 'x' AS ${N}_b" >/dev/null 2>&1
+assert_eq "fox history --search finds text in a statement, and --failed the ones that failed" \
+  "$($S history --json --search "${N}_" | hjson 'print(len(d))')|$($S history --json --failed --search "$N" | hjson 'print(len(d), d[0]["ok"])')" "2|1 False"
+assert_eq "…a % or _ in the search is itself, not a wildcard" "$($S history --json --search "h82%" | hjson 'print(len(d))')" "0"
+IDA="$($S history --json --search "${N}_a" | hjson 'print(d[0]["id"])')"
+assert_eq "fox history show prints one statement exactly, to copy" "$($S history show "$IDA")" "SELECT 1 AS ${N}_a"
+assert_eq "fox history run runs it again, as fox sql does" "$($S history run "$IDA" --format csv --no-header)" "1"
+assert_eq "…and that run is kept as a new entry" "$($S history --json --search "${N}_a" | hjson 'print(len(d))')" "2"
+$S branch delete ith82 >/dev/null 2>&1; $S branch create ith82 >/dev/null 2>&1
+$S sql --branch ith82 "SELECT current_database() AS ${N}_where" >/dev/null 2>&1
+IDB="$($S history --json --search "${N}_where" | hjson 'print(d[0]["id"])')"
+assert_eq "…on the branch it ran on, unless --branch says otherwise" \
+  "$($S history --json --search "${N}_where" | hjson 'print(d[0]["branch"])')|$($S history run "$IDB" >/dev/null 2>&1; $S history --json --search "${N}_where" | hjson 'print(d[0]["branch"])')|$($S history run "$IDB" --branch main >/dev/null 2>&1; $S history --json --search "${N}_where" | hjson 'print(d[0]["branch"])')" "ith82|ith82|main"
+$S branch delete ith82 >/dev/null 2>&1
+assert_eq "…an id that is not yours, or not there, is refused" "$($S history run 999999999 >/dev/null 2>&1; echo $?)" "1"
+
+assert_contains "fox history save keeps an entry under a name" "$($S history save "first $N" --from "$IDA")" "Saved as \"first $N\""
+assert_eq "…a name is used once" "$($S history save "first $N" "SELECT 2" >/dev/null 2>&1; echo $?)" "1"
+$S history save "seven $N" "SELECT 7 AS v" >/dev/null
+printf -- '-- a leading comment\nSELECT 8 AS v\n' | $S history save "comment $N" - >/dev/null
+assert_eq "fox history saved lists them by name" "$($S history saved --json --search "$N" | hjson 'print(*[q["name"] for q in d], sep="|")')" "comment $N|first $N|seven $N"
+assert_eq "…and runs one, even one that starts with a comment" \
+  "$($S history run --saved "seven $N" --format csv --no-header)|$($S history run --saved "comment $N" --format csv --no-header)" "7|8"
+assert_eq "…shows one exactly" "$($S history show --saved "first $N")" "SELECT 1 AS ${N}_a"
+$S history unsave "seven $N" >/dev/null
+assert_eq "fox history unsave deletes one" "$($S history saved --json --search "seven $N" | hjson 'print(len(d))')" "0"
+
+# Over the API, the console's half: search, and saved queries that are yours.
+SQ="$HU/saved-queries"
+as "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT * FROM no_tbl_api_${N}\"}" "$HU/branches/main/query" >/dev/null
+assert_eq "GET /api/history?q=…&failed=1 searches your history" \
+  "$(as "$KEY" "$HU/history?q=no_tbl_api_${N}&failed=1" | hjson 'print(len(d), d[0]["ok"])')" "1 False"
+SID="$(as "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"name\":\"api $N\",\"sql\":\"SELECT 9\"}" "$SQ" | hjson 'print(d["id"])')"
+assert_eq "POST /api/saved-queries saves one; the same name again is 409" \
+  "$([ -n "$SID" ] && echo saved)|$(code "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"name\":\"api $N\",\"sql\":\"SELECT 1\"}" "$SQ")" "saved|409"
+assert_eq "…nobody else sees, renames or deletes it (404)" \
+  "$(as "$KA" "$SQ" | grep -c "api $N")|$(code "$KA" -H 'Content-Type: application/json' -X PUT -d '{"name":"x"}' "$SQ/$SID")|$(code "$KA" -X DELETE "$SQ/$SID")" "0|404|404"
+assert_eq "…its owner renames, finds and deletes it" \
+  "$(as "$KEY" -H 'Content-Type: application/json' -X PUT -d "{\"name\":\"renamed $N\"}" "$SQ/$SID" | hjson 'print(d["name"])')|$(as "$KEY" "$SQ?q=renamed%20$N" | hjson 'print(len(d["queries"]))')|$(code "$KEY" -X DELETE "$SQ/$SID")" "renamed $N|1|204"
+as "$KA" -H 'Content-Type: application/json' -X POST -d "{\"name\":\"alice $N\",\"sql\":\"SELECT 1\"}" "$SQ" >/dev/null
+assert_contains "erasing a person's history at the machine takes their saved queries too" \
+  "$($S history purge --user alice@foxbyte.dev)" "and 1 saved query"
+assert_eq "…which are gone" "$(as "$KA" "$SQ" | hjson 'print(len(d["queries"]))')" "0"
+for n in "first $N" "comment $N"; do $S history unsave "$n" >/dev/null 2>&1; done
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

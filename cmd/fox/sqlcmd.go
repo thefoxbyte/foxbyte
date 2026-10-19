@@ -47,6 +47,13 @@ func sqlCmd(args []string) {
 		fmt.Printf("usage: %s sql [--branch <b>] [--format table|csv|tsv|markdown|json|insert|xlsx] [--no-header] [--raw] [--table <t>] \"<sql>\" | -\n", brand.CLI)
 		os.Exit(2)
 	}
+	runSQLText(args, b, format, sql)
+}
+
+// runSQLText runs sql on a branch and prints it in format, taking the other
+// output flags from args, and exits with fox sql's status. Shared with
+// `fox history run`, which has the statement already.
+func runSQLText(args []string, b, format, sql string) {
 	// A workbook is binary: written to a terminal it is noise that can leave
 	// the terminal in a strange state.
 	if format == "xlsx" && isTerminal(os.Stdout) {
