@@ -438,6 +438,11 @@ export const getCatalog = (branch: string) =>
 export const getObject = (branch: string, kind: CatalogKind, oid: number) =>
   req('GET', `${API}/api/branches/${branch}/schema/${kind}/${oid}`) as Promise<ObjectDetail>
 
+// The data grid's save (point 12.2): rows added, changed and deleted, applied
+// together as you, or not at all.
+export const saveRows = (branch: string, schema: string, table: string, changes: import('./gridquery').RowChange[]) =>
+  req('POST', `${API}/api/branches/${branch}/rows`, { schema, table, changes }) as Promise<{ inserted: number; updated: number; deleted: number }>
+
 // Saved queries (point 8.2): a statement kept under a name until you delete it.
 export type SavedQuery = { id: number; name: string; sql: string; created: number; updated: number }
 export const listSaved = (q = '') =>

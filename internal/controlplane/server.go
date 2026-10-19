@@ -339,6 +339,10 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/branches/{name}/schema", handleCatalog)
 	mux.HandleFunc("GET /api/branches/{name}/schema/{kind}/{oid}", handleCatalogObject)
 
+	// The data grid's saves (point 12.2): rows added, changed and deleted on
+	// screen, applied together as the signed-in user.
+	mux.HandleFunc("POST /api/branches/{name}/rows", handleRowEdits)
+
 	// Run SQL against a branch (powers the web SQL console).
 	mux.HandleFunc("POST /api/branches/{name}/query", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")

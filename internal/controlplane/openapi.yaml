@@ -668,6 +668,57 @@ paths:
         "404": { description: No such object, or not one the caller's list holds. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/rows:
+    post:
+      tags: [branches]
+      summary: Save the data grid's changes to one table, all or none.
+      description: >-
+        Rows added, changed and deleted, applied in one transaction as the
+        signed-in user's own role (so grants, row-level security and the
+        guardrails apply as to typed SQL). Only a table with a
+        primary key; a row is named by its key. An update applies only while
+        the columns it changes still hold the old values given, and an update
+        or delete must find its row, or the whole save is refused (409). The
+        table, columns and key are checked in the catalog and every value is a
+        parameter cast to its column's type. Generated and GENERATED ALWAYS
+        identity columns cannot be set. At most 1,000 changes.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [table, changes]
+              properties:
+                schema: { type: string, default: public }
+                table: { type: string }
+                changes:
+                  type: array
+                  maxItems: 1000
+                  items:
+                    type: object
+                    required: [op]
+                    properties:
+                      op: { type: string, enum: [insert, update, delete] }
+                      key: { type: object, additionalProperties: { type: string }, description: "The row's primary key (update, delete)." }
+                      values: { type: object, additionalProperties: { type: string, nullable: true }, description: "New values as text; null is SQL NULL (insert, update)." }
+                      old: { type: object, additionalProperties: { type: string, nullable: true }, description: "What the grid showed for the columns an update changes." }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inserted: { type: integer }
+                  updated: { type: integer }
+                  deleted: { type: integer }
+        "400": { description: "Refused, and nothing saved: no such table or column, no primary key, a value Postgres rejects, a constraint." }
+        "409": { description: A row was changed or deleted since it was loaded; nothing saved. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches/{name}/ledger:
     get:
       tags: [ledger]

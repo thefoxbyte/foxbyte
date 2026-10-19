@@ -29,11 +29,12 @@ vi.mock('../api', async () => {
     runQuery: vi.fn(async () => ({ columns: [], rows: [], command: 'SELECT 0' }) as QueryResult),
     getCatalog: vi.fn(async () => ({ objects: [] })),
     getObject: vi.fn(async () => ({ kind: 'table', oid: 0, name: '', ddl: '' })),
+    saveRows: vi.fn(async () => ({ inserted: 0, updated: 1, deleted: 0 })),
   }
 })
 
 import Console from './Console'
-import { getCatalog, getObject, runQuery } from '../api'
+import { getCatalog, getObject, runQuery, saveRows } from '../api'
 
 const mockQuery = vi.mocked(runQuery)
 
@@ -299,5 +300,74 @@ describe('the object browser', () => {
     expect(await screen.findByText('FoxByte')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'CREATE script' }))
     expect((await screen.findByLabelText('CREATE script')).textContent).toMatch(/^CREATE TABLE public.invoices/)
+  })
+})
+
+// Point 12.2: a table's rows sorted, filtered and edited.
+describe('the data grid', () => {
+  const columns: QueryResult = {
+    columns: ['nspname', 'relname', 'kind', 'attname', 'type', 'pk'],
+    rows: [['public', 'invoices', 'table', 'id', 'integer', true], ['public', 'invoices', 'table', 'amount', 'numeric', false]],
+    command: 'SELECT 2',
+  }
+  const sqlRun = () => mockQuery.mock.calls.map(c => String(c[1]))
+  beforeEach(() => {
+    vi.mocked(getCatalog).mockResolvedValue({ objects: [] })
+    mockQuery.mockReset()
+    mockQuery.mockImplementation(async (_b: string, sql: string) => {
+      if (sql.includes('pg_attribute')) return columns
+      if (sql.includes('information_schema.tables')) return SCHEMA
+      if (sql.startsWith('SELECT count(*)')) return { columns: ['count'], rows: [[2]], command: 'SELECT 1' }
+      if (sql.startsWith('SELECT * FROM "public"."invoices"')) return { columns: ['id', 'amount'], rows: [[1, 5], [2, 7]], command: 'SELECT 2' }
+      return { columns: [], rows: [], command: 'SELECT 0' }
+    })
+  })
+
+  it('pages in key order, sorts on a header click, and filters', async () => {
+    await open()
+    await waitFor(() => expect(sqlRun().some(q => q.includes('pg_attribute'))).toBe(true))
+    fireEvent.click(await screen.findByRole('button', { name: /invoices/ }))
+    await waitFor(() => expect(sqlRun()).toContain('SELECT * FROM "public"."invoices" ORDER BY "id" LIMIT 100 OFFSET 0'))
+    fireEvent.click(await screen.findByRole('button', { name: 'amount' }))
+    await waitFor(() => expect(sqlRun()).toContain('SELECT * FROM "public"."invoices" ORDER BY "amount" ASC NULLS LAST, "id" LIMIT 100 OFFSET 0'))
+    expect(screen.getByRole('columnheader', { name: /amount/ }).getAttribute('aria-sort')).toBe('ascending')
+    fireEvent.change(screen.getByLabelText('Filter column'), { target: { value: 'amount' } })
+    fireEvent.change(screen.getByLabelText('Filter value'), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
+    await waitFor(() => expect(sqlRun()).toContain(`SELECT * FROM "public"."invoices" WHERE "amount" = '5' ORDER BY "amount" ASC NULLS LAST, "id" LIMIT 100 OFFSET 0`))
+    expect(sqlRun()).toContain(`SELECT count(*) FROM "public"."invoices" WHERE "amount" = '5'`)
+  })
+
+  it('names each row by its key even when the catalog gives no columns', async () => {
+    vi.mocked(getCatalog).mockResolvedValue({ objects: [{ kind: 'table', oid: 10, schema: 'public', name: 'invoices' }] })
+    vi.mocked(getObject).mockResolvedValue({ kind: 'table', oid: 10, name: 'invoices', ddl: '' })
+    await open()
+    await waitFor(() => expect(sqlRun().some(q => q.includes('pg_attribute'))).toBe(true))
+    fireEvent.click(await screen.findByRole('button', { name: /invoices/ }))
+    const edit = await screen.findByRole('button', { name: 'Edit rows' })
+    await waitFor(() => expect((edit as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(edit)
+    await screen.findByText(/click a cell to change it/i)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete row 1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saveRows).toHaveBeenLastCalledWith('main', 'public', 'invoices', [{ op: 'delete', key: { id: '1' } }]))
+  })
+
+  it('edits rows and saves them together through the engine', async () => {
+    await open()
+    await waitFor(() => expect(sqlRun().some(q => q.includes('pg_attribute'))).toBe(true))
+    fireEvent.click(await screen.findByRole('button', { name: /invoices/ }))
+    const edit = await screen.findByRole('button', { name: 'Edit rows' })
+    await waitFor(() => expect((edit as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(edit)
+    await screen.findByText(/click a cell to change it/i)
+    const amount = screen.getAllByRole('row')[1].querySelectorAll('td')[2]
+    fireEvent.click(amount)
+    fireEvent.change(screen.getByLabelText('Value for amount'), { target: { value: '6' } })
+    fireEvent.keyDown(screen.getByLabelText('Value for amount'), { key: 'Enter' })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saveRows).toHaveBeenCalledWith('main', 'public', 'invoices',
+      [{ op: 'update', key: { id: '1' }, values: { amount: '6' }, old: { amount: '5' } }]))
+    expect(await screen.findByText('Saved: 1 changed.')).toBeTruthy()
   })
 })
