@@ -137,35 +137,33 @@ func formulaStart(s string) bool {
 // 4180). NULL is an empty field.
 func delimited(cols []string, rows [][]any, sep rune, o Options) string {
 	var b strings.Builder
-	field := func(s string) string {
-		if strings.ContainsRune(s, sep) || strings.ContainsAny(s, "\"\r\n") {
-			return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-		}
-		return s
-	}
-	line := func(fields []string) {
-		b.WriteString(strings.Join(fields, string(sep)))
-		b.WriteByte('\n')
-	}
 	if o.Header {
-		fs := make([]string, len(cols))
+		head := make([]any, len(cols))
 		for i, c := range cols {
-			fs[i] = field(c)
+			head[i] = c
 		}
-		line(fs)
+		b.WriteString(delimitedLine(head, sep, false))
 	}
 	for _, r := range rows {
-		fs := make([]string, len(r))
-		for i, v := range r {
-			s, _ := text(v)
-			if o.Safe && !isNumber(v) && !looksNumeric.MatchString(s) && formulaStart(s) {
-				s = "'" + s
-			}
-			fs[i] = field(s)
-		}
-		line(fs)
+		b.WriteString(delimitedLine(r, sep, o.Safe))
 	}
 	return b.String()
+}
+
+// delimitedLine is one CSV or TSV line, with its line feed.
+func delimitedLine(vals []any, sep rune, safe bool) string {
+	fs := make([]string, len(vals))
+	for i, v := range vals {
+		s, _ := text(v)
+		if safe && !isNumber(v) && !looksNumeric.MatchString(s) && formulaStart(s) {
+			s = "'" + s
+		}
+		if strings.ContainsRune(s, sep) || strings.ContainsAny(s, "\"\r\n") {
+			s = `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+		}
+		fs[i] = s
+	}
+	return strings.Join(fs, string(sep)) + "\n"
 }
 
 // markdown writes a GitHub-flavoured table. A pipe is escaped, a line break
@@ -224,26 +222,11 @@ func jsonRows(cols []string, rows [][]any) (string, error) {
 	var b strings.Builder
 	b.WriteString("[\n")
 	for ri, r := range rows {
-		b.WriteString("  {\n")
-		for i, v := range r {
-			k, err := json.Marshal(ks[i])
-			if err != nil {
-				return "", err
-			}
-			var val []byte
-			if isNumber(v) {
-				s, _ := text(v)
-				val = []byte(s)
-			} else if val, err = marshal(v); err != nil {
-				return "", err
-			}
-			b.WriteString("    " + string(k) + ": " + string(val))
-			if i < len(r)-1 {
-				b.WriteByte(',')
-			}
-			b.WriteByte('\n')
+		o, err := jsonObject(ks, r)
+		if err != nil {
+			return "", err
 		}
-		b.WriteString("  }")
+		b.WriteString(o)
 		if ri < len(rows)-1 {
 			b.WriteByte(',')
 		}

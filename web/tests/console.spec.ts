@@ -446,3 +446,48 @@ print(z.testzip(), c('A2').find('s:v', ns).text, ''.join(c('B2').itertext()), c(
   // and a formula kept as text rather than escaped, since a typed cell is never run.
   expect(read).toBe('None 1 Ada, Countess b None =1+1')
 })
+
+// Point 1.3: everything a query returns, not the 1,000 rows on screen. The
+// statement is run again on the server, read only, as the signed-in user.
+test('a whole result past the 1,000 on screen can be exported from the server', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  await page.locator('textarea.editor').fill(`SELECT g AS id, 'row ' || g AS note FROM generate_series(1, 2500) g`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.grid-wrap td:not(.expand-col)').first()).toHaveText('1', { timeout: 30_000 })
+
+  await page.getByRole('button', { name: 'Export ▾' }).click()
+  await page.getByLabel('Export format').selectOption('csv')
+  // What is on screen stops at what the console holds.
+  let [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: /download all 1000 rows/i }).click()])
+  expect(readFileSync(await dl.path(), 'utf8').trimEnd().split('\n')).toHaveLength(1001)
+
+  await page.getByLabel(/everything the query returns/i).check()
+  ;[dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: /download every row/i }).click()])
+  expect(dl.suggestedFilename()).toMatch(/^generate_series-\d{8}-\d{4}\.csv$/)
+  const lines = readFileSync(await dl.path(), 'utf8').trimEnd().split('\n')
+  expect(lines).toHaveLength(2501)
+  expect([lines[0], lines[1], lines[2500]]).toEqual(['id,note', '1,row 1', '2500,row 2500'])
+
+  // An export is read only: nextval() runs as a query, but an export of it is
+  // refused, and the menu says why rather than saving anything.
+  await page.keyboard.press('Escape')
+  const seq = `e2e_seq_${Date.now().toString().slice(-6)}`
+  // A script's result cannot be run again on its own, and the menu says so.
+  await page.locator('textarea.editor').fill(`CREATE SEQUENCE ${seq}; SELECT nextval('${seq}') AS n`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.res-tab')).toHaveCount(2, { timeout: 30_000 })
+  await page.locator('.res-tab').nth(1).click()
+  await page.getByRole('button', { name: 'Export ▾' }).click()
+  await expect(page.getByLabel(/everything the query returns/i)).toHaveCount(0)
+  await expect(page.getByText(/run the statement on its own/i)).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.locator('textarea.editor').fill(`SELECT nextval('${seq}') AS n`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.grid-wrap td:not(.expand-col)').first()).toHaveText('2', { timeout: 30_000 })
+  await page.getByRole('button', { name: 'Export ▾' }).click()
+  await page.getByLabel(/everything the query returns/i).check()
+  await page.getByRole('button', { name: /download every row/i }).click()
+  await expect(page.getByRole('alert')).toContainText('read-only transaction', { timeout: 30_000 })
+})

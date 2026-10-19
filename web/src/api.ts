@@ -391,6 +391,30 @@ export const runQuery = (name: string, sql: string, opts: { allowDestructive?: b
     ...(opts.allowDestructive ? { allow_destructive: true } : {}),
     ...(opts.allowRules?.length ? { allow_rules: opts.allowRules } : {}),
   }) as Promise<QueryResult>
+// exportQuery is the whole result of one statement as a file (point 1.3), not
+// the 1,000 rows a run holds. The server streams it as the signed-in user, read
+// only, and records it in the security log. A failure before the first row is
+// a JSON error; one part way through ends the connection, which arrives here
+// as a failed read, so a short file is never handed back as a whole one.
+export const exportQuery = async (name: string, sql: string, format: 'csv' | 'json' | 'xlsx', safe: boolean): Promise<Blob> => {
+  const r = await fetch(`${API}/api/branches/${name}/export`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql, format, safe }),
+  })
+  if (!r.ok) {
+    if (r.status === 401 && location.pathname !== '/login') location.assign('/login')
+    let msg = `HTTP ${r.status}`
+    try { msg = (await r.json()).error || msg } catch { /* not JSON */ }
+    throw new ApiError(r.status, msg)
+  }
+  try {
+    return await r.blob()
+  } catch {
+    throw new Error('the export stopped part way, so nothing was saved: run it again')
+  }
+}
 // Recomputes the Blackbox hash chain (GET …/ledger/verify).
 export type LedgerVerify = { legacy: number; chained: number; broken: number; firstBroken: string }
 export const verifyLedger = async (name: string): Promise<LedgerVerify> => {

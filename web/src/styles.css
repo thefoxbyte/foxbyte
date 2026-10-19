@@ -560,6 +560,8 @@ td.name-cell { white-space: nowrap; }
 .copy-pop .fld { display: flex; flex-direction: column; gap: 4px; font-size: var(--t-sm); }
 .copy-pop .check-row { display: flex; align-items: center; gap: 6px; font-size: var(--t-sm); cursor: pointer; }
 .copy-pop .check-row input { width: auto; }
+.copy-pop .export-scope { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.copy-pop .err { font-size: var(--t-sm); margin: 0; }
 .copy-manual { width: 100%; min-height: 120px; font-family: var(--font-mono); font-size: var(--t-xs, 12px); }
 th.expand-col input, td.expand-col input { width: auto; margin: 0 4px 0 0; vertical-align: middle; }
 tr.row-picked td { background: color-mix(in srgb, var(--accent) 10%, transparent); }

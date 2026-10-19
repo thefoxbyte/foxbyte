@@ -5,7 +5,6 @@ package resultfmt
 import (
 	"archive/zip"
 	"bytes"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -71,47 +70,48 @@ func truncateRunes(s string, n int) string {
 	return s
 }
 
+const (
+	sheetHead = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` + "\n" +
+		`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>`
+	sheetTail = `</sheetData></worksheet>`
+)
+
+// writeCell writes one cell: a number as a number, true/false as a boolean,
+// text as an inline string, and nothing for NULL.
+func writeCell(b *strings.Builder, ref string, v any) {
+	switch t := v.(type) {
+	case nil:
+		return
+	case bool:
+		x := "0"
+		if t {
+			x = "1"
+		}
+		b.WriteString(`<c r="` + ref + `" t="b"><v>` + x + `</v></c>`)
+		return
+	}
+	s, _ := text(v)
+	if isNumber(v) {
+		b.WriteString(`<c r="` + ref + `"><v>` + s + `</v></c>`)
+		return
+	}
+	b.WriteString(`<c r="` + ref + `" t="inlineStr"><is><t xml:space="preserve">` + xmlText(truncateRunes(s, maxCellText)) + `</t></is></c>`)
+}
+
 // SheetXML is the worksheet: the column names as the first row, then a row per
 // result row.
 func SheetXML(cols []string, rows [][]any) string {
 	var b strings.Builder
-	b.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` + "\n")
-	b.WriteString(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>`)
-	cell := func(ref string, v any) {
-		switch t := v.(type) {
-		case nil:
-			return
-		case bool:
-			x := "0"
-			if t {
-				x = "1"
-			}
-			b.WriteString(`<c r="` + ref + `" t="b"><v>` + x + `</v></c>`)
-			return
-		}
-		s, _ := text(v)
-		if isNumber(v) {
-			b.WriteString(`<c r="` + ref + `"><v>` + s + `</v></c>`)
-			return
-		}
-		b.WriteString(`<c r="` + ref + `" t="inlineStr"><is><t xml:space="preserve">` + xmlText(truncateRunes(s, maxCellText)) + `</t></is></c>`)
-	}
-	row := func(n int, vals []any) {
-		b.WriteString(`<row r="` + strconv.Itoa(n) + `">`)
-		for i, v := range vals {
-			cell(colName(i)+strconv.Itoa(n), v)
-		}
-		b.WriteString(`</row>`)
-	}
+	b.WriteString(sheetHead)
 	head := make([]any, len(cols))
 	for i, c := range cols {
 		head[i] = c
 	}
-	row(1, head)
+	b.WriteString(sheetRow(1, head))
 	for i, r := range rows {
-		row(i+2, r)
+		b.WriteString(sheetRow(i+2, r))
 	}
-	b.WriteString(`</sheetData></worksheet>`)
+	b.WriteString(sheetTail)
 	return b.String()
 }
 
@@ -127,19 +127,26 @@ const (
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`
 )
 
-// XLSX is a workbook of one sheet, "Result", holding cols and rows.
-func XLSX(cols []string, rows [][]any) ([]byte, error) {
-	var buf bytes.Buffer
-	z := zip.NewWriter(&buf)
-	stamp := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) // fixed, so the same result makes the same file
-	for _, f := range []struct{ name, body string }{
+// xlsxStamp is every part's time, fixed so the same result makes the same file.
+var xlsxStamp = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+type part struct{ name, body string }
+
+func staticParts() []part {
+	return []part{
 		{"[Content_Types].xml", xlsxContentTypes},
 		{"_rels/.rels", xlsxRels},
 		{"xl/workbook.xml", xlsxWorkbook},
 		{"xl/_rels/workbook.xml.rels", xlsxWorkbookRels},
-		{"xl/worksheets/sheet1.xml", SheetXML(cols, rows)},
-	} {
-		w, err := z.CreateHeader(&zip.FileHeader{Name: f.name, Method: zip.Deflate, Modified: stamp})
+	}
+}
+
+// XLSX is a workbook of one sheet, "Result", holding cols and rows.
+func XLSX(cols []string, rows [][]any) ([]byte, error) {
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	for _, f := range append(staticParts(), part{"xl/worksheets/sheet1.xml", SheetXML(cols, rows)}) {
+		w, err := z.CreateHeader(&zip.FileHeader{Name: f.name, Method: zip.Deflate, Modified: xlsxStamp})
 		if err != nil {
 			return nil, err
 		}

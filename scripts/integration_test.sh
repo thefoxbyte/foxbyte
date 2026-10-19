@@ -1498,6 +1498,77 @@ assert_eq "…and the Blackbox names who ran it, and with what" \
   "$(pg pg-main "SELECT (actor LIKE 'cli:%')::text || '|' || tool FROM bb.schema_ledger WHERE object_identity = 'public.cp_bb' ORDER BY id DESC LIMIT 1")" "true|fox sql"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS cp_demo; DROP TABLE IF EXISTS cp_copy; DROP TABLE IF EXISTS cp_bb" >/dev/null
 
+echo "### 11k. fox export: the whole result, streamed (point 1.3)"
+# fox sql and the console stop at 1,000 rows; an export does not. It is the
+# same text row for row, read only, one statement, as the caller's own role,
+# and recorded in the security log by a fingerprint rather than the query.
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ex_big; DROP TABLE IF EXISTS ex_rls;
+  CREATE TABLE ex_big AS SELECT g AS id, CASE WHEN g % 500 = 0 THEN '=cmd' ELSE 'row ' || g END AS note FROM generate_series(1, 2500) g;
+  CREATE TABLE ex_rls (owner text, v int);
+  INSERT INTO ex_rls VALUES ('alice@foxbyte.dev', 1), ('test@foxbyte.dev', 2);
+  ALTER TABLE ex_rls ENABLE ROW LEVEL SECURITY;
+  CREATE POLICY own_rows ON ex_rls USING (owner = session_user);
+  GRANT SELECT, UPDATE ON ex_big, ex_rls TO db_client;" >/dev/null
+EQ="SELECT id, note FROM ex_big ORDER BY id"
+$S export "$EQ" > /tmp/ex.csv 2>/tmp/ex.err; RC=$?
+assert_eq "fox export writes every row, past the 1,000 fox sql stops at" \
+  "$RC|$(wc -l < /tmp/ex.csv | tr -d ' ')|$(grep -c '^2500 rows exported' /tmp/ex.err)" "0|2501|1"
+assert_eq "…and its first rows are exactly what fox sql prints" \
+  "$(head -1001 /tmp/ex.csv | cmp -s - <($S sql --format csv "$EQ" 2>/dev/null) && echo same)" "same"
+assert_eq "…spreadsheet-safe by default, --raw as it is" \
+  "$(sed -n 501p /tmp/ex.csv)|$($S export --raw --no-header "SELECT note FROM ex_big WHERE id = 500" 2>/dev/null)" "500,'=cmd|=cmd"
+assert_eq "…tab-separated" "$($S export --format tsv --no-header "SELECT id, note FROM ex_big WHERE id = 7" 2>/dev/null)" $'7\trow 7'
+assert_eq "…JSON, every row" \
+  "$($S export --format json "$EQ" 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d), d[0]["id"], d[-2]["note"], d[-1]["note"])')" "2500 1 row 2499 =cmd"
+$S export --format xlsx "$EQ" > /tmp/ex.xlsx 2>/dev/null
+assert_eq "…an Excel workbook of every row, which another reader opens" \
+  "$(python3 - /tmp/ex.xlsx <<'PYX'
+import sys, zipfile, xml.etree.ElementTree as ET
+z = zipfile.ZipFile(sys.argv[1])
+ns = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+root = ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
+last = root.findall('.//s:row', ns)[-1]
+print(z.testzip(), len(root.findall('.//s:row', ns)), last.get('r'), last.find('s:c/s:v', ns).text)
+PYX
+)" "None 2501 2501 2500"
+assert_eq "…which goes down a pipe like any file" \
+  "$($S export --format xlsx "SELECT 1" 2>/dev/null | head -c 2)" "PK"
+assert_eq "SQL can come on stdin" "$(echo "SELECT 40 + 2 AS n" | $S export --no-header - 2>/dev/null)" "42"
+OUT="$($S export "UPDATE ex_big SET note = 'changed' WHERE id = 1 RETURNING id" 2>&1)"; RC=$?
+assert_eq "an export is read only: an UPDATE … RETURNING is refused, and changes nothing" \
+  "$RC|$(grep -c 'read-only transaction' <<<"$OUT")|$(pg pg-main "SELECT note FROM ex_big WHERE id = 1")" "1|1|row 1"
+OUT="$($S export "SELECT 1; SELECT 2" 2>&1)"; RC=$?
+assert_eq "…one statement only" "$RC|$(grep -c 'one statement' <<<"$OUT")" "1|1"
+OUT="$($S export "SELECT * FROM no_such_table" 2>&1)"; RC=$?
+assert_eq "…a failing statement exits 1 and says why" "$RC|$(grep -c '^ERROR: .*no_such_table' <<<"$OUT")" "1|1"
+assert_eq "…as the client role, so row-level security holds (the CLI sees no one's rows)" \
+  "$($S export --no-header "SELECT current_user" 2>/dev/null)|$($S export "SELECT v FROM ex_rls" 2>&1)" $'db_client|v\n0 rows exported'
+FP="$(printf '%s' "$EQ" | sha256sum | cut -c1-12)"
+AUDIT="$($S audit --limit 100 2>/dev/null | grep 'data.export')"
+assert_eq "every export is in the security log, with a fingerprint of the query and not its text" \
+  "$(grep -c "2500 row(s), query $FP" <<<"$AUDIT" | awk '{print ($1>=3)}')|$(grep -c 'ex_big\|no_such_table' <<<"$AUDIT")|$(grep -c 'stopped: SQLSTATE 25006' <<<"$AUDIT" | awk '{print ($1>0)}')" "1|0|1"
+
+# The console's "Everything the query returns": the same endpoint, as the
+# signed-in user's own role.
+EXU=https://localhost:8080/api/branches/main/export
+as "$KEY" -D /tmp/ex.hdr -o /tmp/ex-http.csv -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"$EQ\"}" "$EXU"
+assert_eq "POST …/export streams every row, the same bytes as fox export, named as a download" \
+  "$(cmp -s /tmp/ex.csv /tmp/ex-http.csv && echo same)|$(grep -ci 'content-disposition: attachment; filename="main-export.csv"' /tmp/ex.hdr)|$(grep -ci 'content-type: text/csv' /tmp/ex.hdr)" "same|1|1"
+assert_eq "…a workbook too" \
+  "$(as "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"$EQ\",\"format\":\"xlsx\"}" "$EXU" | head -c 2)" "PK"
+assert_eq "…as the user, so row-level security gives alice her rows only" \
+  "$(as "$KA" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT session_user AS u, v FROM ex_rls","header":false}' "$EXU")" "alice@foxbyte.dev,1"
+assert_eq "…a refusal before the first row is a 400 that says why" \
+  "$(code "$KEY" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM no_such_table"}' "$EXU")|$(as "$KEY" -H 'Content-Type: application/json' -X POST -d '{"sql":"UPDATE ex_big SET id = id RETURNING id"}' "$EXU" | grep -c 'read-only transaction')|$(code "$KEY" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT 1","format":"pdf"}' "$EXU")" "400|1|400"
+$S branch delete itexp >/dev/null 2>&1; $S branch create itexp >/dev/null 2>&1
+assert_eq "…and a branch the caller cannot reach is not found (404)" \
+  "$(code "$KA" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT 1"}' https://localhost:8080/api/branches/itexp/export)" "404"
+$S branch delete itexp >/dev/null 2>&1
+assert_eq "…and the console's exports are in the security log under the user" \
+  "$($S audit --limit 100 2>/dev/null | grep 'data.export' | grep -c 'alice@foxbyte.dev' | awk '{print ($1>0)}')" "1"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ex_big; DROP TABLE IF EXISTS ex_rls" >/dev/null
+rm -f /tmp/ex.csv /tmp/ex.err /tmp/ex.xlsx /tmp/ex.hdr /tmp/ex-http.csv
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.
