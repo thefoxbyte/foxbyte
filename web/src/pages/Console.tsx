@@ -135,10 +135,12 @@ export default function Console() {
 
   // The query API reports SQL errors in the body rather than throwing, so both
   // paths are checked — an error used to be shown as an empty schema.
+  // The console's own reads (the object list, a table's rows and structure)
+  // stay out of the user's query history: nobody typed them.
   const loadObjects = useCallback(async (b: string) => {
     setListing(true); setListErr('')
     try {
-      const r = await runQuery(b, LIST_SQL)
+      const r = await runQuery(b, LIST_SQL, { history: false })
       if (r.error) { setListErr(r.error); return }
       setObjects((r.rows || []).map(row => ({
         schema: String(row[0]), name: String(row[1]),
@@ -186,10 +188,10 @@ export default function Console() {
                WHERE schemaname=${lit(sel.schema)} AND tablename=${lit(sel.name)}
                ORDER BY indexname`
         }
-        const r = await runQuery(branch, q)
+        const r = await runQuery(branch, q, { history: false })
         if (!cancelled) setBrowseRes(r)
         if (tab === 'rows' && !cancelled) {
-          const c = await runQuery(branch, `SELECT count(*) FROM ${rel(sel)}`)
+          const c = await runQuery(branch, `SELECT count(*) FROM ${rel(sel)}`, { history: false })
           if (!cancelled) setTotal(Number(c.rows?.[0]?.[0] ?? 0))
         }
       } catch (e) {

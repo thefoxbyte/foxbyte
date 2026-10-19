@@ -3,6 +3,8 @@
 package controlplane
 
 import (
+	"errors"
+
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
@@ -40,6 +42,22 @@ func RunSQL(branchName, sql, label string) (SQLOutput, error) {
 	}
 	m := runQuery(addr, sql, queryAs{Branch: branchName, Label: label, App: "fox sql"})
 	return sqlOutput(m), nil
+}
+
+// Outcome is what history keeps of a run: how many rows came back across every
+// statement, and the first failure, if there was one.
+func (o SQLOutput) Outcome() (rows int64, err error) {
+	msg := o.Error
+	for _, r := range o.Results {
+		rows += int64(len(r.Rows))
+		if msg == "" && r.Error != "" {
+			msg = r.Error
+		}
+	}
+	if msg != "" {
+		return rows, errors.New(msg)
+	}
+	return rows, nil
 }
 
 // sqlOutput reads runQuery's map into SQLOutput.

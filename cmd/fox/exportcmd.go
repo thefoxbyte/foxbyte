@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
@@ -59,9 +60,15 @@ func resultExportCmd(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	o := controlplane.ExportOptions{Format: format, Header: !hasFlag(args, "--no-header"), Safe: !hasFlag(args, "--raw")}
+	start := time.Now()
 	n, err := controlplane.ExportSQL(ctx, out, b, sql, cliActor(), o)
 	if s := openStore(); s != nil {
 		s.Audit(auth.EvDataExport, cliActor(), b, "", controlplane.ExportDetail(b, sql, format, n, err))
+		kept := err
+		if errors.Is(err, resultfmt.ErrExcelFull) {
+			kept = nil
+		}
+		controlplane.RecordCLIQuery(s, cliActor(), b, sql, "export", start, n, kept)
 	}
 	switch {
 	case errors.Is(err, resultfmt.ErrExcelFull):

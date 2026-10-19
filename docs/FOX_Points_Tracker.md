@@ -4,7 +4,7 @@ What is done and what is left of the 13 points (the expert's 12, plus the
 Aadhaar vault mode), sub-point by sub-point. The sub-points are the phases in
 `docs/FOX_Expert_Review_Plan.md`, section 6. Updated with every PR.
 
-**Last updated:** 17 October 2026: 1.3 done (export a whole result, streamed; `fox export`). Point 1 is complete.
+**Last updated:** 19 October 2026: 8.1 and 8.3 done (query history, and its privacy rules; `fox history`).
 
 ## How a sub-point counts as done
 
@@ -35,13 +35,13 @@ A sub-point is ✅ only when all of these hold:
 | 5 | "Last modified": who changed each row | Standard | 2 | 0 |
 | 6 | "Updated at": when each row changed | Standard | 2 | 0 |
 | 7 | Masking | Enterprise | 5 | 0 |
-| 8 | Query history | Standard | 3 | 0 |
+| 8 | Query history | Standard | 3 | 2 |
 | 9 | Query suggestions | Standard | 4 | 0 |
 | 10 | Job scheduling ("DB agent") | Enterprise | 4 | 0 |
 | 11 | DPDP compliance manager | Enterprise | 4 | 0 |
 | 12 | pgAdmin features in the console | Standard | 6 | 0 |
 | 13 | Aadhaar vault mode | Enterprise | 4 | 0 |
-| | **Total** | | **55** | **4** |
+| | **Total** | | **55** | **6** |
 
 ## The points
 
@@ -114,9 +114,9 @@ A sub-point is ✅ only when all of these hold:
 
 | Sub-point | CLI | UI | Status | PR |
 |---|---|---|---|---|
-| 8.1 Record console and API queries per user: SQL, branch, time, duration, rows, outcome | `fox history` | — | ⬜ | |
+| 8.1 Record console and API queries per user: SQL, branch, time, duration, rows, outcome | ✅ `fox history [--branch] [--limit] [--json]`; console, API, `fox sql`, `fox export` recorded (§11l) | ➖ (recorded from the console; seen on the account page) | ✅ | #PR |
 | 8.2 History panel: search, re-run, copy, saved queries | `fox history --search` | History panel | ⬜ | |
-| 8.3 Privacy: no results kept, 90-day retention, can be off, own history only, searchable and purgeable for a person | `fox history purge …` | Settings | ⬜ | |
+| 8.3 Privacy: no results kept, 90-day retention, can be off, own history only, searchable and purgeable for a person | ✅ `fox history purge [--user]`, `--user`, `--people`, `on\|off`, `retention <days>` (§11l) | ✅ Account page: count, my switch, delete mine; install switch and retention for admins (Playwright) | ✅ | #PR |
 
 ### 9. Query suggestions (Standard)
 

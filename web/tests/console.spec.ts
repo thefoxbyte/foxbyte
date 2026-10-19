@@ -491,3 +491,55 @@ test('a whole result past the 1,000 on screen can be exported from the server', 
   await page.getByRole('button', { name: /download every row/i }).click()
   await expect(page.getByRole('alert')).toContainText('read-only transaction', { timeout: 30_000 })
 })
+
+// Points 8.1 and 8.3: what you type is kept in your history (never a result),
+// the console's own reads of a table are not, and you can turn yours off and
+// delete it from the account page.
+test('the queries you run are kept in your history, which you can turn off and delete', async ({ page }) => {
+  await signIn(page)
+  const count = async () => {
+    await page.goto('/keys', { waitUntil: 'domcontentloaded' })
+    const t = (await page.getByTestId('history-count').textContent({ timeout: 30_000 })) ?? ''
+    return Number(t.split(' ')[0])
+  }
+  const run = async (sql: string) => {
+    await page.goto('/console', { waitUntil: 'domcontentloaded' })
+    await page.locator('select').first().selectOption(branch)
+    await page.locator('textarea.editor').fill(sql)
+    await page.getByRole('button', { name: /^run/i }).click()
+    await expect(page.locator('.grid-wrap td:not(.expand-col), .wb-out').first()).toBeVisible({ timeout: 30_000 })
+  }
+  const t = `e2e_hist_${Date.now().toString().slice(-6)}`
+
+  // Start from history on: the switch is kept by the engine, so a run that
+  // stopped part way could otherwise leave this account opted out.
+  await count()
+  const mine = page.getByLabel(/keep a history of my queries/i)
+  if (!(await mine.isChecked())) {
+    await mine.check()
+    await expect(page.getByText(/kept again/i)).toBeVisible()
+  }
+  const before = await count()
+  await run(`CREATE TABLE ${t} (id int)`)
+  // Browsing the table runs the console's own queries (its rows, its count),
+  // which nobody typed: they are not kept.
+  await page.locator('.obj-filter').fill(t)
+  await page.locator('.obj-item', { hasText: t }).click()
+  await expect(page.locator('.grid-wrap, .wb-empty, .muted').first()).toBeVisible({ timeout: 30_000 })
+  expect(await count()).toBe(before + 1)
+  await expect(page.getByText(/never a result/i)).toBeVisible()
+
+  // Off: nothing new is kept, and what was kept stays.
+  await page.getByLabel(/keep a history of my queries/i).uncheck()
+  await expect(page.getByText(/no longer kept/i)).toBeVisible()
+  await run(`SELECT 1 AS ${t}_off`)
+  expect(await count()).toBe(before + 1)
+  await page.getByLabel(/keep a history of my queries/i).check()
+  await expect(page.getByText(/kept again/i)).toBeVisible()
+
+  // Deleted, after asking.
+  await page.getByRole('button', { name: /delete my history/i }).click()
+  await page.getByRole('button', { name: /^delete$/i }).click()
+  await expect(page.getByText(/^Deleted \d+ entr(y|ies)\.$/)).toBeVisible()
+  await expect(page.getByTestId('history-count')).toHaveText(/^0 queries/)
+})

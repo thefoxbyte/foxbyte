@@ -1569,6 +1569,82 @@ assert_eq "…and the console's exports are in the security log under the user" 
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ex_big; DROP TABLE IF EXISTS ex_rls" >/dev/null
 rm -f /tmp/ex.csv /tmp/ex.err /tmp/ex.xlsx /tmp/ex.hdr /tmp/ex-http.csv
 
+echo "### 11l. query history: what each person ran, never a result (points 8.1, 8.3)"
+# The SQL, branch, time, duration, rows and outcome, kept 90 days, each
+# person's own; console and API through /query, fox sql and fox export at the
+# CLI. Not psql through the gateway, which passes bytes and sees no SQL.
+HU=https://localhost:8080/api
+hjson() { python3 -c 'import sys,json; d=json.load(sys.stdin); d=d.get("entries",d) if isinstance(d,dict) else d; '"$1"; }
+$S history on >/dev/null 2>&1; $S history retention 90 >/dev/null 2>&1
+$S history purge >/dev/null 2>&1; as "$KEY" -X DELETE "$HU/history" >/dev/null; as "$KA" -X DELETE "$HU/history" >/dev/null
+assert_eq "fox history status says it is on, for 90 days" "$($S history status | grep -c 'is on for this install, kept 90 days')" "1"
+M="hist_$RANDOM$RANDOM"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS hist_t; CREATE TABLE hist_t (v text); INSERT INTO hist_t VALUES ('zz-secret-row-value'), ('zz-secret-row-value-2'); GRANT SELECT ON hist_t TO db_client" >/dev/null
+$S sql "SELECT v AS $M FROM hist_t" >/dev/null 2>&1
+$S sql "SELECT * FROM no_such_table_$M" >/dev/null 2>&1
+$S export "SELECT v AS ${M}_x FROM hist_t" >/dev/null 2>&1
+assert_eq "fox sql and fox export are in the history of whoever is at the machine: the statement, rows, outcome" \
+  "$($S history --json | hjson 'print(*["/".join([e["source"], e["kind"], str(e["rows"]), str(e["ok"])]) for e in d if "'"$M"'" in e["sql"]], sep=" ")')" \
+  "cli/export/2/True cli/query/0/False cli/query/2/True"
+assert_contains "…a failure keeps why" "$($S history --json | hjson 'print([e["error"] for e in d if "no_such_table_'"$M"'" in e["sql"]][0])')" "no_such_table_$M"
+assert_contains "…and fox history prints it to read" "$($S history --limit 5)" "SELECT v AS $M FROM hist_t"
+
+as "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT v AS ${M}_api FROM hist_t\"}" "$HU/branches/main/query" >/dev/null
+as "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT v AS ${M}_hidden FROM hist_t\",\"history\":false}" "$HU/branches/main/query" >/dev/null
+as "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT v AS ${M}_exp FROM hist_t\"}" "$HU/branches/main/export" >/dev/null
+MINE="$(as "$KEY" "$HU/history?limit=50")"
+assert_eq "the API records what a key runs, with its rows; an export too; history:false is not kept" \
+  "$(hjson 'print(*sorted("/".join([e["source"], e["kind"], str(e["rows"])]) for e in d if "'"$M"'" in e["sql"]), sep=" ")' <<<"$MINE")|$(grep -c "${M}_hidden" <<<"$MINE")" \
+  "api/export/2 api/query/2|0"
+assert_eq "…each person reads only their own: alice sees none of it, nor the CLI's" \
+  "$(as "$KA" "$HU/history?limit=500" | grep -c "$M")|$(grep -c "${M}_x\|no_such_table_$M" <<<"$MINE")" "0|0"
+# Never a result: the rows those queries returned are nowhere in the store.
+assert_eq "no result is kept: the rows those queries returned are nowhere in the store" \
+  "$(python3 - "$HOME/$BRAND_STATE_DIR/auth.db" <<'PYH'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+hits = 0
+for (t,) in c.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+    for row in c.execute(f'SELECT * FROM "{t}"'):
+        hits += sum('zz-secret-row-value' in str(v) for v in row)
+print(hits)
+PYH
+)" "0"
+GWM="gw_$RANDOM"
+PGPASSWORD="$KEY" psql "$GATEWAY/main?sslmode=require" -tAc "SELECT 1 AS $GWM" >/dev/null 2>&1
+assert_eq "…and psql through the gateway is not seen (the documented limit)" "$(as "$KEY" "$HU/history?limit=50" | grep -c "$GWM")" "0"
+
+# Off for one person, off for the install; settings are an admin's.
+assert_eq "anyone turns their own off" "$(as "$KA" -H 'Content-Type: application/json' -X PUT -d '{"mine":false}' "$HU/history/settings" | hjson 'print(d["mine"])')" "False"
+as "$KA" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT 1 AS ${M}_alice_off\"}" "$HU/branches/main/query" >/dev/null
+as "$KA" -H 'Content-Type: application/json' -X PUT -d '{"mine":true}' "$HU/history/settings" >/dev/null
+as "$KA" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT 1 AS ${M}_alice_on\"}" "$HU/branches/main/query" >/dev/null
+assert_eq "…nothing is kept while it is off, and it keeps again when on" \
+  "$(as "$KA" "$HU/history" | grep -c "${M}_alice_off")|$(as "$KA" "$HU/history" | grep -c "${M}_alice_on")" "0|1"
+assert_eq "…but the install's switch and retention are an admin's" \
+  "$(code "$KA" -H 'Content-Type: application/json' -X PUT -d '{"enabled":false}' "$HU/history/settings")|$(code "$KA" -H 'Content-Type: application/json' -X PUT -d '{"retention_days":7}' "$HU/history/settings")" "403|403"
+$S history off >/dev/null
+$S sql "SELECT 1 AS ${M}_install_off" >/dev/null 2>&1
+$S history on >/dev/null
+assert_eq "fox history off keeps nothing new" "$($S history --json | grep -c "${M}_install_off")" "0"
+assert_eq "…retention is 1 to 3650 days" \
+  "$($S history retention 0 >/dev/null 2>&1; echo $?)|$($S history retention 30 | grep -c 'kept 30 days')|$(as "$KEY" "$HU/history/settings" | hjson 'print(d["retention_days"])')" "1|1|30"
+$S history retention 90 >/dev/null
+
+# A person's history, for a request about their own data: read and deleted at
+# the machine, and both in the security log; never the SQL itself.
+assert_contains "the operator lists who has history" "$($S history --people)" "alice@foxbyte.dev"
+assert_contains "…reads a person's, for them" "$($S history --user alice@foxbyte.dev)" "${M}_alice_on"
+assert_contains "…and deletes it" "$($S history purge --user alice@foxbyte.dev)" "from alice@foxbyte.dev's query history"
+assert_eq "…which is gone" "$(as "$KA" "$HU/history/settings" | hjson 'print(d["count"])')" "0"
+AUD="$($S audit --limit 60 2>/dev/null)"
+assert_eq "…and the security log has both, with no SQL" \
+  "$(grep 'history.read' <<<"$AUD" | grep -c 'alice@foxbyte.dev' | awk '{print ($1>0)}')|$(grep 'history.purged' <<<"$AUD" | grep -c 'alice@foxbyte.dev' | awk '{print ($1>0)}')|$(grep 'history\.' <<<"$AUD" | grep -c "$M\|SELECT")" "1|1|0"
+assert_eq "anyone deletes their own over the API" \
+  "$(as "$KEY" -X DELETE "$HU/history" | hjson 'print(d["deleted"] > 0)')|$(as "$KEY" "$HU/history/settings" | hjson 'print(d["count"])')" "True|0"
+assert_eq "…and purge --everyone asks first" "$($S history purge --everyone >/dev/null 2>&1; echo $?)" "2"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS hist_t" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

@@ -294,6 +294,7 @@ fox sql --branch qa "SELECT 1"   # run SQL and print the result
 fox sql --format csv "SELECT …" > out.csv   # or tsv, markdown, json, insert --table <t>
 fox sql --format xlsx "SELECT …" > out.xlsx # an Excel workbook
 fox export "SELECT …" > all.csv             # every row, streamed (csv, tsv, json, xlsx); read only
+fox history                                 # the SQL you ran (never results), kept 90 days
 ```
 
 Connect any Postgres client through the gateway — the **database name is the

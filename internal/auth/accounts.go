@@ -123,6 +123,10 @@ func (s *Store) ListAccounts() ([]Account, error) {
 // sessions, its API keys (agent keys it owned included), its OAuth sign-ins
 // and its pipelines. The branches it owned stay, with no owner, so only an
 // admin can reach them; nothing in a database is deleted.
+//
+// Its query history goes with it, and its choice to keep none: an email
+// address used again later is a different person, who must not inherit the
+// SQL the last one typed.
 func (s *Store) DeleteAccount(userID int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -135,6 +139,8 @@ func (s *Store) DeleteAccount(userID int64) error {
 		`DELETE FROM oauth_identities WHERE user_id=?`,
 		`DELETE FROM pipelines WHERE user_id=?`,
 		`DELETE FROM branch_owners WHERE user_id=?`,
+		`DELETE FROM query_history WHERE actor=(SELECT email FROM users WHERE id=?)`,
+		`DELETE FROM history_optout WHERE actor=(SELECT email FROM users WHERE id=?)`,
 	} {
 		if _, err := tx.Exec(q, userID); err != nil {
 			return err

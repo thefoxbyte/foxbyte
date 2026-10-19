@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -56,6 +57,9 @@ type Store struct {
 	db       *sql.DB
 	cfg      Config
 	throttle *throttle
+	// historyTrimmed is when query history was last trimmed to its retention,
+	// in Unix nanoseconds (history.go).
+	historyTrimmed atomic.Int64
 
 	// OnFirstUser runs when the first account on this install is created,
 	// however it was created: the web sign-up or `fox user create`. The engine
@@ -181,6 +185,10 @@ func initSchemaOnce(db *sql.DB) error {
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, auditSchema); err != nil {
+		_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, historySchema); err != nil {
 		_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		return err
 	}

@@ -385,12 +385,35 @@ export const resumeBranch = (name: string) => req('POST', `${API}/api/branches/$
 // query runs as the signed-in user, so it counts only for admins of the branch.
 // allowRules applies SET bb.policy_allow: the per-rule override for a Blackbox
 // policy block (BBX01), which allowDestructive does not cover.
-export const runQuery = (name: string, sql: string, opts: { allowDestructive?: boolean; allowRules?: string[] } = {}) =>
+// history: false keeps the query out of the signed-in user's query history
+// (point 8.1): the console's own reads of a table, which nobody typed.
+export const runQuery = (name: string, sql: string, opts: { allowDestructive?: boolean; allowRules?: string[]; history?: boolean } = {}) =>
   req('POST', `${API}/api/branches/${name}/query`, {
     sql,
     ...(opts.allowDestructive ? { allow_destructive: true } : {}),
     ...(opts.allowRules?.length ? { allow_rules: opts.allowRules } : {}),
+    ...(opts.history === false ? { history: false } : {}),
   }) as Promise<QueryResult>
+
+// Query history (points 8.1, 8.3): your own, and the switches. The engine
+// keeps the SQL, branch, time, duration, row count and outcome, never a result.
+export type HistoryEntry = {
+  id: number; branch: string; source: 'console' | 'api' | 'cli'; kind: 'query' | 'export'
+  sql: string; truncated?: boolean; at: number; duration_ms: number; rows: number; ok: boolean; error?: string
+}
+export type HistorySettings = { enabled: boolean; retention_days: number; mine: boolean; count: number; admin: boolean }
+export const listHistory = (opts: { branch?: string; limit?: number; before?: number } = {}) => {
+  const q = new URLSearchParams()
+  if (opts.branch) q.set('branch', opts.branch)
+  if (opts.limit) q.set('limit', String(opts.limit))
+  if (opts.before) q.set('before', String(opts.before))
+  const qs = q.toString()
+  return req('GET', `${API}/api/history${qs ? `?${qs}` : ''}`) as Promise<{ entries: HistoryEntry[] }>
+}
+export const historySettings = () => req('GET', `${API}/api/history/settings`) as Promise<HistorySettings>
+export const setHistorySettings = (p: { mine?: boolean; enabled?: boolean; retention_days?: number }) =>
+  req('PUT', `${API}/api/history/settings`, p) as Promise<HistorySettings>
+export const deleteMyHistory = () => req('DELETE', `${API}/api/history`) as Promise<{ deleted: number }>
 // exportQuery is the whole result of one statement as a file (point 1.3), not
 // the 1,000 rows a run holds. The server streams it as the signed-in user, read
 // only, and records it in the security log. A failure before the first row is

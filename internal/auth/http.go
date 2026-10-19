@@ -63,6 +63,16 @@ func (s *Store) clearCookie(w http.ResponseWriter) {
 		Secure: strings.HasPrefix(s.cfg.WebOrigin, "https"), SameSite: http.SameSiteLaxMode})
 }
 
+// RequestSource names how a request was signed in, for query history: the
+// console, with a session cookie, or the API, with a key. It follows
+// userFromRequest, which tries the session first.
+func RequestSource(r *http.Request) string {
+	if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
+		return "console"
+	}
+	return "api"
+}
+
 // userFromRequest resolves a user via session cookie or API key.
 func (s *Store) userFromRequest(r *http.Request) (User, bool) {
 	if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
