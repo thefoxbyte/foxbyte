@@ -296,6 +296,7 @@ fox sql --format xlsx "SELECT …" > out.xlsx # an Excel workbook
 fox export "SELECT …" > all.csv             # every row, streamed (csv, tsv, json, xlsx); read only
 fox history                                 # the SQL you ran (never results), kept 90 days
 fox history --search orders                 # find one; then: fox history run <id>, show <id>, save <name> --from <id>
+fox schema                                  # what a branch holds; fox schema orders [--ddl] for one, with its CREATE script
 ```
 
 Connect any Postgres client through the gateway — the **database name is the

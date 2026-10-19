@@ -844,6 +844,28 @@ th.expand-col, td.expand-col { width: 58px; padding-left: 8px; padding-right: 0;
 /* SQL console: reload feedback, the folded system schema, and the override */
 .obj-head button:disabled { cursor: default; }
 .obj-head button.spinning { display: inline-block; animation: fox-spin .8s linear infinite; color: var(--accent); }
+/* The object browser (point 12.1): the rest of a branch, folded by kind. */
+.obj-group-btn { display: flex; align-items: center; gap: 6px; width: 100%; background: none; border: 0; cursor: pointer; text-align: left; }
+.obj-group-btn .caret { width: 10px; flex: none; }
+.obj-group-btn .n { margin-left: auto; font-weight: 500; color: var(--faint, var(--muted)); }
+.obj-item .obj-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.obj-sub { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: var(--panel-2); color: var(--muted);
+  font-size: 10.5px; font-weight: 500; white-space: nowrap; }
+.obj-view .obj-body { display: flex; flex-direction: column; gap: var(--s-3); padding-top: var(--s-2); overflow: auto; min-height: 0; }
+.obj-table { border-collapse: collapse; width: 100%; font-size: var(--t-sm); }
+.obj-table th, .obj-table td { text-align: left; vertical-align: top; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.obj-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.obj-facts { width: auto; }
+.mono { font-family: var(--font-mono); font-size: var(--t-xs, 12px); word-break: break-word; }
+.obj-value { margin-right: 6px; }
+.obj-parts { padding-top: var(--s-2); overflow: auto; }
+.obj-members ul { margin: 6px 0 0 18px; padding: 0; max-height: 240px; overflow: auto; }
+.ddl { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-top: var(--s-2); }
+.ddl-bar { display: flex; align-items: center; gap: var(--s-2); padding: 4px 8px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
+.ddl-bar button.sm { padding: 2px 10px; font-size: 12px; }
+.ddl-bar .ok { color: var(--green); font-size: 12px; }
+.ddl-text { margin: 0; padding: 10px 12px; font-family: var(--font-mono); font-size: var(--t-xs, 12px); white-space: pre; overflow: auto; max-height: 60vh; }
+
 .obj-show-system { display: block; width: calc(100% - 16px); margin: 10px 8px 8px; padding: 6px 9px; font-size: 12px;
   background: none; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); cursor: pointer; text-align: center; }
 .obj-show-system:hover { color: var(--accent); border-color: var(--accent); }

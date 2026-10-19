@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdmins, getBranches, runQuery, API, type Branch, type BranchAdmins, type QueryResult, type StatementResult, type Suggestion } from '../api'
+import { getAdmins, getBranches, getCatalog, runQuery, API, type Branch, type BranchAdmins, type CatalogObject, type QueryResult, type StatementResult, type Suggestion } from '../api'
 import { BRAND } from '../brand'
 import { hintFor } from '../errhint'
 import CopyMenu, { cellText } from '../components/CopyMenu'
 import ExportMenu from '../components/ExportMenu'
 import HistoryPanel from '../components/HistoryPanel'
 import { useCompletion } from '../components/Completion'
+import { CatalogGroups, ObjectView, TableParts } from '../components/ObjectBrowser'
 import { applySuggestion, schemaFrom, snippets, SCHEMA_SQL, type Rel } from '../sqlcomplete'
 
 type DbObject = { schema: string; name: string; type: 'table' | 'view' }
-type Tab = 'rows' | 'structure' | 'indexes'
+type Tab = 'rows' | 'structure' | 'indexes' | 'constraints' | 'triggers' | 'ddl'
+// Tabs the catalog fills (point 12.1), rather than a query of the console's own.
+const CATALOG_TABS: Tab[] = ['constraints', 'triggers', 'ddl']
+const TAB_LABEL: Record<Tab, string> = { rows: 'Rows', structure: 'Structure', indexes: 'Indexes', constraints: 'Constraints', triggers: 'Triggers', ddl: 'CREATE script' }
 
 const PAGE = 100
 const HISTORY_KEY = 'fox.history.open'
@@ -62,7 +66,10 @@ export default function Console() {
   const [admins, setAdmins] = useState<BranchAdmins | null>(null)
   const [allowDestructive, setAllowDestructive] = useState(false)
 
-  const [mode, setMode] = useState<'query' | 'browse'>('query')
+  const [mode, setMode] = useState<'query' | 'browse' | 'object'>('query')
+  // The rest of what the branch holds, and the one of those open (point 12.1).
+  const [catalog, setCatalog] = useState<CatalogObject[]>([])
+  const [objSel, setObjSel] = useState<CatalogObject | null>(null)
   const [sel, setSel] = useState<DbObject | null>(null)
   const [tab, setTab] = useState<Tab>('rows')
   const [page, setPage] = useState(0)
@@ -169,6 +176,9 @@ export default function Console() {
       runQuery(b, SCHEMA_SQL, { history: false })
         .then(c => setRels(c.error ? [] : schemaFrom(c.rows || [])))
         .catch(() => setRels([]))
+      // Everything else it holds, for the object browser. Without it the rail
+      // still lists tables and views, as it always has.
+      getCatalog(b).then(c => setCatalog(c.objects ?? [])).catch(() => setCatalog([]))
     } catch (e) {
       setListErr((e as Error).message)
     } finally {
@@ -178,7 +188,7 @@ export default function Console() {
 
   // Reset when the branch changes.
   useEffect(() => {
-    setObjects([]); setRels([]); loadObjects(branch); setSel(null); setMode('query'); setBrowseRes(null); setAllowDestructive(false)
+    setObjects([]); setRels([]); setCatalog([]); setObjSel(null); loadObjects(branch); setSel(null); setMode('query'); setBrowseRes(null); setAllowDestructive(false)
     setAdmins(null)
     getAdmins(branch).then(setAdmins).catch(() => setAdmins(null))
   }, [branch, loadObjects])
@@ -194,6 +204,7 @@ export default function Console() {
   // Load the active browse tab.
   useEffect(() => {
     if (mode !== 'browse' || !sel) return
+    if (CATALOG_TABS.includes(tab)) { setBrowseRes(null); setBusy(false); return }
     let cancelled = false
     const load = async () => {
       setBusy(true); setBrowseRes(null)
@@ -256,6 +267,12 @@ export default function Console() {
     } finally {
       setBusy(false); setAllowDestructive(false); setHistoryTick(t => t + 1)
     }
+  }
+
+  // A CREATE script or a snippet into the editor, to read, change or run.
+  const openSql = (text: string) => {
+    setSql(text); setMode('query')
+    requestAnimationFrame(() => editorRef.current?.focus())
   }
 
   // A "did you mean" fix (point 9.2): the name written into the SQL that ran,
@@ -378,6 +395,9 @@ export default function Console() {
             {tables.map(item)}
             {views.length > 0 && <div className="obj-group">Views</div>}
             {views.map(item)}
+            <CatalogGroups objects={catalog} filter={filter} showSystem={showSystem}
+              active={mode === 'object' ? objSel : null}
+              onOpen={o => { setObjSel(o); setMode('object') }} />
             {showSystem && system.length > 0 && (
               <>
                 <div className="obj-group">{BRAND.product} system</div>
@@ -493,6 +513,8 @@ export default function Console() {
               </section>
               )}
             </>
+          ) : mode === 'object' && objSel ? (
+            <ObjectView branch={branch} obj={objSel} onOpenSql={openSql} />
           ) : sel && (
             <section className="wb-pane wb-res">
               <div className="obj-view-head">
@@ -507,13 +529,16 @@ export default function Console() {
                   }} />
               </div>
               <div className="db-tabs">
-                {(['rows', 'structure', 'indexes'] as Tab[]).map(t => (
+                {((sel.type === 'view' ? ['rows', 'structure', 'ddl'] : ['rows', 'structure', 'indexes', 'constraints', 'triggers', 'ddl']) as Tab[]).map(t => (
                   <button key={t} className={tab === t ? 'active' : ''} onClick={() => switchTab(t)}>
-                    {t === 'rows' ? 'Rows' : t === 'structure' ? 'Structure' : 'Indexes'}
+                    {TAB_LABEL[t]}
                   </button>
                 ))}
               </div>
-              {busy && !browseRes ? <div className="muted">Loading…</div> : browseRes && <Grid res={browseRes} />}
+              {CATALOG_TABS.includes(tab)
+                ? <TableParts branch={branch} tab={tab as 'constraints' | 'triggers' | 'ddl'} onOpenSql={openSql}
+                    obj={catalog.find(o => (o.kind === 'table' || o.kind === 'view') && o.schema === sel.schema && o.name === sel.name) ?? null} />
+                : busy && !browseRes ? <div className="muted">Loading…</div> : browseRes && <Grid res={browseRes} />}
               {tab === 'rows' && browseRes && !browseRes.error && (
                 <div className="pager">
                   <span className="count">

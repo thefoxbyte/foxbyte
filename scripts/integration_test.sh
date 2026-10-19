@@ -1721,6 +1721,88 @@ assert_eq "…and on an export refused before its first row" \
   "$(as "$KEY" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM sg_custmers"}' "$QU/export" | hjson 'print(d["suggestion"]["insert"])')" "sg_customers"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS sg_customers, \"SgProducts\", sg_hidden_tbl" >/dev/null
 
+echo "### 11o. fox schema: the object browser, read only (point 12.1)"
+# Every kind of object a branch can hold, then: the tree, what is left out,
+# each object's parts, and its CREATE script run on a fresh branch giving the
+# same object back.
+$S branch delete itcat >/dev/null 2>&1; $S branch delete itcat2 >/dev/null 2>&1
+$S branch create itcat >/dev/null 2>&1
+sudo docker exec -i -e PGPASSWORD=foxbyte pg-itcat psql -U dbadmin -d appdb -v ON_ERROR_STOP=1 -q >/dev/null 2>&1 <<'CATSQL'
+SET bb.allow_destructive=on;
+DROP SCHEMA IF EXISTS shop CASCADE;
+CREATE SCHEMA shop;
+COMMENT ON SCHEMA shop IS 'the shop';
+CREATE TYPE shop.status AS ENUM ('new', 'paid', 'it''s shipped');
+CREATE TYPE shop.money2 AS (amount numeric(12,2), currency char(3));
+CREATE DOMAIN shop.email AS text NOT NULL CHECK (VALUE LIKE '%@%');
+CREATE TYPE shop.floatrange AS RANGE (subtype = float8);
+CREATE SEQUENCE shop.invoice_no START 1000 INCREMENT 5;
+CREATE TABLE shop.customers (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email shop.email UNIQUE,
+  "Full Name" text NOT NULL DEFAULT 'anon',
+  created timestamptz NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE shop.customers IS 'people who buy';
+COMMENT ON COLUMN shop.customers.email IS 'where we write';
+CREATE TABLE shop.orders (
+  id serial PRIMARY KEY,
+  customer_id bigint NOT NULL REFERENCES shop.customers(id) ON DELETE CASCADE,
+  status shop.status NOT NULL DEFAULT 'new',
+  qty int CHECK (qty > 0),
+  price numeric(10,2),
+  total numeric GENERATED ALWAYS AS (qty * price) STORED,
+  invoice int DEFAULT nextval('shop.invoice_no')
+);
+CREATE INDEX orders_status_idx ON shop.orders (status) WHERE status <> 'paid';
+CREATE FUNCTION shop.touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.qty := coalesce(NEW.qty, 1); RETURN NEW; END $$;
+CREATE TRIGGER orders_touch BEFORE INSERT ON shop.orders FOR EACH ROW EXECUTE FUNCTION shop.touch();
+CREATE FUNCTION shop.order_total(o_id int) RETURNS numeric LANGUAGE sql STABLE AS $$ SELECT total FROM shop.orders WHERE id = o_id $$;
+CREATE FUNCTION shop.order_total(o_id int, discount numeric) RETURNS numeric LANGUAGE sql STABLE AS $$ SELECT total - discount FROM shop.orders WHERE id = o_id $$;
+CREATE PROCEDURE shop.pay(o_id int) LANGUAGE sql AS $$ UPDATE shop.orders SET status = 'paid' WHERE id = o_id $$;
+CREATE VIEW shop.open_orders AS SELECT o.id, c."Full Name" AS who FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id WHERE o.status <> 'paid';
+CREATE MATERIALIZED VIEW shop.order_counts AS SELECT status, count(*) AS n FROM shop.orders GROUP BY status;
+CREATE TABLE shop.events (at date NOT NULL, what text) PARTITION BY RANGE (at);
+CREATE TABLE shop.events_2026 PARTITION OF shop.events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+CREATE TABLE shop.secret (x int); REVOKE ALL ON shop.secret FROM PUBLIC, db_client;
+GRANT USAGE ON SCHEMA shop TO db_client;
+GRANT SELECT ON shop.customers, shop.orders, shop.events, shop.open_orders, shop.order_counts TO db_client;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA shop TO db_client;
+CATSQL
+TREE="$($S schema --branch itcat)"
+assert_contains "fox schema shows each schema and what is in it, by kind" "$TREE" $'shop\n  tables (3)\n    customers\n    events [partitioned]\n    orders\n  views (2)\n    open_orders\n    order_counts [materialized]\n  functions (3)\n    order_total(o_id integer)\n    order_total(o_id integer, discount numeric)\n    touch()\n  procedures (1)\n    pay(IN o_id integer)\n  sequences (2)\n    invoice_no\n    orders_id_seq\n  types (4)\n    email [domain]\n    floatrange [range]\n    money2 [composite]\n    status [enum]'
+assert_eq "…not what is part of something else, nor an extension's, nor a table the caller cannot read" \
+  "$(grep -c 'customers_id_seq\|floatmultirange\|dblink_connect\|secret' <<<"$TREE")" "0"
+assert_eq "…the extensions, and FoxByte's own schema only when asked" \
+  "$(grep -c '^  dblink ' <<<"$TREE")|$(grep -c '^bb$' <<<"$TREE")|$($S schema --branch itcat --all | grep -c '^bb$')" "1|0|1"
+assert_eq "fox schema --search finds by name, --kind narrows" \
+  "$($S schema --branch itcat --search order_t | grep -c 'function  shop.order_total')|$($S schema --branch itcat --search order --kind view | grep -c '^view')" "2|2"
+OBJ="$($S schema --branch itcat shop.orders)"
+assert_contains "fox schema <table> shows its columns" "$OBJ" "total        numeric        generated ((qty)::numeric * price)"
+assert_contains "…its constraints" "$OBJ" "orders_customer_id_fkey: FOREIGN KEY (customer_id) REFERENCES shop.customers(id) ON DELETE CASCADE"
+assert_contains "…its indexes" "$OBJ" "orders_status_idx: CREATE INDEX orders_status_idx ON shop.orders USING btree (status) WHERE (status <> 'paid'::shop.status)"
+assert_contains "…its triggers, FoxByte's marked" "$OBJ" "bb_record_dml (FoxByte): CREATE TRIGGER bb_record_dml"
+assert_eq "…and its CREATE script, without FoxByte's triggers" \
+  "$($S schema --branch itcat orders --ddl | grep -c '^CREATE TRIGGER orders_touch')|$($S schema --branch itcat orders --ddl | grep -c 'bb_')" "1|0"
+assert_eq "a name with overloads shows each" "$($S schema --branch itcat order_total --ddl | grep -c '^CREATE OR REPLACE FUNCTION shop.order_total')" "2"
+assert_eq "an unknown name says so" "$($S schema --branch itcat nope_no_such >/dev/null 2>&1; echo $?)" "1"
+CATORDER="shop status money2 email floatrange invoice_no orders_id_seq touch customers orders events order_total open_orders order_counts pay"
+: > /tmp/cat-rt.sql
+for o in $CATORDER; do $S schema --branch itcat "$o" --ddl >> /tmp/cat-rt.sql; echo >> /tmp/cat-rt.sql; done
+$S branch create itcat2 >/dev/null 2>&1
+sudo docker exec -i -e PGPASSWORD=foxbyte pg-itcat2 psql -U dbadmin -d appdb -v ON_ERROR_STOP=1 -q < /tmp/cat-rt.sql >/dev/null 2>&1; RC=$?
+pg pg-itcat2 "GRANT USAGE ON SCHEMA shop TO db_client; GRANT SELECT ON ALL TABLES IN SCHEMA shop TO db_client; GRANT USAGE ON ALL SEQUENCES IN SCHEMA shop TO db_client;" >/dev/null
+SAME=0; for o in $CATORDER; do [ "$($S schema --branch itcat "$o" --ddl)" = "$($S schema --branch itcat2 "$o" --ddl)" ] && SAME=$((SAME+1)); done
+assert_eq "every CREATE script, run on a fresh branch, makes the same object again (15 of 15)" "$RC|$SAME" "0|15"
+CU=https://localhost:8080/api/branches/itcat/schema
+OID="$(as "$KEY" "$CU" | hjson 'print([o["oid"] for o in d["objects"] if o["kind"]=="table" and o["name"]=="orders"][0])')"
+assert_eq "GET …/schema lists the objects, and …/schema/{kind}/{oid} gives one and its script" \
+  "$(as "$KEY" "$CU" | hjson 'print(sorted({o["kind"] for o in d["objects"]}))')|$(as "$KEY" "$CU/table/$OID" | hjson 'print(d["ddl"].splitlines()[0], len(d["constraints"]))')" \
+  "['extension', 'function', 'procedure', 'schema', 'sequence', 'table', 'type', 'view']|CREATE TABLE shop.orders ( 3"
+assert_eq "…an object not in the caller's list is 404, and a branch out of reach is too" \
+  "$(code "$KEY" "$CU/table/1")|$(code "$KEY" "$CU/function/$OID")|$(code "$KA" "$CU")" "404|404|404"
+$S branch delete itcat >/dev/null 2>&1; $S branch delete itcat2 >/dev/null 2>&1; rm -f /tmp/cat-rt.sql
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.
