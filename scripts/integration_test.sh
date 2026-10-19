@@ -1616,4 +1616,5 @@ rm -f "$MISSING_CMD_FLAG"
 
 echo
 echo "==== ${PASS} passed, ${FAIL} failed ===="
+vm_pause_report
 [ "$FAIL" -eq 0 ]

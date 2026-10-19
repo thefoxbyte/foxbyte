@@ -1418,4 +1418,5 @@ curl -sk -o /dev/null -H "$AUTH" -X DELETE "$AGENTS/agents/v2bg/branch"
 
 echo
 echo "==== ${PASS} passed, ${FAIL} failed ===="
+vm_pause_report
 [ "$FAIL" -eq 0 ]
