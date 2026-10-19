@@ -1803,6 +1803,39 @@ assert_eq "…an object not in the caller's list is 404, and a branch out of rea
   "$(code "$KEY" "$CU/table/1")|$(code "$KEY" "$CU/function/$OID")|$(code "$KA" "$CU")" "404|404|404"
 $S branch delete itcat >/dev/null 2>&1; $S branch delete itcat2 >/dev/null 2>&1; rm -f /tmp/cat-rt.sql
 
+echo "### 11p. the data grid's save: rows edited together, as the user (point 12.2)"
+# Sorting, filtering and paging are the console's own queries (Playwright);
+# the save is the engine's: one transaction, a table with a key, the row as
+# it was loaded, every value a parameter.
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS gp_items, gp_nokey, gp_mine;
+  CREATE TABLE gp_items (id int PRIMARY KEY, name text, qty int CHECK (qty > 0), total int GENERATED ALWAYS AS (qty * 2) STORED);
+  INSERT INTO gp_items (id, name, qty) VALUES (1, 'one', 1), (2, 'two', 2), (3, 'three', 3);
+  CREATE TABLE gp_nokey (v text); CREATE TABLE gp_mine (id int PRIMARY KEY, owner text, v text);
+  INSERT INTO gp_mine VALUES (1, 'alice@foxbyte.dev', 'a'), (2, 'test@foxbyte.dev', 't');
+  ALTER TABLE gp_mine ENABLE ROW LEVEL SECURITY; CREATE POLICY own ON gp_mine USING (owner = session_user);
+  GRANT ALL ON gp_items, gp_nokey, gp_mine TO db_client;" >/dev/null
+RU=https://localhost:8080/api/branches/main/rows
+save() { as "$1" -H 'Content-Type: application/json' -X POST -d "$2" "$RU"; }
+scode() { code "$1" -H 'Content-Type: application/json' -X POST -d "$2" "$RU"; }
+assert_eq "a save adds, changes and deletes rows together" \
+  "$(save "$KEY" '{"table":"gp_items","changes":[{"op":"delete","key":{"id":"3"}},{"op":"update","key":{"id":"1"},"values":{"name":"ONE","qty":"5"},"old":{"name":"one","qty":"1"}},{"op":"insert","values":{"id":"4","name":"x'"'"'); DROP TABLE gp_items; --","qty":null}}]}' | hjson 'print(d["inserted"], d["updated"], d["deleted"])')" "1 1 1"
+assert_eq "…as written: a value is only ever a value, NULL is NULL, and a generated column follows" \
+  "$(pg pg-main "SELECT string_agg(id||':'||name||':'||coalesce(qty::text,'null')||':'||coalesce(total::text,'null'), ' ' ORDER BY id) FROM gp_items")" \
+  "1:ONE:5:10 2:two:2:4 4:x'); DROP TABLE gp_items; --:null:null"
+assert_eq "a row changed since it was loaded stops the whole save (409), and nothing in it applies" \
+  "$(scode "$KEY" '{"table":"gp_items","changes":[{"op":"insert","values":{"id":"9","name":"nine","qty":"1"}},{"op":"update","key":{"id":"2"},"values":{"name":"TWO"},"old":{"name":"stale"}}]}')|$(pg pg-main "SELECT count(*) FROM gp_items WHERE id = 9")|$(pg pg-main "SELECT name FROM gp_items WHERE id = 2")" "409|0|two"
+assert_eq "…so does a row deleted since (409)" "$(scode "$KEY" '{"table":"gp_items","changes":[{"op":"delete","key":{"id":"3"}}]}')" "409"
+OUT="$(save "$KEY" '{"table":"gp_items","changes":[{"op":"insert","values":{"id":"10","qty":"1"}},{"op":"update","key":{"id":"2"},"values":{"qty":"0"},"old":{"qty":"2"}}]}')"
+assert_eq "a constraint refuses the save, says which change and why, and nothing applies" \
+  "$(hjson 'print(d["error"].split(":")[0], "gp_items_qty_check" in d["error"])' <<<"$OUT")|$(pg pg-main "SELECT count(*) FROM gp_items WHERE id = 10")" "change 2 (update) True|0"
+assert_eq "a generated column, an unknown column and a table without a key are refused" \
+  "$(save "$KEY" '{"table":"gp_items","changes":[{"op":"update","key":{"id":"2"},"values":{"total":"1"}}]}' | grep -c 'generated')|$(save "$KEY" '{"table":"gp_items","changes":[{"op":"insert","values":{"nope":"1"}}]}' | grep -c 'no column')|$(save "$KEY" '{"table":"gp_nokey","changes":[{"op":"insert","values":{"v":"1"}}]}' | grep -c 'no primary key')" "1|1|1"
+assert_eq "as the person editing: row-level security lets alice change her row, and not someone else's (409)" \
+  "$(scode "$KA" '{"table":"gp_mine","changes":[{"op":"update","key":{"id":"1"},"values":{"v":"A"},"old":{"v":"a"}}]}')|$(scode "$KA" '{"table":"gp_mine","changes":[{"op":"delete","key":{"id":"2"}}]}')|$(pg pg-main "SELECT string_agg(v, ',' ORDER BY id) FROM gp_mine")" "200|409|A,t"
+assert_eq "…and a branch out of reach is not found (404)" \
+  "$($S branch delete itgp >/dev/null 2>&1; $S branch create itgp >/dev/null 2>&1; code "$KA" -H 'Content-Type: application/json' -X POST -d '{"table":"x","changes":[]}' https://localhost:8080/api/branches/itgp/rows; $S branch delete itgp >/dev/null 2>&1)" "404"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS gp_items, gp_nokey, gp_mine" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

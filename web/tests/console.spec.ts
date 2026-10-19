@@ -701,3 +701,56 @@ test('the object browser shows functions, types and a table\'s parts, with their
   await page.getByRole('button', { name: 'CREATE script' }).click()
   await expect(page.getByLabel('CREATE script')).toContainText(`CREATE TABLE public.${t} (`)
 })
+
+// Point 12.2: the data grid. A table's rows sorted, filtered, and edited in
+// place: a change, a deletion and a new row, saved together.
+test('the data grid sorts, filters, and saves edits together', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const t = `e2e_grid_${Date.now().toString().slice(-6)}`
+  await page.locator('textarea.editor').fill(`CREATE TABLE ${t} (id int PRIMARY KEY, name text, qty int); INSERT INTO ${t} VALUES (1, 'b', 20), (2, 'a', 10), (3, 'c', 30)`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.locator('.res-tab')).toHaveCount(2, { timeout: 30_000 })
+  await page.locator('.obj-filter').fill(t)
+  await page.locator('.obj-item', { hasText: t }).first().click()
+  const firstCol = () => page.locator('.grid-wrap tbody tr td:nth-child(2)')
+  await expect(firstCol()).toHaveText(['1', '2', '3'], { timeout: 30_000 })
+
+  // Sort: a header click, again for descending.
+  await page.getByRole('button', { name: 'name', exact: true }).click()
+  await expect(firstCol()).toHaveText(['2', '1', '3'])
+  await page.getByRole('button', { name: 'name', exact: true }).click()
+  await expect(firstCol()).toHaveText(['3', '1', '2'])
+
+  // Filter: qty above 15, then cleared.
+  await page.getByLabel('Filter column').selectOption('qty')
+  await page.getByLabel('Filter comparison').selectOption('>')
+  await page.getByLabel('Filter value').fill('15')
+  await page.getByRole('button', { name: 'Filter', exact: true }).click()
+  await expect(firstCol()).toHaveText(['3', '1'])
+  await page.getByRole('button', { name: 'Remove filter qty > 15' }).click()
+  await expect(firstCol()).toHaveText(['3', '1', '2'])
+
+  // Edit: change a name, delete a row, add one; save them together.
+  await page.getByRole('button', { name: 'Edit rows' }).click()
+  const rowOf = (id: string) => page.locator('.edit-grid tbody tr', { has: page.locator('td:nth-child(2)', { hasText: new RegExp(`^${id}$`) }) })
+  await rowOf('1').locator('td').nth(2).click()
+  await page.getByLabel('Value for name').fill('bee')
+  await page.getByLabel('Value for name').press('Enter')
+  await rowOf('2').getByRole('button', { name: /^Delete row/ }).click()
+  await page.getByRole('button', { name: 'Add row' }).click()
+  const added = page.locator('.edit-grid tr.row-new')
+  await added.locator('td').nth(1).click()
+  await page.getByLabel('Value for id').fill('4')
+  await page.getByLabel('Value for id').press('Enter')
+  await added.locator('td').nth(2).click()
+  await page.getByLabel('Value for name').fill('dee')
+  await page.getByLabel('Value for name').press('Enter')
+  await expect(page.locator('.edit-bar')).toContainText('1 added, 1 changed, 1 deleted')
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.getByText('Saved: 1 added, 1 changed, 1 deleted.')).toBeVisible({ timeout: 30_000 })
+  // The page reloads from the table: sorted by name, descending, still.
+  await expect(firstCol()).toHaveText(['4', '3', '1'], { timeout: 30_000 })
+  await expect(page.locator('.grid-wrap tbody tr', { hasText: 'bee' })).toHaveCount(1)
+})

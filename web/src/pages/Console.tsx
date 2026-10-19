@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdmins, getBranches, getCatalog, runQuery, API, type Branch, type BranchAdmins, type CatalogObject, type QueryResult, type StatementResult, type Suggestion } from '../api'
+import { getAdmins, getBranches, getCatalog, getObject, runQuery, saveRows, API, type Branch, type BranchAdmins, type CatalogObject, type QueryResult, type StatementResult, type Suggestion } from '../api'
 import { BRAND } from '../brand'
 import { hintFor } from '../errhint'
 import CopyMenu, { cellText } from '../components/CopyMenu'
@@ -8,6 +8,8 @@ import ExportMenu from '../components/ExportMenu'
 import HistoryPanel from '../components/HistoryPanel'
 import { useCompletion } from '../components/Completion'
 import { CatalogGroups, ObjectView, TableParts } from '../components/ObjectBrowser'
+import { EditGrid, FilterBar, type ColInfo } from '../components/DataGrid'
+import { countQuery, nextSort, rowsQuery, summary, type Filter, type Sort } from '../gridquery'
 import { applySuggestion, schemaFrom, snippets, SCHEMA_SQL, type Rel } from '../sqlcomplete'
 
 type DbObject = { schema: string; name: string; type: 'table' | 'view' }
@@ -73,6 +75,12 @@ export default function Console() {
   const [sel, setSel] = useState<DbObject | null>(null)
   const [tab, setTab] = useState<Tab>('rows')
   const [page, setPage] = useState(0)
+  // The data grid (point 12.2): the open table's sort, filters, and whether
+  // its page is being edited.
+  const [sort, setSort] = useState<Sort>(null)
+  const [filters, setFilters] = useState<Filter[]>([])
+  const [editing, setEditing] = useState<ColInfo[] | null>(null)
+  const [gridNote, setGridNote] = useState('')
   const [total, setTotal] = useState<number | null>(null)
 
   const [browseRes, setBrowseRes] = useState<QueryResult | null>(null)
@@ -211,7 +219,7 @@ export default function Console() {
       try {
         let q = ''
         if (tab === 'rows') {
-          q = `SELECT * FROM ${rel(sel)} LIMIT ${PAGE} OFFSET ${page * PAGE}`
+          q = rowsQuery(rel(sel), { sort, filters, page, pageSize: PAGE, key: keyOf(sel) })
         } else if (tab === 'structure') {
           q = `SELECT column_name, data_type, is_nullable, column_default
                FROM information_schema.columns
@@ -225,7 +233,7 @@ export default function Console() {
         const r = await runQuery(branch, q, { history: false })
         if (!cancelled) setBrowseRes(r)
         if (tab === 'rows' && !cancelled) {
-          const c = await runQuery(branch, `SELECT count(*) FROM ${rel(sel)}`, { history: false })
+          const c = await runQuery(branch, countQuery(rel(sel), filters), { history: false })
           if (!cancelled) setTotal(Number(c.rows?.[0]?.[0] ?? 0))
         }
       } catch (e) {
@@ -236,9 +244,43 @@ export default function Console() {
     }
     load()
     return () => { cancelled = true }
-  }, [mode, sel, tab, page, branch, reloadTick])
+  }, [mode, sel, tab, page, branch, reloadTick, sort, filters, rels]) // rels: the key that orders a page
 
-  const openObject = (o: DbObject) => { setSel(o); setTab('rows'); setPage(0); setTotal(null); setMode('browse') }
+  const openObject = (o: DbObject) => {
+    setSel(o); setTab('rows'); setPage(0); setTotal(null); setMode('browse')
+    setSort(null); setFilters([]); setEditing(null); setGridNote('')
+  }
+  // A table's primary key, which orders its pages and names a row in an edit.
+  const keyOf = (o: DbObject) => rels.find(r => r.schema === o.schema && r.name === o.name)?.cols.filter(c => c.pk).map(c => c.name) ?? []
+
+  // Edit mode needs to know which columns Postgres fills itself: those come
+  // from the catalog, with the key.
+  const startEdit = async () => {
+    if (!sel) return
+    setGridNote('')
+    const obj = catalog.find(o => o.kind === 'table' && o.schema === sel.schema && o.name === sel.name)
+    const key = keyOf(sel)
+    let cols = rels.find(r => r.schema === sel.schema && r.name === sel.name)?.cols.map(c => ({ name: c.name, type: c.type })) ?? []
+    const locked = new Map<string, string>()
+    if (obj) {
+      try {
+        const d = await getObject(branch, 'table', obj.oid)
+        if (d.columns?.length) cols = d.columns.map(c => ({ name: c.name, type: c.type }))
+        for (const c of d.columns ?? []) {
+          if (c.generated) locked.set(c.name, `Generated from other columns: ${c.generated}`)
+          else if (c.identity === 'always') locked.set(c.name, 'An identity column: Postgres sets it')
+        }
+      } catch { /* the save still refuses what cannot be set */ }
+    }
+    setEditing(cols.map(c => ({ ...c, key: key.includes(c.name), locked: locked.get(c.name) })))
+  }
+  const saveGrid = async (changes: import('../gridquery').RowChange[]) => {
+    if (!sel) return
+    await saveRows(branch, sel.schema, sel.name, changes)
+    setEditing(null)
+    setGridNote(`Saved: ${summary(changes)}.`)
+    setReloadTick(t => t + 1)
+  }
   const switchTab = (t: Tab) => { setTab(t); if (t === 'rows') setPage(0) }
 
   // The override applies to one run and then switches itself off, so a later
@@ -535,11 +577,31 @@ export default function Console() {
                   </button>
                 ))}
               </div>
+              {tab === 'rows' && (
+                <div className="grid-tools">
+                  <FilterBar cols={browseRes?.columns ?? rels.find(r => r.schema === sel.schema && r.name === sel.name)?.cols.map(c => c.name) ?? []}
+                    filters={filters} onChange={f => { setFilters(f); setPage(0); setEditing(null) }} />
+                  <span className="wb-sp" />
+                  {gridNote && <span className="ok" role="status">{gridNote}</span>}
+                  {sel.type === 'table' && !editing && (
+                    <button type="button" className="ghost" onClick={startEdit}
+                      disabled={keyOf(sel).length === 0 || !browseRes || !!browseRes.error}
+                      title={keyOf(sel).length === 0 ? 'Only a table with a primary key can be edited here: without one, a row cannot be told apart' : 'Add, change and delete rows on this page, then save them together'}>
+                      Edit rows
+                    </button>
+                  )}
+                </div>
+              )}
               {CATALOG_TABS.includes(tab)
                 ? <TableParts branch={branch} tab={tab as 'constraints' | 'triggers' | 'ddl'} onOpenSql={openSql}
                     obj={catalog.find(o => (o.kind === 'table' || o.kind === 'view') && o.schema === sel.schema && o.name === sel.name) ?? null} />
-                : busy && !browseRes ? <div className="muted">Loading…</div> : browseRes && <Grid res={browseRes} />}
-              {tab === 'rows' && browseRes && !browseRes.error && (
+                : tab === 'rows' && editing && browseRes && !browseRes.error
+                  ? <EditGrid cols={browseRes.columns ?? []} rows={browseRes.rows ?? []} info={editing}
+                      onSave={saveGrid} onCancel={() => setEditing(null)} />
+                  : busy && !browseRes ? <div className="muted">Loading…</div>
+                  : browseRes && <Grid res={browseRes} sort={tab === 'rows' ? sort : undefined}
+                      onSort={tab === 'rows' ? (c => { setSort(s => nextSort(s, c)); setPage(0) }) : undefined} />}
+              {tab === 'rows' && browseRes && !browseRes.error && !editing && (
                 <div className="pager">
                   <span className="count">
                     rows {total === 0 ? 0 : page * PAGE + 1}–{page * PAGE + (browseRes.rows?.length || 0)}
@@ -703,8 +765,10 @@ function QueryOutput({ res, sql, branch, expanded, onExpand, onFix }:
 // branch is set where the whole result can be exported again from the server:
 // a statement someone ran, not a page of a table they browsed. script marks a
 // result that is one of several, which cannot be.
-function Grid({ res, showCommand, sql, branch, script, onFix }:
-  { res: StatementResult; showCommand?: boolean; sql?: string; branch?: string; script?: boolean; onFix?: FixFn }) {
+function Grid({ res, showCommand, sql, branch, script, onFix, sort, onSort }:
+  { res: StatementResult; showCommand?: boolean; sql?: string; branch?: string; script?: boolean; onFix?: FixFn
+    // A table's rows, sorted by a header click (point 12.2).
+    sort?: Sort; onSort?: (col: string) => void }) {
   const [expanded, setExpanded] = useState<number | null>(null)
   // Rows ticked for copying, and one cell picked to copy on its own (⌘C).
   const [picked, setPicked] = useState<Set<number>>(new Set())
@@ -785,7 +849,13 @@ function Grid({ res, showCommand, sql, branch, script, onFix }:
             <thead><tr><th className="expand-col">
               {rows.length > 0 && <input type="checkbox" aria-label="Select all rows" checked={all}
                 onChange={() => setPicked(all ? new Set() : new Set(rows.map((_, i) => i)))} />}
-            </th>{cols.map((c, i) => <th key={i}>{c}</th>)}</tr></thead>
+            </th>{cols.map((c, i) => onSort
+              ? <th key={i} aria-sort={sort?.col === c ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" className="th-sort" onClick={() => onSort(c)} title={`Sort by ${c}`}>
+                    {c}{sort?.col === c && <span aria-hidden="true">{sort.dir === 'asc' ? ' ▲' : ' ▼'}</span>}
+                  </button>
+                </th>
+              : <th key={i}>{c}</th>)}</tr></thead>
             <tbody>
               {rows.length === 0
                 ? <tr><td colSpan={cols.length + 1} className="muted">no rows</td></tr>
