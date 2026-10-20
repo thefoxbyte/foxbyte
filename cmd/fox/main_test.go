@@ -59,3 +59,17 @@ func TestRestoreArg(t *testing.T) {
 		t.Errorf("restoreArg(dangling) = %q, want ''", got)
 	}
 }
+
+// The help must say that `down` stops the servers too (it is the same command
+// as `stop`), and must not call the web console a separate app: release builds
+// serve it from the control plane (#152).
+func TestUsageDescribesDownAndControlplane(t *testing.T) {
+	if strings.Contains(usage, "separate app in web/") {
+		t.Error("usage still says the web UI is a separate app")
+	}
+	for _, want := range []string{"Same as stop: stops the background servers", "in release builds, the web console"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage lacks %q", want)
+		}
+	}
+}
