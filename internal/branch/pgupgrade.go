@@ -388,7 +388,7 @@ func dumpCarried(b, image, dir string) (ExportedBranch, error) {
 // standby's; the object store keeps running.
 func stopPostgres(branches []string) {
 	for _, b := range append(slices.Clone(branches), "standby") {
-		quiet("docker", "rm", "-f", container(b))
+		removeContainer(container(b))
 	}
 }
 
