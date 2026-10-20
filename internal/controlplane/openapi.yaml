@@ -719,6 +719,79 @@ paths:
         "409": { description: A row was changed or deleted since it was loaded; nothing saved. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/tracking:
+    get:
+      tags: [branches]
+      summary: Row tracking on the branch, which tables keep who changed each row and when.
+      description: >-
+        A tracked table has created_at, updated_at and last_modified_by (names
+        chosen when tracking starts), kept by a trigger that overrides whatever a
+        statement writes there. last_modified_by is session_user, the login,
+        which a session cannot change. track_new says whether tables made from
+        now on are tracked as they are made.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200": { description: The settings and the tracked tables., content: { application/json: { schema: { $ref: "#/components/schemas/Tracking" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/tracking/tables/{schema}/{table}:
+    put:
+      tags: [branches]
+      summary: Start tracking a table (the branch's owner or an admin).
+      description: >-
+        Adds the columns the table lacks and the trigger that keeps them, in one
+        transaction, recorded in the Blackbox and the security log under the
+        signed-in user. Rows already there are left empty unless
+        label_existing, which gives them this moment. A column that exists
+        must be of the right type. The body is optional; the default names are
+        created_at, updated_at and last_modified_by, and an empty name is a
+        column not kept.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: schema, in: path, required: true, schema: { type: string } }
+        - { name: table, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TrackOptions" }
+      responses:
+        "200": { description: Tracked; the branch's tracking as it now is., content: { application/json: { schema: { $ref: "#/components/schemas/Tracking" } } } }
+        "400": { description: "No such table, a column of the wrong type, or no column kept." }
+        "403": { description: Not the branch's owner or an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [branches]
+      summary: Stop tracking a table; its columns, and what they hold, stay (the branch's owner or an admin).
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: schema, in: path, required: true, schema: { type: string } }
+        - { name: table, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Stopped; the branch's tracking as it now is., content: { application/json: { schema: { $ref: "#/components/schemas/Tracking" } } } }
+        "403": { description: Not the branch's owner or an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/tracking/new:
+    put:
+      tags: [branches]
+      summary: Track every table made from now on, or not (the branch's owner or an admin). Tables that exist are not changed.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/TrackOptions" }
+                - type: object
+                  required: [on]
+                  properties:
+                    on: { type: boolean }
+      responses:
+        "200": { description: The branch's tracking as it now is., content: { application/json: { schema: { $ref: "#/components/schemas/Tracking" } } } }
+        "403": { description: Not the branch's owner or an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches/{name}/ledger:
     get:
       tags: [ledger]
@@ -1994,6 +2067,33 @@ components:
         tables_ready: { type: integer, description: "Tables whose initial copy is done and that now stream changes. Cut over once it equals tables." }
         last_message_at: { type: string, format: date-time, description: When the source last sent anything. }
         received_lsn: { type: string }
+    TrackOptions:
+      type: object
+      properties:
+        created: { type: string, default: created_at, description: "Set when a row is made, never after. Empty: not kept." }
+        updated: { type: string, default: updated_at, description: "Set when a row is made and each time it changes. Empty: not kept." }
+        by: { type: string, default: last_modified_by, description: "The login that last changed the row. Empty: not kept." }
+        label_existing: { type: boolean, default: false, description: Give rows already there this moment instead of leaving them empty. }
+    Tracking:
+      type: object
+      properties:
+        settings:
+          type: object
+          properties:
+            track_new: { type: boolean }
+            created: { type: string }
+            updated: { type: string }
+            by: { type: string }
+        tables:
+          type: array
+          items:
+            type: object
+            properties:
+              schema: { type: string }
+              name: { type: string }
+              created: { type: string }
+              updated: { type: string }
+              by: { type: string }
     CatalogObject:
       type: object
       properties:

@@ -30,6 +30,7 @@ vi.mock('../api', async () => {
     getCatalog: vi.fn(async () => ({ objects: [] })),
     getObject: vi.fn(async () => ({ kind: 'table', oid: 0, name: '', ddl: '' })),
     saveRows: vi.fn(async () => ({ inserted: 0, updated: 1, deleted: 0 })),
+    getTracking: vi.fn(async () => ({ settings: { track_new: false, created: 'created_at', updated: 'updated_at', by: 'last_modified_by' }, tables: [] })),
   }
 })
 

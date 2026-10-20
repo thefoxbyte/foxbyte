@@ -22,3 +22,10 @@ var SchemaExt string
 //
 //go:embed datachanges.sql
 var SchemaData string
+
+// SchemaTracking keeps who changed each row and when, on the tables someone
+// chose to track (points 5 and 6). Apply it after SchemaData, whose override
+// check it shares; it touches no user table by itself.
+//
+//go:embed tracking.sql
+var SchemaTracking string

@@ -109,6 +109,10 @@ func needFor(method, tail string) access.Level {
 	// route added later cannot default to Use by being forgotten here.
 	case strings.HasPrefix(tail, "realtime/"):
 		return access.Manage
+	// Row tracking (points 5, 6) adds columns to a table and a trigger to
+	// keep them: the owner's decision. Reading what is tracked is Use.
+	case strings.HasPrefix(tail, "tracking/"):
+		return access.Manage
 	}
 	return access.Use
 }

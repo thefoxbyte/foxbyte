@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 )
 
@@ -163,3 +164,20 @@ func serve(t *testing.T, h http.Handler, key, method, path, body string) (int, m
 }
 
 func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
+
+// Changing a table's columns is the owner's decision; reading what is tracked is not.
+func TestTrackingNeedsManage(t *testing.T) {
+	for _, c := range []struct {
+		method, tail string
+		want         access.Level
+	}{
+		{"GET", "tracking", access.Use},
+		{"PUT", "tracking/tables/public/orders", access.Manage},
+		{"DELETE", "tracking/tables/public/orders", access.Manage},
+		{"PUT", "tracking/new", access.Manage},
+	} {
+		if got := needFor(c.method, c.tail); got != c.want {
+			t.Errorf("%s %s: %v, want %v", c.method, c.tail, got, c.want)
+		}
+	}
+}

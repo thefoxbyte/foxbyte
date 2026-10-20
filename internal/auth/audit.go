@@ -102,6 +102,9 @@ const (
 	// Somebody's history read by whoever runs the machine, for a request about
 	// that person's own data. Reading your own is not an event.
 	EvHistoryRead = "history.read"
+	// Row tracking (points 5 and 6) turned on or off for a table, or for new
+	// tables: who decided, on which branch.
+	EvTrackingChanged = "tracking.changed"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

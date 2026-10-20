@@ -754,3 +754,45 @@ test('the data grid sorts, filters, and saves edits together', async ({ page }) 
   await expect(firstCol()).toHaveText(['4', '3', '1'], { timeout: 30_000 })
   await expect(page.locator('.grid-wrap tbody tr', { hasText: 'bee' })).toHaveCount(1)
 })
+
+// Points 5.1 and 6.1: row tracking, turned on from the console. Postgres then
+// keeps when each row was made and changed, and the login that changed it.
+test('a table can be tracked: each row says when it was made and changed, and who changed it', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const t = `e2e_trk_${Date.now().toString().slice(-6)}`
+  const ed = page.locator('textarea.editor')
+  await ed.fill(`CREATE TABLE ${t} (id int PRIMARY KEY, v text)`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await page.locator('.obj-filter').fill(t)
+  await page.locator('.obj-item', { hasText: t }).first().click()
+
+  await page.getByRole('button', { name: 'Track changes…' }).click()
+  const dlg = page.getByRole('dialog', { name: `Track changes to ${t}` })
+  await expect(dlg).toContainText('INSERT written without a column list')
+  await dlg.getByRole('button', { name: 'Track', exact: true }).click()
+  await expect(page.getByText('Tracked:')).toBeVisible({ timeout: 30_000 })
+
+  // A row added as the signed-in user, with a name it tried to forge. (The
+  // table's view hides the editor: back to the query first.)
+  await page.locator('.obj-item.special').click()
+  await ed.fill(`INSERT INTO ${t} (id, v, last_modified_by) VALUES (1, 'x', 'mallory')`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await page.locator('.obj-item', { hasText: t }).first().click()
+  const row = page.locator('.grid-wrap tbody tr').first()
+  await expect(row).toContainText(email, { timeout: 30_000 })
+  await expect(row).not.toContainText('mallory')
+
+  // The grid will not edit what Postgres keeps.
+  await page.getByRole('button', { name: 'Edit rows' }).click()
+  const byCell = page.locator('.edit-grid tbody tr').first().locator('td').nth(5)
+  await expect(byCell).toHaveAttribute('title', /Kept by row tracking/)
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  // Stopped, after asking: the columns stay.
+  await page.getByRole('button', { name: 'Stop tracking' }).click()
+  await page.getByRole('button', { name: 'Stop tracking' }).last().click()
+  await expect(page.getByRole('button', { name: 'Track changes…' })).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('.grid-wrap thead')).toContainText('last_modified_by')
+})
