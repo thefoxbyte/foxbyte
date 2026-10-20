@@ -30,6 +30,7 @@ vi.mock('../api', async () => {
     getCatalog: vi.fn(async () => ({ objects: [] })),
     getObject: vi.fn(async () => ({ kind: 'table', oid: 0, name: '', ddl: '' })),
     saveRows: vi.fn(async () => ({ inserted: 0, updated: 1, deleted: 0 })),
+    getTracking: vi.fn(async () => ({ settings: { track_new: false, created: 'created_at', updated: 'updated_at', by: 'last_modified_by' }, tables: [] })),
   }
 })
 
@@ -336,6 +337,24 @@ describe('the data grid', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
     await waitFor(() => expect(sqlRun()).toContain(`SELECT * FROM "public"."invoices" WHERE "amount" = '5' ORDER BY "amount" ASC NULLS LAST, "id" LIMIT 100 OFFSET 0`))
     expect(sqlRun()).toContain(`SELECT count(*) FROM "public"."invoices" WHERE "amount" = '5'`)
+  })
+
+  it('leaves the editor writable when a table is left before its rows arrive', async () => {
+    let release: (r: QueryResult) => void = () => {}
+    mockQuery.mockImplementation(async (_b: string, sql: string) => {
+      if (sql.includes('pg_attribute')) return columns
+      if (sql.includes('information_schema.tables')) return SCHEMA
+      if (sql.startsWith('SELECT * FROM "public"."invoices"')) return new Promise<QueryResult>(r => { release = r })
+      return { columns: [], rows: [], command: 'SELECT 0' }
+    })
+    await open()
+    fireEvent.click(await screen.findByRole('button', { name: /invoices/ }))
+    await screen.findByText('Loading…')
+    fireEvent.click(screen.getByRole('button', { name: /SQL query/ }))
+    expect(editor().readOnly).toBe(false)
+    expect((screen.getByRole('button', { name: /^run/i }) as HTMLButtonElement).disabled).toBe(false)
+    release({ columns: ['id'], rows: [[1]], command: 'SELECT 1' })
+    await waitFor(() => expect(editor().readOnly).toBe(false))
   })
 
   it('names each row by its key even when the catalog gives no columns', async () => {

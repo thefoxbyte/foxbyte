@@ -297,6 +297,7 @@ fox export "SELECT …" > all.csv             # every row, streamed (csv, tsv, j
 fox history                                 # the SQL you ran (never results), kept 90 days
 fox history --search orders                 # find one; then: fox history run <id>, show <id>, save <name> --from <id>
 fox schema                                  # what a branch holds; fox schema orders [--ddl] for one, with its CREATE script
+fox track orders                            # keep created_at, updated_at and last_modified_by on every row
 ```
 
 Connect any Postgres client through the gateway — the **database name is the

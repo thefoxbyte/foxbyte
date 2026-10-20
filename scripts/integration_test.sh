@@ -502,7 +502,12 @@ assert_eq "the primary carries its accounts into the replicated database" \
   "$([ -n "$SD" ] && echo shipped || echo nothing)" "shipped"
 # Replicated, not shipped twice: the document travels in the WAL the standby is
 # already streaming, which is the whole reason this needs no second channel.
-assert_eq "…and the standby has the same document, through replication" "$(statedg pg-standby)" "$SD"
+# Streaming is asynchronous and the primary re-ships whenever an account
+# changes, so one read of each could catch the standby a moment behind: wait for
+# the two to agree, as a reader of the copy would.
+SB=""
+for _ in $(seq 1 15); do SD="$(statedg pg-main)"; SB="$(statedg pg-standby)"; [ -n "$SB" ] && [ "$SB" = "$SD" ] && break; sleep 1; done
+assert_eq "…and the standby has the same document, through replication" "$SB" "$SD"
 assert_eq "…carrying the seven tables a second machine needs" \
   "$(sudo docker exec pg-main psql -U dbadmin -d statedb -tAc "SELECT string_agg(k, ',' ORDER BY k) FROM shared, jsonb_object_keys(payload->'tables') k WHERE id=1" 2>/dev/null)" \
   "api_keys,branch_owners,change_requests,oauth_identities,pipelines,pipeline_targets,users"
@@ -1244,6 +1249,7 @@ $S branch delete democonn >/dev/null 2>&1
 # fox check is the install diagnosing itself: with the stack up it passes.
 CHECK="$($S check 2>&1)"; CHECK_RC=$?
 assert_eq "fox check exits 0 on a working install" "$CHECK_RC" "0"
+[ "$CHECK_RC" = 0 ] || { echo "--- what failed ---"; grep -A1 '^FAIL' <<<"$CHECK"; echo "--- end ---"; }
 assert_eq "…and reports main, the servers, the ports and the Blackbox" \
   "$(echo "$CHECK" | grep -c '^ok  ' | awk '{print ($1>=8)}')|$(echo "$CHECK" | grep -c 'FAIL')" "1|0"
 # A check that the API refuses an unauthenticated caller: a 401 is the install
@@ -1257,7 +1263,9 @@ CHECK="$($S check 2>&1)"; CHECK_RC=$?
 assert_eq "a stopped gateway makes fox check fail and name it" \
   "$CHECK_RC|$(echo "$CHECK" | grep -c 'FAIL  gateway')" "1|1"
 $S start >/dev/null 2>&1; sleep 3
-assert_eq "…and it passes again once the stack is back" "$($S check >/dev/null 2>&1; echo $?)" "0"
+CHECK="$($S check 2>&1)"; CHECK_RC=$?
+assert_eq "…and it passes again once the stack is back" "$CHECK_RC" "0"
+[ "$CHECK_RC" = 0 ] || { echo "--- what failed ---"; grep -A1 '^FAIL' <<<"$CHECK"; echo "--- end ---"; }
 $S branch delete demoseed >/dev/null 2>&1
 
 echo "### 11e. the claims are checkable (onboarding batch 3)"
@@ -1887,6 +1895,58 @@ assert_eq "as the person editing: row-level security lets alice change her row, 
 assert_eq "…and a branch out of reach is not found (404)" \
   "$($S branch delete itgp >/dev/null 2>&1; $S branch create itgp >/dev/null 2>&1; code "$KA" -H 'Content-Type: application/json' -X POST -d '{"table":"x","changes":[]}' https://localhost:8080/api/branches/itgp/rows; $S branch delete itgp >/dev/null 2>&1)" "404"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS gp_items, gp_nokey, gp_mine" >/dev/null
+
+echo "### 11q. row tracking: who changed each row, and when (points 5.1, 6.1)"
+# Opt-in per table; created_at, updated_at and last_modified_by kept by a
+# trigger that overrides what a statement writes; last_modified_by is the
+# login (session_user), which a session cannot change.
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS trk_a, trk_b, trk_c, trk_d, trk_n, trk_m;
+  CREATE TABLE trk_a (id int PRIMARY KEY, v text); INSERT INTO trk_a VALUES (1, 'a'), (2, 'b');
+  CREATE TABLE trk_b (id int PRIMARY KEY); INSERT INTO trk_b VALUES (1);
+  CREATE TABLE trk_c (id int PRIMARY KEY); CREATE TABLE trk_d (id int, created_at date);
+  GRANT ALL ON trk_a, trk_b, trk_c, trk_d TO db_client;" >/dev/null
+assert_contains "fox track <table> starts tracking it" "$($S track trk_a)" "public.trk_a is tracked: created_at (when made), updated_at (when last changed), last_modified_by (who last changed it). Rows already there are left empty."
+assert_contains "…and fox track lists it" "$($S track)" "public.trk_a  created_at  updated_at  last_modified_by"
+assert_eq "rows from before are left empty" "$(pg pg-main "SELECT count(*) FROM trk_a WHERE created_at IS NULL AND updated_at IS NULL AND last_modified_by IS NULL")" "2"
+$S sql "INSERT INTO trk_a (id, v, created_at, updated_at, last_modified_by) VALUES (3, 'c', '2000-01-01', '2000-01-01', 'mallory')" >/dev/null 2>&1
+assert_eq "an insert is stamped, whatever the statement wrote, with the login that made it" \
+  "$(pg pg-main "SELECT (created_at > now() - interval '5 minutes')::text || '|' || (updated_at = created_at)::text || '|' || last_modified_by FROM trk_a WHERE id = 3")" "true|true|db_client"
+TQ=https://localhost:8080/api/branches/main/query
+as "$KEY" -H 'Content-Type: application/json' -X POST -d '{"sql":"INSERT INTO trk_a (id, v) VALUES (4, '"'"'d'"'"')"}' "$TQ" >/dev/null
+C4="$(pg pg-main "SELECT created_at FROM trk_a WHERE id = 4")"
+sleep 1
+as "$KA" -H 'Content-Type: application/json' -X POST -d '{"sql":"UPDATE trk_a SET v = '"'"'D'"'"', created_at = '"'"'1999-01-01'"'"', last_modified_by = '"'"'mallory'"'"' WHERE id = 4"}' "$TQ" >/dev/null
+assert_eq "an update moves updated_at, keeps created_at, and names the person whose login changed it" \
+  "$(pg pg-main "SELECT (created_at = '$C4')::text || '|' || (updated_at > created_at)::text || '|' || last_modified_by FROM trk_a WHERE id = 4")" "true|true|alice@foxbyte.dev"
+assert_eq "…the Blackbox records the table's change under who asked" \
+  "$(pg pg-main "SELECT string_agg(command_tag, ',' ORDER BY id) FROM bb.schema_ledger WHERE object_identity IN ('public.trk_a', 'bb_track on public.trk_a') AND command_tag IN ('ALTER TABLE','CREATE TRIGGER') AND actor LIKE 'cli:%'")" "ALTER TABLE,CREATE TRIGGER"
+assert_eq "the trigger cannot be dropped or disabled without the override" \
+  "$(sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -tAc "DROP TRIGGER bb_track ON trk_a" 2>&1 | grep -c 'cannot be dropped')|$(sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -tAc "ALTER TABLE trk_a DISABLE TRIGGER bb_track" 2>&1 | grep -c 'cannot be disabled')" "1|1"
+assert_contains "--label-existing gives rows already there this moment" "$($S track trk_b --label-existing)" "labelled with this moment"
+assert_eq "…which they hold" "$(pg pg-main "SELECT count(*) FROM trk_b WHERE created_at IS NOT NULL AND updated_at IS NOT NULL")" "1"
+$S track trk_c --created made --no-updated --by who >/dev/null
+assert_eq "the columns can be named, or left out" \
+  "$(pg pg-main "SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute WHERE attrelid = 'trk_c'::regclass AND attnum > 0 AND NOT attisdropped")" "id,made,who"
+OUT="$($S track trk_d 2>&1)"; RC=$?
+assert_eq "a column of the wrong type is refused, and says why" "$RC|$(grep -c 'is date, and tracking keeps timestamp with time zone' <<<"$OUT")" "1|1"
+assert_contains "fox track <table> --off stops it" "$($S track trk_a --off)" "Its columns, and what they hold, are still there."
+$S sql "UPDATE trk_a SET v = 'z' WHERE id = 4" >/dev/null 2>&1
+assert_eq "…and the columns stay, no longer written" \
+  "$(pg pg-main "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'trk_a'::regclass AND tgname = 'bb_track'")|$(pg pg-main "SELECT last_modified_by FROM trk_a WHERE id = 4")" "0|alice@foxbyte.dev"
+$S track --new on >/dev/null
+$S sql "CREATE TABLE trk_n (id int PRIMARY KEY)" >/dev/null 2>&1
+$S track --new off >/dev/null
+$S sql "CREATE TABLE trk_m (id int PRIMARY KEY)" >/dev/null 2>&1
+assert_eq "--new on tracks tables as they are made, and --new off stops" \
+  "$($S track | grep -c '^public.trk_n ')|$($S track | grep -c '^public.trk_m ')" "1|0"
+assert_eq "every change is in the security log" "$($S audit --limit 30 | grep -c 'tracking.changed' | awk '{print ($1>=6)}')" "1"
+TU=https://localhost:8080/api/branches/main/tracking
+assert_eq "the API lists what is tracked, to anyone who uses the branch" \
+  "$(as "$KA" "$TU" | hjson 'print(sorted(t["name"] for t in d["tables"] if t["name"].startswith("trk_")))')" "['trk_b', 'trk_c', 'trk_n']"
+assert_eq "…and only the branch's owner or an admin changes it" \
+  "$(code "$KA" -X PUT "$TU/tables/public/trk_m")|$(code "$KEY" -X PUT "$TU/tables/public/trk_m")|$(code "$KEY" -X DELETE "$TU/tables/public/trk_m")|$(code "$KA" -H 'Content-Type: application/json' -X PUT -d '{"on":true}' "$TU/new")" "403|200|200|403"
+assert_eq "…and says why when Postgres refuses" "$(as "$KEY" -X PUT "$TU/tables/public/trk_d" | grep -c 'is date')" "1"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS trk_a, trk_b, trk_c, trk_d, trk_n, trk_m" >/dev/null
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

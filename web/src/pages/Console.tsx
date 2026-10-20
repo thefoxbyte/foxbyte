@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdmins, getBranches, getCatalog, getObject, runQuery, saveRows, API, type Branch, type BranchAdmins, type CatalogObject, type QueryResult, type StatementResult, type Suggestion } from '../api'
+import { getAdmins, getBranches, getCatalog, getObject, getTracking, runQuery, saveRows, API, type Branch, type BranchAdmins, type CatalogObject, type QueryResult, type Tracking, type StatementResult, type Suggestion } from '../api'
 import { BRAND } from '../brand'
 import { hintFor } from '../errhint'
 import CopyMenu, { cellText } from '../components/CopyMenu'
@@ -9,6 +9,7 @@ import HistoryPanel from '../components/HistoryPanel'
 import { useCompletion } from '../components/Completion'
 import { CatalogGroups, ObjectView, TableParts } from '../components/ObjectBrowser'
 import { EditGrid, FilterBar, type ColInfo } from '../components/DataGrid'
+import { TrackingControl, trackedOf } from '../components/Tracking'
 import { countQuery, nextSort, rowsQuery, summary, type Filter, type Sort } from '../gridquery'
 import { applySuggestion, schemaFrom, snippets, SCHEMA_SQL, type Rel } from '../sqlcomplete'
 
@@ -72,6 +73,8 @@ export default function Console() {
   // The rest of what the branch holds, and the one of those open (point 12.1).
   const [catalog, setCatalog] = useState<CatalogObject[]>([])
   const [objSel, setObjSel] = useState<CatalogObject | null>(null)
+  // Which tables keep who changed each row and when (points 5.1, 6.1).
+  const [tracking, setTracking] = useState<Tracking | null>(null)
   const [sel, setSel] = useState<DbObject | null>(null)
   const [tab, setTab] = useState<Tab>('rows')
   const [page, setPage] = useState(0)
@@ -138,6 +141,11 @@ export default function Console() {
     window.addEventListener('mouseup', up)
   }
   const [busy, setBusy] = useState(false)
+  // A table's rows loading, kept apart from busy (a query in flight, which
+  // locks the editor). Sharing busy left the editor read-only for good when a
+  // load was cancelled by switching back to the query: the cancelled load never
+  // cleared it, and a reload (tracking a table starts one) made that likely.
+  const [loading, setLoading] = useState(false)
   const assist = useCompletion({ editor: editorRef, text: sql, setText: setSql, schema: rels, busy })
 
   // The branch list is what the picker is made of, and it used to be fetched once:
@@ -187,6 +195,7 @@ export default function Console() {
       // Everything else it holds, for the object browser. Without it the rail
       // still lists tables and views, as it always has.
       getCatalog(b).then(c => setCatalog(c.objects ?? [])).catch(() => setCatalog([]))
+      getTracking(b).then(setTracking).catch(() => setTracking(null))
     } catch (e) {
       setListErr((e as Error).message)
     } finally {
@@ -196,7 +205,7 @@ export default function Console() {
 
   // Reset when the branch changes.
   useEffect(() => {
-    setObjects([]); setRels([]); setCatalog([]); setObjSel(null); loadObjects(branch); setSel(null); setMode('query'); setBrowseRes(null); setAllowDestructive(false)
+    setObjects([]); setRels([]); setCatalog([]); setObjSel(null); setTracking(null); loadObjects(branch); setSel(null); setMode('query'); setBrowseRes(null); setAllowDestructive(false)
     setAdmins(null)
     getAdmins(branch).then(setAdmins).catch(() => setAdmins(null))
   }, [branch, loadObjects])
@@ -212,10 +221,10 @@ export default function Console() {
   // Load the active browse tab.
   useEffect(() => {
     if (mode !== 'browse' || !sel) return
-    if (CATALOG_TABS.includes(tab)) { setBrowseRes(null); setBusy(false); return }
+    if (CATALOG_TABS.includes(tab)) { setBrowseRes(null); setLoading(false); return }
     let cancelled = false
     const load = async () => {
-      setBusy(true); setBrowseRes(null)
+      setLoading(true); setBrowseRes(null)
       try {
         let q = ''
         if (tab === 'rows') {
@@ -239,11 +248,11 @@ export default function Console() {
       } catch (e) {
         if (!cancelled) setBrowseRes({ error: (e as Error).message })
       } finally {
-        if (!cancelled) setBusy(false)
+        if (!cancelled) setLoading(false)
       }
     }
     load()
-    return () => { cancelled = true }
+    return () => { cancelled = true; setLoading(false) }
   }, [mode, sel, tab, page, branch, reloadTick, sort, filters, rels]) // rels: the key that orders a page
 
   const openObject = (o: DbObject) => {
@@ -262,11 +271,15 @@ export default function Console() {
     const key = keyOf(sel)
     let cols = rels.find(r => r.schema === sel.schema && r.name === sel.name)?.cols.map(c => ({ name: c.name, type: c.type })) ?? []
     const locked = new Map<string, string>()
+    // Columns row tracking keeps: Postgres writes them on every change.
+    const tr = trackedOf(tracking, sel.schema, sel.name)
+    for (const c of [tr?.created, tr?.updated, tr?.by]) if (c) locked.set(c, 'Kept by row tracking: Postgres writes it on every change')
     if (obj) {
       try {
         const d = await getObject(branch, 'table', obj.oid)
         if (d.columns?.length) cols = d.columns.map(c => ({ name: c.name, type: c.type }))
         for (const c of d.columns ?? []) {
+          if (locked.has(c.name)) continue
           if (c.generated) locked.set(c.name, `Generated from other columns: ${c.generated}`)
           else if (c.identity === 'always') locked.set(c.name, 'An identity column: Postgres sets it')
         }
@@ -563,6 +576,10 @@ export default function Console() {
                 <h2>{sel.name}</h2>
                 <span className="path">{sel.schema} · {sel.type}</span>
                 <span className="wb-sp" />
+                {sel.type === 'table' && (
+                  <TrackingControl branch={branch} schema={sel.schema} table={sel.name} tracking={tracking}
+                    onChange={t => { setTracking(t); loadObjects(branch); setReloadTick(n => n + 1) }} />
+                )}
                 <SnippetMenu rel={rels.find(r => r.schema === sel.schema && r.name === sel.name)
                   ?? { schema: sel.schema, name: sel.name, kind: sel.type === 'view' ? 'view' : 'table', cols: [] }}
                   onPick={text => {
@@ -598,7 +615,7 @@ export default function Console() {
                 : tab === 'rows' && editing && browseRes && !browseRes.error
                   ? <EditGrid cols={browseRes.columns ?? []} rows={browseRes.rows ?? []} info={editing}
                       onSave={saveGrid} onCancel={() => setEditing(null)} />
-                  : busy && !browseRes ? <div className="muted">Loading…</div>
+                  : loading && !browseRes ? <div className="muted">Loading…</div>
                   : browseRes && <Grid res={browseRes} sort={tab === 'rows' ? sort : undefined}
                       onSort={tab === 'rows' ? (c => { setSort(s => nextSort(s, c)); setPage(0) }) : undefined} />}
               {tab === 'rows' && browseRes && !browseRes.error && !editing && (

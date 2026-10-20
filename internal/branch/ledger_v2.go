@@ -46,6 +46,9 @@ func EnsureLedgerV2(name string) error {
 		// TRUNCATE and agents' data changes (datachanges.sql). The two default
 		// guardrails, which are free and are not policy rules.
 		{"Blackbox data-change capture", ledger.SchemaData},
+		// Row tracking (points 5 and 6): who changed each row and when, on
+		// the tables someone opted in. Free, like the guardrails.
+		{"row tracking", ledger.SchemaTracking},
 	} {
 		if err := psqlStdin(name, s.sql); err != nil {
 			return fmt.Errorf("installing %s on %q: %w", s.what, name, err)
