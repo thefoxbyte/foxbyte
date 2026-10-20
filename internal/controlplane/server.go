@@ -60,6 +60,9 @@ func Serve(addr string) error {
 
 	acl = access.New(store)
 	secLog = store
+	// The console's and the API's use of a branch, for the gateway's idle
+	// reaper (auth/branchuse.go).
+	branch.OnUse = throttledTouch(store)
 
 	// What this engine honours, in the security log. license.Install() has
 	// already run in main; this records the decision this process is actually

@@ -43,9 +43,11 @@ import (
 // the same endpoint an application calls is worth more than a second handler.
 
 func registerRealtimeAdmin(api *http.ServeMux, store *auth.Store) {
-	api.HandleFunc("POST /api/branches/{name}/realtime/enable", realtimeAdmin(realtimeEnableHandler))
-	api.HandleFunc("POST /api/branches/{name}/realtime/disable", realtimeAdmin(realtimeDisableHandler))
-	api.HandleFunc("POST /api/branches/{name}/realtime/prepare", realtimeAdmin(realtimePrepareHandler))
+	// The three that run SQL on the branch wake it first (awake); the keys and
+	// the activity meter read FoxByte's own store and leave a suspended branch be.
+	api.HandleFunc("POST /api/branches/{name}/realtime/enable", realtimeAdmin(awake(realtimeEnableHandler)))
+	api.HandleFunc("POST /api/branches/{name}/realtime/disable", realtimeAdmin(awake(realtimeDisableHandler)))
+	api.HandleFunc("POST /api/branches/{name}/realtime/prepare", realtimeAdmin(awake(realtimePrepareHandler)))
 	api.HandleFunc("GET /api/branches/{name}/realtime/keys", realtimeAdmin(realtimeKeysList(store)))
 	api.HandleFunc("POST /api/branches/{name}/realtime/keys", realtimeAdmin(realtimeKeysCreate(store)))
 	api.HandleFunc("DELETE /api/branches/{name}/realtime/keys/{id}", realtimeAdmin(realtimeKeysRevoke(store)))
