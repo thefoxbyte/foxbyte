@@ -78,16 +78,16 @@ export default function Guide() {
         Docker, ZFS, the storage pool, and the image).</p>
       <p><strong>macOS</strong> (needs <a href="https://lima-vm.io" target="_blank" rel="noreferrer">Lima</a>):</p>
       <Code>{`brew install lima
-curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh | sh
+curl -fsSL https://get.thefoxbyte.com/install.sh | sh
 fox setup`}</Code>
       <p><strong>Linux</strong>:</p>
-      <Code>{`curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh | sh
+      <Code>{`curl -fsSL https://get.thefoxbyte.com/install.sh | sh
 sudo fox start`}</Code>
       <p><strong>Windows</strong> (needs <a href="https://learn.microsoft.com/windows/wsl/install" target="_blank" rel="noreferrer">WSL2</a> —
         enable it once with <code>wsl --install</code> in an <strong>Administrator</strong> PowerShell, then reboot).
         Run the commands below <strong>in PowerShell</strong> (not Command Prompt) — <code>irm</code>/<code>iex</code> are
         PowerShell commands:</p>
-      <Code>{`irm https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.ps1 | iex
+      <Code>{`irm https://get.thefoxbyte.com/install.ps1 | iex
 fox setup`}</Code>
       <p className="muted">Seeing <code>irm : not recognized</code>? You're in Command Prompt — open <strong>PowerShell</strong>
         and retry. If scripts are blocked, run <code>Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass</code> first.

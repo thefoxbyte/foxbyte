@@ -26,20 +26,21 @@ import (
 
 // Brand is brand.json. Only the fields the generators use are listed.
 type Brand struct {
-	Product    string `json:"product"`
-	Tagline    string `json:"tagline"`
-	CLI        string `json:"cli"`
-	Slug       string `json:"slug"`
-	EnvPrefix  string `json:"env_prefix"`
-	StateDir   string `json:"state_dir"`
-	DocsPrefix string `json:"docs_prefix"`
-	Repo       string `json:"repo"`
-	Module     string `json:"module"`
-	ImageRepo  string `json:"image_repo"`
-	VMInstance string `json:"vm_instance"`
-	TestVM     string `json:"test_vm"`
-	Logo       Logo   `json:"logo"`
-	Previous   []struct {
+	Product     string `json:"product"`
+	Tagline     string `json:"tagline"`
+	CLI         string `json:"cli"`
+	Slug        string `json:"slug"`
+	EnvPrefix   string `json:"env_prefix"`
+	StateDir    string `json:"state_dir"`
+	DocsPrefix  string `json:"docs_prefix"`
+	Repo        string `json:"repo"`
+	InstallHost string `json:"install_host"`
+	Module      string `json:"module"`
+	ImageRepo   string `json:"image_repo"`
+	VMInstance  string `json:"vm_instance"`
+	TestVM      string `json:"test_vm"`
+	Logo        Logo   `json:"logo"`
+	Previous    []struct {
 		Product   string `json:"product"`
 		CLI       string `json:"cli"`
 		Slug      string `json:"slug"`
@@ -60,7 +61,7 @@ func Load(root string) (Brand, error) {
 	}
 	for _, field := range []struct{ name, value string }{
 		{"product", b.Product}, {"cli", b.CLI}, {"slug", b.Slug}, {"env_prefix", b.EnvPrefix},
-		{"state_dir", b.StateDir}, {"repo", b.Repo}, {"module", b.Module},
+		{"state_dir", b.StateDir}, {"repo", b.Repo}, {"install_host", b.InstallHost}, {"module", b.Module},
 	} {
 		if field.value == "" {
 			return b, fmt.Errorf("brand.json: %q is required", field.name)
@@ -75,6 +76,7 @@ func Files(root string, b Brand) (map[string][]byte, error) {
 		filepath.Join("internal", "brand", "brand_gen.go"): []byte(goFile(b)),
 		filepath.Join("scripts", "lib", "brand.sh"):        []byte(shellFile(b)),
 		filepath.Join("web", "src", "brand.ts"):            []byte(tsFile(b)),
+		filepath.Join("deploy", "get", "vercel.json"):      []byte(vercelFile(b)),
 	}
 	// The installers keep their own shape; only the marked block is generated.
 	for path, block := range map[string]string{
@@ -239,12 +241,15 @@ export const BRAND = {
   stateDir: %q,
   repo: %q,
   repoUrl: %q,
+  // The one-line installers, served from install_host in brand.json.
+  installSh: %q,
+  installPs1: %q,
   // Whether the wordmark picks one letter out in the mark's colours. Off unless
   // the artwork itself does it; see brand.json.
   wordmarkAccent: %t,
 } as const
 `, b.Product, b.Tagline, b.CLI, b.Slug, b.EnvPrefix, b.StateDir, b.Repo,
-		"https://github.com/"+b.Repo, b.Logo.WordmarkAccent)
+		"https://github.com/"+b.Repo, b.InstallURL("install.sh"), b.InstallURL("install.ps1"), b.Logo.WordmarkAccent)
 }
 
 func shellBlock(b Brand) string {
@@ -253,6 +258,30 @@ func shellBlock(b Brand) string {
 }
 
 func powershellBlock(b Brand) string {
-	return fmt.Sprintf("$Product = %q\n$Cli = %q\n$Slug = %q\n$EnvPrefix = %q\n$StateDir = %q\n$DefaultRepo = %q\n",
-		b.Product, b.CLI, b.Slug, b.EnvPrefix, b.StateDir, b.Repo)
+	return fmt.Sprintf("$Product = %q\n$Cli = %q\n$Slug = %q\n$EnvPrefix = %q\n$StateDir = %q\n$DefaultRepo = %q\n$InstallUrl = %q\n",
+		b.Product, b.CLI, b.Slug, b.EnvPrefix, b.StateDir, b.Repo, b.InstallURL("install.ps1"))
+}
+
+// InstallURL is where people fetch one of the installers in deploy/.
+func (b Brand) InstallURL(script string) string {
+	return "https://" + b.InstallHost + "/" + script
+}
+
+// vercelFile is the whole of the install_host site: each installer is fetched
+// from main on GitHub and served under the domain, as a rewrite rather than a
+// redirect, so any client gets the script from the first request. JSON has no
+// comments; deploy/get/README.md explains it.
+func vercelFile(b Brand) string {
+	raw := "https://raw.githubusercontent.com/" + b.Repo + "/main/deploy/"
+	return fmt.Sprintf(`{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/install.sh", "destination": %q },
+    { "source": "/install.ps1", "destination": %q }
+  ],
+  "redirects": [
+    { "source": "/", "destination": %q, "permanent": false }
+  ]
+}
+`, raw+"install.sh", raw+"install.ps1", "https://github.com/"+b.Repo+"#install")
 }

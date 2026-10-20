@@ -245,8 +245,8 @@ const switchPollMs = 2000
 
 function StandardBuild({ titleId, onClose }: { titleId: string; onClose: () => void }) {
   const upgrade = `${BRAND.cli} upgrade --edition enterprise`
-  const unix = `curl -fsSL https://raw.githubusercontent.com/${BRAND.repo}/main/deploy/install.sh | ${BRAND.envPrefix}EDITION=enterprise sh`
-  const win = `$env:${BRAND.envPrefix}EDITION = 'enterprise'; irm https://raw.githubusercontent.com/${BRAND.repo}/main/deploy/install.ps1 | iex`
+  const unix = `curl -fsSL ${BRAND.installSh} | ${BRAND.envPrefix}EDITION=enterprise sh`
+  const win = `$env:${BRAND.envPrefix}EDITION = 'enterprise'; irm ${BRAND.installPs1} | iex`
   const [accepted, setAccepted] = useState(false)
   const [sw, setSw] = useState<EditionSwitch | null>(null)
   const [starting, setStarting] = useState(false)
