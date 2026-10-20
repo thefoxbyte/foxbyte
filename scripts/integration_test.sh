@@ -387,6 +387,25 @@ assert_eq "a replicating branch survives the reaper" "$(sudo docker inspect -f '
 assert_eq "…while an idle plain branch is still suspended" "$(sudo docker inspect -f '{{.State.Status}}' pg-itidle 2>/dev/null)" "exited"
 assert_eq "…and it is still streaming afterwards" "$(repl | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["replicating"], d["tables_ready"], d["tables"])')" "True 1 1"
 $S branch delete itidle >/dev/null 2>&1
+# The console's queries are not gateway connections: each is its own short
+# connection from the control plane. So the reaper took a branch someone was
+# using in the console for an idle one, and stopped it under them, a query in
+# flight hanging and the next refused (found 20 Oct 2026, when the console's UI
+# tests ran long enough to cross the window). The console's use now counts.
+$S branch delete itbusy >/dev/null 2>&1; $S branch delete itidle2 >/dev/null 2>&1
+$S branch create itbusy >/dev/null 2>&1; $S branch create itidle2 >/dev/null 2>&1
+nohup "$S" gateway --addr :6502 --idle 8s >/tmp/itbusygateway.log 2>&1 &
+RPB=$!
+for _ in $(seq 1 10); do
+  curl -sk -o /dev/null -H "$AUTH" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT 1"}' https://localhost:8080/api/branches/itbusy/query
+  sleep 3
+done
+assert_eq "a branch in use in the console survives the reaper" "$(sudo docker inspect -f '{{.State.Status}}' pg-itbusy 2>/dev/null)" "running"
+assert_eq "…while an idle one beside it is suspended" "$(sudo docker inspect -f '{{.State.Status}}' pg-itidle2 2>/dev/null)" "exited"
+sleep 25
+kill "$RPB" 2>/dev/null
+assert_eq "…and once nobody uses it, it is suspended too" "$(sudo docker inspect -f '{{.State.Status}}' pg-itbusy 2>/dev/null)" "exited"
+$S branch delete itbusy >/dev/null 2>&1; $S branch delete itidle2 >/dev/null 2>&1
 assert_eq "the list of continuous imports includes it" \
   "$(curl -sk -H "$AUTH" https://localhost:8080/api/replication | python3 -c 'import sys,json; print([r["branch"] for r in json.load(sys.stdin)].count("itrep"))')" "1"
 assert_eq "cutover makes the branch standalone" \

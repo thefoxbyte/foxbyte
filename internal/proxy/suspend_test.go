@@ -110,3 +110,60 @@ func TestSuspendForgetsTheIdleClock(t *testing.T) {
 		t.Fatalf("suspended %v: the fresh idle clock was not respected", suspended)
 	}
 }
+
+// The console's use counts. A branch with no gateway client for an hour, but
+// used by the console a moment ago, is not idle; one the console last used an
+// hour ago is; and one the console starts using while the reaper's probes run
+// is left alone.
+func TestConsoleUseKeepsABranchAwake(t *testing.T) {
+	var suspended []string
+	used := time.Time{}
+	listSuspendable = func() ([]string, error) { return []string{"c"}, nil }
+	suspendBranch = func(n string) error { suspended = append(suspended, n); return nil }
+	probeConnections = func(string) (int, error) { return 0, nil }
+	probeReplication = func(n string) (branch.Replication, error) { return branch.Replication{Branch: n}, nil }
+	probeRealtime = func(string) (bool, error) { return false, nil }
+	oldUse := probeLastUse
+	probeLastUse = func(string) time.Time { return used }
+	t.Cleanup(func() {
+		listSuspendable = branch.SuspendableBranches
+		suspendBranch = branch.Suspend
+		probeConnections = branch.ActiveConnections
+		probeReplication = branch.ReplicationStatus
+		probeRealtime = branch.RealtimeActive
+		probeLastUse = oldUse
+		mu.Lock()
+		delete(lastActivity, "c")
+		mu.Unlock()
+	})
+	idleGateway := func() {
+		mu.Lock()
+		lastActivity["c"] = time.Now().Add(-time.Hour)
+		mu.Unlock()
+	}
+
+	idleGateway()
+	used = time.Now().Add(-5 * time.Second)
+	sweepOnce(time.Minute)
+	if len(suspended) != 0 {
+		t.Fatalf("stopped a branch the console used 5s ago: %v", suspended)
+	}
+
+	// Used by the console only after the reaper decided and probed: the second
+	// look sees it.
+	idleGateway()
+	used = time.Now().Add(-time.Hour)
+	probeRealtime = func(string) (bool, error) { used = time.Now(); return false, nil }
+	sweepOnce(time.Minute)
+	if len(suspended) != 0 {
+		t.Fatalf("stopped a branch the console began using during the probes: %v", suspended)
+	}
+
+	probeRealtime = func(string) (bool, error) { return false, nil }
+	idleGateway()
+	used = time.Now().Add(-time.Hour)
+	sweepOnce(time.Minute)
+	if len(suspended) != 1 {
+		t.Fatalf("a branch idle everywhere for an hour was not stopped: %v", suspended)
+	}
+}

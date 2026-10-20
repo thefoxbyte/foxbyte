@@ -43,7 +43,7 @@ import (
 func mountRealtimeDoor(outer *http.ServeMux, store *auth.Store, acl *access.Checker) {
 	gate := realtimeGate(store, acl)
 	outer.HandleFunc("GET "+realtime.APIPrefix+"/branches/{name}/hello", gate(realtimeHello))
-	outer.HandleFunc("GET "+realtime.APIPrefix+"/branches/{name}/tables", gate(realtimeTables))
+	outer.HandleFunc("GET "+realtime.APIPrefix+"/branches/{name}/tables", gate(awake(realtimeTables)))
 	outer.HandleFunc("GET "+realtime.APIPrefix+"/branches/{name}/stream", gate(streamRealtime))
 }
 
@@ -96,6 +96,31 @@ func realtimeGate(store *auth.Store, acl *access.Checker) func(func(http.Respons
 			}
 			next(w, r, name)
 		}
+	}
+}
+
+// ensureRunning resumes a branch the idle reaper suspended. A variable so the
+// tests can stand in for Docker.
+var ensureRunning = branch.EnsureRunning
+
+// awake resumes a suspended branch before a handler that reads its database.
+//
+// The idle reaper suspends a branch nobody is connected to, and the console's
+// own requests are not gateway connections, so a branch left alone for two
+// minutes in the console is a stopped container. The SQL routes have always
+// woken it (POST …/query calls EnsureRunning); the realtime routes went straight
+// to `docker exec` and answered "container … is not running" instead, which is
+// what the Realtime page then showed. Only the handlers that reach the
+// database are wrapped: a key list or a hello does not start a container.
+//
+// After authorization, so a caller who may not reach a branch cannot start it.
+func awake(next func(http.ResponseWriter, *http.Request, string)) func(http.ResponseWriter, *http.Request, string) {
+	return func(w http.ResponseWriter, r *http.Request, name string) {
+		if _, err := ensureRunning(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		next(w, r, name)
 	}
 }
 
