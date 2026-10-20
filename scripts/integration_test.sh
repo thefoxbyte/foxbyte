@@ -1279,6 +1279,10 @@ echo "### 11e. the claims are checkable (onboarding batch 3)"
 # the gap stops before the newest writes. That is documented behaviour, not a
 # fault, and taking a backup on the target in force is what a person does after
 # moving one.
+# Unused anonymous volumes, counted before the restore check so it is part of
+# what must leave none behind (§11e2 below).
+unused_vols() { sudo docker volume ls -q --filter dangling=true --filter label=com.docker.volume.anonymous | wc -l | tr -d ' '; }
+VOLS_BEFORE="$(unused_vols)"
 $S backup create >/dev/null 2>&1
 VERIFY="$($S backup verify 2>&1)"; VERIFY_RC=$?
 assert_eq "fox backup verify proves a restore works" "$VERIFY_RC" "0"
@@ -1297,6 +1301,35 @@ assert_eq "fox check reports that a restore has been proven" \
 # proving a restore must not add anything to the record of schema changes.
 assert_eq "…and it records nothing in the Blackbox" \
   "$($S blackbox main --limit 200 2>/dev/null | grep -c 'restore_probe')" "0"
+
+echo "### 11e2. a removed container takes its volume with it"
+# The Postgres image declares VOLUME /var/lib/postgresql, so every branch
+# container comes with an anonymous volume. Removing a container without -v
+# left that volume behind, so a VM's disk filled up over months of branches
+# deleted, stops and starts, and restore checks (each left its restored copy of
+# main). Each of those must now leave the count of unused volumes as it was.
+$S branch create volleak >/dev/null 2>&1
+assert_eq "a branch container has a volume of its own" \
+  "$(sudo docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}x{{end}}{{end}}' pg-volleak 2>/dev/null)" "x"
+$S branch suspend volleak >/dev/null 2>&1; $S branch resume volleak >/dev/null 2>&1
+$S branch delete volleak >/dev/null 2>&1
+$S stop >/dev/null 2>&1; $S start >/dev/null 2>&1
+assert_eq "a restore check, a branch deleted, and a stop and start leave no volume behind" \
+  "$(unused_vols)" "$VOLS_BEFORE"
+# An install from before the fix carries them, so fox check counts them and
+# names the prune that keeps named volumes. One is made here to be found: a
+# container created from the same image and removed the old way.
+PG_IMAGE="$(sudo docker inspect -f '{{.Config.Image}}' pg-main)"
+sudo docker create --name volleak-old "$PG_IMAGE" >/dev/null 2>&1
+OLD_VOL="$(sudo docker inspect -f '{{range .Mounts}}{{.Name}}{{end}}' volleak-old 2>/dev/null)"
+sudo docker rm -f volleak-old >/dev/null 2>&1
+CHECK="$($S check 2>&1)"; CHECK_RC=$?
+assert_eq "fox check counts a volume left by an older version, as a warning" \
+  "$CHECK_RC|$(echo "$CHECK" | grep -c '^warn  docker volumes .*unused anonymous volume')" "0|1"
+assert_eq "…and names the prune that keeps named volumes, not prune -a" \
+  "$(echo "$CHECK" | grep -c 'docker volume prune   ')|$(echo "$CHECK" | grep -c 'prune -a')" "1|0"
+[ -n "$OLD_VOL" ] && sudo docker volume rm "$OLD_VOL" >/dev/null 2>&1
+assert_eq "…and once it is gone it is not counted" "$(unused_vols)" "$VOLS_BEFORE"
 
 # Long-lived containers must come back on their own; transient ones must not.
 for c in pg-main objstore; do

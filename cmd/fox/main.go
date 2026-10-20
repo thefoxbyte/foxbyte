@@ -75,7 +75,8 @@ Stack:
   start                Bring EVERYTHING up in the background: stack + gateway + APIs
   stop                 Stop background servers and all containers
   up                   Bring up the stack: network + MinIO + primary 'main' (archiving)
-  down                 Stop MinIO and all Postgres containers (ZFS data preserved)
+  down                 Same as stop: stops the background servers and all containers
+                       (ZFS data preserved)
   status               Show servers, main readiness, stored backups, and branches
   check                Check this install and say what to do about anything wrong
   logs [gateway|api]   Print a background server's log
@@ -189,7 +190,8 @@ Front door:
                        Smart SQL gateway: reads dbname=<branch> and routes to it,
                        auto-resuming suspended branches, auto-suspending idle ones (--idle 0 = off)
   controlplane [--addr :8080]
-                       Control-plane REST API (JSON; the web UI is a separate app in web/)
+                       Control-plane REST API and, in release builds, the web console
+                       (development builds serve the console with: make web-dev)
 
 Agent Branch API:
   serve [--addr :8088] Run the HTTP API: one database branch per AI agent
@@ -326,7 +328,9 @@ func main() {
 		editionSwitchCmd(os.Args[2:])
 	case "_update-guest": // the engine-side steps of `fox update`
 		updateGuestCmd(os.Args[2:])
-	case "stop":
+	case "stop", "down":
+		// down is the same command: removing the containers leaves the servers
+		// nothing to serve, so it has always stopped them too (#152).
 		for name := range services {
 			daemon.Stop(name)
 		}
@@ -345,11 +349,6 @@ func main() {
 		}
 	case "up":
 		must(branch.Up())
-	case "down":
-		for name := range services {
-			daemon.Stop(name)
-		}
-		must(branch.Down())
 	case "status":
 		fmt.Println("=== servers ===")
 		fmt.Printf("control API: %s\n", daemon.Status("controlplane"))

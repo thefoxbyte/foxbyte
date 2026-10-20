@@ -145,7 +145,7 @@ func NodeJoin(token string) error {
 
 	fmt.Printf("1/4 copying %s:%d over TLS…\n", j.Address, j.Port)
 	store := activeStorage()
-	quiet("docker", "rm", "-f", container("standby"))
+	removeContainer(container("standby"))
 	if err := store.resetStandby(); err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func NodeLeave() error {
 			"Leaving now would delete the only copy of those writes. Run `%s ha failback` first",
 			j.Address, brand.CLI)
 	}
-	quiet("docker", "rm", "-f", container("standby"))
+	removeContainer(container("standby"))
 	activeStorage().destroyStandby()
 	if err := os.Remove(joinedPath()); err != nil && !os.IsNotExist(err) {
 		return err

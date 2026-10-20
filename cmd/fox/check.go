@@ -89,6 +89,7 @@ func checks() []check {
 		one("backups", checkBackups),
 		one("restore proven", checkRestore),
 		one("sample data", checkSampleData),
+		one("docker volumes", checkVolumes),
 	}
 }
 
@@ -761,6 +762,23 @@ func checkSampleData() checkLine {
 		return warn("sample data", "main has no tables", fmt.Sprintf("%s demo seed main", brand.CLI))
 	}
 	return ok("sample data", fmt.Sprintf("main has %d table(s)", n))
+}
+
+// Anonymous volumes left by branches removed before removeContainer passed -v.
+// Only a warning: they cost disk and nothing else. The fix names prune without
+// -a, which removes unused anonymous volumes and keeps every named one; with
+// -a it would also take the object store's volume whenever that is stopped.
+func checkVolumes() checkLine {
+	n, err := branch.UnusedAnonymousVolumes()
+	if err != nil {
+		return warn("docker volumes", "Docker could not be asked: "+firstLine(err.Error()), "")
+	}
+	if n == 0 {
+		return ok("docker volumes", "no unused anonymous volumes")
+	}
+	return warn("docker volumes",
+		fmt.Sprintf("%d unused anonymous volume(s), most likely left by branches removed by an older version", n),
+		"docker volume prune   — removes unused anonymous volumes only; named ones, the object store's included, are kept")
 }
 
 func firstLine(s string) string {
