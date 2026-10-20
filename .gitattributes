@@ -38,3 +38,7 @@ go.sum          text eol=lf
 # test wanted. That test no longer cares how the file is wrapped or terminated,
 # but pinning the bytes keeps the next one from finding out the same way.
 *.md  text eol=lf
+
+# deploy/get/vercel.json is generated from brand.json and compared byte for byte
+# by TestGeneratedFilesAreInStep, like web/src/brand.ts above.
+vercel.json text eol=lf

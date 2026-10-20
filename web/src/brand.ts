@@ -11,6 +11,9 @@ export const BRAND = {
   stateDir: ".fox",
   repo: "thefoxbyte/foxbyte",
   repoUrl: "https://github.com/thefoxbyte/foxbyte",
+  // The one-line installers, served from install_host in brand.json.
+  installSh: "https://get.thefoxbyte.com/install.sh",
+  installPs1: "https://get.thefoxbyte.com/install.ps1",
   // Whether the wordmark picks one letter out in the mark's colours. Off unless
   // the artwork itself does it; see brand.json.
   wordmarkAccent: false,

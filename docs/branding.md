@@ -69,6 +69,7 @@ reads a retired name where it still matters:
 | `scripts/lib/brand.sh` | sourced by the integration suites |
 | `web/src/brand.ts` | the web UI is built, not run from the repository |
 | the marked block in `deploy/install.sh` and `install.ps1` | both are fetched standalone from GitHub |
+| `deploy/get/vercel.json` | the `install_host` site, deployed by Vercel from this folder |
 
 ## Things worth knowing
 

@@ -195,7 +195,7 @@ Needs [Lima](https://lima-vm.io) for the local Linux VM.
 
 ```bash
 brew install lima
-curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh | sh
+curl -fsSL https://get.thefoxbyte.com/install.sh | sh
 fox setup
 ```
 
@@ -208,7 +208,7 @@ it's fast.
 The engine runs directly (no VM). ZFS + Docker are provisioned on first start.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh | sh
+curl -fsSL https://get.thefoxbyte.com/install.sh | sh
 sudo fox start
 ```
 
@@ -225,7 +225,7 @@ for you. The engine runs in a dedicated **WSL2** distro that stores branches on
 **btrfs**, so it works on any WSL kernel — nothing kernel-specific to build.
 
 ```powershell
-irm https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.ps1 | iex
+irm https://get.thefoxbyte.com/install.ps1 | iex
 ```
 
 That installs WSL if absent (no Linux distribution of your own needed —
@@ -709,7 +709,7 @@ features need a licence — without one it behaves exactly like Standard.
 | ETL pipelines (`fox import` is free: migrating in is onboarding, not ETL) | — | yes |
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh \
+curl -fsSL https://get.thefoxbyte.com/install.sh \
   | FOX_EDITION=enterprise sh
 ```
 

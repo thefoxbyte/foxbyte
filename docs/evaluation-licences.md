@@ -67,7 +67,7 @@ paid code at all, so a licence does nothing to it. That is the point, and it is
 also the comparison worth making:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh \
+curl -fsSL https://get.thefoxbyte.com/install.sh \
   | FOX_EDITION=enterprise sh
 
 fox license activate FB-EVAL-007.json
