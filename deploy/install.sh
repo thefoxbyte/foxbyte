@@ -7,7 +7,7 @@
 #   Linux:  sudo fox start # provisions ZFS/Docker/image and brings everything up
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh | sh
+#   curl -fsSL https://get.thefoxbyte.com/install.sh | sh
 #
 # The Enterprise edition (paid) is a different binary from the same release. It
 # needs a licence to unlock its features, and behaves exactly like Standard

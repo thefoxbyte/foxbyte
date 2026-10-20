@@ -5,7 +5,7 @@
 # installs the fox launcher, and runs `fox setup`.
 #
 # Usage (PowerShell):
-#   irm https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.ps1 | iex
+#   irm https://get.thefoxbyte.com/install.ps1 | iex
 #
 # This file must stay free of a UTF-8 BOM: `irm | iex` pipes the BOM into the
 # parser, which then reports `The term '# ' is not recognized` on line 1.
@@ -37,6 +37,7 @@ $Slug = "foxbyte"
 $EnvPrefix = "FOX_"
 $StateDir = ".fox"
 $DefaultRepo = "thefoxbyte/foxbyte"
+$InstallUrl = "https://get.thefoxbyte.com/install.ps1"
 # end generated
 
 $Repo    = if ($env:FOX_REPO)    { $env:FOX_REPO }    else { $DefaultRepo }
@@ -127,6 +128,9 @@ function Register-Resume {
     # Without the wait it fails immediately on `irm` and the user sees only a
     # stray error window -- which is what happened on the first real machine
     # this was tried on.
+    #
+    # It fetches from GitHub directly, not from $InstallUrl: nobody reads this
+    # command, and at logon it is one fewer service that has to be up.
     $url = 'https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.ps1'
     $cmd = "for (`$i=0; `$i -lt 60; `$i++) { " +
            "if (Test-Connection -ComputerName raw.githubusercontent.com -Count 1 -Quiet) { break }; " +
@@ -371,7 +375,7 @@ function Invoke-Install {
             # Always given, even when the resume was registered: it depends on
             # RunOnce firing and on networking being up, neither guaranteed.
             Write-Host "If it does not, just run the same command again:" -ForegroundColor Yellow
-            Write-Host "    irm https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.ps1 | iex"
+            Write-Host "    irm $InstallUrl | iex"
             Write-Host "Nothing is lost by re-running it -- the install picks up where it stopped."
             Write-Host ""
             return

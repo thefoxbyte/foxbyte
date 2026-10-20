@@ -3,6 +3,7 @@
 package gen
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,9 @@ func TestInstallerBlocksKeepTheirVariables(t *testing.T) {
 		if !strings.Contains(ps, want) {
 			t.Errorf("install.ps1 is missing %s", want)
 		}
+	}
+	if !strings.Contains(ps, `$InstallUrl = "https://`+b.InstallHost+`/install.ps1"`) {
+		t.Errorf("install.ps1 is missing $InstallUrl")
 	}
 	sh := string(files[filepath.Join("deploy", "install.sh")])
 	for _, want := range []string{`PRODUCT="` + b.Product + `"`, `CLI="` + b.CLI + `"`, `DEFAULT_REPO="` + b.Repo + `"`} {
@@ -159,5 +163,43 @@ func TestGeneratedTextFilesHaveALineEndingRule(t *testing.T) {
 		t.Errorf("%s is generated but %q has no `eol=` rule in .gitattributes — "+
 			"Windows will check it out with CRLF, the generator writes LF, and "+
 			"TestGeneratedFilesAreInStep will fail there and only there", rel, ext)
+	}
+}
+
+// The install host serves the installers from main. A wrong destination would
+// make the one-liner print a 404 page into sh, so each path is checked against
+// the script it must serve.
+func TestInstallHostServesTheInstallers(t *testing.T) {
+	b, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := Files(root, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var site struct {
+		Rewrites []struct{ Source, Destination string }
+	}
+	if err := json.Unmarshal(files[filepath.Join("deploy", "get", "vercel.json")], &site); err != nil {
+		t.Fatalf("vercel.json: %v", err)
+	}
+	want := map[string]string{
+		"/install.sh":  "https://raw.githubusercontent.com/" + b.Repo + "/main/deploy/install.sh",
+		"/install.ps1": "https://raw.githubusercontent.com/" + b.Repo + "/main/deploy/install.ps1",
+	}
+	for _, r := range site.Rewrites {
+		if want[r.Source] != r.Destination {
+			t.Errorf("%s rewrites to %q, want %q", r.Source, r.Destination, want[r.Source])
+		}
+		delete(want, r.Source)
+	}
+	for src := range want {
+		t.Errorf("vercel.json does not serve %s", src)
+	}
+	for _, script := range []string{"install.sh", "install.ps1"} {
+		if _, err := os.Stat(filepath.Join(root, "deploy", script)); err != nil {
+			t.Errorf("the install host serves deploy/%s, which is missing: %v", script, err)
+		}
 	}
 }

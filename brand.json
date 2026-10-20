@@ -11,7 +11,11 @@
     "existing install.",
     "",
     "To rename the product: edit this file, run `make brand`, then",
-    "`bash scripts/rebrand.sh` for the prose and file names. See docs/branding.md."
+    "`bash scripts/rebrand.sh` for the prose and file names. See docs/branding.md.",
+    "",
+    "install_host is the address people install from: https://<install_host>/install.sh",
+    "and /install.ps1. It serves the scripts from this repository's main branch",
+    "(deploy/get, a Vercel project), so the one-liner never shows GitHub's raw URL."
   ],
   "product": "FoxByte",
   "tagline": "every schema change on record, every row change live",
@@ -21,6 +25,7 @@
   "state_dir": ".fox",
   "docs_prefix": "FOX_",
   "repo": "thefoxbyte/foxbyte",
+  "install_host": "get.thefoxbyte.com",
   "module": "github.com/thefoxbyte/foxbyte",
   "image_repo": "ghcr.io/thefoxbyte",
   "vm_instance": "fox",

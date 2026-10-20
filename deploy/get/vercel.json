@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/install.sh", "destination": "https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.sh" },
+    { "source": "/install.ps1", "destination": "https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.ps1" }
+  ],
+  "redirects": [
+    { "source": "/", "destination": "https://github.com/thefoxbyte/foxbyte#install", "permanent": false }
+  ]
+}
