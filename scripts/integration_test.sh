@@ -502,7 +502,12 @@ assert_eq "the primary carries its accounts into the replicated database" \
   "$([ -n "$SD" ] && echo shipped || echo nothing)" "shipped"
 # Replicated, not shipped twice: the document travels in the WAL the standby is
 # already streaming, which is the whole reason this needs no second channel.
-assert_eq "…and the standby has the same document, through replication" "$(statedg pg-standby)" "$SD"
+# Streaming is asynchronous and the primary re-ships whenever an account
+# changes, so one read of each could catch the standby a moment behind: wait for
+# the two to agree, as a reader of the copy would.
+SB=""
+for _ in $(seq 1 15); do SD="$(statedg pg-main)"; SB="$(statedg pg-standby)"; [ -n "$SB" ] && [ "$SB" = "$SD" ] && break; sleep 1; done
+assert_eq "…and the standby has the same document, through replication" "$SB" "$SD"
 assert_eq "…carrying the seven tables a second machine needs" \
   "$(sudo docker exec pg-main psql -U dbadmin -d statedb -tAc "SELECT string_agg(k, ',' ORDER BY k) FROM shared, jsonb_object_keys(payload->'tables') k WHERE id=1" 2>/dev/null)" \
   "api_keys,branch_owners,change_requests,oauth_identities,pipelines,pipeline_targets,users"
@@ -1244,6 +1249,7 @@ $S branch delete democonn >/dev/null 2>&1
 # fox check is the install diagnosing itself: with the stack up it passes.
 CHECK="$($S check 2>&1)"; CHECK_RC=$?
 assert_eq "fox check exits 0 on a working install" "$CHECK_RC" "0"
+[ "$CHECK_RC" = 0 ] || { echo "--- what failed ---"; grep -A1 '^FAIL' <<<"$CHECK"; echo "--- end ---"; }
 assert_eq "…and reports main, the servers, the ports and the Blackbox" \
   "$(echo "$CHECK" | grep -c '^ok  ' | awk '{print ($1>=8)}')|$(echo "$CHECK" | grep -c 'FAIL')" "1|0"
 # A check that the API refuses an unauthenticated caller: a 401 is the install
@@ -1257,7 +1263,9 @@ CHECK="$($S check 2>&1)"; CHECK_RC=$?
 assert_eq "a stopped gateway makes fox check fail and name it" \
   "$CHECK_RC|$(echo "$CHECK" | grep -c 'FAIL  gateway')" "1|1"
 $S start >/dev/null 2>&1; sleep 3
-assert_eq "…and it passes again once the stack is back" "$($S check >/dev/null 2>&1; echo $?)" "0"
+CHECK="$($S check 2>&1)"; CHECK_RC=$?
+assert_eq "…and it passes again once the stack is back" "$CHECK_RC" "0"
+[ "$CHECK_RC" = 0 ] || { echo "--- what failed ---"; grep -A1 '^FAIL' <<<"$CHECK"; echo "--- end ---"; }
 $S branch delete demoseed >/dev/null 2>&1
 
 echo "### 11e. the claims are checkable (onboarding batch 3)"

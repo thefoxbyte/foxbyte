@@ -339,6 +339,24 @@ describe('the data grid', () => {
     expect(sqlRun()).toContain(`SELECT count(*) FROM "public"."invoices" WHERE "amount" = '5'`)
   })
 
+  it('leaves the editor writable when a table is left before its rows arrive', async () => {
+    let release: (r: QueryResult) => void = () => {}
+    mockQuery.mockImplementation(async (_b: string, sql: string) => {
+      if (sql.includes('pg_attribute')) return columns
+      if (sql.includes('information_schema.tables')) return SCHEMA
+      if (sql.startsWith('SELECT * FROM "public"."invoices"')) return new Promise<QueryResult>(r => { release = r })
+      return { columns: [], rows: [], command: 'SELECT 0' }
+    })
+    await open()
+    fireEvent.click(await screen.findByRole('button', { name: /invoices/ }))
+    await screen.findByText('Loading…')
+    fireEvent.click(screen.getByRole('button', { name: /SQL query/ }))
+    expect(editor().readOnly).toBe(false)
+    expect((screen.getByRole('button', { name: /^run/i }) as HTMLButtonElement).disabled).toBe(false)
+    release({ columns: ['id'], rows: [[1]], command: 'SELECT 1' })
+    await waitFor(() => expect(editor().readOnly).toBe(false))
+  })
+
   it('names each row by its key even when the catalog gives no columns', async () => {
     vi.mocked(getCatalog).mockResolvedValue({ objects: [{ kind: 'table', oid: 10, schema: 'public', name: 'invoices' }] })
     vi.mocked(getObject).mockResolvedValue({ kind: 'table', oid: 10, name: 'invoices', ddl: '' })

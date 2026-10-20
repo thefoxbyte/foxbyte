@@ -141,6 +141,11 @@ export default function Console() {
     window.addEventListener('mouseup', up)
   }
   const [busy, setBusy] = useState(false)
+  // A table's rows loading, kept apart from busy (a query in flight, which
+  // locks the editor). Sharing busy left the editor read-only for good when a
+  // load was cancelled by switching back to the query: the cancelled load never
+  // cleared it, and a reload (tracking a table starts one) made that likely.
+  const [loading, setLoading] = useState(false)
   const assist = useCompletion({ editor: editorRef, text: sql, setText: setSql, schema: rels, busy })
 
   // The branch list is what the picker is made of, and it used to be fetched once:
@@ -216,10 +221,10 @@ export default function Console() {
   // Load the active browse tab.
   useEffect(() => {
     if (mode !== 'browse' || !sel) return
-    if (CATALOG_TABS.includes(tab)) { setBrowseRes(null); setBusy(false); return }
+    if (CATALOG_TABS.includes(tab)) { setBrowseRes(null); setLoading(false); return }
     let cancelled = false
     const load = async () => {
-      setBusy(true); setBrowseRes(null)
+      setLoading(true); setBrowseRes(null)
       try {
         let q = ''
         if (tab === 'rows') {
@@ -243,11 +248,11 @@ export default function Console() {
       } catch (e) {
         if (!cancelled) setBrowseRes({ error: (e as Error).message })
       } finally {
-        if (!cancelled) setBusy(false)
+        if (!cancelled) setLoading(false)
       }
     }
     load()
-    return () => { cancelled = true }
+    return () => { cancelled = true; setLoading(false) }
   }, [mode, sel, tab, page, branch, reloadTick, sort, filters, rels]) // rels: the key that orders a page
 
   const openObject = (o: DbObject) => {
@@ -610,7 +615,7 @@ export default function Console() {
                 : tab === 'rows' && editing && browseRes && !browseRes.error
                   ? <EditGrid cols={browseRes.columns ?? []} rows={browseRes.rows ?? []} info={editing}
                       onSave={saveGrid} onCancel={() => setEditing(null)} />
-                  : busy && !browseRes ? <div className="muted">Loading…</div>
+                  : loading && !browseRes ? <div className="muted">Loading…</div>
                   : browseRes && <Grid res={browseRes} sort={tab === 'rows' ? sort : undefined}
                       onSort={tab === 'rows' ? (c => { setSort(s => nextSort(s, c)); setPage(0) }) : undefined} />}
               {tab === 'rows' && browseRes && !browseRes.error && !editing && (
