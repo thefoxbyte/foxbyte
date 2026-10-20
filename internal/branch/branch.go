@@ -1436,9 +1436,21 @@ func Resume(name string) error {
 
 // EnsureRunning makes sure a branch is running (resuming it if suspended) and
 // returns its current backend address. Errors if the branch does not exist.
+// OnUse, when set, is told each time a branch is about to be used through
+// EnsureRunning. The control plane sets it to record the use where the gateway's
+// idle reaper can see it (auth.Store.TouchBranch): the console's queries are not
+// gateway connections, and without it the reaper took a branch in use for an
+// idle one.
+var OnUse func(name string)
+
 func EnsureRunning(name string) (string, error) {
 	if err := checkName(name); err != nil {
 		return "", err
+	}
+	// Before the branch is woken or looked at, so the idle reaper (which runs
+	// in another process) sees it as in use from the first moment.
+	if OnUse != nil {
+		OnUse(name)
 	}
 	if name == "main" {
 		// The primary's lifecycle is managed by `up`/`ha`. Never auto-start it

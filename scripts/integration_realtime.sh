@@ -543,6 +543,23 @@ assert_eq "…and the feed it resumed for delivers" \
   "$(have_in "$G" "e.get('type')=='change' and (e.get('identity') or {}).get('id')=='2'")" "yes"
 kill "$GWPID" 2>/dev/null
 
+# The Realtime page reads a branch's tables (realtime/v1/…/tables), and its
+# enable, disable and prepare run SQL there. Each wakes a suspended branch, as
+# the console's SQL always has, rather than answering that the container is not
+# running: which is what the page showed once a branch had been left alone for
+# two minutes (found 20 Oct 2026, when every realtime UI test after an idle
+# minute failed). rtidle is still suspended from the reaper above.
+assert_eq "the table survey wakes a suspended branch, and answers" \
+  "$(sudo docker inspect -f '{{.State.Status}}' pg-rtidle 2>/dev/null)|$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" "$API/realtime/v1/branches/rtidle/tables")|$(sudo docker inspect -f '{{.State.Status}}' pg-rtidle 2>/dev/null)" \
+  "exited|200|running"
+pg pg-rtidle 'CREATE TABLE public.idle_t (id bigint PRIMARY KEY)'
+pg pg-rtidle 'GRANT SELECT ON public.idle_t TO db_client'
+"$S" branch suspend rtidle >/dev/null 2>&1
+assert_eq "…and so does enabling a table on one" \
+  "$(sudo docker inspect -f '{{.State.Status}}' pg-rtidle 2>/dev/null)|$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -X POST -d '{"schema":"public","table":"idle_t"}' "$API/api/branches/rtidle/realtime/enable")|$(sudo docker inspect -f '{{.State.Status}}' pg-rtidle 2>/dev/null)" \
+  "exited|200|running"
+curl -sk -o /dev/null -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -X POST -d '{"schema":"public","table":"idle_t"}' "$API/api/branches/rtidle/realtime/disable"
+
 # `fox check` is where somebody looks when a slot is holding WAL and nothing is
 # draining it. The slot on rtfeed is idle now, which is the case worth a word.
 #

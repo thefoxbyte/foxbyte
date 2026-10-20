@@ -601,6 +601,15 @@ var (
 	probeRealtime    = branch.RealtimeActive
 	listSuspendable  = branch.SuspendableBranches
 	suspendBranch    = branch.Suspend
+	// When the console or the API last used a branch: the control plane's use,
+	// which never passes through this gateway (auth/branchuse.go).
+	probeLastUse = func(name string) time.Time {
+		if authStore == nil {
+			return time.Time{}
+		}
+		t, _ := authStore.BranchUsedAt(name)
+		return t
+	}
 )
 
 // canSuspend reports whether a branch that has been idle past the window can be
@@ -665,9 +674,18 @@ func sweepOnce(idle time.Duration) {
 			mu.Unlock()
 			continue
 		}
-		idleFor := time.Since(last)
 		mu.Unlock()
+		// Gateway traffic or the console's use, whichever was later.
+		if u := probeLastUse(n); u.After(last) {
+			last = u
+		}
+		idleFor := time.Since(last)
 		if idleFor < idle || !canSuspend(n) {
+			continue
+		}
+		// Asked again after the probes, which take a moment: someone may have
+		// started using the branch while they ran.
+		if u := probeLastUse(n); time.Since(u) < idle {
 			continue
 		}
 		log.Printf("auto-suspend: %s idle %s, 0 connections -> stopping", n, idleFor.Round(time.Second))

@@ -46,6 +46,8 @@ import (
 //   - query_history, saved_queries, history_optout, history_settings:
 //     deliberately not. The SQL people type is the last thing to replicate
 //     (history.go, saved.go), and the settings are this node's.
+//   - branch_activity: deliberately not. When the console last used a branch
+//     is for this node's own idle reaper (branchuse.go).
 //   - security_events: deliberately not. It is a hash chain, and a chain is a
 //     per-writer structure — two nodes' chains cannot be merged into one, and
 //     overwriting one node's chain with another's would destroy the evidence
