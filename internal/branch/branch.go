@@ -302,7 +302,7 @@ func startContainer(name string, primary bool) error {
 	if err := checkDataMajor(name, dataMajor(name), img); err != nil {
 		return err
 	}
-	quiet("docker", "rm", "-f", container(name))
+	removeContainer(container(name))
 	args := []string{"run", "-d",
 		"--name", container(name),
 		"--network", network,
@@ -632,6 +632,21 @@ func quoteLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+// removeContainer removes a container and the anonymous volumes Docker made
+// for it (docker rm -f -v), whether it is running or not.
+//
+// Without -v every removal left a volume behind. The Postgres image declares
+// VOLUME /var/lib/postgresql and a branch mounts its dataset one level down,
+// at /var/lib/postgresql/data, so Docker gave each container an anonymous
+// volume for the parent: a branch deleted, a stop and start, a failback each
+// left one, and a `fox backup verify` left its whole restored copy of main
+// (found 20 Oct 2026, when the test VM's disk filled with 2,284 of them).
+// Named volumes are never removed by -v: the object store's data, the WAL
+// archive and the backups, stay.
+func removeContainer(name string) {
+	quiet("docker", "rm", "-f", "-v", name)
+}
+
 // psqlStdin runs a (possibly multi-statement) SQL script on a branch's Postgres
 // by piping it to psql over stdin, aborting on the first error.
 func psqlStdin(name, sql string) error {
@@ -807,7 +822,7 @@ func Delete(name string) error {
 		return fmt.Errorf("refusing to delete the primary branch 'main'")
 	}
 	forgetBranchRoles(name)
-	quiet("docker", "rm", "-f", container(name))
+	removeContainer(container(name))
 	return activeStorage().destroy(name)
 }
 
@@ -927,7 +942,7 @@ func Up() error {
 		return err
 	}
 	if !objStoreRunning() || objStorePublic() {
-		quiet("docker", "rm", "-f", objStore)
+		removeContainer(objStore)
 		args := []string{"run", "-d",
 			"--name", objStore, "--network", network,
 			"--label", managedLabel,
@@ -988,7 +1003,7 @@ func Down() error {
 			continue
 		}
 		seen[n] = true
-		quiet("docker", "rm", "-f", n)
+		removeContainer(n)
 	}
 	return nil
 }
@@ -1035,7 +1050,7 @@ func restorePITRInto(name, ts string, publish bool) error {
 	if backup != "LATEST" {
 		fmt.Printf("starting from base backup %s (the newest one that precedes %s)\n", backup, ts)
 	}
-	quiet("docker", "rm", "-f", container(name))
+	removeContainer(container(name))
 	args := []string{"run", "-d",
 		"--name", container(name), "--network", network,
 		"--label", managedLabel,

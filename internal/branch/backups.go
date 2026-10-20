@@ -71,7 +71,7 @@ func SetBackupTarget(t Target, allowHTTP bool) error {
 	fmt.Printf("Backups now go to %s.\n", t.Describe())
 	// main's archive settings are fixed when its container starts.
 	fmt.Println("Restarting main so it archives there …")
-	quiet("docker", "rm", "-f", PrimaryContainer())
+	removeContainer(PrimaryContainer())
 	// Up takes the first base backup on a target that has none (ensureFirstBackup).
 	if err := Up(); err != nil {
 		return fmt.Errorf("restarting main: %w", err)

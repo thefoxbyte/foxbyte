@@ -321,7 +321,7 @@ func listBaseBackupsWithin(d time.Duration) ([]walgBackup, error) {
 		// The container is not a child of `docker run` — it belongs to the
 		// daemon and carries on without its client, which is how a `check`
 		// that was given up on left a Postgres container up behind it.
-		quiet("docker", "rm", "-f", name)
+		removeContainer(name)
 		// Its own sentence rather than execErr's: the deadline here is
 		// whatever the caller allowed, which for `check` is the budget for
 		// one line — not FOX_EXEC_TIMEOUT, which execErr would name.
@@ -525,7 +525,7 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 		return BeforeEntryResult{}, fmt.Errorf("creating storage for %q: %w", newName, err)
 	}
 	fail := func(err error) (BeforeEntryResult, error) {
-		quiet("docker", "rm", "-f", container(newName))
+		removeContainer(container(newName))
 		if derr := store.destroy(newName); derr != nil {
 			err = fmt.Errorf("%w (and removing the partial branch failed: %v)", err, derr)
 		}

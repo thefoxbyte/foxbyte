@@ -127,7 +127,7 @@ func VerifyRestore(logf func(string, ...any)) (RestoreCheck, error) {
 		return finish(fmt.Errorf("the primary is not running, so there is nothing to check"))
 	}
 	if ContainerState(restoreCheckContainer) != "absent" {
-		quiet("docker", "rm", "-f", container(restoreCheckContainer))
+		removeContainer(container(restoreCheckContainer))
 	}
 
 	// 1. A row that can only have come from now.
@@ -160,7 +160,7 @@ func VerifyRestore(logf func(string, ...any)) (RestoreCheck, error) {
 	} else if name, err := restoreBackupName("latest"); err == nil {
 		c.BaseBackup = name
 	}
-	defer quiet("docker", "rm", "-f", container(restoreCheckContainer))
+	defer removeContainer(container(restoreCheckContainer))
 	if err := restorePITRInto(restoreCheckContainer, "latest", false); err != nil {
 		return finish(fmt.Errorf("restoring: %w", err))
 	}

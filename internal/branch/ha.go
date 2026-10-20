@@ -349,7 +349,7 @@ func HAEnable() error {
 	}
 
 	// 2. Fresh standby storage.
-	quiet("docker", "rm", "-f", container("standby"))
+	removeContainer(container("standby"))
 	store := activeStorage()
 	if err := store.resetStandby(); err != nil {
 		return err
@@ -402,7 +402,7 @@ func RestartStandby() error {
 	if ContainerState("standby") == "absent" {
 		return nil
 	}
-	quiet("docker", "rm", "-f", container("standby"))
+	removeContainer(container("standby"))
 	if err := startStandbyContainer(activeStorage()); err != nil {
 		return err
 	}
@@ -561,7 +561,7 @@ func HADisable() error {
 	if err := haGuard("disable", primary); err != nil {
 		return err
 	}
-	quiet("docker", "rm", "-f", container("standby"))
+	removeContainer(container("standby"))
 	// The standby's slot, now that the standby it was holding WAL for is gone.
 	// A slot nobody will consume holds write-ahead log that cannot be reclaimed.
 	//
@@ -642,12 +642,12 @@ func HAFailback() error {
 
 	// Before the standby is stopped: undo by removing the half-built main.
 	stopped := func(cause error) error {
-		quiet("docker", "rm", "-f", container("main"))
+		removeContainer(container("main"))
 		return fmt.Errorf("failback stopped: %w\n'main' is still served by the standby and nothing was lost; fix the problem and run `fox ha failback` again", cause)
 	}
 	// After the standby is stopped, but before main is promoted: start it again.
 	restart := func(cause error) error {
-		quiet("docker", "rm", "-f", container("main"))
+		removeContainer(container("main"))
 		if run("docker", "start", standby) == nil {
 			_ = waitReady("standby")
 		}
@@ -658,7 +658,7 @@ func HAFailback() error {
 	if err := allowReplication(standby); err != nil {
 		return stopped(err)
 	}
-	quiet("docker", "rm", "-f", container("main"))
+	removeContainer(container("main"))
 	// Only the contents are replaced: branches are copy-on-write clones of main's
 	// snapshots, so its dataset stays.
 	if err := run("rm", "-rf", mountpoint("main")+"/pgdata"); err != nil {
@@ -730,7 +730,7 @@ func HAFailback() error {
 	}
 
 	fmt.Println("5/5 removing the old standby…")
-	quiet("docker", "rm", "-f", standby)
+	removeContainer(standby)
 	store.destroyStandby()
 	// main is a primary again with no standby, so nothing may be waiting for
 	// one. The marker stays: `ha enable` below puts the mode back.
