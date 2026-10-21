@@ -89,20 +89,21 @@ func Serve(addr string) error {
 
 	api := http.NewServeMux()
 	registerAPI(api)
-	registerPipelines(api, store)     // /api/pipelines* (ETL)
-	registerImpact(api)               // /api/branches/{name}/impact, /api/{ledger,blackbox}/diff
-	registerPolicy(api, store)        // /api/branches/{name}/policies* and /admins (Blackbox policy gate)
-	registerLedgerV2(api)             // /api/branches/{name}/ledger/{integrity,checkpoint,export,entries,{id}/branch}
-	store.MountKeys(api)              // /api/keys (protected via Authn below)
-	registerAccounts(api, store)      // /api/account*, /api/users* (admins)
-	registerRequests(api, store)      // /api/branches/{name}/request, /api/requests*
-	registerLicense(api)              // /api/license
-	registerHistory(api, store)       // /api/history* (the caller's own query history)
-	registerSavedQueries(api, store)  // /api/saved-queries* (the caller's own)
-	registerTracking(api)             // /api/branches/{name}/tracking* (points 5, 6)
-	registerPersonalData(api)         // /api/branches/{name}/personal-data* (point 4)
-	registerPersonalDataReview(api)   // /api/branches/{name}/personal-data/findings/* (point 4.6)
-	registerEditionSwitch(api, store) // /api/edition/switch (the Upgrade modal's Install button)
+	registerPipelines(api, store)      // /api/pipelines* (ETL)
+	registerImpact(api)                // /api/branches/{name}/impact, /api/{ledger,blackbox}/diff
+	registerPolicy(api, store)         // /api/branches/{name}/policies* and /admins (Blackbox policy gate)
+	registerLedgerV2(api)              // /api/branches/{name}/ledger/{integrity,checkpoint,export,entries,{id}/branch}
+	store.MountKeys(api)               // /api/keys (protected via Authn below)
+	registerAccounts(api, store)       // /api/account*, /api/users* (admins)
+	registerRequests(api, store)       // /api/branches/{name}/request, /api/requests*
+	registerLicense(api)               // /api/license
+	registerHistory(api, store)        // /api/history* (the caller's own query history)
+	registerSavedQueries(api, store)   // /api/saved-queries* (the caller's own)
+	registerTracking(api)              // /api/branches/{name}/tracking* (points 5, 6)
+	registerPersonalData(api)          // /api/branches/{name}/personal-data* (point 4)
+	registerPersonalDataReview(api)    // /api/branches/{name}/personal-data/findings/* (point 4.6)
+	registerPersonalDataInventory(api) // /api/branches/{name}/personal-data/{unclassified,columns/*} (point 4.7)
+	registerEditionSwitch(api, store)  // /api/edition/switch (the Upgrade modal's Install button)
 	// The paid edition's routes. Compiled out of the Standard build entirely,
 	// where this call does nothing (internal/controlplane/enterprise_off.go).
 	mountEnterprise(api, mux, store, acl)

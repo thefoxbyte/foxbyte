@@ -827,6 +827,7 @@ paths:
               type: object
               properties:
                 sample: { type: integer, minimum: 1, maximum: 100000, description: "Rows read per table." }
+                newOnly: { type: boolean, description: "Read only tables with a column no scan has seen, and JSON columns (point 4.7)." }
       responses:
         "200": { description: Scanned; the branch's findings as they now are., content: { application/json: { schema: { $ref: "#/components/schemas/PersonalData" } } } }
         "400": { description: A sample outside 1 to 100000. }
@@ -906,6 +907,51 @@ paths:
         "400": { description: n outside 1 to 20. }
         "403": { description: "Not the branch's owner or an admin, no licence, or the caller's own role cannot read the location." }
         "404": { description: No such finding, or its column has gone since the scan. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/personal-data/unclassified:
+    get:
+      tags: [branches]
+      summary: Columns and JSON paths that appeared after the branch's first scan and no one has reviewed (the branch's owner or an admin).
+      description: >-
+        The first scan of a branch is its baseline. What appears after it is
+        unclassified until every finding at it is decided, or it is accepted as
+        holding nothing to classify. Only places the latest scan still saw.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200":
+          description: The unclassified places.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branch: { type: string }
+                  columns: { type: array, items: { $ref: "#/components/schemas/PersonalDataColumn" } }
+        "403": { description: Not the branch's owner or an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/personal-data/columns/{id}/accept:
+    post:
+      tags: [branches]
+      summary: Accept a new column or path as holding nothing to classify (Enterprise; the branch's owner or an admin).
+      description: >-
+        Refused while any finding at it is undecided: those are decided one by
+        one, and deciding the last reviews the place. Kept, append-only, and in
+        the security log.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { note: { type: string, maxLength: 1000 } } }
+      responses:
+        "200": { description: Reviewed., content: { application/json: { schema: { $ref: "#/components/schemas/PersonalDataColumn" } } } }
+        "400": { description: "A place from the baseline, one already reviewed, or a note over 1000 characters." }
+        "403": { description: Not the branch's owner or an admin, or no licence covers personal-data discovery. }
+        "404": { description: No such column in the branch's inventory. }
+        "409": { description: Findings at it are still undecided. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/branches/{name}/ledger:
@@ -2232,6 +2278,8 @@ components:
         findings:
           type: array
           items: { $ref: "#/components/schemas/PersonalDataFindingRow" }
+        fullScan: { type: integer, description: "The latest scan that read every table." }
+        unclassified: { type: integer, description: "Places that appeared after the first scan, not yet reviewed." }
     PersonalDataFindingRow:
       type: object
       properties:
@@ -2253,6 +2301,23 @@ components:
         decidedBy: { type: string, description: "Who made the latest decision; empty if none." }
         decidedAt: { type: string, format: date-time, nullable: true }
         note: { type: string }
+    PersonalDataColumn:
+      type: object
+      properties:
+        id: { type: integer }
+        schema: { type: string }
+        table: { type: string }
+        column: { type: string }
+        path: { type: string }
+        status: { type: string, enum: [known, unclassified, reviewed] }
+        firstScan: { type: integer }
+        lastScan: { type: integer }
+        firstSeen: { type: string, format: date-time }
+        reviewedBy: { type: string }
+        reviewedAt: { type: string, format: date-time, nullable: true }
+        note: { type: string }
+        findings: { type: integer, description: "Findings at this place." }
+        undecided: { type: integer, description: "Of which still suggested." }
     PersonalDataFinding:
       type: object
       properties:

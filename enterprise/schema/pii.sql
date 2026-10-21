@@ -84,8 +84,55 @@ CREATE OR REPLACE TRIGGER pii_decisions_append_only BEFORE UPDATE OR DELETE ON b
 CREATE OR REPLACE TRIGGER pii_decisions_no_truncate BEFORE TRUNCATE ON bb.pii_decisions
   FOR EACH STATEMENT EXECUTE FUNCTION bb.pii_decisions_append_only();
 
-REVOKE ALL ON bb.pii_scans, bb.pii_findings, bb.pii_decisions FROM PUBLIC;
-REVOKE ALL ON SEQUENCE bb.pii_scans_id_seq, bb.pii_findings_id_seq, bb.pii_decisions_id_seq FROM PUBLIC;
+-- Keeping it current (point 4.7): an inventory of every column, and every
+-- JSON path inside one, that a scan has seen, so the next scan can tell what is
+-- new. The first scan of a branch is its baseline (known). Whatever appears
+-- after it is unclassified until a person has looked: by deciding every finding
+-- at it, or by saying it holds nothing to classify. Never a value; only names.
+ALTER TABLE bb.pii_scans ADD COLUMN IF NOT EXISTS new_only boolean NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS bb.pii_columns (
+  id          bigserial   PRIMARY KEY,
+  schema_name text        NOT NULL,
+  table_name  text        NOT NULL,
+  column_name text        NOT NULL,
+  json_path   text        NOT NULL DEFAULT '',
+  status      text        NOT NULL CHECK (status IN ('known', 'unclassified', 'reviewed')),
+  first_scan  bigint      NOT NULL REFERENCES bb.pii_scans (id),
+  last_scan   bigint      NOT NULL REFERENCES bb.pii_scans (id),
+  first_seen  timestamptz NOT NULL DEFAULT now(),
+  reviewed_by text        NOT NULL DEFAULT '',
+  reviewed_at timestamptz,
+  note        text        NOT NULL DEFAULT '',
+  UNIQUE (schema_name, table_name, column_name, json_path)
+);
+
+-- Every change of a column's status, append-only, as bb.pii_decisions is for
+-- findings.
+CREATE TABLE IF NOT EXISTS bb.pii_column_reviews (
+  id          bigserial   PRIMARY KEY,
+  column_id   bigint      NOT NULL REFERENCES bb.pii_columns (id),
+  status      text        NOT NULL CHECK (status IN ('unclassified', 'reviewed')),
+  actor       text        NOT NULL,
+  note        text        NOT NULL DEFAULT '',
+  reviewed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS pii_column_reviews_column ON bb.pii_column_reviews (column_id, id);
+
+CREATE OR REPLACE FUNCTION bb.pii_append_only() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'bb.% is append-only: it is changed by recording another row', TG_TABLE_NAME;
+END;
+$$;
+CREATE OR REPLACE TRIGGER pii_column_reviews_append_only BEFORE UPDATE OR DELETE ON bb.pii_column_reviews
+  FOR EACH ROW EXECUTE FUNCTION bb.pii_append_only();
+CREATE OR REPLACE TRIGGER pii_column_reviews_no_truncate BEFORE TRUNCATE ON bb.pii_column_reviews
+  FOR EACH STATEMENT EXECUTE FUNCTION bb.pii_append_only();
+
+REVOKE ALL ON bb.pii_scans, bb.pii_findings, bb.pii_decisions, bb.pii_columns, bb.pii_column_reviews FROM PUBLIC;
+REVOKE ALL ON SEQUENCE bb.pii_scans_id_seq, bb.pii_findings_id_seq, bb.pii_decisions_id_seq,
+  bb.pii_columns_id_seq, bb.pii_column_reviews_id_seq FROM PUBLIC;
 
 SET client_min_messages = DEFAULT;
 SET session_replication_role = DEFAULT;

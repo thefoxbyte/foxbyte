@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from 'react'
-import { getPersonalData, scanPersonalData, type Branch, type PersonalData as Report, type PIIFinding } from '../api'
+import { acceptColumn, getPersonalData, getUnclassified, scanPersonalData, type Branch, type PersonalData as Report, type PIIColumn, type PIIFinding } from '../api'
 import { PIIReview } from '../components/PIIReview'
 import { useFeatures, why } from '../features'
 import { useBranches } from '../useBranches'
@@ -41,9 +41,12 @@ const FOUND_BY: Record<PIIFinding['rule'], string> = {
 
 const when = (iso: string) => new Date(iso).toLocaleString()
 
-type View = 'suggested' | 'confirmed' | 'rejected' | 'all'
+type View = 'suggested' | 'unclassified' | 'confirmed' | 'rejected' | 'all'
 const VIEWS: { v: View; label: string }[] = [
   { v: 'suggested', label: 'To review' },
+  // Point 4.7: columns and JSON paths that appeared after the branch's first
+  // scan, until someone has looked. Places, not findings.
+  { v: 'unclassified', label: 'Unclassified' },
   { v: 'confirmed', label: 'Confirmed' },
   { v: 'rejected', label: 'Rejected' },
   { v: 'all', label: 'All' },
@@ -55,6 +58,7 @@ export default function PersonalData() {
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [sample, setSample] = useState('1000')
+  const [newOnly, setNewOnly] = useState(false)
   const [err, setErr] = useState('')
   const [view, setView] = useState<View>('suggested')
   const [reviewing, setReviewing] = useState<PIIFinding | null>(null)
@@ -74,7 +78,7 @@ export default function PersonalData() {
     const n = Number(sample)
     if (!Number.isInteger(n) || n < 1 || n > 100000) { setErr('The sample is 1 to 100,000 rows per table.'); return }
     setScanning(true); setErr('')
-    try { setReport(await scanPersonalData(branch, n)) }
+    try { setReport(await scanPersonalData(branch, n, newOnly)) }
     catch (e) { setErr((e as Error).message) }
     finally { setScanning(false) }
   }
@@ -83,7 +87,8 @@ export default function PersonalData() {
   const s = report?.scan ?? null
   const all = report?.findings ?? []
   const findings = view === 'all' ? all : all.filter(f => f.state === view)
-  const count = (v: View) => (v === 'all' ? all.length : all.filter(f => f.state === v).length)
+  const count = (v: View) =>
+    v === 'unclassified' ? report?.unclassified ?? 0 : v === 'all' ? all.length : all.filter(f => f.state === v).length
   // A decision changes one row; the list is not read again for it.
   const decided = (f: PIIFinding) =>
     setReport(r => (r ? { ...r, findings: (r.findings ?? []).map(x => (x.id === f.id ? f : x)) } : r))
@@ -110,6 +115,10 @@ export default function PersonalData() {
         <label className="muted" style={{ fontSize: 13 }} htmlFor="pii-sample">Rows per table</label>
         <input id="pii-sample" type="number" min={1} max={100000} value={sample} style={{ width: 110 }}
           onChange={e => setSample(e.target.value)} />
+        <label className="pii-new" style={{ fontSize: 13 }}
+          title="Read only the tables with a column no scan has seen, and JSON columns: a quick look for what has changed">
+          <input type="checkbox" checked={newOnly} onChange={e => setNewOnly(e.target.checked)} /> Only what is new
+        </label>
         <button className="primary" onClick={scan} disabled={scanning || !licensed}
           title={licensed ? undefined : why(edition, 'Scanning for personal data')}>
           {scanning ? 'Scanning…' : licensed ? 'Scan now' : 'Scan now (Enterprise)'}
@@ -129,11 +138,11 @@ export default function PersonalData() {
       ) : (
         <>
           <p className="muted" style={{ marginTop: 16 }} data-testid="pii-summary">
-            Scanned {when(s.finished)}{s.actor ? ` by ${s.actor}` : ''}: {s.tables} table(s), {s.columns} column(s) read,
+            Scanned {when(s.finished)}{s.actor ? ` by ${s.actor}` : ''}{s.newOnly ? ' (what is new)' : ''}: {s.tables} table(s), {s.columns} column(s) read,
             up to {s.sample} rows each{(s.skipped?.length ?? 0) > 0 ? `; ${s.skipped!.length} not read` : ''}.
           </p>
 
-          {all.length > 0 && (
+          {(all.length > 0 || count('unclassified') > 0) && (
             <div className="seg" role="group" aria-label="Show findings" style={{ marginBottom: 10 }}>
               {VIEWS.map(x => (
                 <button key={x.v} aria-pressed={view === x.v} className={view === x.v ? 'active' : ''} onClick={() => setView(x.v)}>
@@ -143,7 +152,10 @@ export default function PersonalData() {
             </div>
           )}
 
-          {all.length === 0 ? (
+          {view === 'unclassified' ? (
+            <Unclassified branch={branch} scanId={s.id} canAccept={licensed} onReview={() => setView('suggested')}
+              onAccepted={() => setReport(r => (r ? { ...r, unclassified: Math.max(0, (r.unclassified ?? 1) - 1) } : r))} />
+          ) : all.length === 0 ? (
             <div className="panel" style={{ padding: 22, textAlign: 'center' }}>
               <p className="muted" style={{ margin: 0 }}>Nothing recognised as personal data. The limits below still apply.</p>
             </div>
@@ -173,7 +185,8 @@ export default function PersonalData() {
                       <td>
                         {f.state}
                         {f.decidedBy && f.state !== 'suggested' && <div className="muted" style={{ fontSize: 12 }}>by {f.decidedBy}</div>}
-                        {f.lastScan !== s.id && <div className="muted" style={{ fontSize: 12 }}>not seen in the latest scan</div>}
+                        {/* Against the latest full scan: a scan of what is new does not look again at a table it skipped. */}
+                        {f.lastScan < (report?.fullScan || s.id) && <div className="muted" style={{ fontSize: 12 }}>not seen in the latest scan</div>}
                       </td>
                       <td>
                         <button className="ghost sm" aria-label={`Review ${f.schema}.${f.table}.${f.column}${f.path ? ' ' + f.path : ''} (${CATEGORY[f.category] ?? f.category})`}
@@ -209,6 +222,76 @@ export default function PersonalData() {
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+// The places that appeared after the branch's first scan and no one has
+// reviewed (4.7): accepted as holding nothing to classify, or reviewed by
+// deciding their findings, which the engine notices on its own.
+function Unclassified({ branch, scanId, canAccept, onReview, onAccepted }: {
+  branch: string
+  scanId: number
+  canAccept: boolean
+  onReview: () => void
+  onAccepted: () => void
+}) {
+  const [cols, setCols] = useState<PIIColumn[] | null>(null)
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(0)
+
+  useEffect(() => {
+    setCols(null); setErr('')
+    getUnclassified(branch).then(r => setCols(r.columns ?? [])).catch(e => setErr((e as Error).message))
+  }, [branch, scanId])
+
+  const accept = async (c: PIIColumn) => {
+    setBusy(c.id); setErr('')
+    try {
+      await acceptColumn(branch, c.id)
+      setCols(cs => (cs ?? []).filter(x => x.id !== c.id))
+      onAccepted()
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(0)
+    }
+  }
+
+  if (err) return <div className="err">{err}</div>
+  if (!cols) return <p className="muted">Loading…</p>
+  if (cols.length === 0) {
+    return (
+      <div className="panel" style={{ padding: 22, textAlign: 'center' }}>
+        <p className="muted" style={{ margin: 0 }}>Nothing new is unclassified. Columns and paths that appear after the first scan show here until someone has looked.</p>
+      </div>
+    )
+  }
+  const where = (c: PIIColumn) => `${c.schema}.${c.table}.${c.column}${c.path ? ' ' + c.path : ''}`
+  return (
+    <div className="table-wrap">
+      <table aria-label="Unclassified places">
+        <thead><tr><th>Where</th><th>First seen</th><th className="num">Findings</th><th><span className="sr-only">Next</span></th></tr></thead>
+        <tbody>
+          {cols.map(c => (
+            <tr key={c.id}>
+              <td><code>{where(c)}</code></td>
+              <td>{when(c.firstSeen)}</td>
+              <td className="num">{c.findings}</td>
+              <td>
+                {c.undecided > 0 ? (
+                  <button className="ghost sm" onClick={onReview}>Decide its {c.undecided} finding(s)</button>
+                ) : (
+                  <button className="ghost sm" disabled={!canAccept || busy === c.id} aria-label={`Accept ${where(c)}`}
+                    title={canAccept ? 'It holds nothing to classify' : 'Accepting is part of Enterprise'} onClick={() => accept(c)}>
+                    Accept
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

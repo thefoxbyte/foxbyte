@@ -21,6 +21,8 @@ import (
 //	GET  /api/branches/{name}/personal-data/findings/{id}           one finding and every decision on it
 //	POST /api/branches/{name}/personal-data/findings/{id}/mark      decide, {"state": confirmed|rejected|suggested, "note"} (Enterprise)
 //	GET  /api/branches/{name}/personal-data/findings/{id}/samples   masked samples, ?n=5, read as the caller's own role (Enterprise)
+//	GET  /api/branches/{name}/personal-data/unclassified            what appeared since the first scan, not yet reviewed
+//	POST /api/branches/{name}/personal-data/columns/{id}/accept     a new column or path holds nothing to classify, {"note"} (Enterprise)
 //
 // All need Manage (needFor): a list of where personal data sits is itself
 // sensitive. Reading is free in every edition; scanning, deciding and reading
@@ -46,15 +48,16 @@ func registerPersonalData(mux *http.ServeMux) {
 		}
 		name := r.PathValue("name")
 		var body struct {
-			Sample int `json:"sample"`
+			Sample  int  `json:"sample"`
+			NewOnly bool `json:"newOnly"`
 		}
 		if r.ContentLength != 0 {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				writeErr(w, 400, fmt.Errorf("the body must be JSON: {\"sample\": rows per table}"))
+				writeErr(w, 400, fmt.Errorf("the body must be JSON: {\"sample\": rows per table, \"newOnly\": true|false}"))
 				return
 			}
 		}
-		o, err := branch.CheckPIIScanOptions(branch.PIIScanOptions{Sample: body.Sample})
+		o, err := branch.CheckPIIScanOptions(branch.PIIScanOptions{Sample: body.Sample, NewOnly: body.NewOnly})
 		if err != nil {
 			writeErr(w, 400, err)
 			return
@@ -174,5 +177,67 @@ func registerPersonalDataReview(mux *http.ServeMux) {
 			secLog.Audit(auth.EvPersonalDataSampled, u.Email, name, remoteIP(r), ss.Summary())
 		}
 		writeJSON(w, 200, ss)
+	})
+}
+
+// registerPersonalDataInventory mounts keeping it current (point 4.7).
+func registerPersonalDataInventory(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/branches/{name}/personal-data/unclassified", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if _, err := branch.EnsureRunning(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		cs, err := branch.PersonalDataUnclassified(name)
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"branch": name, "columns": cs})
+	})
+	mux.HandleFunc("POST /api/branches/{name}/personal-data/columns/{id}/accept", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.PersonalData) {
+			return
+		}
+		name := r.PathValue("name")
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id < 1 {
+			writeErr(w, 400, fmt.Errorf("a column is named by its number, not %q", r.PathValue("id")))
+			return
+		}
+		if _, err := branch.EnsureRunning(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		var body struct {
+			Note string `json:"note"`
+		}
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeErr(w, 400, fmt.Errorf("the body must be JSON: {\"note\": \"…\"}"))
+				return
+			}
+		}
+		u, _ := auth.UserFrom(r.Context())
+		c, err := branch.AcceptPersonalData(name, id, body.Note, u.Email)
+		switch {
+		case err == nil:
+		case errors.Is(err, branch.ErrNoColumn):
+			writeErr(w, 404, err)
+			return
+		case errors.Is(err, branch.ErrUndecided):
+			writeErr(w, 409, err)
+			return
+		case errors.Is(err, branch.ErrInvalidRequest):
+			writeErr(w, 400, err)
+			return
+		default:
+			writeErr(w, 500, err)
+			return
+		}
+		if secLog != nil {
+			secLog.Audit(auth.EvPersonalDataAccepted, u.Email, name, remoteIP(r), c.AcceptSummary())
+		}
+		writeJSON(w, 200, c)
 	})
 }

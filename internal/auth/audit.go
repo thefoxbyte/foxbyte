@@ -114,6 +114,9 @@ const (
 	// Masked samples of a finding shown to a reviewer: a read of personal
 	// data, masked or not, is something an auditor asks about.
 	EvPersonalDataSampled = "personal-data.sampled"
+	// A new column or JSON path accepted as holding nothing to classify
+	// (point 4.7): who, and where.
+	EvPersonalDataAccepted = "personal-data.accepted"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

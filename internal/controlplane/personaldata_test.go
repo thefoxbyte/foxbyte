@@ -20,6 +20,8 @@ func TestPersonalDataNeedsManage(t *testing.T) {
 		{"GET", "personal-data"},
 		{"POST", "personal-data/scan"},
 		{"POST", "personal-data/findings/7/mark"},
+		{"GET", "personal-data/unclassified"},
+		{"POST", "personal-data/columns/3/accept"},
 	} {
 		if got := needFor(c.method, c.tail); got != access.Manage {
 			t.Errorf("%s %s: %v, want Manage", c.method, c.tail, got)
@@ -58,5 +60,13 @@ func TestReviewSummariesKeepNoValues(t *testing.T) {
 	}
 	if strings.Contains(got, "0124") || strings.Contains(f.MarkSummary(), "KYC") {
 		t.Fatal("a summary carries a sample or a note")
+	}
+}
+
+func TestAcceptSummaryKeepsNoNote(t *testing.T) {
+	c := branch.PIIColumn{ID: 3, Schema: "public", Table: "orders", Column: "meta", Path: "$.gift_note", Status: "reviewed", Note: "free text from the shop"}
+	got := c.AcceptSummary()
+	if got != "column 3 (public.orders.meta $.gift_note): reviewed with a note" || strings.Contains(got, "shop") {
+		t.Fatalf("accept: %q", got)
 	}
 }

@@ -12,12 +12,14 @@ vi.mock('../api', async () => {
     getFinding: vi.fn(),
     markFinding: vi.fn(),
     getSamples: vi.fn(),
+    getUnclassified: vi.fn(),
+    acceptColumn: vi.fn(),
     getBranches: vi.fn(async () => [{ name: 'main' }, { name: 'dev' }]),
     getStatus: vi.fn(),
   }
 })
 
-import { getFinding, getPersonalData, getSamples, getStatus, markFinding, scanPersonalData, type PersonalData as Report, type Status } from '../api'
+import { acceptColumn, getFinding, getPersonalData, getSamples, getStatus, getUnclassified, markFinding, scanPersonalData, type PersonalData as Report, type PIIColumn, type Status } from '../api'
 import PersonalData from './PersonalData'
 
 const status = (features: string[], edition: 'standard' | 'enterprise' = 'enterprise') =>
@@ -93,7 +95,7 @@ describe('Personal data page', () => {
     fireEvent.change(screen.getByLabelText('Branch'), { target: { value: 'dev' } })
     fireEvent.change(screen.getByLabelText('Rows per table'), { target: { value: '250' } })
     fireEvent.click(screen.getByRole('button', { name: 'Scan now' }))
-    await waitFor(() => expect(scanPersonalData).toHaveBeenCalledWith('dev', 250))
+    await waitFor(() => expect(scanPersonalData).toHaveBeenCalledWith('dev', 250, false))
     expect(await screen.findByRole('table', { name: 'Personal data found' })).toBeTruthy()
   })
 
@@ -179,5 +181,45 @@ describe('Personal data page', () => {
     expect(await screen.findByText(/Reading samples and deciding are part of Enterprise/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Confirm' })).toBeNull()
     expect(getSamples).not.toHaveBeenCalled()
+  })
+
+  const col = (id: number, column: string, findings: number, undecided: number): PIIColumn => ({
+    id, schema: 'public', table: 'people', column, path: '', status: 'unclassified', firstScan: 2, lastScan: 3,
+    firstSeen: '2026-10-21T12:00:00Z', reviewedBy: '', reviewedAt: null, note: '', findings, undecided,
+  })
+
+  it('scans only what is new when asked', async () => {
+    vi.mocked(getPersonalData).mockResolvedValue({ branch: 'main', scan: null, findings: [] })
+    vi.mocked(scanPersonalData).mockResolvedValue(scanned)
+    page()
+    await screen.findByText(/has not been scanned/)
+    fireEvent.click(screen.getByLabelText(/Only what is new/))
+    fireEvent.click(screen.getByRole('button', { name: 'Scan now' }))
+    await waitFor(() => expect(scanPersonalData).toHaveBeenCalledWith('main', 1000, true))
+  })
+
+  it('lists what appeared since the first scan, accepts a place with nothing to decide, and sends the rest to review', async () => {
+    vi.mocked(getPersonalData).mockResolvedValue({ ...scanned, unclassified: 2 })
+    vi.mocked(getUnclassified).mockResolvedValue({ branch: 'main', columns: [col(9, 'status', 0, 0), col(10, 'mobile', 1, 1)] })
+    vi.mocked(acceptColumn).mockResolvedValue({ ...col(9, 'status', 0, 0), status: 'reviewed' })
+    page()
+    fireEvent.click(await screen.findByRole('button', { name: 'Unclassified (2)' }))
+    const table = await screen.findByRole('table', { name: 'Unclassified places' })
+    expect(table.textContent).toContain('public.people.status')
+    fireEvent.click(screen.getByRole('button', { name: 'Accept public.people.status' }))
+    await waitFor(() => expect(acceptColumn).toHaveBeenCalledWith('main', 9))
+    await waitFor(() => expect(screen.getByRole('table', { name: 'Unclassified places' }).textContent).not.toContain('public.people.status'))
+    expect(screen.getByRole('button', { name: 'Unclassified (1)' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Decide its 1 finding(s)' }))
+    expect(screen.getByRole('button', { name: /^To review/ }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('a finding a scan of what is new skipped is not called "not seen"', async () => {
+    const f = { ...scanned.findings![0], lastScan: 1 }
+    vi.mocked(getPersonalData).mockResolvedValue({ ...scanned, scan: { ...scan, id: 3, newOnly: true }, fullScan: 1, findings: [f] })
+    page()
+    const table = await screen.findByRole('table', { name: 'Personal data found' })
+    expect(table.textContent).not.toContain('not seen in the latest scan')
+    expect(screen.getByTestId('pii-summary').textContent).toContain('(what is new)')
   })
 })

@@ -712,7 +712,7 @@
   <h2><span class="al">O</span>Personal data &amp; compliance<span class="cnt"></span></h2>
   <table>
     <tr><th></th><th>ID</th><th>Item &middot; scope</th><th>Tested by</th></tr>
-    <tr data-id="O1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">O1</td><td><b>Personal-data discovery: scan and review</b> (points 4.1, 4.2, 4.6)<ul class="subs">
+    <tr data-id="O1" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">O1</td><td><b>Personal-data discovery: scan, review, keeping it current</b> (points 4.1, 4.2, 4.6, 4.7)<ul class="subs">
       <li class="ok">Recognisers for Aadhaar (Verhoeff), PAN (holder type), GSTIN (check character), mobile, card (Luhn), email, UPI, IFSC, passport, voter ID, vehicle registration, date of birth, IP address; a date of birth under 18 is a child&rsquo;s data</li>
       <li class="ok">By name and by value, with a confidence: a checked value alone, a format with most of the sample or the name, a weak shape only with the name; chance checksum passes are not findings</li>
       <li class="ok">Up to 1,000 rows a table (TABLESAMPLE on large ones), read-only, 30 s per table, as the superuser so row-level security hides nothing from it</li>
@@ -721,8 +721,10 @@
       <li class="ok">JSON documents walked path by path, each path classified like a column; arrays as <code>[*]</code>, numbers kept as digits; bounded at 256 KB a document, 32 levels and 500 paths a column, each bound reported when reached</li>
       <li class="ok">Review: confirm, reject or reopen each finding with a note; the latest on the finding, every decision in an append-only record; kept across scans, carried by branches; in the security log</li>
       <li class="ok">Masked samples to decide by, read as the reviewer&rsquo;s own role (row-level security and grants apply), masked in the engine, never stored; JSON paths followed by Postgres</li>
-      <li class="ok"><code>fox pii scan|findings|show|samples|mark</code>, five API routes, and the console&rsquo;s Personal data page with its review queue</li>
-      <li class="lim">A sample, not every row; unclassified columns and paths (4.7) and free text (4.3) are later steps; marks do not yet create pgAudit grants (F6)</li></ul></td><td class="tb">enterprise/pii unit; VM &sect;11r; personaldata.spec.ts</td></tr>
+      <li class="ok">Keeping it current: an inventory of columns and JSON paths; the first scan is the baseline, and what appears after it is unclassified until its findings are decided or it is accepted; kept append-only, in the security log</li>
+      <li class="ok">A quick scan of what is new (<code>--new</code>): only tables with an unseen column, plus JSON columns, and says what it left; &ldquo;not seen&rdquo; judged against the latest full scan</li>
+      <li class="ok"><code>fox pii scan|findings|show|samples|mark|unclassified|accept</code>, seven API routes, and the console&rsquo;s Personal data page with its review queue and Unclassified tab</li>
+      <li class="lim">A sample, not every row; free text (4.3) is a later step; marks do not yet create pgAudit grants (F6)</li></ul></td><td class="tb">enterprise/pii unit; VM &sect;11r; personaldata.spec.ts</td></tr>
   </table>
   <div class="foot">FOX_Checklist &middot; area O</div>
 </section>
