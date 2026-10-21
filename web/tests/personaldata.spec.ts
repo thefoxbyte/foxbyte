@@ -36,6 +36,12 @@ test('a scan from the page finds personal data, keeps where, and shows no value'
   await expect(row('email')).toContainText('Email')
   await expect(row('card_no')).toContainText('Card number')
   await expect(found.getByText('public.pii_people.status', { exact: true })).toHaveCount(0)
+  // Inside a JSON column, by path (4.2): the phone number, and not the theme.
+  const phone = found.locator('tr', { has: page.getByText('$.contact.phone', { exact: true }) })
+  await expect(phone).toContainText('public.pii_people.profile')
+  await expect(phone).toContainText('Mobile number')
+  await expect(phone).toContainText('2/2')
+  await expect(found.getByText('$.theme', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('heading', { name: 'What this cannot claim' })).toBeVisible()
   await expect(page.getByTestId('pii-summary')).toContainText('up to 1000 rows each')
 
@@ -46,7 +52,7 @@ test('a scan from the page finds personal data, keeps where, and shows no value'
 
   // Where, never what: no sampled value reaches the screen.
   const text = await page.locator('main').innerText()
-  for (const v of ['234567890124', '456789012341', 'a@example.com', '4111111111111111']) {
+  for (const v of ['234567890124', '456789012341', 'a@example.com', '4111111111111111', '9876543210']) {
     expect(text).not.toContain(v)
   }
 })

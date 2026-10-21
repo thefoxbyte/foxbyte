@@ -127,7 +127,7 @@ export default function PersonalData() {
                   {findings.map(f => (
                     <tr key={f.id}>
                       <td>
-                        <code>{f.schema}.{f.table}.{f.column}</code>{f.path && <code> {f.path}</code>}
+                        <code>{f.schema}.{f.table}.{f.column}</code>{f.path && <>{' '}<code>{f.path}</code></>}
                         <div className="muted" style={{ fontSize: 12 }}>{f.why}</div>
                       </td>
                       <td>{CATEGORY[f.category] ?? f.category}</td>

@@ -92,8 +92,8 @@ rtsql "ANALYZE public.rt_keyless"
 # synthetic: 234567890124 and 456789012341 pass Verhoeff, 4111111111111111 is
 # the usual Luhn test card.
 rtsql "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.pii_people"
-rtsql "CREATE TABLE public.pii_people (id int PRIMARY KEY, aadhaar_no text, email text, card_no text, status text)"
-rtsql "INSERT INTO public.pii_people VALUES (1, '234567890124', 'a@example.com', '4111111111111111', 'open'), (2, '456789012341', 'b@example.org', NULL, 'closed')"
+rtsql "CREATE TABLE public.pii_people (id int PRIMARY KEY, aadhaar_no text, email text, card_no text, status text, profile jsonb)"
+rtsql "INSERT INTO public.pii_people VALUES (1, '234567890124', 'a@example.com', '4111111111111111', 'open', '{\"contact\": {\"phone\": \"9876543210\"}, \"theme\": \"dark\"}'), (2, '456789012341', 'b@example.org', NULL, 'closed', '{\"contact\": {\"phone\": \"+91 98765 43211\"}}')"
 
 # The console has to be there: a binary built without `-tags embedui` serves
 # the API but no UI, and every test below would fail on a blank page.

@@ -7,11 +7,13 @@ package pii
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/thefoxbyte/foxbyte/enterprise/schema"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
@@ -68,12 +70,14 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 	}
 
 	type found struct {
-		t   table
-		col string
-		sig Signal
+		t    table
+		col  string
+		path string // inside a JSON column; "" for the column
+		sig  Signal
 	}
 	var all []found
-	sawJSON, sawSampled := false, false
+	var js jsonStats
+	sawSampled := false
 	for _, t := range tables {
 		if t.kind == "f" {
 			s.Skipped = append(s.Skipped, branch.PIISkip{Object: t.label(), Reason: "a foreign table: its data is held somewhere else"})
@@ -82,12 +86,14 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 		var read []column
 		for _, c := range t.cols {
 			switch {
-			case c.typname == "json" || c.typname == "jsonb":
-				sawJSON = true
-				// Its name still says something; its documents are step 4.2.
+			case isJSON(c):
+				// Its documents are walked path by path below; its own name
+				// still says something (a jsonb called aadhaar).
+				js.columns++
 				for _, sig := range Classify(c.name, "-", nil) {
-					all = append(all, found{t, c.name, sig})
+					all = append(all, found{t, c.name, "", sig})
 				}
+				read = append(read, c)
 			case strings.ContainsAny(c.typcat, "SNDI") && c.typcat != "":
 				read = append(read, c)
 			default:
@@ -95,7 +101,7 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 				// identifier, but a column called aadhaar holding ciphertext
 				// is still a finding worth a reviewer's time.
 				for _, sig := range Classify(c.name, "-", nil) {
-					all = append(all, found{t, c.name, sig})
+					all = append(all, found{t, c.name, "", sig})
 				}
 			}
 		}
@@ -113,14 +119,38 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 		s.Tables++
 		s.Columns += len(read)
 		for i, c := range read {
-			for _, sig := range Classify(c.name, c.typcat, samples[i]) {
-				all = append(all, found{t, c.name, sig})
+			if isJSON(c) {
+				// A document over the size limit comes back as a marker,
+				// not as itself (sample).
+				docs := samples[i][:0]
+				for _, d := range samples[i] {
+					if d == tooLarge {
+						js.large++
+						continue
+					}
+					docs = append(docs, d)
+				}
+				paths, truncated, bad := walkJSON(docs, c.name)
+				js.paths += len(paths)
+				js.bad += bad
+				if truncated {
+					js.truncated = append(js.truncated, t.label()+"."+c.name)
+				}
+				for _, p := range paths {
+					for _, sig := range Classify(p.name, "S", p.values) {
+						all = append(all, found{t, c.name, p.path, sig})
+					}
+				}
+			} else {
+				for _, sig := range Classify(c.name, c.typcat, samples[i]) {
+					all = append(all, found{t, c.name, "", sig})
+				}
 			}
 			samples[i] = nil // done with the values; nothing below needs them
 		}
 	}
 
-	s.Limits = limits(o.Sample, sawSampled, sawJSON)
+	s.Limits = limits(o.Sample, sawSampled, js)
 	s.Finished = time.Now().UTC()
 
 	// One transaction, so a scan's findings and its record appear together or
@@ -144,13 +174,13 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 		if _, err := tx.Exec(ctx, `INSERT INTO bb.pii_findings
 				(schema_name, table_name, column_name, json_path, category, rule, confidence, why,
 				 matched, sampled, first_scan, last_scan)
-				VALUES ($1, $2, $3, '', $4, $5, $6, $7, $8, $9, $10, $10)
+				VALUES ($1, $2, $3, $11, $4, $5, $6, $7, $8, $9, $10, $10)
 				ON CONFLICT (schema_name, table_name, column_name, json_path, category) DO UPDATE SET
 				  rule = EXCLUDED.rule, confidence = EXCLUDED.confidence, why = EXCLUDED.why,
 				  matched = EXCLUDED.matched, sampled = EXCLUDED.sampled,
 				  last_scan = EXCLUDED.last_scan, last_seen = now()`,
 			f.t.schema, f.t.name, f.col, string(f.sig.Category), f.sig.Rule, string(f.sig.Confidence), f.sig.Why,
-			f.sig.Matched, f.sig.Sampled, s.ID); err != nil {
+			f.sig.Matched, f.sig.Sampled, s.ID, f.path); err != nil {
 			return s, fmt.Errorf("recording a finding: %w", err)
 		}
 	}
@@ -206,7 +236,14 @@ func catalog(ctx context.Context, conn *pgx.Conn) ([]table, error) {
 func sample(ctx context.Context, conn *pgx.Conn, t table, cols []column, n int) ([][]string, bool, error) {
 	sel := make([]string, len(cols))
 	for i, c := range cols {
-		sel[i] = branch.QuoteIdent(c.name) + "::text"
+		q := branch.QuoteIdent(c.name)
+		sel[i] = q + "::text"
+		if isJSON(c) {
+			// Not a large document as itself: it would have to cross the
+			// connection, be parsed, and be held, to be walked once.
+			sel[i] = fmt.Sprintf("CASE WHEN pg_column_size(%s) > %d THEN %s ELSE %s::text END",
+				q, maxDocument, branch.QuoteLiteral(tooLarge), q)
+		}
 	}
 	from, sampled := t.ref(), false
 	if (t.kind == "r" || t.kind == "m") && t.rows > int64(5*n) {
@@ -255,13 +292,18 @@ func readFailure(err error) string {
 	case strings.Contains(msg, "permission denied"):
 		return "permission denied"
 	default:
+		// The SQLSTATE, which names the kind of failure and never a value.
+		var pe *pgconn.PgError
+		if errors.As(err, &pe) {
+			return "it could not be read (SQLSTATE " + pe.Code + ")"
+		}
 		return "it could not be read"
 	}
 }
 
 // limits are what a scan's result cannot claim. Every result carries them,
 // found or not.
-func limits(n int, sampled, sawJSON bool) []string {
+func limits(n int, sampled bool, js jsonStats) []string {
 	l := []string{
 		fmt.Sprintf("Up to %d rows of each table were read. A value in a row that was not read is not seen, so finding nothing does not show a table holds nothing.", n),
 		"A check digit shows a value is well-formed, not that it was issued, or whose it is.",
@@ -271,8 +313,34 @@ func limits(n int, sampled, sawJSON bool) []string {
 	if sampled {
 		l = append(l, "Large tables were sampled by block (TABLESAMPLE SYSTEM), not row by row.")
 	}
-	if sawJSON {
-		l = append(l, "JSON columns were judged by their names only: their documents are read path by path in a later step (4.2).")
+	if js.columns > 0 {
+		l = append(l, fmt.Sprintf("JSON documents were read path by path (%d path(s) in %d column(s)); an array's elements share one path, written [*], and nothing deeper than %d levels is read.",
+			js.paths, js.columns, maxDepth))
+	}
+	if js.large > 0 {
+		l = append(l, fmt.Sprintf("%d JSON document(s) larger than %d KB were not read.", js.large, maxDocument/1024))
+	}
+	if js.bad > 0 {
+		l = append(l, fmt.Sprintf("%d value(s) in JSON columns could not be parsed and were not read.", js.bad))
+	}
+	if len(js.truncated) > 0 {
+		l = append(l, fmt.Sprintf("Only the first %d paths of each column were classified, and %s had more.", maxPaths, strings.Join(js.truncated, ", ")))
 	}
 	return l
 }
+
+// jsonStats is what the walk of a scan's JSON columns could not cover.
+type jsonStats struct {
+	columns, paths, large, bad int
+	truncated                  []string
+}
+
+// maxDocument is the largest JSON document read, in bytes as stored.
+const maxDocument = 256 * 1024
+
+// tooLarge marks a document over maxDocument in a sample. Not valid JSON (no
+// JSON text starts with #), so it can never be mistaken for a document. Plain
+// characters: Postgres text cannot hold a NUL, which is what the first try was.
+const tooLarge = "#fox:too-large"
+
+func isJSON(c column) bool { return c.typname == "json" || c.typname == "jsonb" }

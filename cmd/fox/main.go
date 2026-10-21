@@ -94,7 +94,8 @@ Stack:
                        Keep who changed each row and when (created_at, updated_at, last_modified_by)
   pii scan [--branch b] [--sample n] [--json]
                        Find personal data (Aadhaar, PAN, mobile, card, email…) by column names
-                       and sampled values; keeps where, never the values (Enterprise)
+                       and sampled values, and inside JSON path by path; keeps where, never
+                       the values (Enterprise)
   pii [findings] [--branch b] [--json]
                        What scans have found on a branch
   demo seed|drop|sql [branch]
