@@ -101,6 +101,7 @@ func Serve(addr string) error {
 	registerSavedQueries(api, store)  // /api/saved-queries* (the caller's own)
 	registerTracking(api)             // /api/branches/{name}/tracking* (points 5, 6)
 	registerPersonalData(api)         // /api/branches/{name}/personal-data* (point 4)
+	registerPersonalDataReview(api)   // /api/branches/{name}/personal-data/findings/* (point 4.6)
 	registerEditionSwitch(api, store) // /api/edition/switch (the Upgrade modal's Install button)
 	// The paid edition's routes. Compiled out of the Standard build entirely,
 	// where this call does nothing (internal/controlplane/enterprise_off.go).

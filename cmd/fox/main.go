@@ -96,8 +96,10 @@ Stack:
                        Find personal data (Aadhaar, PAN, mobile, card, email…) by column names
                        and sampled values, and inside JSON path by path; keeps where, never
                        the values (Enterprise)
-  pii [findings] [--branch b] [--json]
-                       What scans have found on a branch
+  pii [findings] [--branch b] [--state suggested|confirmed|rejected] [--json]
+                       What scans have found on a branch; --state suggested is the review queue
+  pii show <id> | samples <id> [--n 5] | mark <id> confirm|reject|reopen [--note "…"]
+                       One finding and its decisions; masked samples to decide by; decide (Enterprise)
   demo seed|drop|sql [branch]
                        The sample tables (users, projects, events). A first start
                        seeds main; FOX_NO_DEMO=1 starts empty

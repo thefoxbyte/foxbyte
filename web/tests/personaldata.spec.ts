@@ -55,4 +55,28 @@ test('a scan from the page finds personal data, keeps where, and shows no value'
   for (const v of ['234567890124', '456789012341', 'a@example.com', '4111111111111111', '9876543210']) {
     expect(text).not.toContain(v)
   }
+
+  // Review (4.6): masked samples, read as this person's own role, then a
+  // decision with a note, which takes the finding out of the queue.
+  await page.getByRole('button', { name: 'Review public.pii_people.aadhaar_no (Aadhaar)' }).click()
+  const dlg = page.getByRole('dialog', { name: 'Review public.pii_people.aadhaar_no' })
+  const samples = dlg.getByRole('list', { name: 'Masked samples' })
+  await expect(samples).toContainText('XXXXXXXX0124', { timeout: 30_000 })
+  await expect(samples).toContainText('XXXXXXXX2341')
+  await expect(dlg).toContainText(`Read as ${email}`)
+  expect(await dlg.innerText()).not.toContain('234567890124')
+  await dlg.getByLabel('Note (optional)').fill('the KYC column')
+  await dlg.getByRole('button', { name: 'Confirm' }).click()
+  await expect(dlg.getByRole('list', { name: 'Decisions' })).toContainText(`confirmed by ${email}`)
+  await expect(dlg.getByRole('list', { name: 'Decisions' })).toContainText('the KYC column')
+  await dlg.getByRole('button', { name: 'Close' }).click()
+  await expect(found.getByText('public.pii_people.aadhaar_no', { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: /^Confirmed \(\d+\)$/ }).click()
+  await expect(row('aadhaar_no')).toContainText(`by ${email}`)
+
+  // Kept in the branch: still confirmed on the next visit.
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByRole('button', { name: /^Confirmed \(\d+\)$/ }).click()
+  await expect(row('aadhaar_no')).toContainText('confirmed', { timeout: 30_000 })
 })

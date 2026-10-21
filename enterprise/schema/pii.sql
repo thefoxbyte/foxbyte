@@ -54,8 +54,38 @@ CREATE TABLE IF NOT EXISTS bb.pii_findings (
   UNIQUE (schema_name, table_name, column_name, json_path, category)
 );
 
-REVOKE ALL ON bb.pii_scans, bb.pii_findings FROM PUBLIC;
-REVOKE ALL ON SEQUENCE bb.pii_scans_id_seq, bb.pii_findings_id_seq FROM PUBLIC;
+-- Review (point 4.6): a reviewer confirms or rejects each finding. The
+-- finding carries the latest decision; bb.pii_decisions keeps every one,
+-- append-only, so "who said this column holds Aadhaar, and when" always has
+-- an answer. Added columns, so a branch scanned before review existed gains
+-- them on its next start and keeps its findings.
+ALTER TABLE bb.pii_findings ADD COLUMN IF NOT EXISTS decided_by text NOT NULL DEFAULT '';
+ALTER TABLE bb.pii_findings ADD COLUMN IF NOT EXISTS decided_at timestamptz;
+ALTER TABLE bb.pii_findings ADD COLUMN IF NOT EXISTS note text NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS bb.pii_decisions (
+  id         bigserial   PRIMARY KEY,
+  finding_id bigint      NOT NULL REFERENCES bb.pii_findings (id),
+  state      text        NOT NULL CHECK (state IN ('suggested', 'confirmed', 'rejected')),
+  actor      text        NOT NULL,
+  note       text        NOT NULL DEFAULT '',
+  decided_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS pii_decisions_finding ON bb.pii_decisions (finding_id, id);
+
+CREATE OR REPLACE FUNCTION bb.pii_decisions_append_only() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'bb.pii_decisions is append-only: a decision is changed by recording another';
+END;
+$$;
+CREATE OR REPLACE TRIGGER pii_decisions_append_only BEFORE UPDATE OR DELETE ON bb.pii_decisions
+  FOR EACH ROW EXECUTE FUNCTION bb.pii_decisions_append_only();
+CREATE OR REPLACE TRIGGER pii_decisions_no_truncate BEFORE TRUNCATE ON bb.pii_decisions
+  FOR EACH STATEMENT EXECUTE FUNCTION bb.pii_decisions_append_only();
+
+REVOKE ALL ON bb.pii_scans, bb.pii_findings, bb.pii_decisions FROM PUBLIC;
+REVOKE ALL ON SEQUENCE bb.pii_scans_id_seq, bb.pii_findings_id_seq, bb.pii_decisions_id_seq FROM PUBLIC;
 
 SET client_min_messages = DEFAULT;
 SET session_replication_role = DEFAULT;

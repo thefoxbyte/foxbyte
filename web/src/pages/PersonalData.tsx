@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from 'react'
 import { getPersonalData, scanPersonalData, type Branch, type PersonalData as Report, type PIIFinding } from '../api'
+import { PIIReview } from '../components/PIIReview'
 import { useFeatures, why } from '../features'
 import { useBranches } from '../useBranches'
 
@@ -8,8 +9,12 @@ import { useBranches } from '../useBranches'
 // found from column names and sampled values. The engine keeps where it found
 // it, never a value, so nothing on this page can show one.
 //
-// Reading the findings is free; scanning is Enterprise. The page stays and says
-// which half is which rather than disappearing.
+// Reading the findings is free; scanning and review are Enterprise. The page
+// stays and says which half is which rather than disappearing.
+//
+// Review (point 4.6): every finding starts suggested, and the default view is
+// the ones still to review. A reviewer opens one, sees masked samples read as
+// their own role, and confirms or rejects it.
 
 export const CATEGORY: Record<string, string> = {
   aadhaar: 'Aadhaar',
@@ -36,6 +41,14 @@ const FOUND_BY: Record<PIIFinding['rule'], string> = {
 
 const when = (iso: string) => new Date(iso).toLocaleString()
 
+type View = 'suggested' | 'confirmed' | 'rejected' | 'all'
+const VIEWS: { v: View; label: string }[] = [
+  { v: 'suggested', label: 'To review' },
+  { v: 'confirmed', label: 'Confirmed' },
+  { v: 'rejected', label: 'Rejected' },
+  { v: 'all', label: 'All' },
+]
+
 export default function PersonalData() {
   const [branch, setBranch] = useState('main')
   const [report, setReport] = useState<Report | null>(null)
@@ -43,6 +56,8 @@ export default function PersonalData() {
   const [scanning, setScanning] = useState(false)
   const [sample, setSample] = useState('1000')
   const [err, setErr] = useState('')
+  const [view, setView] = useState<View>('suggested')
+  const [reviewing, setReviewing] = useState<PIIFinding | null>(null)
   const { branches } = useBranches()
   const { can, edition } = useFeatures()
   const licensed = can('personal-data')
@@ -66,7 +81,12 @@ export default function PersonalData() {
 
   const options = branches.length ? branches : ([{ name: 'main' }] as Branch[])
   const s = report?.scan ?? null
-  const findings = report?.findings ?? []
+  const all = report?.findings ?? []
+  const findings = view === 'all' ? all : all.filter(f => f.state === view)
+  const count = (v: View) => (v === 'all' ? all.length : all.filter(f => f.state === v).length)
+  // A decision changes one row; the list is not read again for it.
+  const decided = (f: PIIFinding) =>
+    setReport(r => (r ? { ...r, findings: (r.findings ?? []).map(x => (x.id === f.id ? f : x)) } : r))
 
   return (
     <div className="fade-up">
@@ -113,15 +133,31 @@ export default function PersonalData() {
             up to {s.sample} rows each{(s.skipped?.length ?? 0) > 0 ? `; ${s.skipped!.length} not read` : ''}.
           </p>
 
-          {findings.length === 0 ? (
+          {all.length > 0 && (
+            <div className="seg" role="group" aria-label="Show findings" style={{ marginBottom: 10 }}>
+              {VIEWS.map(x => (
+                <button key={x.v} aria-pressed={view === x.v} className={view === x.v ? 'active' : ''} onClick={() => setView(x.v)}>
+                  {x.label} ({count(x.v)})
+                </button>
+              ))}
+            </div>
+          )}
+
+          {all.length === 0 ? (
             <div className="panel" style={{ padding: 22, textAlign: 'center' }}>
               <p className="muted" style={{ margin: 0 }}>Nothing recognised as personal data. The limits below still apply.</p>
+            </div>
+          ) : findings.length === 0 ? (
+            <div className="panel" style={{ padding: 22, textAlign: 'center' }}>
+              <p className="muted" style={{ margin: 0 }}>
+                {view === 'suggested' ? 'Nothing left to review.' : `No ${VIEWS.find(x => x.v === view)!.label.toLowerCase()} findings.`}
+              </p>
             </div>
           ) : (
             <div className="table-wrap">
               <table aria-label="Personal data found">
                 <thead>
-                  <tr><th>Where</th><th>What</th><th>Confidence</th><th className="num">Matched</th><th>Found by</th><th>State</th></tr>
+                  <tr><th>Where</th><th>What</th><th>Confidence</th><th className="num">Matched</th><th>Found by</th><th>State</th><th><span className="sr-only">Review</span></th></tr>
                 </thead>
                 <tbody>
                   {findings.map(f => (
@@ -136,7 +172,12 @@ export default function PersonalData() {
                       <td>{FOUND_BY[f.rule] ?? f.rule}</td>
                       <td>
                         {f.state}
+                        {f.decidedBy && f.state !== 'suggested' && <div className="muted" style={{ fontSize: 12 }}>by {f.decidedBy}</div>}
                         {f.lastScan !== s.id && <div className="muted" style={{ fontSize: 12 }}>not seen in the latest scan</div>}
+                      </td>
+                      <td>
+                        <button className="ghost sm" aria-label={`Review ${f.schema}.${f.table}.${f.column}${f.path ? ' ' + f.path : ''} (${CATEGORY[f.category] ?? f.category})`}
+                          onClick={() => setReviewing(f)}>Review</button>
                       </td>
                     </tr>
                   ))}
@@ -152,6 +193,12 @@ export default function PersonalData() {
                 {s.skipped!.map(k => <li key={k.object}><code>{k.object}</code>: {k.reason}</li>)}
               </ul>
             </div>
+          )}
+
+          {reviewing && (
+            <PIIReview branch={branch} finding={reviewing} label={CATEGORY[reviewing.category] ?? reviewing.category}
+              canDecide={licensed} onClose={() => setReviewing(null)}
+              onDecided={f => { decided(f); setReviewing(f) }} />
           )}
 
           <div className="panel" style={{ marginTop: 14 }}>

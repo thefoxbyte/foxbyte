@@ -833,6 +833,81 @@ paths:
         "403": { description: Not the branch's owner or an admin, or no licence covers personal-data discovery. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/personal-data/findings/{id}:
+    get:
+      tags: [branches]
+      summary: One finding and every decision made on it (the branch's owner or an admin).
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: The finding and its decisions, oldest first., content: { application/json: { schema: { $ref: "#/components/schemas/PersonalDataFinding" } } } }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such finding on this branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/personal-data/findings/{id}/mark:
+    post:
+      tags: [branches]
+      summary: Decide what a finding is (Enterprise; the branch's owner or an admin).
+      description: >-
+        confirmed or rejected, or suggested to reopen it. The finding keeps the
+        latest decision; every decision is kept, append-only, and is in the
+        security log. A later scan does not undo it.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state: { type: string, enum: [confirmed, rejected, suggested] }
+                note: { type: string, maxLength: 1000 }
+      responses:
+        "200": { description: Decided; the finding and its decisions., content: { application/json: { schema: { $ref: "#/components/schemas/PersonalDataFinding" } } } }
+        "400": { description: Another state, or a note over 1000 characters. }
+        "403": { description: Not the branch's owner or an admin, or no licence covers personal-data discovery. }
+        "404": { description: No such finding on this branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/personal-data/findings/{id}/samples:
+    get:
+      tags: [branches]
+      summary: Masked samples of what a finding points at, to decide by (Enterprise; the branch's owner or an admin).
+      description: >-
+        Read as the caller's own role, so grants and row-level security apply as
+        they would to any query of theirs, and masked before they leave the
+        engine: the last four letters and digits stay (XXXX XXXX 0124); an
+        email keeps its first letter and domain, a date of birth its year, an
+        IP address its network. Values that look like the finding's category
+        come first. Never stored; each view is in the security log.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: n, in: query, schema: { type: integer, minimum: 1, maximum: 20, default: 5 } }
+      responses:
+        "200":
+          description: The masked samples.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  finding: { $ref: "#/components/schemas/PersonalDataFindingRow" }
+                  samples:
+                    type: array
+                    items: { type: object, properties: { masked: { type: string }, matches: { type: boolean } } }
+                  read: { type: integer, description: "Values read to choose them from." }
+                  as: { type: string, description: "The role they were read as." }
+        "400": { description: n outside 1 to 20. }
+        "403": { description: "Not the branch's owner or an admin, no licence, or the caller's own role cannot read the location." }
+        "404": { description: No such finding, or its column has gone since the scan. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches/{name}/ledger:
     get:
       tags: [ledger]
@@ -2156,24 +2231,42 @@ components:
             limits: { type: array, items: { type: string } }
         findings:
           type: array
+          items: { $ref: "#/components/schemas/PersonalDataFindingRow" }
+    PersonalDataFindingRow:
+      type: object
+      properties:
+        id: { type: integer }
+        schema: { type: string }
+        table: { type: string }
+        column: { type: string }
+        path: { type: string, description: "A JSON path inside the column; empty for the column itself." }
+        category: { type: string }
+        rule: { type: string, enum: [name, value, name+value] }
+        confidence: { type: string, enum: [high, medium, low] }
+        why: { type: string }
+        matched: { type: integer }
+        sampled: { type: integer }
+        state: { type: string, enum: [suggested, confirmed, rejected] }
+        firstScan: { type: integer }
+        lastScan: { type: integer }
+        lastSeen: { type: string, format: date-time }
+        decidedBy: { type: string, description: "Who made the latest decision; empty if none." }
+        decidedAt: { type: string, format: date-time, nullable: true }
+        note: { type: string }
+    PersonalDataFinding:
+      type: object
+      properties:
+        finding: { $ref: "#/components/schemas/PersonalDataFindingRow" }
+        decisions:
+          type: array
           items:
             type: object
             properties:
               id: { type: integer }
-              schema: { type: string }
-              table: { type: string }
-              column: { type: string }
-              path: { type: string, description: "A JSON path inside the column; empty for the column itself." }
-              category: { type: string }
-              rule: { type: string, enum: [name, value, name+value] }
-              confidence: { type: string, enum: [high, medium, low] }
-              why: { type: string }
-              matched: { type: integer }
-              sampled: { type: integer }
               state: { type: string, enum: [suggested, confirmed, rejected] }
-              firstScan: { type: integer }
-              lastScan: { type: integer }
-              lastSeen: { type: string, format: date-time }
+              actor: { type: string }
+              note: { type: string }
+              at: { type: string, format: date-time }
     CatalogObject:
       type: object
       properties:
