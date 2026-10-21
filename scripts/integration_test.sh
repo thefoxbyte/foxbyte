@@ -1948,7 +1948,7 @@ assert_eq "…and only the branch's owner or an admin changes it" \
 assert_eq "…and says why when Postgres refuses" "$(as "$KEY" -X PUT "$TU/tables/public/trk_d" | grep -c 'is date')" "1"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS trk_a, trk_b, trk_c, trk_d, trk_n, trk_m" >/dev/null
 
-echo "### 11r. personal-data discovery: where a branch holds personal data (point 4.1)"
+echo "### 11r. personal-data discovery: where a branch holds personal data (points 4.1, 4.2)"
 # Every identifier here is synthetic: made to pass its check, never a person's.
 # 234567890124, 345678901238 and 456789012341 pass Verhoeff; 4111111111111111
 # is the usual Luhn test card; 27AAPFU0939F1ZV carries a valid GSTIN check
@@ -1959,9 +1959,17 @@ pg pg-piit "CREATE TABLE customers (id int PRIMARY KEY, full_name text, aadhaar_
     phone text, email text, dob date, gstin text, card_no text, upi text, notes text, prefs jsonb, last_ip inet);
   INSERT INTO customers VALUES
     (1, 'A Person', '2345 6789 0124', '345678901238', 'ABCPE1234F', '+91 98765 43210', 'a@example.com', '1990-05-17',
-     '27AAPFU0939F1ZV', '4111111111111111', 'person@okhdfc', 'called back', '{}', '10.0.0.1'),
+     '27AAPFU0939F1ZV', '4111111111111111', 'person@okhdfc', 'called back',
+     '{\"contact\": {\"mobile\": \"+91 98765 43210\"}, \"kyc\": {\"aadhaar\": \"234567890124\"}, \"orders\": [{\"email\": \"a@example.com\"}], \"theme\": \"dark\"}',
+     '10.0.0.1'),
     (2, 'B Person', '456789012341', '234567890124', 'AAACB1234C', '9876543211', 'b@example.org', '2015-01-01',
-     NULL, NULL, NULL, NULL, NULL, '10.0.0.2');
+     NULL, NULL, NULL, NULL,
+     '{\"contact\": {\"mobile\": \"9876543211\"}, \"kyc\": {\"aadhaar\": 456789012341}, \"orders\": [{\"email\": \"b@example.org\"}, {\"email\": \"c@example.net\"}]}',
+     '10.0.0.2');
+  -- A document past the size the scan reads (256 KB as stored): hex does not
+  -- compress much, so this is well over it.
+  CREATE TABLE big_docs (id int PRIMARY KEY, doc jsonb);
+  INSERT INTO big_docs SELECT 1, jsonb_build_object('email', 'x@example.com', 'blob', string_agg(md5(g::text), '')) FROM generate_series(1, 20000) g;
   CREATE TABLE orders (id bigint PRIMARY KEY, status text); INSERT INTO orders VALUES (1, 'open'), (2, 'closed');" >/dev/null
 LEDGER_BEFORE="$(pg pg-piit "SELECT count(*) FROM bb.schema_ledger")"
 SCANS_LOGGED="$($S audit --limit 1000 | grep -c 'personal-data.scanned')"
@@ -1970,20 +1978,25 @@ assert_eq "fox pii scan reads every table and exits 0" \
   "$SCAN_RC|$(grep -c '^Scanned piit: .* table(s), .* column(s) read, up to 1000 rows each' <<<"$SCAN")" "0|1"
 [ "$SCAN_RC" = 0 ] || { echo "--- what it said ---"; tail -8 <<<"$SCAN"; echo "--- end ---"; }
 PJ="$($S pii --branch piit --json 2>/dev/null)"
-found() { hjson "print(' '.join(sorted(f['column']+':'+f['category']+':'+f['confidence']+':'+f['rule'] for f in d['findings'] if f['table']=='$1')))" <<<"$PJ"; }
+found() { hjson "print(' '.join(sorted(f['column']+f['path']+':'+f['category']+':'+f['confidence']+':'+f['rule'] for f in d['findings'] if f['table']=='$1')))" <<<"$PJ"; }
 assert_eq "…and finds each identifier by its name and its values, with its check digit where it has one" \
   "$(found customers)" \
-  "aadhaar_no:aadhaar:high:name+value card_no:card:high:name+value dob:child:high:name+value dob:date_of_birth:high:name+value email:email:high:name+value gstin:gstin:high:name+value last_ip:ip_address:high:name+value pan:pan:high:name+value phone:mobile:high:name+value ref:aadhaar:high:value upi:upi:high:name+value"
+  "aadhaar_no:aadhaar:high:name+value card_no:card:high:name+value dob:child:high:name+value dob:date_of_birth:high:name+value email:email:high:name+value gstin:gstin:high:name+value last_ip:ip_address:high:name+value pan:pan:high:name+value phone:mobile:high:name+value prefs$.contact.mobile:mobile:high:name+value prefs$.kyc.aadhaar:aadhaar:high:name+value prefs$.orders[*].email:email:high:name+value ref:aadhaar:high:value upi:upi:high:name+value"
 assert_eq "…finds nothing in a table that holds none" "$(found orders)" ""
 assert_eq "…counts how much of the sample matched: one of two dates of birth is a child's" \
   "$(hjson "print([(f['matched'], f['sampled']) for f in d['findings'] if f['category']=='child'][0])" <<<"$PJ")" "(1, 2)"
-assert_eq "…and says what it cannot claim, JSON columns included" \
-  "$(grep -c 'not that it was issued' <<<"$SCAN")|$(grep -c 'JSON columns were judged by their names only' <<<"$SCAN")" "1|1"
+assert_eq "…walks JSON path by path, an array's elements as one path, a number kept as its digits" \
+  "$(hjson "print(sorted((f['path'], f['matched'], f['sampled']) for f in d['findings'] if f['column']=='prefs'))" <<<"$PJ")" \
+  "[('$.contact.mobile', 2, 2), ('$.kyc.aadhaar', 2, 2), ('$.orders[*].email', 3, 3)]"
+assert_eq "…does not read a document past its size limit, and says so" \
+  "$(found big_docs)|$(grep -c '1 JSON document(s) larger than 256 KB were not read' <<<"$SCAN")" "|1"
+assert_eq "…and says what it cannot claim, JSON included" \
+  "$(grep -c 'not that it was issued' <<<"$SCAN")|$(grep -c 'JSON documents were read path by path' <<<"$SCAN")" "1|1"
 # The point of keeping counts: the findings must not become a second copy of
 # the data they point at.
 assert_eq "no value is stored, in the findings or the scan's record" \
   "$(pg pg-piit "SELECT count(*) FROM (SELECT f::text t FROM bb.pii_findings f UNION ALL SELECT s::text FROM bb.pii_scans s) x
-     WHERE t ~ '(234567890124|2345 6789 0124|ABCPE1234F|98765 43210|a@example\.com|1990-05-17|4111111111111111|person@okhdfc|27AAPFU0939F1ZV)'")" "0"
+     WHERE t ~ '(234567890124|456789012341|2345 6789 0124|ABCPE1234F|98765 43210|a@example\.com|c@example\.net|1990-05-17|4111111111111111|person@okhdfc|27AAPFU0939F1ZV)'")" "0"
 assert_eq "…and a client role cannot read where personal data is" \
   "$(sudo docker exec -e PGPASSWORD=foxbyte pg-piit psql -U dbadmin -d appdb -tAc "SET ROLE db_client; SELECT count(*) FROM bb.pii_findings" 2>&1 | grep -c 'permission denied')" "1"
 assert_eq "a scan reads only: the Blackbox records nothing for it" "$(pg pg-piit "SELECT count(*) FROM bb.schema_ledger")" "$LEDGER_BEFORE"
@@ -2007,7 +2020,7 @@ PU=https://localhost:8080/api/branches/piit/personal-data
 assert_eq "the API scans and lists for the branch's owner or an admin, and no one else" \
   "$(code "$KEY" -X POST "$PU/scan")|$(code "$KEY" "$PU")|$(code "$KA" "$PU")|$(code "$KA" -X POST "$PU/scan")|$(code "$KA" https://localhost:8080/api/branches/main/personal-data)|$(code "$KA" -X POST https://localhost:8080/api/branches/main/personal-data/scan)|$(code "$KEY" https://localhost:8080/api/branches/nosuchbranch/personal-data)" "200|200|404|404|403|403|404"
 assert_eq "…answering with what it found" \
-  "$(as "$KEY" "$PU" | hjson "print(sum(1 for f in d['findings'] if f['category']=='aadhaar'), d['scan']['actor'])")" "2 test@foxbyte.dev"
+  "$(as "$KEY" "$PU" | hjson "print(sum(1 for f in d['findings'] if f['category']=='aadhaar'), d['scan']['actor'])")" "3 test@foxbyte.dev"
 $S branch delete piit >/dev/null 2>&1
 
 echo "### 12. fox uninstall (B1)"
