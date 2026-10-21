@@ -1948,7 +1948,7 @@ assert_eq "…and only the branch's owner or an admin changes it" \
 assert_eq "…and says why when Postgres refuses" "$(as "$KEY" -X PUT "$TU/tables/public/trk_d" | grep -c 'is date')" "1"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS trk_a, trk_b, trk_c, trk_d, trk_n, trk_m" >/dev/null
 
-echo "### 11r. personal-data discovery: where a branch holds personal data (points 4.1, 4.2)"
+echo "### 11r. personal-data discovery: where a branch holds personal data, and review (points 4.1, 4.2, 4.6)"
 # Every identifier here is synthetic: made to pass its check, never a person's.
 # 234567890124, 345678901238 and 456789012341 pass Verhoeff; 4111111111111111
 # is the usual Luhn test card; 27AAPFU0939F1ZV carries a valid GSTIN check
@@ -2004,8 +2004,10 @@ assert_eq "…and it is in the security log, with its coverage" \
   "$($S audit --limit 1000 | grep -c 'personal-data.scanned')|$($S audit --limit 1000 | grep 'personal-data.scanned' | grep -vc 'table(s)')" "$((SCANS_LOGGED+1))|0"
 # A reviewer's decision (step 4.6) must survive the next scan; a column that
 # has gone stays listed, marked as not seen.
-pg pg-piit "UPDATE bb.pii_findings SET state = 'confirmed' WHERE column_name = 'aadhaar_no';
-  SET bb.allow_destructive = on; ALTER TABLE customers DROP COLUMN pan" >/dev/null
+fid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='$1' and f['column']=='$2' and f['path']=='$3'][0])" <<<"$PJ"; }
+AID="$(fid customers aadhaar_no '')"
+MARK="$($S pii mark "$AID" confirm --note 'the KYC column' --branch piit 2>&1)"; MARK_RC=$?
+pg pg-piit "SET bb.allow_destructive = on; ALTER TABLE customers DROP COLUMN pan" >/dev/null
 SCAN2="$($S pii scan --branch piit 2>&1)"
 assert_eq "a scan again keeps a decision already made" \
   "$(pg pg-piit "SELECT state FROM bb.pii_findings WHERE column_name = 'aadhaar_no'")" "confirmed"
@@ -2021,6 +2023,52 @@ assert_eq "the API scans and lists for the branch's owner or an admin, and no on
   "$(code "$KEY" -X POST "$PU/scan")|$(code "$KEY" "$PU")|$(code "$KA" "$PU")|$(code "$KA" -X POST "$PU/scan")|$(code "$KA" https://localhost:8080/api/branches/main/personal-data)|$(code "$KA" -X POST https://localhost:8080/api/branches/main/personal-data/scan)|$(code "$KEY" https://localhost:8080/api/branches/nosuchbranch/personal-data)" "200|200|404|404|403|403|404"
 assert_eq "…answering with what it found" \
   "$(as "$KEY" "$PU" | hjson "print(sum(1 for f in d['findings'] if f['category']=='aadhaar'), d['scan']['actor'])")" "3 test@foxbyte.dev"
+
+# Review (4.6): a person decides what each finding is, from masked samples.
+assert_eq "fox pii mark records the decision, who made it, and why" \
+  "$MARK_RC|$(grep -c ': confirmed\.$' <<<"$MARK")|$(pg pg-piit "SELECT state || '|' || (decided_by LIKE 'cli:%')::text || '|' || note FROM bb.pii_findings WHERE id = $AID")" \
+  "0|1|confirmed|true|the KYC column"
+assert_eq "…kept for good: the record of decisions cannot be changed or emptied" \
+  "$(pg pg-piit "DELETE FROM bb.pii_decisions" >/dev/null; pg pg-piit "UPDATE bb.pii_decisions SET state = 'rejected'" >/dev/null; pg pg-piit "SELECT string_agg(state, ',') FROM bb.pii_decisions WHERE finding_id = $AID")" "confirmed"
+SAMP="$($S pii samples "$AID" --branch piit 2>&1)"
+assert_eq "masked samples show the kind of value, never the value" \
+  "$(grep -c 'XXXX XXXX 0124 *looks like one' <<<"$SAMP")|$(grep -c 'XXXXXXXX2341' <<<"$SAMP")|$(grep -cE '234567890124|2345 6789 0124|456789012341' <<<"$SAMP")" "1|1|0"
+PID="$(fid customers prefs '$.kyc.aadhaar')"
+assert_eq "…inside a JSON document too, following the finding's path" \
+  "$($S pii samples "$PID" --branch piit 2>&1 | grep -cE 'XXXXXXXX0124|XXXXXXXX2341')" "2"
+assert_eq "…and both are in the security log" \
+  "$($S audit --limit 50 | grep -c 'personal-data.marked' | awk '{print ($1>=1)}')|$($S audit --limit 50 | grep -c 'personal-data.sampled' | awk '{print ($1>=2)}')" "1|1"
+$S branch delete piit2 >/dev/null 2>&1
+$S branch create piit2 --from piit >/dev/null 2>&1
+assert_eq "a decision travels with the branch: one made from it carries it" \
+  "$(pg pg-piit2 "SELECT state FROM bb.pii_findings WHERE id = $AID")" "confirmed"
+$S branch delete piit2 >/dev/null 2>&1
+# Samples are read as the reviewer's own role: what row-level security hides
+# from them, or a grant withholds, they are not shown. The scan, as the
+# superuser, still finds both.
+pg pg-piit "CREATE TABLE hidden_people (id int PRIMARY KEY, aadhaar_no text);
+  INSERT INTO hidden_people VALUES (1, '234567890124'), (2, '456789012341');
+  GRANT SELECT ON hidden_people TO db_client; ALTER TABLE hidden_people ENABLE ROW LEVEL SECURITY;
+  CREATE TABLE closed_people (id int PRIMARY KEY, aadhaar_no text); INSERT INTO closed_people VALUES (1, '234567890124');
+  REVOKE ALL ON closed_people FROM db_client" >/dev/null
+$S pii scan --branch piit >/dev/null 2>&1
+PJ="$($S pii --branch piit --json 2>/dev/null)"
+HID="$(fid hidden_people aadhaar_no '')"; CID="$(fid closed_people aadhaar_no '')"; EID="$(fid customers email '')"
+assert_eq "samples through the API are read as the reviewer: none past row-level security, though the operator sees two" \
+  "$(as "$KEY" "$PU/findings/$HID/samples" | hjson "print(d['read'], len(d['samples']), d['as'])")|$($S pii samples "$HID" --branch piit --json | hjson "print(d['read'])")" \
+  "0 0 test@foxbyte.dev|2"
+assert_eq "…and a location their grants withhold is refused, saying so" \
+  "$(code "$KEY" "$PU/findings/$CID/samples")|$(as "$KEY" "$PU/findings/$CID/samples" | grep -c 'your role cannot read this location')" "403|1"
+assert_eq "the API decides, and refuses a state, a finding, or a sample count it does not know" \
+  "$(code "$KEY" -H 'Content-Type: application/json' -X POST -d '{"state":"rejected","note":"test data"}' "$PU/findings/$EID/mark")|$(pg pg-piit "SELECT state || '|' || decided_by FROM bb.pii_findings WHERE id = $EID")|$(code "$KEY" -H 'Content-Type: application/json' -X POST -d '{"state":"maybe"}' "$PU/findings/$EID/mark")|$(code "$KEY" "$PU/findings/999999")|$(code "$KEY" "$PU/findings/$EID/samples?n=50")" \
+  "200|rejected|test@foxbyte.dev|400|404|400"
+assert_eq "…for the branch's owner or an admin only" \
+  "$(code "$KA" "$PU/findings/$EID")|$(code "$KA" -H 'Content-Type: application/json' -X POST -d '{"state":"confirmed"}' "$PU/findings/$EID/mark")|$(code "$KA" "$PU/findings/$EID/samples")" "404|404|404"
+$S pii mark "$AID" reopen --branch piit >/dev/null 2>&1
+assert_eq "a finding can be reopened, and its history keeps both decisions in order" \
+  "$(as "$KEY" "$PU/findings/$AID" | hjson "print(d['finding']['state'], [x['state'] for x in d['decisions']])")" "suggested ['confirmed', 'suggested']"
+assert_eq "fox pii --state suggested is the review queue" \
+  "$($S pii --branch piit --state suggested | grep -c 'customers.aadhaar_no ')|$($S pii --branch piit --state suggested | grep -c 'customers.email ')" "1|0"
 $S branch delete piit >/dev/null 2>&1
 
 echo "### 12. fox uninstall (B1)"

@@ -43,3 +43,20 @@ func TestScanSummaryKeepsNoValues(t *testing.T) {
 		t.Fatal("the security log entry names no column")
 	}
 }
+
+// The security log names where and what was decided or shown, never a value.
+func TestReviewSummariesKeepNoValues(t *testing.T) {
+	f := branch.PIIFinding{ID: 7, Schema: "public", Table: "customers", Column: "prefs", Path: "$.kyc.aadhaar",
+		Category: "aadhaar", State: "confirmed", Note: "checked with the KYC team"}
+	if got := f.MarkSummary(); got != "finding 7 (public.customers.prefs $.kyc.aadhaar, aadhaar): confirmed with a note" {
+		t.Fatalf("mark: %q", got)
+	}
+	ss := branch.PIISamples{Finding: f, Samples: []branch.PIISample{{Masked: "XXXXXXXX0124", Matches: true}}, As: "owner@example.com"}
+	got := ss.Summary()
+	if got != "finding 7 (public.customers.prefs $.kyc.aadhaar, aadhaar): 1 masked sample(s) shown, read as owner@example.com" {
+		t.Fatalf("samples: %q", got)
+	}
+	if strings.Contains(got, "0124") || strings.Contains(f.MarkSummary(), "KYC") {
+		t.Fatal("a summary carries a sample or a note")
+	}
+}

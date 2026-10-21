@@ -108,6 +108,12 @@ const (
 	// A branch scanned for personal data (point 4.1): who, and how much it
 	// covered. Never a value: the scan keeps none.
 	EvPersonalDataScanned = "personal-data.scanned"
+	// A reviewer's decision on a finding (point 4.6): confirmed, rejected or
+	// reopened, and where. A location, never a value.
+	EvPersonalDataMarked = "personal-data.marked"
+	// Masked samples of a finding shown to a reviewer: a read of personal
+	// data, masked or not, is something an auditor asks about.
+	EvPersonalDataSampled = "personal-data.sampled"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

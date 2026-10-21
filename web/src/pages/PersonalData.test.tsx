@@ -9,12 +9,15 @@ vi.mock('../api', async () => {
     ...actual,
     getPersonalData: vi.fn(),
     scanPersonalData: vi.fn(),
+    getFinding: vi.fn(),
+    markFinding: vi.fn(),
+    getSamples: vi.fn(),
     getBranches: vi.fn(async () => [{ name: 'main' }, { name: 'dev' }]),
     getStatus: vi.fn(),
   }
 })
 
-import { getPersonalData, getStatus, scanPersonalData, type PersonalData as Report, type Status } from '../api'
+import { getFinding, getPersonalData, getSamples, getStatus, markFinding, scanPersonalData, type PersonalData as Report, type Status } from '../api'
 import PersonalData from './PersonalData'
 
 const status = (features: string[], edition: 'standard' | 'enterprise' = 'enterprise') =>
@@ -51,6 +54,9 @@ describe('Personal data page', () => {
     vi.mocked(getPersonalData).mockReset()
     vi.mocked(scanPersonalData).mockReset()
     vi.mocked(getStatus).mockResolvedValue(status(['personal-data']))
+    vi.mocked(getFinding).mockReset().mockResolvedValue({ finding: scanned.findings![0], decisions: [] })
+    vi.mocked(markFinding).mockReset()
+    vi.mocked(getSamples).mockReset()
   })
   afterEach(cleanup)
 
@@ -115,5 +121,63 @@ describe('Personal data page', () => {
     vi.mocked(getPersonalData).mockRejectedValue(new Error('only the owner of "main" or an admin may do that'))
     page()
     expect(await screen.findByText(/only the owner of "main" or an admin/)).toBeTruthy()
+  })
+
+  it('shows what is still to review first, and the rest under their state', async () => {
+    const pan = scanned.findings!.find(f => f.column === 'pan')!
+    const decidedOne = { ...pan, state: 'confirmed' as const, decidedBy: 'owner@example.com' }
+    vi.mocked(getPersonalData).mockResolvedValue({ ...scanned, findings: [scanned.findings![0], decidedOne] })
+    page()
+    const table = await screen.findByRole('table', { name: 'Personal data found' })
+    expect(table.textContent).toContain('public.customers.aadhaar_no')
+    expect(table.textContent).not.toContain('public.old.pan')
+    expect(screen.getByRole('button', { name: 'To review (1)' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmed (1)' }))
+    const confirmed = screen.getByRole('table', { name: 'Personal data found' })
+    expect(confirmed.textContent).toContain('public.old.pan')
+    expect(confirmed.textContent).toContain('by owner@example.com')
+  })
+
+  it('reviews a finding from masked samples, and records the decision with its note', async () => {
+    vi.mocked(getPersonalData).mockResolvedValue(scanned)
+    vi.mocked(getSamples).mockResolvedValue({ finding: scanned.findings![0], read: 12, as: 'owner@example.com',
+      samples: [{ masked: 'XXXX XXXX 0124', matches: true }, { masked: 'X/X', matches: false }] })
+    const confirmed = { ...scanned.findings![0], state: 'confirmed' as const, decidedBy: 'owner@example.com', note: 'KYC column' }
+    vi.mocked(markFinding).mockResolvedValue({ finding: confirmed,
+      decisions: [{ id: 1, state: 'confirmed', actor: 'owner@example.com', note: 'KYC column', at: '2026-10-21T11:00:00Z' }] })
+    page()
+    fireEvent.click(await screen.findByRole('button', { name: 'Review public.customers.aadhaar_no (Aadhaar)' }))
+    const dlg = screen.getByRole('dialog', { name: 'Review public.customers.aadhaar_no' })
+    const list = await screen.findByRole('list', { name: 'Masked samples' })
+    expect(list.textContent).toContain('XXXX XXXX 0124')
+    expect(list.textContent).toContain('looks like aadhaar')
+    expect(dlg.textContent).toContain('Read as owner@example.com')
+    expect(getSamples).toHaveBeenCalledWith('main', 1)
+    fireEvent.change(screen.getByLabelText('Note (optional)'), { target: { value: ' KYC column ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(markFinding).toHaveBeenCalledWith('main', 1, 'confirmed', 'KYC column'))
+    expect((await screen.findByRole('list', { name: 'Decisions' })).textContent).toMatch(/confirmed by owner@example.com.*KYC column/)
+    // Decided, so it has left the queue behind the dialog.
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.getByRole('table', { name: 'Personal data found' }).textContent).not.toContain('public.customers.aadhaar_no')
+    expect(screen.getByRole('button', { name: 'Confirmed (1)' })).toBeTruthy()
+  })
+
+  it('says when the reviewer’s own role may not read the samples', async () => {
+    vi.mocked(getPersonalData).mockResolvedValue(scanned)
+    vi.mocked(getSamples).mockRejectedValue(new Error('your role cannot read this location: public.customers.aadhaar_no (permission denied)'))
+    page()
+    fireEvent.click(await screen.findByRole('button', { name: /^Review public\.customers\.aadhaar_no/ }))
+    expect(await screen.findByText(/your role cannot read this location/)).toBeTruthy()
+  })
+
+  it('without the feature, a finding can be read but not decided, and no sample is read', async () => {
+    vi.mocked(getStatus).mockResolvedValue(status([], 'standard'))
+    vi.mocked(getPersonalData).mockResolvedValue(scanned)
+    page()
+    fireEvent.click(await screen.findByRole('button', { name: /^Review public\.customers\.aadhaar_no/ }))
+    expect(await screen.findByText(/Reading samples and deciding are part of Enterprise/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Confirm' })).toBeNull()
+    expect(getSamples).not.toHaveBeenCalled()
   })
 })

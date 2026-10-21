@@ -5,6 +5,7 @@ package branch
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -124,6 +125,32 @@ func SetGuard(target string, enabled bool) { setGuard(target, enabled) }
 // cannot carry a tab or a newline inside one.
 func OpenSuper(ctx context.Context, name string) (*pgx.Conn, error) {
 	return stateConn(ctx, container(ServingBranch(name)), pgDatabase)
+}
+
+// OpenAs connects to the branch's database as account's own login role, the
+// role the console and the gateway log that person in as: a member of
+// db_client, so grants and row-level security apply to it as they would to any
+// query of theirs. "" is the operator at the machine, who gets the superuser.
+// For a paid feature that must show a person only what they could read anyway
+// (a reviewer's masked samples).
+func OpenAs(ctx context.Context, name, account string) (*pgx.Conn, error) {
+	if account == "" {
+		return OpenSuper(ctx, name)
+	}
+	target := ServingBranch(name)
+	if err := EnsureUserRole(target, account); err != nil {
+		return nil, fmt.Errorf("preparing %s's role on %s: %w", account, name, err)
+	}
+	ip, err := containerIP(container(target))
+	if err != nil {
+		return nil, fmt.Errorf("finding %s: %w", name, err)
+	}
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s:5432/%s", ip, pgDatabase))
+	if err != nil {
+		return nil, err
+	}
+	cfg.User, cfg.Password = account, UserRolePassword(account)
+	return pgx.ConnectConfig(ctx, cfg)
 }
 
 // QuoteIdent renders a name as a Postgres identifier, preserving its case.

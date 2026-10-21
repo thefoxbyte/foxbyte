@@ -482,12 +482,27 @@ export type PIIFinding = {
   firstScan: number
   lastScan: number
   lastSeen: string
+  decidedBy?: string
+  decidedAt?: string | null
+  note?: string
 }
 export type PersonalData = { branch: string; scan: PIIScan | null; findings: PIIFinding[] | null }
 export const getPersonalData = (branch: string) =>
   req('GET', `${API}/api/branches/${branch}/personal-data`) as Promise<PersonalData>
 export const scanPersonalData = (branch: string, sample?: number) =>
   req('POST', `${API}/api/branches/${branch}/personal-data/scan`, sample ? { sample } : {}) as Promise<PersonalData>
+
+// Review (point 4.6): a reviewer decides what each finding is, from masked
+// samples read as their own role.
+export type PIIDecision = { id: number; state: PIIFinding['state']; actor: string; note: string; at: string }
+export type PIIFindingDetail = { finding: PIIFinding; decisions: PIIDecision[] | null }
+export type PIISamples = { finding: PIIFinding; samples: { masked: string; matches: boolean }[] | null; read: number; as: string }
+const findingURL = (branch: string, id: number) => `${API}/api/branches/${branch}/personal-data/findings/${id}`
+export const getFinding = (branch: string, id: number) => req('GET', findingURL(branch, id)) as Promise<PIIFindingDetail>
+export const markFinding = (branch: string, id: number, state: PIIFinding['state'], note: string) =>
+  req('POST', `${findingURL(branch, id)}/mark`, { state, note }) as Promise<PIIFindingDetail>
+export const getSamples = (branch: string, id: number, n = 5) =>
+  req('GET', `${findingURL(branch, id)}/samples?n=${n}`) as Promise<PIISamples>
 
 // The data grid's save (point 12.2): rows added, changed and deleted, applied
 // together as you, or not at all.
