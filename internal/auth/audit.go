@@ -117,6 +117,9 @@ const (
 	// A new column or JSON path accepted as holding nothing to classify
 	// (point 4.7): who, and where.
 	EvPersonalDataAccepted = "personal-data.accepted"
+	// The access review report produced (point 4.8): who asked, and what it
+	// covered. A report of who can reach what is itself worth knowing about.
+	EvAccessReviewed = "access.reviewed"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

@@ -1920,6 +1920,35 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: Not an admin. }
 
+  /api/access-review:
+    get:
+      tags: [account]
+      summary: The access review report (Enterprise; admins only).
+      description: >-
+        Every account, what it can reach (main, the branches it owns, or every
+        branch as an install admin), where it may override the guardrails, its
+        keys with their kind, reach, age and last use, and when it was last
+        active (the newest of a console sign-in, a key's use and a query kept in
+        history). An account older than the window with no activity in it is
+        dormant; a key never used and older than it, or last used before it, is
+        stale. Every branch with its owner and who may override its guardrails
+        (read from running branches only). The report states what it cannot
+        claim, and producing one is in the security log. As JSON, or one of its
+        tables as CSV (values that would be a spreadsheet formula are quoted).
+      parameters:
+        - { name: dormant, in: query, schema: { type: integer, minimum: 1, maximum: 3650, default: 90 }, description: "Days without activity that make an account dormant and a key stale." }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv], default: json } }
+        - { name: section, in: query, schema: { type: string, enum: [accounts, keys, branches], default: accounts }, description: "The table, for CSV." }
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/AccessReview" } }
+            text/csv: { schema: { type: string } }
+        "400": { description: "dormant outside 1 to 3650, or an unknown format or section." }
+        "403": { description: Not an admin, or no licence covers the access review report. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/users:
     get:
       tags: [accounts]
@@ -2301,6 +2330,69 @@ components:
         decidedBy: { type: string, description: "Who made the latest decision; empty if none." }
         decidedAt: { type: string, format: date-time, nullable: true }
         note: { type: string }
+    AccessReview:
+      type: object
+      properties:
+        generated: { type: string, format: date-time }
+        dormantDays: { type: integer }
+        summary:
+          type: object
+          properties:
+            accounts: { type: integer }
+            admins: { type: integer }
+            dormant: { type: integer }
+            keys: { type: integer }
+            agentKeys: { type: integer }
+            staleKeys: { type: integer }
+            branches: { type: integer }
+            unowned: { type: integer }
+        accounts:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              email: { type: string }
+              created: { type: string, format: date-time }
+              admin: { type: boolean }
+              reaches: { type: string }
+              owns: { type: array, items: { type: string } }
+              overrideOn: { type: array, items: { type: string } }
+              keys: { type: integer }
+              unmasked: { type: string }
+              lastSignIn: { type: string, format: date-time, nullable: true }
+              lastKeyUse: { type: string, format: date-time, nullable: true }
+              lastQuery: { type: string, format: date-time, nullable: true }
+              lastActive: { type: string, format: date-time, nullable: true }
+              dormant: { type: boolean }
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              prefix: { type: string }
+              owner: { type: string }
+              kind: { type: string, enum: [account, agent, realtime] }
+              identity: { type: string }
+              reach: { type: string }
+              created: { type: string, format: date-time }
+              lastUsed: { type: string, format: date-time, nullable: true }
+              ageDays: { type: integer }
+              stale: { type: boolean }
+              why: { type: string }
+        branches:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              state: { type: string }
+              owner: { type: string }
+              admins: { type: array, items: { type: string } }
+              asked: { type: boolean }
+        limits: { type: array, items: { type: string } }
     PersonalDataColumn:
       type: object
       properties:

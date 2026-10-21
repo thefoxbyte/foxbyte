@@ -10,6 +10,7 @@ import (
 	// Register the paid engines with internal/branch. Blank, because nothing
 	// here calls them: the free halves dispatch through the runners these set,
 	// so internal/branch never has to import enterprise/.
+	_ "github.com/thefoxbyte/foxbyte/enterprise/accessreview"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/anchor"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/impact"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pii"
