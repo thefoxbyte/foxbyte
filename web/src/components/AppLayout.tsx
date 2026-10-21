@@ -43,7 +43,10 @@ export const APP_NAV: NavSection[] = [
   },
   {
     label: 'Compliance',
-    items: [{ to: '/personal-data', label: 'Personal data', icon: I.IconPersonalData }],
+    items: [
+      { to: '/personal-data', label: 'Personal data', icon: I.IconPersonalData },
+      { to: '/access-review', label: 'Access review', icon: I.IconKey },
+    ],
   },
   {
     label: 'Account',

@@ -95,6 +95,7 @@ func Serve(addr string) error {
 	registerLedgerV2(api)              // /api/branches/{name}/ledger/{integrity,checkpoint,export,entries,{id}/branch}
 	store.MountKeys(api)               // /api/keys (protected via Authn below)
 	registerAccounts(api, store)       // /api/account*, /api/users* (admins)
+	registerAccessReview(api, store)   // /api/access-review (admins; point 4.8)
 	registerRequests(api, store)       // /api/branches/{name}/request, /api/requests*
 	registerLicense(api)               // /api/license
 	registerHistory(api, store)        // /api/history* (the caller's own query history)

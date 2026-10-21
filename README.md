@@ -709,6 +709,7 @@ features need a licence — without one it behaves exactly like Standard.
 | Blackbox export (the compliance bundle) | — | yes |
 | ETL pipelines (`fox import` is free: migrating in is onboarding, not ETL) | — | yes |
 | Scanning for personal data (`fox pii scan`); reading what earlier scans found | — / yes | yes |
+| The access review report (`fox access review`) | — | yes |
 
 ```sh
 curl -fsSL https://get.thefoxbyte.com/install.sh \

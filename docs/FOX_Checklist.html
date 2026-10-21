@@ -725,6 +725,13 @@
       <li class="ok">A quick scan of what is new (<code>--new</code>): only tables with an unseen column, plus JSON columns, and says what it left; &ldquo;not seen&rdquo; judged against the latest full scan</li>
       <li class="ok"><code>fox pii scan|findings|show|samples|mark|unclassified|accept</code>, seven API routes, and the console&rsquo;s Personal data page with its review queue and Unclassified tab</li>
       <li class="lim">A sample, not every row; free text (4.3) is a later step; marks do not yet create pgAudit grants (F6)</li></ul></td><td class="tb">enterprise/pii unit; VM &sect;11r; personaldata.spec.ts</td></tr>
+    <tr data-id="O2" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">O2</td><td><b>Access review report</b> (point 4.8)<ul class="subs">
+      <li class="ok">Accounts: install admin or not, what each reaches, owned branches, guardrail overrides, keys, last active (sign-in, key use, query), dormant after a window</li>
+      <li class="ok">Keys: kind (account, agent, realtime) and what that means, reach, age, last use, stale and why; never a secret</li>
+      <li class="ok">Branches: owner, and who may override their guardrails (running branches; a suspended one not woken, and said so)</li>
+      <li class="ok"><code>fox access review [--dormant] [--json] [--csv accounts|keys|branches]</code>, <code>GET /api/access-review</code> (admins only), and the console&rsquo;s Access review page with CSV downloads and print for PDF</li>
+      <li class="ok">Each report in the security log; what it cannot claim stated in it</li>
+      <li class="lim">No unmask rights to review until masking (point 7); campaigns are 4.9 (Gate 2)</li></ul></td><td class="tb">enterprise/accessreview unit; VM &sect;11s; accessreview.spec.ts</td></tr>
   </table>
   <div class="foot">FOX_Checklist &middot; area O</div>
 </section>

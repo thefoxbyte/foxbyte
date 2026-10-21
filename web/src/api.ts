@@ -23,6 +23,7 @@ export type Feature =
   | 'export'
   | 'pipelines'
   | 'personal-data'
+  | 'access-review'
 
 export type Status = {
   mainReady: boolean
@@ -769,3 +770,49 @@ export const runPipelineStream = async (id: string, onEvent: (e: ImportEvent) =>
   const res = await fetch(`${API}/api/pipelines/${encodeURIComponent(id)}/run`, { method: 'POST', credentials: 'include' })
   return consumeSSE(res, onEvent) as Promise<PipelineRunResult>
 }
+
+// The access review report (point 4.8): admins only.
+export type ReviewAccount = {
+  id: number
+  email: string
+  created: string
+  admin: boolean
+  reaches: string
+  owns: string[] | null
+  overrideOn: string[] | null
+  keys: number
+  unmasked: string
+  lastSignIn: string | null
+  lastKeyUse: string | null
+  lastQuery: string | null
+  lastActive: string | null
+  dormant: boolean
+}
+export type ReviewKey = {
+  id: string
+  name: string
+  prefix: string
+  owner: string
+  kind: 'account' | 'agent' | 'realtime'
+  identity: string
+  reach: string
+  created: string
+  lastUsed: string | null
+  ageDays: number
+  stale: boolean
+  why?: string
+}
+export type ReviewBranch = { name: string; state: string; owner: string; admins: string[] | null; asked: boolean }
+export type AccessReview = {
+  generated: string
+  dormantDays: number
+  summary: { accounts: number; admins: number; dormant: number; keys: number; agentKeys: number; staleKeys: number; branches: number; unowned: number }
+  accounts: ReviewAccount[] | null
+  keys: ReviewKey[] | null
+  branches: ReviewBranch[] | null
+  limits: string[] | null
+}
+export const getAccessReview = (dormant: number) =>
+  req('GET', `${API}/api/access-review?dormant=${dormant}`) as Promise<AccessReview>
+export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches') =>
+  `${API}/api/access-review?dormant=${dormant}&format=csv&section=${section}`

@@ -35,6 +35,9 @@ const (
 	// PersonalData is discovering personal data: scanning, and (later) marking
 	// and keeping the marks current. Point 4 of the review plan.
 	PersonalData Feature = "personal-data"
+	// AccessReview is the access review report: who can reach what, with
+	// which credentials, and who has gone quiet. Point 4.8.
+	AccessReview Feature = "access-review"
 )
 
 // descriptions are used in refusals, so each one says what the user is missing
@@ -48,6 +51,7 @@ var descriptions = map[Feature]string{
 	Export:       "Blackbox export and compliance bundles",
 	Pipelines:    "ETL pipelines",
 	PersonalData: "personal-data discovery",
+	AccessReview: "the access review report",
 }
 
 // Describe names a feature in a sentence. An unknown feature describes itself,

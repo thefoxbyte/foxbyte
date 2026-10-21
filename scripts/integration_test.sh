@@ -2115,6 +2115,62 @@ assert_eq "a scan takes an inventory number only for what is new, so the numbers
   "$(pg pg-piit "SELECT max(id) - count(*) FROM bb.pii_columns")" "0"
 $S branch delete piit >/dev/null 2>&1
 
+echo "### 11s. the access review report (point 4.8)"
+# Who can reach what, with which keys, who may override the guardrails where,
+# and who has gone quiet. An account and a key are backdated in the account
+# store to be found dormant and stale: nothing else here is that old.
+AUTHDB="$HOME/$BRAND_STATE_DIR/auth.db"
+printf 'password123\n' | $S user create dormant@foxbyte.dev >/dev/null 2>&1
+$S apikey create dormant@foxbyte.dev old-key >/dev/null 2>&1
+$S apikey create alice@foxbyte.dev '=1+1' >/dev/null 2>&1
+python3 - "$AUTHDB" <<'PY'
+import sqlite3, sys, time
+db = sqlite3.connect(sys.argv[1], timeout=10)
+day = 86400
+now = int(time.time())
+db.execute("UPDATE users SET created = ? WHERE email = 'dormant@foxbyte.dev'", (now - 200 * day,))
+db.execute("""UPDATE api_keys SET created = ?, last_used = NULL
+              WHERE name = 'old-key' AND user_id = (SELECT id FROM users WHERE email = 'dormant@foxbyte.dev')""", (now - 150 * day,))
+db.commit()
+PY
+$S branch delete arq >/dev/null 2>&1
+$S branch create arq >/dev/null 2>&1
+$S branch owner arq alice@foxbyte.dev >/dev/null 2>&1
+$S admin grant alice@foxbyte.dev --branch arq >/dev/null 2>&1
+REV="$($S access review 2>&1)"; REV_RC=$?
+assert_eq "fox access review produces the report, and says what it cannot claim" \
+  "$REV_RC|$(grep -c '^ACCOUNTS$' <<<"$REV")|$(grep -c '^KEYS$' <<<"$REV")|$(grep -c '^BRANCHES$' <<<"$REV")|$(grep -c 'No masking is in place yet' <<<"$REV")" "0|1|1|1|1"
+RJ="$($S access review --json 2>/dev/null)"
+acct() { hjson "a=[x for x in d['accounts'] if x['email']=='$1'][0]; print($2)" <<<"$RJ"; }
+assert_eq "an install admin reaches every branch" "$(acct test@foxbyte.dev "a['admin'], a['reaches']")" "True every branch (an install admin)"
+assert_eq "an account reaches main and what it owns, and may override where it was granted" \
+  "$(acct alice@foxbyte.dev "a['admin'], 'arq' in a['owns'], 'arq' in a['overrideOn'], a['reaches'].startswith('main, and the')")" "False True True True"
+assert_eq "an account with no activity in the window is dormant, a recent one is not" \
+  "$(acct dormant@foxbyte.dev "a['dormant'], a['lastActive']")|$(acct test@foxbyte.dev "a['dormant']")" "True None|False"
+assert_eq "a key never used and older than the window is stale, and says why" \
+  "$(hjson "k=[x for x in d['keys'] if x['name']=='old-key'][0]; print(k['stale'], k['why'], k['kind'], k['owner'])" <<<"$RJ")" \
+  "True never used, made 150 days ago account dormant@foxbyte.dev"
+assert_eq "a branch shows its owner and who may override its guardrails" \
+  "$(hjson "b=[x for x in d['branches'] if x['name']=='arq'][0]; print(b['owner'], 'alice@foxbyte.dev' in b['admins'], b['asked'])" <<<"$RJ")" \
+  "alice@foxbyte.dev True True"
+assert_eq "no secret is in it: a key is its prefix, never the key" \
+  "$(grep -c -- "$KEY" <<<"$RJ")|$(grep -c 'key_hash' <<<"$RJ")" "0|0"
+assert_eq "its tables come as CSV, with a value that would be a formula made safe" \
+  "$($S access review --csv keys | head -1)|$($S access review --csv keys | grep -c "'=1+1" | awk '{print ($1>=1)}')|$($S access review --csv keys | grep -c ',=1+1')|$($S access review --csv branches | head -1)" \
+  "id,name,prefix,owner,kind,identity,reach,created,last_used,age_days,stale,why|1|0|branch,state,owner,admins,admins_read"
+$S branch suspend arq >/dev/null 2>&1
+assert_eq "a suspended branch is not woken to be asked, and the report says so" \
+  "$($S access review --json | hjson "b=[x for x in d['branches'] if x['name']=='arq'][0]; print(b['asked'], any('were not running' in l for l in d['limits']))")|$($S branch list 2>/dev/null | grep -w arq | grep -c running)" \
+  "False True|0"
+assert_eq "…and each report is in the security log" "$($S audit --limit 20 | grep -c 'access.reviewed' | awk '{print ($1>=3)}')" "1"
+AR=https://localhost:8080/api/access-review
+assert_eq "the API gives the report to an admin, and to no one else" \
+  "$(code "$KEY" "$AR")|$(as "$KEY" "$AR" | hjson "print(d['summary']['accounts'] >= 3, d['dormantDays'])")|$(code "$KA" "$AR")" "200|True 90|403"
+assert_eq "…as CSV too, and refuses a window or a table it does not know" \
+  "$(curl -sk -o /dev/null -w '%{content_type}' -H "Authorization: Bearer $KEY" "$AR?format=csv&section=accounts")|$(as "$KEY" "$AR?format=csv&section=branches" | head -1)|$(code "$KEY" "$AR?dormant=0")|$(code "$KEY" "$AR?format=csv&section=passwords")" \
+  "text/csv; charset=utf-8|branch,state,owner,admins,admins_read|400|400"
+$S branch delete arq >/dev/null 2>&1
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

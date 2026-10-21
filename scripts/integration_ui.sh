@@ -39,6 +39,10 @@ echo "### setup: a running stack, an account, a clean branch"
 "$S" start >/dev/null 2>&1
 for _ in $(seq 60); do curl -sk "$API/api/status" >/dev/null 2>&1 && break; sleep 1; done
 printf '%s\n' "$PASSWORD" | "$S" user create "$EMAIL" >/dev/null 2>&1
+# An install admin from the start: the access review report (point 4.8) is for
+# admins only, and no spec depends on this account not being one. The upgrade
+# test below granted it anyway; this only makes it so before the first spec.
+"$S" admin grant "$EMAIL" >/dev/null 2>&1
 # The console and Blackbox tests need a branch of their own, and a branch made
 # here belongs to no account until it is handed over (audit v2 G02).
 for b in "$BRANCH" "$NEW_BRANCH" "$TARGET_BRANCH"; do "$S" branch delete "$b" >/dev/null 2>&1; done
