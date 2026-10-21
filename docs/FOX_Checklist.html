@@ -326,7 +326,7 @@
       <li class="ok">Start creates no account and no key, and caches none on disk</li><li class="ok">The banner shows the connection string and how to make a key</li>
       <li class="ok">The first account created gets the admin grant on main</li><li class="ok">First account over HTTP needs the setup token (<code>fox setup-token</code>)</li><li class="ok">Exactly one first account, however many sign up at once</li></ul></td><td class="tb">Integration §1</td></tr>
     <tr data-id="E4" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E4</td><td><b>Browser security headers</b><ul class="subs">
-      <li class="ok">No response can be framed; none is type-sniffed</li><li class="ok">The console runs scripts from its own server only</li>
+      <li class="ok">No response can be framed; none is type-sniffed</li><li class="ok">The console runs scripts from its own server only</li><li class="ok">The console loads its fonts from its own server, no other site</li>
       <li class="ok">HSTS on TLS to a real name, never to localhost</li><li class="ok">No console page breaks the policy (UI suite)</li></ul></td><td class="tb">Unit; VM §1c; UI</td></tr>
     <tr data-id="E5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">E5</td><td><b>Cross-site requests refused</b><ul class="subs">
       <li class="ok">A change from another site's page is refused on both APIs and at sign-in</li><li class="ok">Origin: null and Sec-Fetch-Site: cross-site refused</li>
