@@ -63,6 +63,18 @@ func Supervise(ctx context.Context, branchName, slot, password string, hub *Hub,
 		default:
 			failures++
 			log.Printf("change feed %s: %v (attempt %d)", branchName, err, failures)
+			if errors.Is(err, ErrResumeAhead) {
+				// Retrying cannot help: the next attempt would drop the
+				// position (since is only used once) and silently stream from
+				// the slot instead, which is the quiet substitution this whole
+				// change exists to remove. The route refuses this before the
+				// stream opens; reaching it here means the log moved under a
+				// subscriber, and a refetch is the honest answer.
+				hub.Close(Notice{Type: "resync", Code: CodeCursorExpired,
+					Detail: "the position asked for is past this branch's log, so it cannot be " +
+						"resumed from; refetch the table and subscribe again"})
+				return
+			}
 			if isSlotLost(err) {
 				// The WAL budget did its job: Postgres dropped the slot rather
 				// than hold more. The subscriber cannot resume, and must be

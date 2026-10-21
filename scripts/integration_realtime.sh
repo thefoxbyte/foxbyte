@@ -422,6 +422,134 @@ case "$GOT" in
   *) bad "replay lost changes (got '$GOT', want 101,102,103 in order)" ;;
 esac
 
+# ── 7b. A position the feed cannot serve, and what it is told ───────────────
+#
+# Replay above is the single-subscriber case, and it was the only case: it ran
+# with nobody else listening, which is exactly the condition under which the
+# bug below does not appear. Both of these were silent.
+echo
+echo "7b. a position the feed cannot serve is said out loud"
+
+# codes_in <file> -- the type/code of every event that is not a row.
+codes_in() { python3 -c '
+import json,sys
+out=[]
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: e=json.loads(line)
+    except Exception: continue
+    if e.get("type")!="change": out.append(e.get("type","?")+"/"+str(e.get("code","")))
+print(",".join(out))' "$1" 2>/dev/null; }
+confirmed_lsn() { pg pg-main "SELECT coalesce((SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name='fox_rt_main_stream'),'none')"; }
+
+# One subscriber keeps reading while another drops and comes back. The second
+# one's position is behind what the first has already been given, and a fan-out
+# cannot replay: what it published went to whoever was attached. It used to be
+# attached to the live stream and told nothing, so it carried on with a hole in
+# its copy and no way to know.
+G=/tmp/rt-gap-a.ndjson
+LONG=/tmp/rt-gap-b.ndjson
+( stream_for 30 "$LONG" ) &   # B, the subscriber that stays
+BPID=$!
+sleep 2
+( stream_for 6 "$G" ) &       # A, which drops
+APID=$!
+sleep 2
+pg pg-main "INSERT INTO public.ok_t VALUES (110, 'seen by both', 'x')" >/dev/null
+wait "$APID" 2>/dev/null
+GMARK="$(last_lsn "$G")"
+pg pg-main "INSERT INTO public.ok_t VALUES (111, 'while A is away', 'x')" >/dev/null
+pg pg-main "INSERT INTO public.ok_t VALUES (112, 'while A is away', 'x')" >/dev/null
+sleep 2
+A2=/tmp/rt-gap-a2.ndjson
+stream_for 8 "$A2" "$GMARK"
+kill "$BPID" 2>/dev/null; wait "$BPID" 2>/dev/null
+GOT="$(ids_in "$A2")"
+GOTC="$(codes_in "$A2")"
+case "$GOT,$GOTC" in
+  *111*112*)
+    ok "a subscriber rejoining a live stream is given what it missed" ;;
+  *cursor_expired*)
+    ok "a subscriber rejoining a live stream is told to refetch, not given a hole"
+    # The position it could not serve is in the message, because "resync" with
+    # no position is not something a developer can debug.
+    assert_contains "…and the answer names that position" "$(cat "$A2")" "$GMARK" ;;
+  *)
+    bad "rejoining a live stream was answered with '$GOT' and '$GOTC' — a silent gap" ;;
+esac
+
+# A position ahead of the branch's log. One request used to set the slot's
+# confirmed position past the end of the WAL -- the decoder reports `since` as
+# flushed -- and from then on the branch's feed delivered nothing to anybody,
+# across restarts, with `fox realtime slots` still calling the slot idle.
+BEFORE_CONF="$(confirmed_lsn)"
+# --max-time on both, because the failure being tested for is a *stream*: a
+# route that answers this with 200 and an open stream would hang the suite for
+# the hour a stream is allowed to live. It did, once, while this was written.
+CODE="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" \
+  "$API/api/branches/main/realtime?since=FFFFFFFF/FFFFFFF0")"
+assert_eq "a position ahead of the branch is refused with 400" "$CODE" "400"
+BODY="$(curl -sk --max-time 10 -H "Authorization: Bearer $KEY" "$API/api/branches/main/realtime?since=FFFFFFFF/FFFFFFF0")"
+assert_contains "…and says why, naming the branch's own log" "$BODY" "ahead of"
+# Held open past the standby interval, which is what used to be enough to move
+# the slot. The position must be unchanged afterwards.
+curl -skN --max-time 13 -H "Authorization: Bearer $KEY" \
+  "$API/api/branches/main/realtime?since=FFFFFFFF/FFFFFFF0" >/dev/null 2>&1
+assert_eq "…and the slot is not moved by asking" "$(confirmed_lsn)" "$BEFORE_CONF"
+# The proof that matters: the feed still works for everybody else.
+ALIVE=/tmp/rt-alive.ndjson
+( stream_for 8 "$ALIVE" ) &
+PID=$!
+sleep 3
+pg pg-main "INSERT INTO public.ok_t VALUES (113, 'after the refusal', 'x')" >/dev/null
+wait "$PID" 2>/dev/null
+assert_contains "…and the branch's feed still delivers" "$(ids_in "$ALIVE")" "113"
+
+# A transaction larger than one subscriber's buffer cannot be streamed whole --
+# pgoutput proto 1 sends it in one piece -- and it used to end the stream with
+# `overflow` and the advice to reconnect with ?since=. Every change in it
+# carries that transaction's commit position, so that advice either replays the
+# transaction and overflows in the same place for ever, or skips the rest of it
+# without a word. It now says to refetch.
+BIG=/tmp/rt-big.ndjson
+( stream_for 40 "$BIG" ) &
+PID=$!
+sleep 3
+# 5,000 rows in one statement, which is one transaction: comfortably past the
+# 256-event buffer and quick to write.
+pg pg-main "INSERT INTO public.ok_t SELECT i, 'bulk', 'x' FROM generate_series(5000,9999) i" >/dev/null
+wait "$PID" 2>/dev/null
+BIGC="$(codes_in "$BIG")"
+assert_contains "a transaction too large for the buffer ends the stream" "$BIGC" "tx_too_large"
+assert_missing  "…and not as something to resume from" "$BIGC" "/overflow"
+assert_contains "…saying what to do instead" "$(cat "$BIG")" "refetch"
+assert_contains "…and naming the limit that can be raised" "$(cat "$BIG")" "REALTIME_BUFFER"
+# And the feed is not wedged by it: a subscriber that refetches and comes back
+# without a position is served.
+AFTER=/tmp/rt-after-big.ndjson
+( stream_for 10 "$AFTER" ) &
+PID=$!
+sleep 3
+pg pg-main "INSERT INTO public.ok_t VALUES (114, 'after the big one', 'x')" >/dev/null
+wait "$PID" 2>/dev/null
+assert_contains "…and the feed carries on for a subscriber that refetched" "$(ids_in "$AFTER")" "114"
+
+# A position with no slot behind it at all: there is nothing to replay from, so
+# a decoder would create a slot starting now and the client would silently lose
+# everything up to this moment.
+pg pg-main "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots
+  WHERE slot_name = 'fox_rt_main_stream' AND active_pid IS NOT NULL" >/dev/null
+pg pg-main "SELECT pg_drop_replication_slot('fox_rt_main_stream')
+  WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name='fox_rt_main_stream')" >/dev/null
+NOSLOT=/tmp/rt-noslot.ndjson
+stream_for 6 "$NOSLOT" "$GMARK"
+assert_contains "a position with no slot to replay from is told to refetch" "$(codes_in "$NOSLOT")" "cursor_expired"
+# Leave a slot behind, as the sections before this one did: §8 tears the feed
+# down and rebuilds it, and starting from a different state than it used to is
+# how a suite grows failures that belong to the test rather than the product.
+stream_for 5 /tmp/rt-reseed.ndjson
+
 # ── 8. The budget: a slot past saving says so ───────────────────────────────
 echo
 echo "8. exceeding the WAL budget costs a resync, not a full disk"
@@ -727,6 +855,10 @@ assert_eq "a base backup is taken with the feed on" \
   "$("$S" backup list 2>/dev/null | grep -c 'base_')" "$((BEFORE_B + 1))"
 VERIFY="$("$S" backup verify 2>&1)"; VRC=$?
 assert_eq "…and a restore from it is proved to work" "$VRC" "0"
+# What it said, when it failed. The same reason `ha enable` below prints its
+# log: a restore that refuses has one cause and the assertion carries none of
+# it, and this one has failed once for a reason nobody could name afterwards.
+[ "$VRC" = 0 ] || { echo "  (backup verify said:)"; sed 's/^/    /' <<<"$VERIFY" | tail -20; }
 sudo docker rm -f pg-restore >/dev/null 2>&1
 
 # Kept, like the failback below: when a standby fails to build, every assertion

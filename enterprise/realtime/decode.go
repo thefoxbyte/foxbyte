@@ -31,6 +31,11 @@ import (
 // Ten seconds is well inside the default wal_sender_timeout of sixty.
 const StandbyInterval = 10 * time.Second
 
+// ErrResumeAhead is a resume position the branch's log has not reached. Its own
+// error so a caller can tell it from a connection that failed: retrying will
+// never help, because nothing about the request will be different next time.
+var ErrResumeAhead = errors.New("resume position is ahead of the log")
+
 // Decoder streams one branch's changes.
 type Decoder struct {
 	conn        *pgconn.PgConn
@@ -108,6 +113,26 @@ func isDuplicateSlot(err error) bool {
 // since is where to resume from: the LSN a subscriber last saw. Zero starts
 // from wherever the slot is, which for a new slot is "now".
 func (d *Decoder) Run(ctx context.Context, since pglogrepl.LSN) error {
+	// A position past the end of the log is refused here as well as at the
+	// route, because of what this function does with it next: it becomes acked,
+	// and acked is reported to Postgres as flushed. One request carrying an
+	// impossible position moved a slot's confirmed position past the end of the
+	// WAL, and from then on that branch's feed delivered nothing to anybody,
+	// across restarts, while `fox realtime slots` still called the slot idle.
+	//
+	// The check belongs here too rather than only at the caller: this is where
+	// the promise that only delivered positions are acknowledged is kept, and a
+	// position the log has not reached cannot have been delivered to anyone.
+	if since > 0 {
+		sys, err := pglogrepl.IdentifySystem(ctx, d.conn)
+		if err != nil {
+			return fmt.Errorf("reading the log position before resuming: %w", err)
+		}
+		if since > sys.XLogPos {
+			return fmt.Errorf("%w: refusing to resume from %s, which is past this branch's log end (%s)",
+				ErrResumeAhead, since, sys.XLogPos)
+		}
+	}
 	d.acked = since
 	if err := pglogrepl.StartReplication(ctx, d.conn, d.slot, since,
 		pglogrepl.StartReplicationOptions{PluginArgs: []string{
@@ -157,6 +182,20 @@ func (d *Decoder) Run(ctx context.Context, since pglogrepl.LSN) error {
 			}
 			if err := d.handle(xld); err != nil {
 				return err
+			}
+			// A subscriber overflowed inside the transaction that has just
+			// finished, and is still attached for exactly this moment: report
+			// the position before it goes, because the last subscriber leaving
+			// is what stops this decoder, and a transaction nobody could be
+			// given has to be behind us when that happens. Otherwise the next
+			// subscriber starts in front of it and overflows in the same place.
+			if d.hub.Releasable() {
+				if err := pglogrepl.SendStandbyStatusUpdate(ctx, d.conn,
+					pglogrepl.StandbyStatusUpdate{WALWritePosition: d.acked}); err != nil {
+					return fmt.Errorf("reporting the position of a transaction that could not be delivered: %w", err)
+				}
+				next = time.Now().Add(StandbyInterval)
+				d.hub.ReleasePending()
 			}
 		}
 	}
