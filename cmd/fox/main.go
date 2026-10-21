@@ -92,6 +92,11 @@ Stack:
                        What a branch holds, and each object's CREATE script (read only)
   track [<table> [--off] [--label-existing] [--created c] [--updated u] [--by col]] [--new on|off] [--branch b]
                        Keep who changed each row and when (created_at, updated_at, last_modified_by)
+  pii scan [--branch b] [--sample n] [--json]
+                       Find personal data (Aadhaar, PAN, mobile, card, email…) by column names
+                       and sampled values; keeps where, never the values (Enterprise)
+  pii [findings] [--branch b] [--json]
+                       What scans have found on a branch
   demo seed|drop|sql [branch]
                        The sample tables (users, projects, events). A first start
                        seeds main; FOX_NO_DEMO=1 starts empty
@@ -368,6 +373,8 @@ func main() {
 		schemaCmd(os.Args[2:])
 	case "track":
 		trackCmd(os.Args[2:])
+	case "pii":
+		piiCmd(os.Args[2:])
 	case "check":
 		checkCmd(os.Args[2:])
 	case "connect":

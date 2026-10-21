@@ -12,6 +12,7 @@ import (
 	// so internal/branch never has to import enterprise/.
 	_ "github.com/thefoxbyte/foxbyte/enterprise/anchor"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/impact"
+	_ "github.com/thefoxbyte/foxbyte/enterprise/pii"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pipeline"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/policy"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/promote"

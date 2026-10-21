@@ -105,6 +105,9 @@ const (
 	// Row tracking (points 5 and 6) turned on or off for a table, or for new
 	// tables: who decided, on which branch.
 	EvTrackingChanged = "tracking.changed"
+	// A branch scanned for personal data (point 4.1): who, and how much it
+	// covered. Never a value: the scan keeps none.
+	EvPersonalDataScanned = "personal-data.scanned"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence
