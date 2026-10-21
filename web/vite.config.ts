@@ -3,6 +3,14 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // Never inline a font as a data: URI. Vite inlines any asset under 4 KB by
+    // default, which caught the smallest subsets of the bundled fonts, and the
+    // console's Content-Security-Policy allows fonts from this server only
+    // (font-src 'self'), so an inlined one was blocked. Every other asset keeps
+    // the default.
+    assetsInlineLimit: (file) => (/\.woff2?$/.test(file) ? false : undefined),
+  },
   // Component tests run here rather than in a second config: one place to look,
   // and the tests compile through the same pipeline the app does.
   //

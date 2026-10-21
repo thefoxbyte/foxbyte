@@ -75,3 +75,17 @@ func TestTheConsolePolicy(t *testing.T) {
 		t.Error("ConsolePolicy lets inline or eval'd script run")
 	}
 }
+
+// The console's fonts are bundled, so the page may load nothing from another
+// site: no stylesheet, no font file. Opening the console contacts this server
+// only.
+func TestTheConsolePolicyLoadsNothingFromElsewhere(t *testing.T) {
+	for _, must := range []string{"style-src 'self' 'unsafe-inline';", "font-src 'self';"} {
+		if !strings.Contains(ConsolePolicy, must) {
+			t.Errorf("ConsolePolicy lacks %q", must)
+		}
+	}
+	if strings.Contains(ConsolePolicy, "https:") || strings.Contains(ConsolePolicy, "http:") {
+		t.Errorf("ConsolePolicy names another origin: %s", ConsolePolicy)
+	}
+}

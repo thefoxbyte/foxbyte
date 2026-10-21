@@ -1,6 +1,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { createBrowserRouter, RouterProvider, NavLink, Outlet, Link, Navigate } from 'react-router-dom'
+import './fonts'
 import './styles.css'
 import { AuthProvider, useAuth } from './auth-context'
 import AppLayout from './components/AppLayout'
