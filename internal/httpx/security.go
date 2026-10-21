@@ -11,13 +11,14 @@ import (
 //
 // Scripts come only from this server, so a string that reaches the page as
 // markup cannot run as code. Styles may be inline, since React writes them per
-// element, and the stylesheet and font files come from Google Fonts. The page
-// talks to this server and nothing else, and no other site may frame it, which
-// is what stops a page elsewhere from dressing up the console's buttons
-// (clickjacking).
+// element. Stylesheets and font files come from this server too: the fonts are
+// bundled into the build, so opening the console asks no other site for
+// anything. The page talks to this server and nothing else, and no other site
+// may frame it, which is what stops a page elsewhere from dressing up the
+// console's buttons (clickjacking).
 const ConsolePolicy = "default-src 'self'; script-src 'self'; " +
-	"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-	"font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"font-src 'self'; img-src 'self' data:; connect-src 'self'; " +
 	"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 
 // APIPolicy is the Content-Security-Policy for a server that answers only
