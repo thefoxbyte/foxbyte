@@ -22,6 +22,7 @@ export type Feature =
   | 'promotion'
   | 'export'
   | 'pipelines'
+  | 'personal-data'
 
 export type Status = {
   mainReady: boolean
@@ -450,6 +451,43 @@ export const untrackTable = (branch: string, schema: string, table: string) =>
   req('DELETE', `${API}/api/branches/${branch}/tracking/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`) as Promise<Tracking>
 export const setTrackNew = (branch: string, on: boolean, o: Omit<TrackOptions, 'label_existing'>) =>
   req('PUT', `${API}/api/branches/${branch}/tracking/new`, { on, ...o }) as Promise<Tracking>
+
+// Personal-data discovery (point 4.1). A finding says where and what, never a
+// value: the engine keeps none.
+export type PIISkip = { object: string; reason: string }
+export type PIIScan = {
+  id: number
+  started: string
+  finished: string
+  actor: string
+  sample: number
+  tables: number
+  columns: number
+  skipped: PIISkip[] | null
+  limits: string[] | null
+}
+export type PIIFinding = {
+  id: number
+  schema: string
+  table: string
+  column: string
+  path: string
+  category: string
+  rule: 'name' | 'value' | 'name+value'
+  confidence: 'high' | 'medium' | 'low'
+  why: string
+  matched: number
+  sampled: number
+  state: 'suggested' | 'confirmed' | 'rejected'
+  firstScan: number
+  lastScan: number
+  lastSeen: string
+}
+export type PersonalData = { branch: string; scan: PIIScan | null; findings: PIIFinding[] | null }
+export const getPersonalData = (branch: string) =>
+  req('GET', `${API}/api/branches/${branch}/personal-data`) as Promise<PersonalData>
+export const scanPersonalData = (branch: string, sample?: number) =>
+  req('POST', `${API}/api/branches/${branch}/personal-data/scan`, sample ? { sample } : {}) as Promise<PersonalData>
 
 // The data grid's save (point 12.2): rows added, changed and deleted, applied
 // together as you, or not at all.

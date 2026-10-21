@@ -42,6 +42,10 @@ export const APP_NAV: NavSection[] = [
     ],
   },
   {
+    label: 'Compliance',
+    items: [{ to: '/personal-data', label: 'Personal data', icon: I.IconPersonalData }],
+  },
+  {
     label: 'Account',
     items: [
       { to: '/keys', label: 'API keys', icon: I.IconKey },

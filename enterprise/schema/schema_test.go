@@ -125,5 +125,6 @@ func paidSchemas() map[string]string {
 		"checkpoints.sql": schemaCheckpoints,
 		"policy.sql":      schemaPolicy,
 		"impact.sql":      schemaImpact,
+		"pii.sql":         schemaPII,
 	}
 }

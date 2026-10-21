@@ -4,7 +4,8 @@
 
 // Package schema installs the Blackbox objects only the paid edition creates:
 // the checkpoint table behind signed anchors, the policy rule engine and its
-// event trigger, and the impact-analysis functions.
+// event trigger, the impact-analysis functions, and personal-data discovery's
+// scans and findings.
 //
 // Per feature, not all-or-nothing. A licence covering anchors but not the rule
 // engine installs the checkpoint table and not bb.policy_rules, which is the
@@ -16,6 +17,7 @@ import (
 	"fmt"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 // The schema objects only this edition creates. They live here rather than in
@@ -30,6 +32,8 @@ var (
 	schemaPolicy string
 	//go:embed impact.sql
 	schemaImpact string
+	//go:embed pii.sql
+	schemaPII string
 )
 
 func init() { branch.SetSchemaInstaller(install) }
@@ -50,6 +54,9 @@ func install(name string) error {
 		{policy, "the Blackbox policy gate", schemaPolicy},
 		// bb.blast_radius, which only reads the catalog.
 		{impact, "Blackbox impact analysis", schemaImpact},
+		// Where personal data was found, never the data: bb.pii_scans and
+		// bb.pii_findings.
+		{edition.Has(edition.PersonalData), "personal-data discovery", schemaPII},
 	} {
 		if !s.want {
 			continue
@@ -57,6 +64,16 @@ func install(name string) error {
 		if err := branch.ExecScript(name, s.sql); err != nil {
 			return fmt.Errorf("installing %s on %q: %w", s.what, name, err)
 		}
+	}
+	return nil
+}
+
+// EnsurePII installs personal-data discovery's tables on a branch, for a scan
+// on a branch made before the licence covered it. The same script a start
+// runs, so the two cannot disagree.
+func EnsurePII(name string) error {
+	if err := branch.ExecScript(name, schemaPII); err != nil {
+		return fmt.Errorf("installing personal-data discovery on %q: %w", name, err)
 	}
 	return nil
 }
