@@ -63,11 +63,21 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 	}
 	defer conn.Close(context.Background())
 
-	s := branch.PIIScan{Started: time.Now().UTC(), Actor: o.Actor, Sample: o.Sample, Skipped: []branch.PIISkip{}}
+	s := branch.PIIScan{Started: time.Now().UTC(), Actor: o.Actor, Sample: o.Sample, NewOnly: o.NewOnly, Skipped: []branch.PIISkip{}}
 	tables, err := catalog(ctx, conn)
 	if err != nil {
 		return s, fmt.Errorf("reading the catalog: %w", err)
 	}
+	// What earlier scans saw (4.7). Empty means this is the branch's
+	// baseline: everything in it is known, and only what appears after it is
+	// new.
+	inv, err := inventory(ctx, conn)
+	if err != nil {
+		return s, fmt.Errorf("reading the inventory: %w", err)
+	}
+	baseline := len(inv) == 0
+	var seen []place
+	unchanged := 0
 
 	type found struct {
 		t    table
@@ -79,8 +89,28 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 	var js jsonStats
 	sawSampled := false
 	for _, t := range tables {
+		// Every column is in the inventory, read or not: its name is all the
+		// inventory keeps.
+		hasNew, hasJSON := false, false
+		for _, c := range t.cols {
+			p := place{t.schema, t.name, c.name, ""}
+			seen = append(seen, p)
+			if !inv[p] {
+				hasNew = true
+			}
+			if isJSON(c) {
+				hasJSON = true
+			}
+		}
 		if t.kind == "f" {
 			s.Skipped = append(s.Skipped, branch.PIISkip{Object: t.label(), Reason: "a foreign table: its data is held somewhere else"})
+			continue
+		}
+		// A scan of what is new reads a table only if it has a column no scan
+		// has seen, or a JSON column, whose new paths can only be found by
+		// reading it.
+		if o.NewOnly && !hasNew && !hasJSON && !baseline {
+			unchanged++
 			continue
 		}
 		var read []column
@@ -131,6 +161,9 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 					docs = append(docs, d)
 				}
 				paths, truncated, bad := walkJSON(docs, c.name)
+				for _, p := range paths {
+					seen = append(seen, place{t.schema, t.name, c.name, p.path})
+				}
 				js.paths += len(paths)
 				js.bad += bad
 				if truncated {
@@ -151,6 +184,9 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 	}
 
 	s.Limits = limits(o.Sample, sawSampled, js)
+	if unchanged > 0 {
+		s.Limits = append(s.Limits, fmt.Sprintf("A scan of what is new: %d table(s) with no column a scan had not seen were not read again, so a value added to an existing column there is not looked for.", unchanged))
+	}
 	s.Finished = time.Now().UTC()
 
 	// One transaction, so a scan's findings and its record appear together or
@@ -163,9 +199,9 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 	skipped, _ := json.Marshal(s.Skipped)
 	lims, _ := json.Marshal(s.Limits)
 	if err := tx.QueryRow(ctx, `INSERT INTO bb.pii_scans
-			(started_at, finished_at, actor, sample_size, tables_scanned, columns_scanned, skipped, limits)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-		s.Started, s.Finished, s.Actor, s.Sample, s.Tables, s.Columns, skipped, lims).Scan(&s.ID); err != nil {
+			(started_at, finished_at, actor, sample_size, tables_scanned, columns_scanned, skipped, limits, new_only)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+		s.Started, s.Finished, s.Actor, s.Sample, s.Tables, s.Columns, skipped, lims, s.NewOnly).Scan(&s.ID); err != nil {
 		return s, fmt.Errorf("recording the scan: %w", err)
 	}
 	for _, f := range all {
@@ -184,7 +220,65 @@ func scan(name string, o branch.PIIScanOptions) (branch.PIIScan, error) {
 			return s, fmt.Errorf("recording a finding: %w", err)
 		}
 	}
+	if err := record(ctx, tx, seen, s.ID, baseline); err != nil {
+		return s, fmt.Errorf("recording the inventory: %w", err)
+	}
 	return s, tx.Commit(ctx)
+}
+
+// place is a column, or a JSON path inside one: what the inventory keeps.
+type place struct{ schema, table, column, path string }
+
+// inventory reads every place earlier scans have seen.
+func inventory(ctx context.Context, conn *pgx.Conn) (map[place]bool, error) {
+	rows, err := conn.Query(ctx, `SELECT schema_name, table_name, column_name, json_path FROM bb.pii_columns`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	inv := map[place]bool{}
+	for rows.Next() {
+		var p place
+		if err := rows.Scan(&p.schema, &p.table, &p.column, &p.path); err != nil {
+			return nil, err
+		}
+		inv[p] = true
+	}
+	return inv, rows.Err()
+}
+
+// record adds what this scan saw to the inventory: a place seen before is
+// marked seen again, a new one comes in known (the baseline) or unclassified.
+// One statement over arrays, since a branch can have thousands of columns.
+func record(ctx context.Context, tx pgx.Tx, seen []place, scan int64, baseline bool) error {
+	if len(seen) == 0 {
+		return nil
+	}
+	status := branch.PIIUnclassified
+	if baseline {
+		status = branch.PIIKnown
+	}
+	n := len(seen)
+	sc, tb, co, pa := make([]string, n), make([]string, n), make([]string, n), make([]string, n)
+	for i, p := range seen {
+		sc[i], tb[i], co[i], pa[i] = p.schema, p.table, p.column, p.path
+	}
+	// An update for what was there and an insert for what was not, rather
+	// than an upsert: an upsert takes a sequence number for every row it
+	// touches, so the IDs people type would jump by thousands a scan.
+	_, err := tx.Exec(ctx, `WITH seen AS (
+			SELECT DISTINCT s, t, c, p FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS x(s, t, c, p)
+		), again AS (
+			UPDATE bb.pii_columns pc SET last_scan = $6
+			FROM seen WHERE (pc.schema_name, pc.table_name, pc.column_name, pc.json_path) = (seen.s, seen.t, seen.c, seen.p)
+		)
+		INSERT INTO bb.pii_columns (schema_name, table_name, column_name, json_path, status, first_scan, last_scan)
+		SELECT s, t, c, p, $5, $6, $6 FROM seen
+		WHERE NOT EXISTS (SELECT 1 FROM bb.pii_columns pc
+		                  WHERE (pc.schema_name, pc.table_name, pc.column_name, pc.json_path) = (seen.s, seen.t, seen.c, seen.p))
+		ORDER BY s, t, c, p`,
+		sc, tb, co, pa, status, scan)
+	return err
 }
 
 // catalog lists the tables a scan reads, with their columns.

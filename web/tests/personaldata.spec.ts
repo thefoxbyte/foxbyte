@@ -79,4 +79,23 @@ test('a scan from the page finds personal data, keeps where, and shows no value'
   await page.getByLabel('Branch').selectOption(branch)
   await page.getByRole('button', { name: /^Confirmed \(\d+\)$/ }).click()
   await expect(row('aadhaar_no')).toContainText('confirmed', { timeout: 30_000 })
+
+  // Keeping it current (4.7): a table made after the first scan is new. A
+  // scan of what is new finds it, and it waits under Unclassified until
+  // someone accepts it. Made through the API the SQL console uses, with this
+  // browser's own session, as the realtime test writes its row.
+  const later = `pii_later_${Date.now().toString().slice(-6)}`
+  const made = await page.request.post(`/api/branches/${branch}/query`, {
+    data: { sql: `CREATE TABLE public.${later} (id int PRIMARY KEY, nickname text)` },
+  })
+  expect(made.ok()).toBeTruthy()
+  await page.getByLabel(/Only what is new/).check()
+  await page.getByRole('button', { name: 'Scan now' }).click()
+  await expect(page.getByTestId('pii-summary')).toContainText('(what is new)', { timeout: 60_000 })
+  await page.getByRole('button', { name: /^Unclassified \(\d+\)$/ }).click()
+  const unclassified = page.getByRole('table', { name: 'Unclassified places' })
+  await expect(unclassified).toContainText(`public.${later}.nickname`)
+  await expect(unclassified).not.toContainText('public.pii_people.email')
+  await page.getByRole('button', { name: `Accept public.${later}.nickname` }).click()
+  await expect(unclassified.getByText(`public.${later}.nickname`, { exact: true })).toHaveCount(0)
 })

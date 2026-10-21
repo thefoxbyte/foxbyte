@@ -463,6 +463,7 @@ export type PIIScan = {
   sample: number
   tables: number
   columns: number
+  newOnly?: boolean
   skipped: PIISkip[] | null
   limits: string[] | null
 }
@@ -486,11 +487,17 @@ export type PIIFinding = {
   decidedAt?: string | null
   note?: string
 }
-export type PersonalData = { branch: string; scan: PIIScan | null; findings: PIIFinding[] | null }
+export type PersonalData = {
+  branch: string
+  scan: PIIScan | null
+  findings: PIIFinding[] | null
+  fullScan?: number // the latest scan that read every table
+  unclassified?: number // new places since the first scan, not reviewed (4.7)
+}
 export const getPersonalData = (branch: string) =>
   req('GET', `${API}/api/branches/${branch}/personal-data`) as Promise<PersonalData>
-export const scanPersonalData = (branch: string, sample?: number) =>
-  req('POST', `${API}/api/branches/${branch}/personal-data/scan`, sample ? { sample } : {}) as Promise<PersonalData>
+export const scanPersonalData = (branch: string, sample?: number, newOnly?: boolean) =>
+  req('POST', `${API}/api/branches/${branch}/personal-data/scan`, { ...(sample ? { sample } : {}), ...(newOnly ? { newOnly } : {}) }) as Promise<PersonalData>
 
 // Review (point 4.6): a reviewer decides what each finding is, from masked
 // samples read as their own role.
@@ -503,6 +510,29 @@ export const markFinding = (branch: string, id: number, state: PIIFinding['state
   req('POST', `${findingURL(branch, id)}/mark`, { state, note }) as Promise<PIIFindingDetail>
 export const getSamples = (branch: string, id: number, n = 5) =>
   req('GET', `${findingURL(branch, id)}/samples?n=${n}`) as Promise<PIISamples>
+
+// Keeping it current (point 4.7): what appeared after a branch's first scan
+// and no one has reviewed yet. Names only.
+export type PIIColumn = {
+  id: number
+  schema: string
+  table: string
+  column: string
+  path: string
+  status: 'known' | 'unclassified' | 'reviewed'
+  firstScan: number
+  lastScan: number
+  firstSeen: string
+  reviewedBy: string
+  reviewedAt: string | null
+  note: string
+  findings: number
+  undecided: number
+}
+export const getUnclassified = (branch: string) =>
+  req('GET', `${API}/api/branches/${branch}/personal-data/unclassified`) as Promise<{ branch: string; columns: PIIColumn[] | null }>
+export const acceptColumn = (branch: string, id: number, note = '') =>
+  req('POST', `${API}/api/branches/${branch}/personal-data/columns/${id}/accept`, note ? { note } : {}) as Promise<PIIColumn>
 
 // The data grid's save (point 12.2): rows added, changed and deleted, applied
 // together as you, or not at all.

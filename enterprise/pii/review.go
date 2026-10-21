@@ -65,7 +65,51 @@ func mark(name string, id int64, state, note, actor string) error {
 		id, state, actor, note); err != nil {
 		return err
 	}
+	if err := followInventory(ctx, tx, id, state, actor); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+// followInventory keeps a new place's status in step with its findings (4.7).
+// Deciding the last undecided finding at a place that appeared after the
+// baseline reviews the place; reopening one puts it back to unclassified. A
+// place from the baseline is reviewed as its findings, and stays known.
+func followInventory(ctx context.Context, tx pgx.Tx, finding int64, state, actor string) error {
+	var have bool
+	if err := tx.QueryRow(ctx, "SELECT to_regclass('bb.pii_columns') IS NOT NULL").Scan(&have); err != nil || !have {
+		return err
+	}
+	var col int64
+	var err error
+	if state == branch.PIISuggested {
+		err = tx.QueryRow(ctx, `UPDATE bb.pii_columns c SET status = 'unclassified', reviewed_by = '', reviewed_at = NULL, note = ''
+			FROM bb.pii_findings f
+			WHERE f.id = $1 AND (c.schema_name, c.table_name, c.column_name, c.json_path) = (f.schema_name, f.table_name, f.column_name, f.json_path)
+			  AND c.status = 'reviewed'
+			RETURNING c.id`, finding).Scan(&col)
+	} else {
+		err = tx.QueryRow(ctx, `UPDATE bb.pii_columns c SET status = 'reviewed', reviewed_by = $2, reviewed_at = now(), note = 'every finding here decided'
+			FROM bb.pii_findings f
+			WHERE f.id = $1 AND (c.schema_name, c.table_name, c.column_name, c.json_path) = (f.schema_name, f.table_name, f.column_name, f.json_path)
+			  AND c.status = 'unclassified'
+			  AND NOT EXISTS (SELECT 1 FROM bb.pii_findings o
+			                  WHERE (o.schema_name, o.table_name, o.column_name, o.json_path) = (c.schema_name, c.table_name, c.column_name, c.json_path)
+			                    AND o.state = 'suggested')
+			RETURNING c.id`, finding, actor).Scan(&col)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // nothing to follow: a baseline place, or findings still undecided
+	}
+	if err != nil {
+		return err
+	}
+	status, note := branch.PIIReviewed, "every finding here decided"
+	if state == branch.PIISuggested {
+		status, note = branch.PIIUnclassified, "a finding here was reopened"
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO bb.pii_column_reviews (column_id, status, actor, note) VALUES ($1, $2, $3, $4)`, col, status, actor, note)
+	return err
 }
 
 // samples reads values from a finding's location as the reviewer's own role,

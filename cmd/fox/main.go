@@ -92,7 +92,7 @@ Stack:
                        What a branch holds, and each object's CREATE script (read only)
   track [<table> [--off] [--label-existing] [--created c] [--updated u] [--by col]] [--new on|off] [--branch b]
                        Keep who changed each row and when (created_at, updated_at, last_modified_by)
-  pii scan [--branch b] [--sample n] [--json]
+  pii scan [--branch b] [--sample n] [--new] [--json]
                        Find personal data (Aadhaar, PAN, mobile, card, email…) by column names
                        and sampled values, and inside JSON path by path; keeps where, never
                        the values (Enterprise)
@@ -100,6 +100,8 @@ Stack:
                        What scans have found on a branch; --state suggested is the review queue
   pii show <id> | samples <id> [--n 5] | mark <id> confirm|reject|reopen [--note "…"]
                        One finding and its decisions; masked samples to decide by; decide (Enterprise)
+  pii unclassified | accept <column-id> [--note "…"]
+                       What appeared since a branch's first scan, not reviewed; accept one as holding nothing
   demo seed|drop|sql [branch]
                        The sample tables (users, projects, events). A first start
                        seeds main; FOX_NO_DEMO=1 starts empty

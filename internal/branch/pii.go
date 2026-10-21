@@ -33,6 +33,10 @@ const (
 type PIIScanOptions struct {
 	Sample int    // rows read per table; DefaultPIISample when 0
 	Actor  string // who asked, kept with the scan
+	// NewOnly reads only the tables with a column no scan has seen, and every
+	// JSON column (its new paths can only be found by reading it). Point 4.7:
+	// a quick look for what has changed, not a re-check of what was there.
+	NewOnly bool
 }
 
 // PIIScan is one scan: when, by whom, and how much it covered.
@@ -44,6 +48,7 @@ type PIIScan struct {
 	Sample   int       `json:"sample"`
 	Tables   int       `json:"tables"`
 	Columns  int       `json:"columns"`
+	NewOnly  bool      `json:"newOnly"`
 	Skipped  []PIISkip `json:"skipped"`
 	// Limits are what the scan could not see or cannot claim, in sentences.
 	// Every result carries them: a scan that found nothing has not shown a
@@ -86,6 +91,13 @@ type PIIReport struct {
 	Branch   string       `json:"branch"`
 	Scan     *PIIScan     `json:"scan"` // nil before the first scan
 	Findings []PIIFinding `json:"findings"`
+	// FullScan is the latest scan that read every table. A finding last seen
+	// before it was not found again; one only a NewOnly scan skipped was not
+	// looked for, and is not "not seen".
+	FullScan int64 `json:"fullScan"`
+	// Unclassified counts the columns and paths that appeared after the
+	// branch's first scan and that no one has reviewed yet (4.7).
+	Unclassified int `json:"unclassified"`
 }
 
 // scanPII is the scan, supplied by enterprise/pii in an Enterprise build and nil
@@ -151,11 +163,22 @@ func PersonalDataFindings(name string) (PIIReport, error) {
 		return rep, nil
 	}
 
+	// new_only and the inventory came with 4.7; a branch whose tables predate
+	// them, on an install that has not started since, reads without them.
+	newOnly, err := hasColumn(ctx, conn, "bb.pii_scans", "new_only")
+	if err != nil {
+		return rep, err
+	}
+	newOnlyCol := "false"
+	if newOnly {
+		newOnlyCol = "new_only"
+	}
 	var s PIIScan
 	var skipped, limits []byte
-	err = conn.QueryRow(ctx, `SELECT id, started_at, finished_at, actor, sample_size, tables_scanned, columns_scanned, skipped, limits
+	err = conn.QueryRow(ctx, `SELECT id, started_at, finished_at, actor, sample_size, tables_scanned, columns_scanned, `+newOnlyCol+`,
+			skipped, limits, coalesce((SELECT max(id) FROM bb.pii_scans WHERE NOT `+newOnlyCol+`), 0)
 		FROM bb.pii_scans ORDER BY id DESC LIMIT 1`).
-		Scan(&s.ID, &s.Started, &s.Finished, &s.Actor, &s.Sample, &s.Tables, &s.Columns, &skipped, &limits)
+		Scan(&s.ID, &s.Started, &s.Finished, &s.Actor, &s.Sample, &s.Tables, &s.Columns, &s.NewOnly, &skipped, &limits, &rep.FullScan)
 	switch {
 	case err == nil:
 		if err := json.Unmarshal(skipped, &s.Skipped); err != nil {
@@ -171,7 +194,27 @@ func PersonalDataFindings(name string) (PIIReport, error) {
 	}
 
 	rep.Findings, err = readFindings(ctx, conn, "")
+	if err != nil {
+		return rep, err
+	}
+	if rep.Scan != nil {
+		var have bool
+		if err := conn.QueryRow(ctx, "SELECT to_regclass('bb.pii_columns') IS NOT NULL").Scan(&have); err != nil || !have {
+			return rep, err
+		}
+		err = conn.QueryRow(ctx, `SELECT count(*) FROM bb.pii_columns WHERE status = 'unclassified' AND last_scan = $1`, rep.Scan.ID).
+			Scan(&rep.Unclassified)
+	}
 	return rep, err
+}
+
+// hasColumn reports whether a table has a column, for reading a branch whose
+// Blackbox tables are older than the code reading them.
+func hasColumn(ctx context.Context, conn *pgx.Conn, table, column string) (bool, error) {
+	var have bool
+	err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_attribute
+		WHERE attrelid = to_regclass($1) AND attname = $2 AND NOT attisdropped)`, table, column).Scan(&have)
+	return have, err
 }
 
 // readFindings reads findings, all of them or those matching where (a SQL
@@ -182,9 +225,8 @@ func PersonalDataFindings(name string) (PIIReport, error) {
 // them yet, and reading must not fail on it: they read as undecided.
 func readFindings(ctx context.Context, conn *pgx.Conn, where string, args ...any) ([]PIIFinding, error) {
 	decided := "'' AS decided_by, NULL::timestamptz AS decided_at, '' AS note"
-	var have bool
-	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_attribute
-		WHERE attrelid = 'bb.pii_findings'::regclass AND attname = 'decided_by' AND NOT attisdropped)`).Scan(&have); err != nil {
+	have, err := hasColumn(ctx, conn, "bb.pii_findings", "decided_by")
+	if err != nil {
 		return nil, err
 	}
 	if have {
@@ -405,4 +447,154 @@ func (f PIIFinding) MarkSummary() string {
 func (s PIISamples) Summary() string {
 	return fmt.Sprintf("finding %d (%s, %s): %d masked sample(s) shown, read as %s",
 		s.Finding.ID, s.Finding.Where(), s.Finding.Category, len(s.Samples), s.As)
+}
+
+// --- keeping it current (point 4.7) -------------------------------------------
+
+// The statuses of a column or path in the inventory.
+const (
+	PIIKnown        = "known"        // there at the branch's first scan: its findings are reviewed as findings
+	PIIUnclassified = "unclassified" // appeared since, and no one has looked yet
+	PIIReviewed     = "reviewed"     // appeared since, and someone has
+)
+
+// PIIColumn is one column, or one JSON path inside a column, that scans have
+// seen: names only.
+type PIIColumn struct {
+	ID         int64      `json:"id"`
+	Schema     string     `json:"schema"`
+	Table      string     `json:"table"`
+	Column     string     `json:"column"`
+	Path       string     `json:"path"`
+	Status     string     `json:"status"`
+	FirstScan  int64      `json:"firstScan"`
+	LastScan   int64      `json:"lastScan"`
+	FirstSeen  time.Time  `json:"firstSeen"`
+	ReviewedBy string     `json:"reviewedBy"`
+	ReviewedAt *time.Time `json:"reviewedAt"`
+	Note       string     `json:"note"`
+	Findings   int        `json:"findings"`  // findings at this place
+	Undecided  int        `json:"undecided"` // of which still suggested
+}
+
+// Where is the column's location as a reader writes it.
+func (c PIIColumn) Where() string {
+	return PIIFinding{Schema: c.Schema, Table: c.Table, Column: c.Column, Path: c.Path}.Where()
+}
+
+var acceptPII func(name string, id int64, note, actor string) error
+
+// SetPIIInventory installs accepting a column. Called from enterprise/pii's
+// init, and from nowhere else.
+func SetPIIInventory(accept func(name string, id int64, note, actor string) error) {
+	acceptPII = accept
+}
+
+// ErrNoColumn is an inventory id the branch does not have.
+var ErrNoColumn = errors.New("no such column in this branch's inventory")
+
+// ErrUndecided is accepting a column whose findings are not all decided: those
+// are decided one by one, with the evidence in front of whoever decides.
+var ErrUndecided = errors.New("decide its findings first")
+
+// PersonalDataUnclassified lists what has appeared since the branch's first
+// scan and is not reviewed yet: columns and paths the latest scan still saw.
+// Free, as reading always is.
+func PersonalDataUnclassified(name string) ([]PIIColumn, error) {
+	if name == "" {
+		name = "main"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := OpenSuper(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+	var have bool
+	if err := conn.QueryRow(ctx, "SELECT to_regclass('bb.pii_columns') IS NOT NULL").Scan(&have); err != nil || !have {
+		return []PIIColumn{}, err
+	}
+	return readColumns(ctx, conn, `c.status = 'unclassified' AND c.last_scan = (SELECT max(id) FROM bb.pii_scans)`)
+}
+
+// PersonalDataColumn reads one inventory entry.
+func PersonalDataColumn(name string, id int64) (PIIColumn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := OpenSuper(ctx, name)
+	if err != nil {
+		return PIIColumn{}, err
+	}
+	defer conn.Close(context.Background())
+	var have bool
+	if err := conn.QueryRow(ctx, "SELECT to_regclass('bb.pii_columns') IS NOT NULL").Scan(&have); err != nil {
+		return PIIColumn{}, err
+	}
+	if !have {
+		return PIIColumn{}, ErrNoColumn
+	}
+	cs, err := readColumns(ctx, conn, "c.id = $1", id)
+	if err != nil {
+		return PIIColumn{}, err
+	}
+	if len(cs) == 0 {
+		return PIIColumn{}, ErrNoColumn
+	}
+	return cs[0], nil
+}
+
+func readColumns(ctx context.Context, conn *pgx.Conn, where string, args ...any) ([]PIIColumn, error) {
+	rows, err := conn.Query(ctx, `SELECT c.id, c.schema_name, c.table_name, c.column_name, c.json_path, c.status,
+			c.first_scan, c.last_scan, c.first_seen, c.reviewed_by, c.reviewed_at, c.note,
+			count(f.id)::int, count(f.id) FILTER (WHERE f.state = 'suggested')::int
+		FROM bb.pii_columns c
+		LEFT JOIN bb.pii_findings f ON (f.schema_name, f.table_name, f.column_name, f.json_path)
+		                             = (c.schema_name, c.table_name, c.column_name, c.json_path)
+		WHERE `+where+`
+		GROUP BY c.id
+		ORDER BY c.schema_name, c.table_name, c.column_name, c.json_path`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PIIColumn{}
+	for rows.Next() {
+		var c PIIColumn
+		if err := rows.Scan(&c.ID, &c.Schema, &c.Table, &c.Column, &c.Path, &c.Status, &c.FirstScan, &c.LastScan,
+			&c.FirstSeen, &c.ReviewedBy, &c.ReviewedAt, &c.Note, &c.Findings, &c.Undecided); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// AcceptPersonalData records that a person has looked at an unclassified
+// column or path and it holds nothing to classify. Refused while any of its
+// findings are undecided: those are decided one by one (MarkPersonalData),
+// which reviews the column too once the last is.
+func AcceptPersonalData(name string, id int64, note, actor string) (PIIColumn, error) {
+	if err := requireFeature(edition.PersonalData); err != nil {
+		return PIIColumn{}, err
+	}
+	if acceptPII == nil {
+		return PIIColumn{}, ErrPersonalDataNotLicensed
+	}
+	if len(note) > 1000 {
+		return PIIColumn{}, fmt.Errorf("%w: a note is at most 1000 characters", ErrInvalidRequest)
+	}
+	if err := acceptPII(name, id, note, actor); err != nil {
+		return PIIColumn{}, err
+	}
+	return PersonalDataColumn(name, id)
+}
+
+// AcceptSummary is the security log's line for accepting a column.
+func (c PIIColumn) AcceptSummary() string {
+	s := fmt.Sprintf("column %d (%s): %s", c.ID, c.Where(), c.Status)
+	if c.Note != "" {
+		s += " with a note"
+	}
+	return s
 }

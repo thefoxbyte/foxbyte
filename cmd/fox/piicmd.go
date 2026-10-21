@@ -18,12 +18,14 @@ import (
 // piiCmd is `fox pii` (points 4.1, 4.2, 4.6): where a branch holds personal
 // data, and what a reviewer decided it is.
 //
-//	fox pii scan [--branch b] [--sample n] [--json]             scan now (Enterprise)
+//	fox pii scan [--branch b] [--sample n] [--new] [--json]     scan now; --new reads only what is new (Enterprise)
 //	fox pii [findings] [--branch b] [--state s] [--json]        what scans have found
 //	fox pii show <id> [--branch b] [--json]                     one finding and its decisions
 //	fox pii samples <id> [--branch b] [--n 5] [--json]          masked samples to decide by (Enterprise)
 //	fox pii mark <id> confirm|reject|reopen [--note "…"] [--branch b]
 //	                                                            decide (Enterprise)
+//	fox pii unclassified [--branch b] [--json]                  what appeared since the first scan, not reviewed (4.7)
+//	fox pii accept <column-id> [--note "…"] [--branch b]        a new column or path holds nothing to classify (Enterprise)
 //
 // `--state suggested` is the review queue.
 // A scan reads up to n rows of every table (1,000 unless told), recognises
@@ -42,7 +44,7 @@ func piiCmd(args []string) {
 	switch sub {
 	case "scan":
 		requireFeature(edition.PersonalData)
-		o := branch.PIIScanOptions{Actor: cliActor()}
+		o := branch.PIIScanOptions{Actor: cliActor(), NewOnly: hasFlag(args, "--new")}
 		if v := optValue(args, "--sample"); v != "" {
 			n, err := strconv.Atoi(v)
 			if err != nil {
@@ -121,6 +123,31 @@ func piiCmd(args []string) {
 			}
 			fmt.Printf("  %-32s %s\n", x.Masked, like)
 		}
+	case "unclassified":
+		cs, err := branch.PersonalDataUnclassified(b)
+		must(err)
+		if hasFlag(args, "--json") {
+			printJSON(cs)
+			return
+		}
+		printUnclassified(os.Stdout, cs, b)
+	case "accept":
+		requireFeature(edition.PersonalData)
+		if len(ps) < 2 {
+			usagePII()
+		}
+		id, err := strconv.ParseInt(ps[1], 10, 64)
+		if err != nil || id < 1 {
+			must(fmt.Errorf("a column is named by its number (the ID column of %s pii unclassified), not %q", brand.CLI, ps[1]))
+		}
+		me := cliActor()
+		c, err := branch.AcceptPersonalData(b, id, optValue(args, "--note"), me)
+		must(err)
+		if s := historyStore(); s != nil {
+			s.Audit(auth.EvPersonalDataAccepted, me, b, "", c.AcceptSummary())
+			s.Close()
+		}
+		fmt.Printf("%s is reviewed: %s.\n", c.Where(), c.Note)
 	case "mark":
 		requireFeature(edition.PersonalData)
 		if len(ps) < 3 {
@@ -144,11 +171,13 @@ func piiCmd(args []string) {
 }
 
 func usagePII() {
-	fmt.Fprintf(os.Stderr, "usage: %[1]s pii scan [--branch b] [--sample n] [--json]\n"+
+	fmt.Fprintf(os.Stderr, "usage: %[1]s pii scan [--branch b] [--sample n] [--new] [--json]\n"+
 		"       %[1]s pii [findings] [--branch b] [--state suggested|confirmed|rejected] [--json]\n"+
 		"       %[1]s pii show <id> [--branch b] [--json]\n"+
 		"       %[1]s pii samples <id> [--branch b] [--n 5] [--json]\n"+
-		"       %[1]s pii mark <id> confirm|reject|reopen [--note \"…\"] [--branch b]\n", brand.CLI)
+		"       %[1]s pii mark <id> confirm|reject|reopen [--note \"…\"] [--branch b]\n"+
+		"       %[1]s pii unclassified [--branch b] [--json]\n"+
+		"       %[1]s pii accept <column-id> [--note \"…\"] [--branch b]\n", brand.CLI)
 	os.Exit(2)
 }
 
@@ -192,8 +221,16 @@ func printPII(w io.Writer, rep branch.PIIReport, justScanned bool) {
 	if justScanned {
 		when = "Scanned"
 	}
-	fmt.Fprintf(w, "%s %s: %d table(s), %d column(s) read, up to %d rows each; %d skipped.\n",
-		when, rep.Branch, s.Tables, s.Columns, s.Sample, len(s.Skipped))
+	kind := ""
+	if s.NewOnly {
+		kind = " (what is new)"
+	}
+	fmt.Fprintf(w, "%s %s%s: %d table(s), %d column(s) read, up to %d rows each; %d skipped.\n",
+		when, rep.Branch, kind, s.Tables, s.Columns, s.Sample, len(s.Skipped))
+	if rep.Unclassified > 0 {
+		fmt.Fprintf(w, "%d new column(s) or path(s) since the first scan are unclassified: %s pii unclassified --branch %s\n",
+			rep.Unclassified, brand.CLI, rep.Branch)
+	}
 	if len(rep.Findings) == 0 {
 		fmt.Fprintln(w, "\nNothing recognised as personal data.")
 	} else {
@@ -207,7 +244,10 @@ func printPII(w io.Writer, rep branch.PIIReport, justScanned bool) {
 				matched = fmt.Sprintf("%d/%d", f.Matched, f.Sampled)
 			}
 			state := f.State
-			if f.LastScan != s.ID {
+			// Against the latest full scan: a scan of what is new does not
+			// look again at a table it skipped, so its findings were not
+			// "not seen".
+			if f.LastScan < rep.FullScan {
 				state += " (not seen in the latest scan)"
 			}
 			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", f.ID, where, f.Category, f.Confidence, matched, f.Rule, state)
@@ -224,4 +264,22 @@ func printPII(w io.Writer, rep branch.PIIReport, justScanned bool) {
 	for _, l := range s.Limits {
 		fmt.Fprintf(w, "  - %s\n", l)
 	}
+}
+
+func printUnclassified(w io.Writer, cs []branch.PIIColumn, b string) {
+	if len(cs) == 0 {
+		fmt.Fprintf(w, "Nothing new on %s is unclassified.\n", b)
+		return
+	}
+	fmt.Fprintf(w, "New on %s since its first scan, not yet reviewed:\n\n", b)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tWHERE\tFIRST SEEN\tFINDINGS\tNEXT")
+	for _, c := range cs {
+		next := fmt.Sprintf("%s pii accept %d", brand.CLI, c.ID)
+		if c.Undecided > 0 {
+			next = fmt.Sprintf("decide its %d finding(s): %s pii --state suggested", c.Undecided, brand.CLI)
+		}
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%s\n", c.ID, c.Where(), c.FirstSeen.Local().Format("2 Jan 2006 15:04"), c.Findings, next)
+	}
+	tw.Flush()
 }

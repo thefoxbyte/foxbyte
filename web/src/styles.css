@@ -1296,3 +1296,5 @@ button.primary.sm.upgrade-btn { padding: 6px 14px; font-size: 13px; }
    header is for screen readers only. */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 td button.sm { padding: 2px 10px; font-size: 12px; }
+.pii-new { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.pii-new input { width: auto; margin: 0; }

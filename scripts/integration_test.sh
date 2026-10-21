@@ -1948,7 +1948,7 @@ assert_eq "…and only the branch's owner or an admin changes it" \
 assert_eq "…and says why when Postgres refuses" "$(as "$KEY" -X PUT "$TU/tables/public/trk_d" | grep -c 'is date')" "1"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS trk_a, trk_b, trk_c, trk_d, trk_n, trk_m" >/dev/null
 
-echo "### 11r. personal-data discovery: where a branch holds personal data, and review (points 4.1, 4.2, 4.6)"
+echo "### 11r. personal-data discovery: where a branch holds personal data, review, and keeping it current (points 4.1, 4.2, 4.6, 4.7)"
 # Every identifier here is synthetic: made to pass its check, never a person's.
 # 234567890124, 345678901238 and 456789012341 pass Verhoeff; 4111111111111111
 # is the usual Luhn test card; 27AAPFU0939F1ZV carries a valid GSTIN check
@@ -2069,6 +2069,50 @@ assert_eq "a finding can be reopened, and its history keeps both decisions in or
   "$(as "$KEY" "$PU/findings/$AID" | hjson "print(d['finding']['state'], [x['state'] for x in d['decisions']])")" "suggested ['confirmed', 'suggested']"
 assert_eq "fox pii --state suggested is the review queue" \
   "$($S pii --branch piit --state suggested | grep -c 'customers.aadhaar_no ')|$($S pii --branch piit --state suggested | grep -c 'customers.email ')" "1|0"
+
+# Keeping it current (4.7). The first scan of a branch is its baseline; what
+# appears after it is unclassified until someone has looked.
+assert_eq "what was there at the first scan is known, not unclassified" \
+  "$(pg pg-piit "SELECT count(*) FROM bb.pii_columns WHERE table_name = 'customers' AND json_path = '' AND status <> 'known'")" "0"
+pg pg-piit "ALTER TABLE customers ADD COLUMN alt_mobile text, ADD COLUMN tier text;
+  UPDATE customers SET alt_mobile = '9876543212', tier = 'gold';
+  UPDATE customers SET prefs = prefs || '{\"bank\": {\"ifsc\": \"HDFC0001234\"}}' WHERE id = 1;
+  CREATE TABLE coupons (id int PRIMARY KEY, code text); INSERT INTO coupons VALUES (1, 'DIWALI10')" >/dev/null
+NEWSCAN="$($S pii scan --branch piit --new 2>&1)"
+assert_eq "fox pii scan --new reads only what has changed, and says what it left" \
+  "$(grep -c '^Scanned piit (what is new):' <<<"$NEWSCAN")|$(grep -c 'were not read again' <<<"$NEWSCAN")|$(grep -c 'new column(s) or path(s) since the first scan are unclassified' <<<"$NEWSCAN")" "1|1|1"
+UJ="$($S pii unclassified --branch piit --json 2>/dev/null)"
+assert_eq "fox pii unclassified lists the new columns, the new table, and a new path inside JSON" \
+  "$(hjson "print(' '.join(sorted(c['table']+'.'+c['column']+c['path'] for c in d if c['table'] in ('customers', 'coupons'))))" <<<"$UJ")" \
+  "coupons.code coupons.id customers.alt_mobile customers.prefs\$.bank.ifsc customers.tier"
+assert_eq "…and a finding on a table that scan skipped is not called not seen; only the dropped column's is" \
+  "$($S pii --branch piit | grep -c 'not seen in the latest scan')|$($S pii --branch piit | grep 'not seen in the latest scan' | grep -c 'customers.pan ')" "1|1"
+cid() { hjson "print([c['id'] for c in d if c['table']=='$1' and c['column']=='$2' and c['path']=='$3'][0])" <<<"$UJ"; }
+ALT="$(cid customers alt_mobile '')"; TIER="$(cid customers tier '')"
+assert_eq "a new column with a finding undecided cannot be accepted; its findings are decided one by one" \
+  "$($S pii accept "$ALT" --branch piit >/dev/null 2>&1; echo $?)|$($S pii accept "$ALT" --branch piit 2>&1 | grep -c 'decide its findings first')|$(code "$KEY" -X POST "$PU/columns/$ALT/accept")" "1|1|409"
+assert_eq "one that holds nothing to classify is accepted, with who and why, and leaves the list" \
+  "$($S pii accept "$TIER" --note 'a loyalty tier' --branch piit >/dev/null 2>&1; echo $?)|$(pg pg-piit "SELECT status || '|' || (reviewed_by LIKE 'cli:%')::text || '|' || note FROM bb.pii_columns WHERE id = $TIER")|$($S pii unclassified --branch piit | grep -c 'customers.tier ')" \
+  "0|reviewed|true|a loyalty tier|0"
+PJ="$($S pii --branch piit --json 2>/dev/null)"
+AMF="$(fid customers alt_mobile '')"
+$S pii mark "$AMF" confirm --branch piit >/dev/null 2>&1
+assert_eq "deciding the last finding at a new column reviews the column too" \
+  "$(pg pg-piit "SELECT status FROM bb.pii_columns WHERE id = $ALT")" "reviewed"
+$S pii mark "$AMF" reopen --branch piit >/dev/null 2>&1
+assert_eq "…and reopening it puts the column back, and both are kept in its record" \
+  "$(pg pg-piit "SELECT status FROM bb.pii_columns WHERE id = $ALT")|$(pg pg-piit "SELECT string_agg(status, ',' ORDER BY id) FROM bb.pii_column_reviews WHERE column_id = $ALT")" "unclassified|reviewed,unclassified"
+assert_eq "…a record that cannot be changed or emptied" \
+  "$(pg pg-piit "DELETE FROM bb.pii_column_reviews" >/dev/null; pg pg-piit "SELECT count(*) FROM bb.pii_column_reviews WHERE column_id IN ($ALT, $TIER)")" "3"
+EMAILCOL="$(pg pg-piit "SELECT id FROM bb.pii_columns WHERE table_name = 'customers' AND column_name = 'email' AND json_path = ''")"
+assert_eq "the API accepts for the owner or an admin, and refuses a baseline column, an unknown one, and anyone else" \
+  "$(code "$KEY" -H 'Content-Type: application/json' -X POST -d '{"note":"a coupon code"}' "$PU/columns/$(cid coupons code '')/accept")|$(code "$KEY" -X POST "$PU/columns/$EMAILCOL/accept")|$(code "$KEY" -X POST "$PU/columns/999999/accept")|$(code "$KA" -X POST "$PU/columns/$(cid coupons id '')/accept")|$(code "$KA" "$PU/unclassified")" \
+  "200|400|404|404|404"
+assert_eq "…which lists what is left, and the security log has each acceptance" \
+  "$(as "$KEY" "$PU/unclassified" | hjson "print(sorted(c['column'] for c in d['columns'] if c['table'] in ('customers', 'coupons')))")|$($S audit --limit 50 | grep -c 'personal-data.accepted' | awk '{print ($1>=2)}')" \
+  "['alt_mobile', 'id', 'prefs']|1"
+assert_eq "a scan takes an inventory number only for what is new, so the numbers people type stay small" \
+  "$(pg pg-piit "SELECT max(id) - count(*) FROM bb.pii_columns")" "0"
 $S branch delete piit >/dev/null 2>&1
 
 echo "### 12. fox uninstall (B1)"
