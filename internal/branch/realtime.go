@@ -225,6 +225,40 @@ func DropRealtimeSlot(name, slot string) error {
 	return err
 }
 
+// ResumeWindow is what a subscriber's `?since=` can be judged against on one
+// branch: how far the feed has been acknowledged, and how far the branch's own
+// log has got.
+type ResumeWindow struct {
+	// Confirmed is the slot's confirmed_flush_lsn, and HaveSlot says whether
+	// there is a slot at all. Postgres will not replay from before Confirmed,
+	// and does not say so when it is asked to: it simply starts where it can.
+	Confirmed string
+	HaveSlot  bool
+	// WALEnd is the branch's current write position. A position beyond it did
+	// not come from this branch's log, and reporting one to Postgres as flushed
+	// moves the slot somewhere the log has not reached.
+	WALEnd string
+}
+
+// RealtimeResumeWindow reads that window for one branch and slot.
+//
+// One query rather than reusing RealtimeSlots: this needs confirmed_flush_lsn,
+// which that struct does not carry and which `fox realtime slots` and
+// `fox check` have no use for, and it needs it for exactly one slot.
+func RealtimeResumeWindow(name, slot string) (ResumeWindow, error) {
+	lines, err := LedgerQuery(ServingBranch(name),
+		"SELECT coalesce((SELECT confirmed_flush_lsn::text FROM pg_replication_slots"+
+			" WHERE slot_name = "+QuoteLiteral(slot)+"), '') || '|' || pg_current_wal_lsn()::text")
+	if err != nil {
+		return ResumeWindow{}, err
+	}
+	if len(lines) == 0 {
+		return ResumeWindow{}, fmt.Errorf("%q did not report its log position", name)
+	}
+	confirmed, walEnd, _ := strings.Cut(lines[0], "|")
+	return ResumeWindow{Confirmed: confirmed, HaveSlot: confirmed != "", WALEnd: walEnd}, nil
+}
+
 // RealtimeHAGuard refuses a setup or teardown while a promoted standby is
 // serving main.
 //
@@ -324,18 +358,62 @@ func SweepRealtimeSlots() {
 		if err != nil {
 			continue
 		}
+		ahead := slotsAheadOfLog(n)
 		for _, s := range slots {
-			if s.Active || !s.Lost() {
+			if s.Active {
 				continue
 			}
-			if err := DropRealtimeSlot(n, s.Name); err != nil {
-				log.Printf("change feed: could not drop the lost slot %s on %s: %v", s.Name, n, err)
-			} else {
-				log.Printf("change feed: dropped %s on %s — it had fallen further behind than %s allows",
-					s.Name, n, WALKeepSize())
+			switch {
+			case s.Lost():
+				if err := DropRealtimeSlot(n, s.Name); err != nil {
+					log.Printf("change feed: could not drop the lost slot %s on %s: %v", s.Name, n, err)
+				} else {
+					log.Printf("change feed: dropped %s on %s — it had fallen further behind than %s allows",
+						s.Name, n, WALKeepSize())
+				}
+			case ahead[s.Name]:
+				// A slot acknowledged past the end of its own log, which
+				// Postgres does not call lost and which no budget bounds: it
+				// holds no WAL, reports as a healthy idle slot, and delivers
+				// nothing ever again, because there is no position for the log
+				// to reach. Until the route began checking a subscriber's
+				// ?since=, one request could put a slot here, and an install
+				// that already has one cannot be repaired by waiting.
+				if err := DropRealtimeSlot(n, s.Name); err != nil {
+					log.Printf("change feed: could not drop %s on %s, which is acknowledged past the end "+
+						"of the log and can never deliver again: %v", s.Name, n, err)
+				} else {
+					log.Printf("change feed: dropped %s on %s — it was acknowledged past the end of the "+
+						"log, so it could never have delivered again; its subscribers will refetch",
+						s.Name, n)
+				}
 			}
 		}
 	}
+}
+
+// slotsAheadOfLog names the feed's inactive slots on a branch whose
+// acknowledged position is beyond the branch's own write position.
+//
+// Asked in SQL rather than compared here, so there is no LSN arithmetic to get
+// wrong. The comparison is only meaningful for an inactive slot: a confirmed
+// position comes from a subscriber's reply and can never legitimately exceed
+// what the server has written, so a slot in this state is not behind, not lost,
+// and not usable.
+func slotsAheadOfLog(name string) map[string]bool {
+	out := map[string]bool{}
+	lines, err := LedgerQuery(ServingBranch(name),
+		"SELECT slot_name FROM pg_replication_slots WHERE slot_name LIKE '"+SlotPrefix+"%'"+
+			" AND NOT active AND confirmed_flush_lsn > pg_current_wal_lsn()")
+	if err != nil {
+		return out
+	}
+	for _, l := range lines {
+		if l = strings.TrimSpace(l); l != "" {
+			out[l] = true
+		}
+	}
+	return out
 }
 
 // RealtimeRole is the role a decoder connects as.

@@ -123,11 +123,28 @@ type Notice struct {
 }
 
 // Reasons a stream says something other than a row.
+//
+// The type matters as much as the code: `resync` means the position is gone and
+// the subscriber has to refetch the table and start again, while `error` with
+// CodeOverflow means it may reconnect with ?since= and carry on. Telling a
+// subscriber to resume from a position it cannot resume from is the one answer
+// worse than both.
 const (
 	CodeOverflow      = "overflow"       // this subscriber could not keep up
 	CodeDecoderFailed = "decoder_failed" // the decoder gave up after repeated failures
 	CodeSlotLost      = "slot_invalid"   // the WAL budget was exceeded; refetch and resubscribe
 	CodeMaxDuration   = "max_duration"   // the stream's time limit; reconnect with ?since=
+	// CodeCursorExpired is a ?since= the feed can no longer replay from: the
+	// slot has been acknowledged past it, or a stream already in progress has
+	// carried changes after it to somebody else. Refetch and subscribe again.
+	CodeCursorExpired = "cursor_expired"
+	// CodeTxTooLarge is one transaction with more changes than a subscriber's
+	// buffer holds. Distinct from CodeOverflow because the way out is not the
+	// same: the changes dropped here share one commit position, so resuming
+	// from the last one seen either replays the whole transaction and overflows
+	// again or skips what is left of it. Refetching is the only way back to a
+	// correct copy.
+	CodeTxTooLarge = "tx_too_large"
 )
 
 // BuildChange turns one decoded tuple into what a subscriber receives.
