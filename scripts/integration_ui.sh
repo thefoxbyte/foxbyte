@@ -88,6 +88,13 @@ rtsql "INSERT INTO public.rt_keyless SELECT 'row-'||g, repeat('x', 200) FROM gen
 rtsql "UPDATE public.rt_keyless SET b = repeat('y', 200)"
 rtsql "ANALYZE public.rt_keyless"
 
+# Personal data for the scan (point 4.1), made here for the same reason. All
+# synthetic: 234567890124 and 456789012341 pass Verhoeff, 4111111111111111 is
+# the usual Luhn test card.
+rtsql "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.pii_people"
+rtsql "CREATE TABLE public.pii_people (id int PRIMARY KEY, aadhaar_no text, email text, card_no text, status text)"
+rtsql "INSERT INTO public.pii_people VALUES (1, '234567890124', 'a@example.com', '4111111111111111', 'open'), (2, '456789012341', 'b@example.org', NULL, 'closed')"
+
 # The console has to be there: a binary built without `-tags embedui` serves
 # the API but no UI, and every test below would fail on a blank page.
 if ! curl -sk "$API/login" | grep -qi '<div id="root"\|<title'; then

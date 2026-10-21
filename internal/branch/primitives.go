@@ -4,7 +4,10 @@ package branch
 
 import (
 	"bytes"
+	"context"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
@@ -114,6 +117,14 @@ func ExecScript(target, sql string) error { return psqlStdin(target, sql) }
 // guardrails exist to stop a person dropping something by accident, not to stop
 // a pipeline doing the thing it was asked to do.
 func SetGuard(target string, enabled bool) { setGuard(target, enabled) }
+
+// OpenSuper connects to the branch's database as the superuser, over pgx. For
+// a paid feature that must read every table whatever its grants and policies
+// say (a personal-data scan) and needs values as values: psql's text output
+// cannot carry a tab or a newline inside one.
+func OpenSuper(ctx context.Context, name string) (*pgx.Conn, error) {
+	return stateConn(ctx, container(ServingBranch(name)), pgDatabase)
+}
 
 // QuoteIdent renders a name as a Postgres identifier, preserving its case.
 func QuoteIdent(s string) string { return sqlIdent(s) }

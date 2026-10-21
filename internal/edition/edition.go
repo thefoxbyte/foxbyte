@@ -32,18 +32,22 @@ const (
 	Promotion Feature = "promotion" // change requests: propose, review, apply
 	Export    Feature = "export"    // ledger export and compliance bundles
 	Pipelines Feature = "pipelines" // ETL pipelines (fox import stays free)
+	// PersonalData is discovering personal data: scanning, and (later) marking
+	// and keeping the marks current. Point 4 of the review plan.
+	PersonalData Feature = "personal-data"
 )
 
 // descriptions are used in refusals, so each one says what the user is missing
 // rather than repeating the feature's identifier back at them.
 var descriptions = map[Feature]string{
-	Realtime:  "the realtime change feed",
-	Anchors:   "writing signed Blackbox anchors",
-	Policy:    "the Blackbox policy rule engine",
-	Impact:    "impact analysis",
-	Promotion: "change requests",
-	Export:    "Blackbox export and compliance bundles",
-	Pipelines: "ETL pipelines",
+	Realtime:     "the realtime change feed",
+	Anchors:      "writing signed Blackbox anchors",
+	Policy:       "the Blackbox policy rule engine",
+	Impact:       "impact analysis",
+	Promotion:    "change requests",
+	Export:       "Blackbox export and compliance bundles",
+	Pipelines:    "ETL pipelines",
+	PersonalData: "personal-data discovery",
 }
 
 // Describe names a feature in a sentence. An unknown feature describes itself,

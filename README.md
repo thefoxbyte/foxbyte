@@ -298,6 +298,7 @@ fox history                                 # the SQL you ran (never results), k
 fox history --search orders                 # find one; then: fox history run <id>, show <id>, save <name> --from <id>
 fox schema                                  # what a branch holds; fox schema orders [--ddl] for one, with its CREATE script
 fox track orders                            # keep created_at, updated_at and last_modified_by on every row
+fox pii scan                                # where personal data is (Aadhaar, PAN, mobile, card…); never the values (Enterprise)
 ```
 
 Connect any Postgres client through the gateway — the **database name is the
@@ -707,6 +708,7 @@ features need a licence — without one it behaves exactly like Standard.
 | Reading rules, checking a statement against them, the evaluations log, listing and rejecting requests | yes | yes |
 | Blackbox export (the compliance bundle) | — | yes |
 | ETL pipelines (`fox import` is free: migrating in is onboarding, not ETL) | — | yes |
+| Scanning for personal data (`fox pii scan`); reading what earlier scans found | — / yes | yes |
 
 ```sh
 curl -fsSL https://get.thefoxbyte.com/install.sh \

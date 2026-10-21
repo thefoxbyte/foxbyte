@@ -52,6 +52,9 @@ var (
 	ErrPromotionNotLicensed = notLicensed{edition.Promotion}
 	ErrExportNotLicensed    = notLicensed{edition.Export}
 	ErrPipelinesNotLicensed = notLicensed{edition.Pipelines}
+	// Scanning for personal data. Reading the findings an earlier scan left is
+	// free, by the rule above.
+	ErrPersonalDataNotLicensed = notLicensed{edition.PersonalData}
 )
 
 // requireFeature is the one-line guard the gated functions start with.

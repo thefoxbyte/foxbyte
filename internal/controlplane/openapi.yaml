@@ -792,6 +792,47 @@ paths:
         "403": { description: Not the branch's owner or an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/personal-data:
+    get:
+      tags: [branches]
+      summary: Where the branch holds personal data, as scans have found it (the branch's owner or an admin).
+      description: >-
+        The latest scan, with what it covered, what it skipped and what it
+        cannot claim, and every finding any scan has made: a column, a
+        category (aadhaar, pan, gstin, mobile, card, email, upi, ifsc,
+        passport, voter_id, vehicle_registration, date_of_birth, ip_address,
+        child), how it was found, and how much of the sample matched. Never a
+        value. Free in every edition; scan is null before the first scan.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200": { description: The latest scan and the findings., content: { application/json: { schema: { $ref: "#/components/schemas/PersonalData" } } } }
+        "403": { description: Not the branch's owner or an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/personal-data/scan:
+    post:
+      tags: [branches]
+      summary: Scan the branch for personal data now (Enterprise; the branch's owner or an admin).
+      description: >-
+        Reads up to sample rows of every table (1,000 unless given) in
+        read-only transactions, recognises identifiers by column names and by
+        values, with their check digits where they have one, and records where
+        it found them, never the values. A finding found again keeps its
+        state. The scan is in the security log with its coverage.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sample: { type: integer, minimum: 1, maximum: 100000, description: "Rows read per table." }
+      responses:
+        "200": { description: Scanned; the branch's findings as they now are., content: { application/json: { schema: { $ref: "#/components/schemas/PersonalData" } } } }
+        "400": { description: A sample outside 1 to 100000. }
+        "403": { description: Not the branch's owner or an admin, or no licence covers personal-data discovery. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches/{name}/ledger:
     get:
       tags: [ledger]
@@ -2094,6 +2135,45 @@ components:
               created: { type: string }
               updated: { type: string }
               by: { type: string }
+    PersonalData:
+      type: object
+      properties:
+        branch: { type: string }
+        scan:
+          nullable: true
+          type: object
+          properties:
+            id: { type: integer }
+            started: { type: string, format: date-time }
+            finished: { type: string, format: date-time }
+            actor: { type: string }
+            sample: { type: integer }
+            tables: { type: integer }
+            columns: { type: integer }
+            skipped:
+              type: array
+              items: { type: object, properties: { object: { type: string }, reason: { type: string } } }
+            limits: { type: array, items: { type: string } }
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              schema: { type: string }
+              table: { type: string }
+              column: { type: string }
+              path: { type: string, description: "A JSON path inside the column; empty for the column itself." }
+              category: { type: string }
+              rule: { type: string, enum: [name, value, name+value] }
+              confidence: { type: string, enum: [high, medium, low] }
+              why: { type: string }
+              matched: { type: integer }
+              sampled: { type: integer }
+              state: { type: string, enum: [suggested, confirmed, rejected] }
+              firstScan: { type: integer }
+              lastScan: { type: integer }
+              lastSeen: { type: string, format: date-time }
     CatalogObject:
       type: object
       properties:

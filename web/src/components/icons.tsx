@@ -25,6 +25,9 @@ export const IconImport = (p: IconProps) => (
 export const IconPipelines = (p: IconProps) => (
   <Icon {...p}><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="18" r="2.5" /><path d="M8.5 6H14a4 4 0 0 1 4 4v5.5" /></Icon>
 )
+export const IconPersonalData = (p: IconProps) => (
+  <Icon {...p}><circle cx="11" cy="8" r="3.5" /><path d="M4 20a7 7 0 0 1 10.5-6" /><circle cx="17.5" cy="17.5" r="3" /><path d="M19.7 19.7 22 22" /></Icon>
+)
 export const IconBlackbox = (p: IconProps) => (
   <Icon {...p}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /><path d="M8 13h8" /><path d="M8 16.5h5" /></Icon>
 )
