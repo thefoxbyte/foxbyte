@@ -755,8 +755,9 @@ test('the data grid sorts, filters, and saves edits together', async ({ page }) 
   await expect(page.locator('.grid-wrap tbody tr', { hasText: 'bee' })).toHaveCount(1)
 })
 
-// Points 5.1 and 6.1: row tracking, turned on from the console. Postgres then
-// keeps when each row was made and changed, and the login that changed it.
+// Points 5.1, 5.2 and 6.1: row tracking, turned on from the console. Postgres
+// then keeps when each row was made and changed, the login that changed it, and
+// whom for (nobody here: the console asserts no application user).
 test('a table can be tracked: each row says when it was made and changed, and who changed it', async ({ page }) => {
   await signIn(page)
   await page.goto('/console', { waitUntil: 'domcontentloaded' })
@@ -783,11 +784,14 @@ test('a table can be tracked: each row says when it was made and changed, and wh
   const row = page.locator('.grid-wrap tbody tr').first()
   await expect(row).toContainText(email, { timeout: 30_000 })
   await expect(row).not.toContainText('mallory')
+  await expect(page.locator('.grid-wrap thead')).toContainText('last_modified_for')
 
   // The grid will not edit what Postgres keeps.
   await page.getByRole('button', { name: 'Edit rows' }).click()
   const byCell = page.locator('.edit-grid tbody tr').first().locator('td').nth(5)
   await expect(byCell).toHaveAttribute('title', /Kept by row tracking/)
+  const forCell = page.locator('.edit-grid tbody tr').first().locator('td').nth(6)
+  await expect(forCell).toHaveAttribute('title', /Kept by row tracking/)
   await page.getByRole('button', { name: 'Done' }).click()
 
   // Stopped, after asking: the columns stay.
@@ -795,4 +799,45 @@ test('a table can be tracked: each row says when it was made and changed, and wh
   await page.getByRole('button', { name: 'Stop tracking' }).last().click()
   await expect(page.getByRole('button', { name: 'Track changes…' })).toBeVisible({ timeout: 30_000 })
   await expect(page.locator('.grid-wrap thead')).toContainText('last_modified_by')
+})
+
+// Point 5.2 on a table tracked before whom-for: one click adds the column, and
+// nothing else about the table changes.
+test('a table tracked without whom-for gains it from the console', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const t = `e2e_trkf_${Date.now().toString().slice(-6)}`
+  const ed = page.locator('textarea.editor')
+  await ed.fill(`CREATE TABLE ${t} (id int PRIMARY KEY, v text)`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await page.locator('.obj-filter').fill(t)
+  await page.locator('.obj-item', { hasText: t }).first().click()
+
+  await page.getByRole('button', { name: 'Track changes…' }).click()
+  const dlg = page.getByRole('dialog', { name: `Track changes to ${t}` })
+  await dlg.getByLabel('Keep whom for').uncheck()
+  await dlg.getByRole('button', { name: 'Track', exact: true }).click()
+  const on = page.locator('.track-on')
+  await expect(on).toBeVisible({ timeout: 30_000 })
+  await expect(on).not.toContainText('last_modified_for')
+
+  await page.getByRole('button', { name: 'Add whom for' }).click()
+  await expect(on).toContainText('last_modified_for', { timeout: 30_000 })
+  await expect(page.getByRole('button', { name: 'Add whom for' })).toHaveCount(0)
+  await expect(on).toContainText('last_modified_by')
+})
+
+// Point 5.2 end to end: a row integration_ui.sh changed through the Gateway in
+// a transaction an application asserted alice for keeps that, beside the login.
+test('a tracked row shows whom it was last changed for', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const t = process.env.FOX_E2E_FOR_ROWS ?? 'e2e_for_rows'
+  await page.locator('.obj-filter').fill(t)
+  await page.locator('.obj-item', { hasText: t }).first().click()
+  const row = page.locator('.grid-wrap tbody tr').first()
+  await expect(row).toContainText('asserted:uishop:alice', { timeout: 30_000 })
+  await expect(row).toContainText(email)
 })

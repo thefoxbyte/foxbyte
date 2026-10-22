@@ -1907,8 +1907,8 @@ pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS trk_a, trk_b, trk_
   CREATE TABLE trk_b (id int PRIMARY KEY); INSERT INTO trk_b VALUES (1);
   CREATE TABLE trk_c (id int PRIMARY KEY); CREATE TABLE trk_d (id int, created_at date);
   GRANT ALL ON trk_a, trk_b, trk_c, trk_d TO db_client;" >/dev/null
-assert_contains "fox track <table> starts tracking it" "$($S track trk_a)" "public.trk_a is tracked: created_at (when made), updated_at (when last changed), last_modified_by (who last changed it). Rows already there are left empty."
-assert_contains "…and fox track lists it" "$($S track)" "public.trk_a  created_at  updated_at  last_modified_by"
+assert_contains "fox track <table> starts tracking it" "$($S track trk_a)" "public.trk_a is tracked: created_at (when made), updated_at (when last changed), last_modified_by (who last changed it), last_modified_for (whom for, where an application said so). Rows already there are left empty."
+assert_eq "…and fox track lists it" "$($S track | grep '^public.trk_a ' | tr -s ' ')" "public.trk_a created_at updated_at last_modified_by last_modified_for"
 assert_eq "rows from before are left empty" "$(pg pg-main "SELECT count(*) FROM trk_a WHERE created_at IS NULL AND updated_at IS NULL AND last_modified_by IS NULL")" "2"
 $S sql "INSERT INTO trk_a (id, v, created_at, updated_at, last_modified_by) VALUES (3, 'c', '2000-01-01', '2000-01-01', 'mallory')" >/dev/null 2>&1
 assert_eq "an insert is stamped, whatever the statement wrote, with the login that made it" \
@@ -1926,7 +1926,7 @@ assert_eq "the trigger cannot be dropped or disabled without the override" \
   "$(sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -tAc "DROP TRIGGER bb_track ON trk_a" 2>&1 | grep -c 'cannot be dropped')|$(sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -tAc "ALTER TABLE trk_a DISABLE TRIGGER bb_track" 2>&1 | grep -c 'cannot be disabled')" "1|1"
 assert_contains "--label-existing gives rows already there this moment" "$($S track trk_b --label-existing)" "labelled with this moment"
 assert_eq "…which they hold" "$(pg pg-main "SELECT count(*) FROM trk_b WHERE created_at IS NOT NULL AND updated_at IS NOT NULL")" "1"
-$S track trk_c --created made --no-updated --by who >/dev/null
+$S track trk_c --created made --no-updated --by who --no-for >/dev/null
 assert_eq "the columns can be named, or left out" \
   "$(pg pg-main "SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute WHERE attrelid = 'trk_c'::regclass AND attnum > 0 AND NOT attisdropped")" "id,made,who"
 OUT="$($S track trk_d 2>&1)"; RC=$?
@@ -2298,6 +2298,67 @@ assert_eq "removing an application refuses its tokens, and keeps what it asserte
 PGPASSWORD="$KEY" psql "$GATEWAY/main?sslmode=require" -X -q -c "SET bb.allow_destructive=on; DROP TABLE IF EXISTS f1_a, f1_b, f1_c, f1_d, f1_f, f1_g, f1_h, f1_i, f1_k" >/dev/null 2>&1
 for b in f1b f1s; do $S branch delete "$b" >/dev/null 2>&1; done
 rm -rf "$F1D"
+
+echo "### 11v. last_modified_for: whom each row was last changed for, through the Gateway (point 5.2)"
+# Row tracking's fourth column: what an application asserted (11u), or a
+# client claimed, about whom a change was for. The SQL's own cases (a value set
+# by hand, another application's login, the cost) are integration_f1.sh's.
+F5D="$(mktemp -d)"
+( cd "$(dirname "$0")/.." && go build -o "$F5D/mint" ./scripts/f1/mint ) || bad "the token tool builds"
+printf 'password123\n' | $S user create trk-svc@foxbyte.dev >/dev/null 2>&1
+TK="$($S apikey create trk-svc@foxbyte.dev app 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+"$F5D/mint" keygen "$F5D" k1 >"$F5D/k1.pub"
+$S app remove trkapp >/dev/null 2>&1
+$S app register trkapp --account trk-svc@foxbyte.dev --key "$F5D/k1.pub" --kid k1 >/dev/null 2>&1
+AUD5="$($S app list --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["install_id"])')"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS trk_f, trk_g;
+  CREATE TABLE trk_f (id int PRIMARY KEY, v text); CREATE TABLE trk_g (id int PRIMARY KEY, v text);
+  INSERT INTO trk_g VALUES (1, 'old');
+  GRANT ALL ON trk_f, trk_g TO db_client;" >/dev/null
+$S track trk_f >/dev/null
+# gw5 <sql…>: one transaction through the Gateway as the application's account.
+gw5() { PGPASSWORD="$TK" psql "$GATEWAY/main?sslmode=require" -X -q -tA 2>&1; }
+gw5 >/dev/null <<SQL
+BEGIN;
+SELECT bb.act_for(\$1) \bind '$("$F5D/mint" token "$F5D/k1.seed" -kid k1 -iss trkapp -aud "$AUD5" -sub alice)' \g
+INSERT INTO trk_f VALUES (1, 'a');
+COMMIT;
+SQL
+gw5 >/dev/null <<'SQL'
+BEGIN; SET LOCAL bb.claimed_actor = 'bob'; INSERT INTO trk_f VALUES (2, 'b'); COMMIT;
+SQL
+gw5 >/dev/null <<'SQL'
+INSERT INTO trk_f VALUES (3, 'c');
+SQL
+assert_eq "a row keeps the login and, where the application asserted one, whom it was for" \
+  "$(pg pg-main "SELECT string_agg(id || ':' || last_modified_by || ':' || coalesce(last_modified_for, 'NULL'), ' ' ORDER BY id) FROM trk_f")" \
+  "1:trk-svc@foxbyte.dev:asserted:trkapp:alice 2:trk-svc@foxbyte.dev:claimed:bob 3:trk-svc@foxbyte.dev:NULL"
+$S app key revoke trkapp k1 >/dev/null 2>&1
+gw5 >/dev/null <<SQL
+BEGIN;
+SELECT bb.act_for(\$1) \bind '$("$F5D/mint" token "$F5D/k1.seed" -kid k1 -iss trkapp -aud "$AUD5" -sub alice)' \g
+UPDATE trk_f SET v = 'z' WHERE id = 1;
+COMMIT;
+SQL
+assert_eq "a revoked key's token is not taken: the row is changed for nobody" "$(pg pg-main "SELECT coalesce(last_modified_for, 'NULL') FROM trk_f WHERE id = 1")" "NULL"
+$S track trk_g --no-for >/dev/null
+assert_eq "--no-for tracks a table as before, with three columns" \
+  "$(pg pg-main "SELECT count(*) FROM pg_attribute WHERE attrelid = 'trk_g'::regclass AND attname = 'last_modified_for'")" "0"
+assert_contains "tracking it again adds the for column, and says so" "$($S track trk_g)" "was tracked already, and now keeps last_modified_for too"
+assert_eq "…and nothing else: its rows keep what they had, and the trigger was replaced, not dropped" \
+  "$(pg pg-main "SELECT v || '|' || coalesce(last_modified_for, 'NULL') FROM trk_g WHERE id = 1")|$(pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE command_tag = 'DROP TRIGGER' AND object_identity LIKE '%trk_g%'")" "old|NULL|0"
+assert_contains "…a third time it changes nothing" "$($S track trk_g)" "is tracked already"
+assert_eq "fox track lists the for column" "$($S track | grep '^public.trk_g ' | tr -s ' ')" "public.trk_g created_at updated_at last_modified_by last_modified_for"
+assert_eq "the API says which tables keep it" \
+  "$(as "$KA" https://localhost:8080/api/branches/main/tracking | hjson 'print(sorted((t["name"], t["for"]) for t in d["tables"] if t["name"] in ("trk_f", "trk_g")))')" \
+  "[('trk_f', 'last_modified_for'), ('trk_g', 'last_modified_for')]"
+$S track --new on >/dev/null
+assert_eq "--new on keeps it on the tables made from then" \
+  "$(as "$KA" https://localhost:8080/api/branches/main/tracking | hjson 'print(d["settings"]["for"])')" "last_modified_for"
+$S track --new off >/dev/null
+$S app remove trkapp >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS trk_f, trk_g" >/dev/null
+rm -rf "$F5D"
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

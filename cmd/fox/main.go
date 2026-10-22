@@ -90,8 +90,9 @@ Stack:
                        The SQL people ran (console, API, fox sql, fox export), never results; kept 90 days
   schema [--branch b] [<object> [--ddl]] [--search t] [--kind k] [--all] [--json]
                        What a branch holds, and each object's CREATE script (read only)
-  track [<table> [--off] [--label-existing] [--created c] [--updated u] [--by col]] [--new on|off] [--branch b]
-                       Keep who changed each row and when (created_at, updated_at, last_modified_by)
+  track [<table> [--off] [--label-existing] [--created c] [--updated u] [--by col] [--for col] [--no-for]] [--new on|off] [--branch b]
+                       Keep who changed each row, whom for, and when (created_at, updated_at,
+                       last_modified_by, last_modified_for); again on a tracked table adds the for column
   pii scan [--branch b] [--sample n] [--new] [--json]
                        Find personal data (Aadhaar, PAN, mobile, card, email…) by column names
                        and sampled values, and inside JSON path by path; keeps where, never

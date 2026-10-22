@@ -11,8 +11,8 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
-// Row tracking over HTTP (points 5.1, 6.1, 5.2's last_modified_by): who
-// changed each row and when. The rules are in internal/ledger/tracking.sql and
+// Row tracking over HTTP (points 5.1, 5.2 and 6.1): who changed each row,
+// whom for, and when. The rules are in internal/ledger/tracking.sql and
 // internal/branch/tracking.go.
 //
 //	GET    /api/branches/{name}/tracking                          what is tracked (Use)
@@ -37,7 +37,7 @@ func registerTracking(mux *http.ServeMux) {
 		o := branch.DefaultTrackOptions
 		if r.ContentLength != 0 {
 			if err := json.NewDecoder(r.Body).Decode(&o); err != nil {
-				writeErr(w, 400, fmt.Errorf("the body must be JSON: {\"created\", \"updated\", \"by\", \"label_existing\"}"))
+				writeErr(w, 400, fmt.Errorf("the body must be JSON: {\"created\", \"updated\", \"by\", \"for\", \"label_existing\"}"))
 				return
 			}
 		}
@@ -56,7 +56,7 @@ func registerTracking(mux *http.ServeMux) {
 			branch.TrackOptions
 		}{TrackOptions: branch.DefaultTrackOptions}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeErr(w, 400, fmt.Errorf("the body must be JSON: {\"on\": true|false, \"created\", \"updated\", \"by\"}"))
+			writeErr(w, 400, fmt.Errorf("the body must be JSON: {\"on\": true|false, \"created\", \"updated\", \"by\", \"for\"}"))
 			return
 		}
 		what := "new tables off"
