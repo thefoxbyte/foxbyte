@@ -2171,6 +2171,29 @@ assert_eq "…as CSV too, and refuses a window or a table it does not know" \
   "text/csv; charset=utf-8|branch,state,owner,admins,admins_read|400|400"
 $S branch delete arq >/dev/null 2>&1
 
+echo "### 11t. listing backups starts no container while main runs"
+# A throwaway container on the bridge network creates and destroys a network
+# interface, and a browser on the same machine takes that for the network
+# changing and aborts every request it has in flight ("Failed to fetch"). The
+# Dashboard lists backups on every visit, so the console's own suite saw one
+# every few seconds and failed a test at random. With main running, the listing
+# runs inside it.
+EVLOG="$(mktemp)"
+sudo timeout 8 docker events --filter type=container --filter event=start --format '{{.Actor.Attributes.name}}' >"$EVLOG" 2>/dev/null &
+EVPID=$!
+sleep 1
+for _ in 1 2 3; do as "$KEY" https://localhost:8080/api/backups >/dev/null; done
+wait "$EVPID" 2>/dev/null
+assert_eq "listing backups through the API, three times, starts no container" \
+  "$(grep -c . "$EVLOG")|$(as "$KEY" https://localhost:8080/api/backups | python3 -c 'import sys,json; print(len(json.load(sys.stdin)) > 0)')" "0|True"
+rm -f "$EVLOG"
+# Without a running primary the backups are still in object storage, and
+# listing them falls back to a throwaway container.
+sudo docker stop pg-main >/dev/null 2>&1
+assert_eq "…and with main stopped they are still listed, from a container of their own" \
+  "$($S check 2>&1 | grep '^[a-z]* *backups ' | grep -c 'could not be listed')" "0"
+$S start >/dev/null 2>&1; sleep 3
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.
