@@ -14,3 +14,16 @@ CREATE FUNCTION fox_txn_id()
 RETURNS text
 AS 'MODULE_PATHNAME'
 LANGUAGE C VOLATILE PARALLEL UNSAFE;
+
+-- The MAC over an application actor and this transaction, under the install
+-- secret (bb_f1.secret). Never granted: a client able to call it could forge.
+CREATE FUNCTION fox_app_mac(actor text, issuer text, kid text, tenant text)
+RETURNS text
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+-- n bytes from the server's strong random source, for the install secret.
+CREATE FUNCTION fox_random_bytes(n integer)
+RETURNS bytea
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;

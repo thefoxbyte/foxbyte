@@ -75,9 +75,16 @@ echo "### a throwaway Postgres, with the Blackbox and the prototype"
 sudo docker rm -f "$C" >/dev/null 2>&1
 sudo docker run -d --name "$C" -e POSTGRES_USER=dbadmin -e POSTGRES_PASSWORD=f1proto -e POSTGRES_DB=appdb "$IMG" >/dev/null
 for _ in $(seq 60); do [ "$(su 'SELECT 1')" = "1" ] && break; sleep 1; done
-sudo docker exec -i "$C" psql -X -q -U dbadmin -d appdb -v ON_ERROR_STOP=1 < "$REPO/internal/ledger/ledger.sql" >/dev/null 2>"$WORK/install.log" &&
-  sudo docker exec -i "$C" psql -X -q -U dbadmin -d appdb -v ON_ERROR_STOP=1 < "$REPO/scripts/f1/f1_proto.sql" >/dev/null 2>>"$WORK/install.log"
-assert_eq "the Blackbox and the prototype install" "$?" "0"
+# The Blackbox as the engine installs it (EnsureLedgerV2's order): the base,
+# then the richer capture, provenance, the data guardrails, and row tracking,
+# which needs the guardrails' override function. Then the prototype.
+installed=1
+: >"$WORK/install.log"
+for f in internal/ledger/ledger.sql internal/ledger/ledger_ext.sql internal/ledger/provenance.sql \
+         internal/ledger/datachanges.sql internal/ledger/tracking.sql scripts/f1/f1_proto.sql; do
+  sudo docker exec -i "$C" psql -X -q -U dbadmin -d appdb -v ON_ERROR_STOP=1 < "$REPO/$f" >/dev/null 2>>"$WORK/install.log" || { installed=0; echo "  (installing $f failed)"; }
+done
+assert_eq "the Blackbox and the prototype install" "$installed" "1"
 [ -s "$WORK/install.log" ] && grep -v '^NOTICE' "$WORK/install.log" | head -5
 
 ( cd "$REPO" && go build -o "$WORK/mint" ./scripts/f1/mint ) || { echo "could not build the mint tool"; exit 1; }
@@ -103,10 +110,14 @@ assert_eq "it verifies RFC 8032's test vectors, and refuses them altered" \
            decode('92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00','hex'))")" \
   "true|true|false"
 assert_eq "…and 20,000 random inputs of every length are refused without crashing a backend" \
-  "$(su "SELECT count(*) FILTER (WHERE bb_f1.fox_ed25519_verify(bb_f1.random_bytes((g % 40) + 12), bb_f1.random_bytes((g % 300) + 1), bb_f1.random_bytes((g % 70) + 1))) FROM generate_series(1, 20000) g")|$(su "SELECT bb_f1.fox_ed25519_verify(''::bytea, ''::bytea, ''::bytea)")|$(su 'SELECT 1')" \
+  "$(su "SELECT count(*) FILTER (WHERE bb_f1.fox_ed25519_verify(bb_f1.fox_random_bytes((g % 40) + 12), bb_f1.fox_random_bytes((g % 300) + 1), bb_f1.fox_random_bytes((g % 70) + 1))) FROM generate_series(1, 20000) g")|$(su "SELECT bb_f1.fox_ed25519_verify(''::bytea, ''::bytea, ''::bytea)")|$(su 'SELECT 1')" \
   "0|f|1"
 assert_eq "its private functions are not a client's to call" \
-  "$(echo "SELECT bb_f1.mac('a','shop','k1','');" | as shop_app | grep -c 'permission denied for schema bb_f1')" "1"
+  "$(echo "SELECT bb_f1.fox_app_mac('a','shop','k1','');" | as shop_app | grep -c 'permission denied for schema bb_f1')" "1"
+# Its own link to OpenSSL, not one borrowed from the postgres binary: built
+# with PGXS's MODULES, SHLIB_LINK was ignored and the library had none.
+assert_eq "the library links libcrypto itself, on 18 and 16" \
+  "$(sudo docker run --rm "$IMG" sh -c 'ldd /usr/lib/postgresql/18/lib/fox_ed25519.so | grep -c libcrypto')|$(sudo docker run --rm "$IMG16" sh -c 'ldd /usr/lib/postgresql/16/lib/fox_ed25519.so | grep -c libcrypto')" "1|1"
 assert_eq "the Postgres 16 build verifies too" \
   "$(sudo docker run --rm "$IMG16" sh -c 'ls /usr/lib/postgresql/16/lib/fox_ed25519.so >/dev/null && echo built')" "built"
 
@@ -234,6 +245,18 @@ SQL
 assert_eq "each transaction is its own user's, and one that forgets to assert is nobody's" \
   "$(attr pool_1)/$(attr pool_2)/$(attr pool_3)" "asserted by shop|alice|/asserted by shop|bob|/none||"
 
+assert_eq "bb.app_actor_label() decides as bb.app_actor() does: asserted, claimed, none, and a forgery" \
+  "$(as shop_app <<SQL | tr '\n' '/'
+BEGIN;
+SELECT bb.act_for(\$1) \bind '$(tok k1)' \g
+SELECT bb.app_actor_label();
+COMMIT;
+BEGIN; SET LOCAL fox.claimed_actor = 'bob'; SELECT bb.app_actor_label(); COMMIT;
+BEGIN; SELECT '[' || bb.app_actor_label() || ']'; COMMIT;
+BEGIN; SELECT set_config('fox.app.actor', 'mallory', true); SELECT '[' || bb.app_actor_label() || ']'; COMMIT;
+SQL
+)" "alice/asserted:shop:alice/claimed:bob/[]/mallory/[]/"
+
 echo "### keys over their life"
 assert_eq "during a rotation both keys are good" \
   "$(one shop_app "$(tok k1 -sub r1)" k_rot1)/$(one shop_app "$(tok k2 -kid k2 -sub r2)" k_rot2)" \
@@ -294,7 +317,50 @@ COMMIT;
 SQL
 )"
 echo "  (bb.app_actor(), what each recorded row pays: ${PER} µs a call)"
-assert_eq "checking the actor costs under 50 µs a call" "$(awk -v p="$PER" 'BEGIN{print (p != "" && p < 50)}')" "1"
+assert_eq "checking the actor costs under 5 µs a call, the check remembered across rows" "$(awk -v p="$PER" 'BEGIN{print (p != "" && p < 5)}')" "1"
+
+# The bound the cache exists for (design, sections 11 and 13): a 10,000-row
+# UPDATE on a table with FoxByte's row-tracking trigger, against the same
+# trigger asking for the application actor on every row, as 5.2's
+# last_modified_for will (bb.app_actor_label(), the string that column
+# holds). The minimum of nine alternating runs each: noise on the VM only ever
+# adds time, and medians moved several percent from run to run while the
+# minimums held steady.
+su "CREATE TABLE bench_a (id int PRIMARY KEY, v int, created_at timestamptz, updated_at timestamptz, last_modified_by text);
+    CREATE TABLE bench_b (LIKE bench_a INCLUDING ALL);
+    INSERT INTO bench_a (id, v) SELECT g, 0 FROM generate_series(1, 10000) g;
+    INSERT INTO bench_b (id, v) SELECT g, 0 FROM generate_series(1, 10000) g;
+    GRANT ALL ON bench_a, bench_b TO shop_app;
+    DO \$\$ DECLARE src text; BEGIN
+      SELECT prosrc INTO src FROM pg_proc WHERE oid = 'bb.track_row()'::regprocedure;
+      EXECUTE format('CREATE FUNCTION public.bench_track_with_actor() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS %L',
+                     regexp_replace(src, 'BEGIN', 'BEGIN IF bb.app_actor_label() <> ''asserted:shop:bench'' THEN RAISE EXCEPTION ''not asserted''; END IF;'));
+    END \$\$;
+    CREATE TRIGGER bench_a_track BEFORE INSERT OR UPDATE ON bench_a FOR EACH ROW EXECUTE FUNCTION bb.track_row('created_at', 'updated_at', 'last_modified_by');
+    CREATE TRIGGER bench_b_track BEFORE INSERT OR UPDATE ON bench_b FOR EACH ROW EXECUTE FUNCTION public.bench_track_with_actor('created_at', 'updated_at', 'last_modified_by');" >/dev/null
+for _ in 1 2 3 4 5 6 7 8 9; do
+  for t in bench_a bench_b; do
+    cat <<SQL
+BEGIN;
+SELECT bb.act_for(\$1) \bind '$T' \g
+SELECT clock_timestamp() AS t0 \gset
+UPDATE $t SET v = v + 1;
+SELECT '$t', extract(epoch FROM clock_timestamp() - :'t0'::timestamptz) * 1000;
+COMMIT;
+SQL
+  done
+done > "$WORK/bench.sql"
+sudo docker cp "$WORK/bench.sql" "$C:/tmp/bench.sql"
+BENCH="$(sudo docker exec "$C" psql -X -q -tA -F ' ' -U shop_app -d appdb -f /tmp/bench.sql 2>&1)"
+fastest() { grep "^$1 " <<<"$BENCH" | awk '{print $2}' | sort -n | head -1; }
+MA="$(fastest bench_a)"; MB="$(fastest bench_b)"
+echo "  (10,000 tracked rows updated: ${MA} ms; asking for the application actor on each row too: ${MB} ms)"
+assert_eq "asking for the actor on every row of a 10,000-row tracked update costs under 5%" \
+  "$(awk -v a="$MA" -v b="$MB" 'BEGIN{print (a != "" && b != "" && b <= a * 1.05)}')" "1"
+# The benchmark's trigger raises on any row not asserted, so nine updates of
+# every row is nine checks of every row that all passed.
+assert_eq "…and every row of every run was checked and asserted" \
+  "$(su "SELECT count(*) FROM bench_b WHERE v = 9")" "10000"
 
 echo
 echo "==== ${PASS} passed, ${FAIL} failed ===="

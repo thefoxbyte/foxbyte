@@ -1,7 +1,8 @@
 # F1: identity and attribution — design
 
 **Status:** agreed as recommended (22 October 2026, #175). The Gate 0 prototype
-is built and its suite passes; what it found is in section 13. Written against
+is built and its suite passes (#176); what it found is in section 13. Gate 1's
+first step, the check in C with its cache, is in section 14. Written against
 `main` at `d93492c`. It answers Gate 0's F1 item in the review plan
 (`docs/FOX_Expert_Review_Plan.md`, sections 4 and 5): the token protocol written
 down, the signature-checking choice made, and the prototype and its tests
@@ -401,4 +402,68 @@ path", which needs the product wired and is Gate 1:
 | The same with `bb.act_for(token)` | 0.395 ms (+0.27 ms, under 0.5) |
 | `bb.app_actor()`, asserted, per call | 12.7 µs |
 | `fox_txn_id()`, per call | 0.3 µs |
+
+---
+
+## 14. Gate 1, step 1: the check in C, remembered across rows
+
+**The question.** Section 13 left one bound unmet: a 10,000-row `UPDATE` on a
+tracked table, asking for the application actor on every row as 5.2's
+`last_modified_for` will, must cost within 5% of today. At 12.7 µs a row it cost
+far more.
+
+**What changed** (`feat/f1-verify-cache`):
+
+- **The check is in C.** `bb.app_actor()` is now the extension's `fox_app_actor`.
+  - **The MAC** is computed with OpenSSL's HMAC (`fox_app_mac`), under a secret
+    read once per backend as its owner, and compared in constant time.
+  - **The secret's bytes** come from the server's strong random source
+    (`fox_random_bytes`).
+  - **pgcrypto is no longer needed**, and with it goes the qualified-name
+    workaround of section 13.
+- **It remembers the last set of values it checked**: the transaction, the
+  actor, the issuer, the key, the tenant and the MAC, with the answer.
+  - A call with the same values in the same transaction is answered from
+    memory. Any change is checked again.
+  - A client can change a setting, but not this process's memory, so the
+    memory never vouches for values it did not check.
+- **The settings are defined by the extension when it loads**
+  (`DefineCustomStringVariable`), not left as placeholders, so reading one is a
+  pointer, not a lookup by name. They stay settings any session may set; the MAC
+  is what makes a value count.
+- **`bb.app_actor_label()` returns the decision as one string**: what
+  `last_modified_for` will hold, `asserted:<issuer>:<user>`, `claimed:<user>`,
+  or empty. Returning a record cost a tuple built and a field taken out of it on
+  every call, which was most of what was left.
+- **The library links libcrypto itself.** Built with PGXS's `MODULES`, it had
+  ignored `SHLIB_LINK` and linked nothing, working only because the postgres
+  binary links OpenSSL.
+
+**Measured on the test VM**, Postgres 18.6. Each is the fastest of nine
+alternating runs: noise on the VM only adds time, and medians moved several
+percent from run to run.
+
+| What | Before | After |
+|---|---|---|
+| `bb.app_actor()`, asserted, per call | 12.7 µs | 1.7–2.2 µs |
+| 10,000 tracked rows updated, checked on every row, against not checked | +18% (record, before the settings were defined) | **+1% to +3%**: within noise of a trivial call (−3% to +2%) |
+| A transaction with `bb.act_for(token)` | +0.27 ms | +0.19 ms |
+
+**How the bound was found.** A third trigger, making a trivial built-in call per
+row, showed that the trigger's own call costs nothing measurable. What was left
+was the check itself:
+
+1. The record return, which the label removed.
+2. Five settings looked up by name on every row, which defining them removed.
+
+**The suite has 50 checks, all passing.** New since #176:
+
+- the 5% bound itself, the fastest of nine alternating runs;
+- that the label agrees with the record in every state;
+- that the library links libcrypto on both majors.
+
+**Still Gate 1, in order:** the SQL into `internal/ledger` with the actor
+recorded by the Blackbox's own trigger; `fox app` registration; row tracking's
+`last_modified_for` and provenance; the access review's Applications table;
+G1's remainder; SDK helpers; the public wording.
 
