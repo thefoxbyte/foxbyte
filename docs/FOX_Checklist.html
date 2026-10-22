@@ -448,6 +448,10 @@
       <li class="ok">Refused on a conflict (both sides changed the same object), on a statement the target's gate blocks, and when there is nothing to promote</li>
       <li class="ok">Approving needs the right to manage the target, so an agent cannot approve its own request</li>
       <li class="ok">Promotion: CLI, REST, MCP and the web Requests page</li></ul></td><td class="tb">Unit; v2 §8, §8b</td></tr>
+    <tr data-id="H19" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H19</td><td><b>The catalog scan: what the event triggers did not record</b><ul class="subs">
+      <li class="ok">A change made with the event triggers stopped is recorded as UNRECORDED</li><li class="ok">Roles, memberships, settings, databases, event triggers: OBSERVED</li>
+      <li class="ok">A setting or trigger change that switches the record off: kill-switch</li><li class="ok">Recorded changes, renames, cascades and restarts add nothing</li>
+      <li class="ok">Its memory is outside the database; every 5 minutes and <code>fox blackbox scan</code></li><li class="ok">Who and exactly when stay unknown</li></ul></td><td class="tb">Unit; v2 §11</td></tr>
   </table>
 </section>
 

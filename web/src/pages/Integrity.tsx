@@ -164,8 +164,10 @@ export default function Integrity() {
                     <td>{en.command_tag} <span className="muted">{en.object_identity}</span></td>
                     <td><span className={'lg-status ' + en.status}>{en.status}</span></td>
                     <td align="right">
-                      <button className="ghost" disabled={restoring || en.status === 'BLOCKED'}
-                        title={en.status === 'BLOCKED' ? 'A blocked change never happened' : 'Branch from just before this change'}
+                      <button className="ghost" disabled={restoring || en.status === 'BLOCKED' || en.status === 'UNRECORDED' || en.status === 'OBSERVED'}
+                        title={en.status === 'BLOCKED' ? 'A blocked change never happened'
+                          : en.status === 'UNRECORDED' || en.status === 'OBSERVED' ? 'Found by the catalog scan after the change: there is no moment just before it'
+                          : 'Branch from just before this change'}
                         onClick={() => { setEntryId(String(en.id)); setBeforeErr('') }}>Select</button>
                     </td>
                   </tr>

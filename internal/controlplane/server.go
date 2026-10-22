@@ -115,6 +115,10 @@ func Serve(addr string) error {
 
 	// Blackbox 2.0: anchor new ledger entries outside the database on a schedule.
 	branch.StartCheckpointer()
+	// And what the event triggers did not record: changes made with them
+	// stopped, and roles, memberships, databases and settings, which they never
+	// see. Free in every edition.
+	branch.StartCatalogScanner()
 	// Base backups on a schedule, pruned to a retention (audit v2 G19).
 	branch.StartBackupScheduler()
 	// And proof that they restore: a backup nothing has ever restored is a hope,

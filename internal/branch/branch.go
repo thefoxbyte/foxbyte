@@ -784,6 +784,7 @@ func Create(name, parent string) error {
 		return err
 	}
 	forgetBranchRoles(name)
+	forgetCatalogScan(name)
 	// Cloning a branch that doesn't exist fails deep in the storage layer with a
 	// message about datasets or snapshots; say what's actually wrong.
 	if !activeStorage().exists(parent) {
@@ -822,6 +823,7 @@ func Delete(name string) error {
 		return fmt.Errorf("refusing to delete the primary branch 'main'")
 	}
 	forgetBranchRoles(name)
+	forgetCatalogScan(name)
 	removeContainer(container(name))
 	return activeStorage().destroy(name)
 }

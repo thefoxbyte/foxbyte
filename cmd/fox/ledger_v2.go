@@ -17,6 +17,7 @@ import (
 //
 //	fox ledger checkpoint [branch]   anchor new entries outside the database
 //	fox ledger integrity [branch]    check the ledger against its anchors
+//	fox ledger scan [branch]         record what the event triggers missed, now
 //	fox ledger export [branch]       every entry as JSON lines (--format jsonl)
 //	fox ledger entries [branch]      newest entries with their ids (--limit N)
 //	fox ledger sessions [branch]     agent sessions: agent, task, parent session (--limit N)
@@ -69,6 +70,12 @@ func ledgerV2Cmd(args []string) bool {
 		if !rep.Intact {
 			os.Exit(1)
 		}
+	case "scan":
+		// What the scheduler does every few minutes, on one branch, now: an
+		// auditor's way to ask "is anything missing?" before reading the record.
+		res, err := branch.ScanCatalog(name)
+		must(err)
+		fmt.Println(branch.FormatCatalogScan(res))
 	case "export":
 		requireFeature(edition.Export)
 		if f := optValue(args, "--format"); f != "" && f != "jsonl" {
