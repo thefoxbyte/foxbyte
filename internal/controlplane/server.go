@@ -96,6 +96,7 @@ func Serve(addr string) error {
 	store.MountKeys(api)               // /api/keys (protected via Authn below)
 	registerAccounts(api, store)       // /api/account*, /api/users* (admins)
 	registerAccessReview(api, store)   // /api/access-review (admins; point 4.8)
+	registerApps(api, store)           // /api/apps* (admins; application identity, F1)
 	registerRequests(api, store)       // /api/branches/{name}/request, /api/requests*
 	registerLicense(api)               // /api/license
 	registerHistory(api, store)        // /api/history* (the caller's own query history)
@@ -612,19 +613,40 @@ func ledgerSQL(q url.Values) string {
 	// before. Without them the console could show that a record existed but not
 	// that it was linked, which is the whole claim — and it could not offer to
 	// branch from before an entry, because it never knew an entry's id.
-	extra := ""
+	//
+	// with=for adds who each change was made for, where an application said so
+	// (application identity): app_for, app_state, app_kid, app_note.
+	extra, join := "", ""
 	for _, w := range strings.Split(q.Get("with"), ",") {
 		switch strings.TrimSpace(w) {
 		case "session":
 			extra += ", session"
 		case "chain":
 			extra += ", id, prev_hash, row_hash"
+		case "for":
+			if join == "" {
+				cols, j := branch.AppForSQL("bb.schema_ledger", compromisedKeys())
+				extra, join = extra+", "+cols, j
+			}
 		}
 	}
 	return fmt.Sprintf(`SELECT to_char(at,'YYYY-MM-DD HH24:MI:SS') AS at, actor, actor_kind, tool,
 		branch, command_tag, object_identity, statement, status, risk%s
-		FROM bb.schema_ledger WHERE %s ORDER BY at DESC LIMIT %d OFFSET %d`,
-		extra, strings.Join(where, " AND "), limit, offset)
+		FROM bb.schema_ledger%s WHERE %s ORDER BY at DESC LIMIT %d OFFSET %d`,
+		extra, join, strings.Join(where, " AND "), limit, offset)
+}
+
+// compromisedKeys reads the keys reported compromised from the account store,
+// for the Blackbox's "for" column. A variable so tests supply their own.
+var compromisedKeys = func() []branch.CompromisedKey {
+	if secLog == nil {
+		return nil
+	}
+	apps, err := secLog.Apps()
+	if err != nil {
+		return nil
+	}
+	return branch.CompromisedKeys(apps)
 }
 
 // queryAs says whose session a query runs in.

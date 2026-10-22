@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
 // The default columns are a contract: the SDKs and the console were built
@@ -13,7 +15,7 @@ import (
 // opt-in, so a client that asks for nothing gets what it always got.
 func TestLedgerSQLDefaultColumns(t *testing.T) {
 	sql := ledgerSQL(url.Values{})
-	for _, unwanted := range []string{"session", "prev_hash", "row_hash"} {
+	for _, unwanted := range []string{"session", "prev_hash", "row_hash", "app_for", "ledger_ext"} {
 		if strings.Contains(sql, unwanted) {
 			t.Errorf("the default query selects %q, which clients were not built for:\n%s", unwanted, sql)
 		}
@@ -66,5 +68,31 @@ func TestLedgerSQLIgnoresUnknownWith(t *testing.T) {
 		if !strings.Contains(sql, want) {
 			t.Errorf("padding stopped %q being added:\n%s", want, sql)
 		}
+	}
+}
+
+// with=for says who each change was made for, and reads the keys reported
+// compromised from the account store into the query, so nobody reading a
+// Blackbox needs access to the branch's copy of the keys.
+func TestLedgerSQLWithFor(t *testing.T) {
+	old := compromisedKeys
+	compromisedKeys = func() []branch.CompromisedKey {
+		return []branch.CompromisedKey{{Issuer: "o'shop", Kid: "k1", Since: 1792659600}}
+	}
+	t.Cleanup(func() { compromisedKeys = old })
+	sql := ledgerSQL(url.Values{"with": {"for,chain"}, "actor": {"alice"}})
+	for _, want := range []string{"AS app_for", "AS app_state", "AS app_kid", "AS app_note",
+		"LEFT JOIN LATERAL (SELECT to_jsonb(x) AS j FROM bb.ledger_ext x WHERE x.ledger_id = bb.schema_ledger.id) app_ext ON true",
+		"VALUES ('o''shop', 'k1', 1792659600::bigint)", "(key reported compromised)", "actor ILIKE '%alice%'", "prev_hash"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("with=for should contain %q:\n%s", want, sql)
+		}
+	}
+	if strings.Count(sql, "LEFT JOIN LATERAL") != 1 {
+		t.Errorf("one join, however the columns were asked for:\n%s", ledgerSQL(url.Values{"with": {"for,for"}}))
+	}
+	compromisedKeys = func() []branch.CompromisedKey { return nil }
+	if sql := ledgerSQL(url.Values{"with": {"for"}}); !strings.Contains(sql, "SELECT NULL::text, NULL::text, NULL::bigint WHERE false") {
+		t.Errorf("with no compromised key, the list should be empty, not missing:\n%s", sql)
 	}
 }

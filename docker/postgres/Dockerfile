@@ -27,32 +27,24 @@
 ARG PG_MAJOR=18
 ARG PG_DIGEST=sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
 
-# ── F1 prototype: the fox_ed25519 extension, only when asked for ─────────────
-# Ed25519 verification for F1's application identity tokens
-# (docs/FOX_F1_Identity_Design.md, section 6). A prototype: off unless the build
-# says WITH_F1=on, so a published image is the image it was before.
-#
-# The check is inside the stage, not a choice between stages: Docker's legacy
-# builder (the test VM's) builds every stage whether it is used or not, so off
-# has to mean "this stage does nothing", or every local build would install a
-# compiler. Built against the server headers of the image's own major, from the
-# PGDG apt repository the official image already trusts, and linked to the
-# OpenSSL that image already carries; only the .so, the control file and the SQL
-# file reach the final image.
+# ── bb_identity: application identity (F1) ──────────────────────────────────
+# Ed25519 verification, the transaction's identity and the MAC that F1's
+# application identity tokens rest on (docs/FOX_F1_Identity_Design.md, sections
+# 6 and 14). Built against the server headers of the image's own major, from
+# the PGDG apt repository the official image already trusts, and linked to the
+# OpenSSL that image already carries; only the .so, the control file and the
+# SQL file reach the final image, never the compiler.
 FROM postgres:${PG_MAJOR}-bookworm@${PG_DIGEST} AS f1-build
 ARG PG_MAJOR
-ARG WITH_F1=off
-COPY fox_ed25519/ /src/fox_ed25519/
+COPY bb_identity/ /src/bb_identity/
 RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends build-essential "postgresql-server-dev-${PG_MAJOR}" libssl-dev; \
+    rm -rf /var/lib/apt/lists/*; \
     mkdir -p /out; \
-    if [ "${WITH_F1}" = "on" ]; then \
-      apt-get update; \
-      apt-get install -y --no-install-recommends build-essential "postgresql-server-dev-${PG_MAJOR}" libssl-dev; \
-      rm -rf /var/lib/apt/lists/*; \
-      make -C /src/fox_ed25519; \
-      make -C /src/fox_ed25519 install DESTDIR=/out; \
-      test -f "/out/usr/lib/postgresql/${PG_MAJOR}/lib/fox_ed25519.so"; \
-    fi
+    make -C /src/bb_identity; \
+    make -C /src/bb_identity install DESTDIR=/out; \
+    test -f "/out/usr/lib/postgresql/${PG_MAJOR}/lib/bb_identity.so"
 
 FROM postgres:${PG_MAJOR}-bookworm@${PG_DIGEST}
 
@@ -97,9 +89,14 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ls /usr/share/postgresql/"${PG_MAJOR}"/extension/vector.control
 
-# The F1 prototype's extension when built WITH_F1=on; nothing otherwise (/out
-# is empty).
 COPY --from=f1-build /out/ /
+
+# What this image has, as a number the engine reads without starting a
+# container (internal/branch/images.go, PGImageRevision). An install keeps the
+# image it first fetched, so a fox that needs something newer has to be able to
+# tell: 2 is the first with bb_identity. Raise it with anything a fox comes to
+# depend on, and raise PGImageRevision with it.
+LABEL dev.dbengine.image-revision="2"
 
 # Disposable point-in-time restore entrypoint (used by scripts/pitr_restore.sh).
 COPY restore-entrypoint.sh /usr/local/bin/restore-entrypoint.sh

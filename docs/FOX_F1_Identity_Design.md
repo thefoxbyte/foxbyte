@@ -2,7 +2,8 @@
 
 **Status:** agreed as recommended (22 October 2026, #175). The Gate 0 prototype
 is built and its suite passes (#176); what it found is in section 13. Gate 1's
-first step, the check in C with its cache, is in section 14. Written against
+first step, the check in C with its cache, is in section 14 (#177). The second,
+applications asserting their user in the product, is in section 15. Written against
 `main` at `d93492c`. It answers Gate 0's F1 item in the review plan
 (`docs/FOX_Expert_Review_Plan.md`, sections 4 and 5): the token protocol written
 down, the signature-checking choice made, and the prototype and its tests
@@ -467,3 +468,89 @@ recorded by the Blackbox's own trigger; `fox app` registration; row tracking's
 `last_modified_for` and provenance; the access review's Applications table;
 G1's remainder; SDK helpers; the public wording.
 
+
+---
+
+## 15. Gate 1, step 2: applications assert their user, in the product
+
+**What a user can now do.** An admin registers an application against the
+account whose key its connections use, with the public half of a key only the
+application holds:
+
+```
+fox app register shop --account shop-svc@example.com --key shop.pub
+```
+
+The application then calls `SELECT bb.act_for($1)` in each transaction, with a
+token signed by that key. The Blackbox records each change as made by the
+account and for the user the token names: `fox blackbox` shows
+`alice, asserted by shop` beside `shop-svc@example.com`, and so do the API
+(`?with=for`) and the console's Blackbox page.
+
+**What was built** (`feat/f1-wire`):
+
+- **The extension in every engine image.** The `WITH_F1` switch is gone. The
+  image carries a revision label, `dev.dbengine.image-revision`, and this one is
+  revision 2.
+  - An install keeps the image it first fetched, so a newer `fox` reads the
+    label at start. An older image is fetched again, or built from the copy
+    inside `fox` when the pull still gives an old one.
+  - Nothing running is restarted. Each container uses the new image from the
+    next time it is created: `fox stop`, then `fox start`.
+  - An image set with `FOX_PG_IMAGE` is the operator's, and is used as it is.
+- **The SQL in every branch:** `internal/ledger/identity.sql`, installed with
+  the Blackbox's other free parts (`EnsureLedgerV2`).
+  - Where a branch's container predates the extension, the same functions are
+    installed with nothing to check with. `bb.act_for` refuses and says to
+    restart the engine; `bb.app_actor` answers `claimed` or `none`, and never
+    takes a value set by hand for an assertion.
+  - The next run on that branch, once its container has the extension, puts the
+    checking functions in place. The SQL suite tests both directions by hiding
+    the extension's control file.
+- **Recorded by the Blackbox's own trigger.** `bb.capture_ext` (`ledger_ext.sql`)
+  asks `bb.app_actor()` for every row it records, into six new columns of
+  `bb.ledger_ext`: `app_actor`, `app_state`, `app_issuer`, `app_kid`,
+  `app_tenant` and `app_note`.
+  - This replaces the prototype's event trigger and its "not yet attributed"
+    rule (section 13, item 3): the question does not arise.
+  - The capture row's hash covers the new fields only when a row has them, so a
+    row recorded before them hashes exactly as it did, and every checkpoint
+    taken over it still verifies.
+- **Registrations live in the account store** (`internal/auth/apps.go`): the
+  applications, their keys, and the install id that is every token's `aud`.
+  - The HA standby gets them with the accounts. A node older than these tables
+    ignores them, and a document from such a node leaves them alone.
+  - Only public keys are kept. A key is accepted as PEM, JWK, hex or base64; a
+    private key is refused whatever its form. A key's id defaults to its RFC 7638
+    thumbprint.
+- **Copied into each branch** (`internal/branch/identity.go`): the install id,
+  the branch's own name, and every key.
+  - At once, into every running branch, when a registration changes.
+  - On wake, into a suspended branch, before its first transaction. A key
+    revoked while it slept is refused at once.
+  - On create and restore, before anyone can reach the branch. Until then a copy
+    of main answers to main's name.
+- **`fox app`**: `register`, `list`, `show`, `key add`, `key revoke
+  [--compromised-since]` and `remove`. On macOS and Windows, a key file on the
+  host is read there and passed into the VM.
+- **REST**: `/api/apps` and its four routes, for admins only.
+- **The console**: an Applications page for admins, and on the Blackbox page,
+  "for alice asserted by shop" under the account that made the change.
+- **Reports never upgrade a state.** What a key reported compromised asserted
+  from that moment shows as `asserted by shop (key reported compromised)`.
+  - The compromised keys are written into the Blackbox query from the account
+    store, so reading a Blackbox needs no access to the branch's copy of the
+    keys.
+
+**One choice the design left open, now made:** an application is registered
+against an **account**, and its role is that account's own login. The account's
+agent keys log in as `agent:<email>`, so they cannot assert. The docs say to
+register an account of the application's own, never a person's.
+
+**Still Gate 1, in order:**
+
+- row tracking's `last_modified_for`, and provenance (point 5.2);
+- the access review's Applications table;
+- G1's remainder (section 9);
+- SDK helpers;
+- the public wording.

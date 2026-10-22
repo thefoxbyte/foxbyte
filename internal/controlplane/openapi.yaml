@@ -54,6 +54,12 @@ tags:
       made a branch may use and manage it, every account may use main, and an admin may do
       anything. A branch you may not reach answers 404 on every route below.
   - name: agents
+  - name: apps
+    description: >-
+      Application identity. An application registered here, against the account whose key its
+      connections use, calls `SELECT bb.act_for($1)` with a short-lived Ed25519 token naming its user,
+      and the Blackbox records each change that transaction makes as made by the account and for that
+      user ("asserted by" the application). Admins only.
   - name: auth
     description: Browser sign-in and sessions (cookie-based; no API key needed).
 
@@ -967,7 +973,7 @@ paths:
         - { name: kind, in: query, schema: { type: string, enum: [human, agent] } }
         - { name: since, in: query, description: "Only entries at or after this time.", schema: { type: string } }
         - { name: until, in: query, description: "Only entries at or before this time.", schema: { type: string } }
-        - { name: with, in: query, description: "Extra columns, comma-separated: session, chain (id, prev_hash, row_hash). The default columns never change.", schema: { type: string, example: "session,chain" } }
+        - { name: with, in: query, description: "Extra columns, comma-separated: session, chain (id, prev_hash, row_hash), for (app_for, app_state, app_kid, app_note: who the change was made for, where an application asserted it; app_state is 'asserted by <application>', with '(key reported compromised)' where that applies, 'claimed', 'none', or null for a record made before application identity). The default columns never change.", schema: { type: string, example: "session,chain,for" } }
         - { name: limit, in: query, schema: { type: integer, default: 200, maximum: 2000 } }
         - { name: offset, in: query, schema: { type: integer } }
       responses:
@@ -1949,6 +1955,113 @@ paths:
         "403": { description: Not an admin, or no licence covers the access review report. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/apps:
+    get:
+      tags: [apps]
+      summary: The registered applications, the install id their tokens name, and which branches can check them (admins only).
+      responses:
+        "200":
+          description: >-
+            install_id is the "aud" every token must carry. readiness maps each running branch to checked,
+            unavailable (its container predates the engine image that checks tokens; restart the engine)
+            or not installed (its Blackbox predates application identity; `fox ledger upgrade`).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  install_id: { type: string }
+                  apps: { type: array, items: { $ref: "#/components/schemas/App" } }
+                  readiness: { type: object, additionalProperties: { type: string } }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [apps]
+      summary: Register an application, and optionally its first key (admins only).
+      description: >-
+        Its tokens are accepted only from the account's own logins, never its agent keys. The change reaches
+        every running branch before the reply; a suspended one gets it when it is woken.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, account]
+              properties:
+                name: { type: string, description: "The tokens' iss: 1 to 63 lower-case letters, digits, '.', '_' or '-'." }
+                account: { type: string, description: The account whose key the application's connections use. }
+                max_life_seconds: { type: integer, minimum: 1, maximum: 3600, default: 300, description: "The longest exp - iat accepted." }
+                on_invalid: { type: string, enum: [none, refuse], default: none, description: "none: the change is recorded for nobody, with the reason. refuse: the transaction is aborted." }
+                public_key: { type: string, description: "Ed25519: a PEM public key, a JWK, or the 32 bytes in hex or base64. A private key is refused." }
+                kid: { type: string, description: The key id tokens carry in their header; the key's RFC 7638 thumbprint when omitted. }
+      responses:
+        "200": { description: Registered., content: { application/json: { schema: { $ref: "#/components/schemas/AppChange" } } } }
+        "400": { description: A name, account, life, choice or key that is not valid. }
+        "409": { description: An application by that name is already registered. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/apps/{name}:
+    delete:
+      tags: [apps]
+      summary: Remove an application and its keys (admins only). What it asserted stays in every Blackbox.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Removed., content: { application/json: { schema: { $ref: "#/components/schemas/AppChange" } } } }
+        "404": { description: No application by that name. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/apps/{name}/keys:
+    post:
+      tags: [apps]
+      summary: Add a key, to rotate (admins only). Both keys are accepted until the old one is revoked.
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_key]
+              properties:
+                public_key: { type: string }
+                kid: { type: string }
+      responses:
+        "200": { description: Added., content: { application/json: { schema: { $ref: "#/components/schemas/AppChange" } } } }
+        "400": { description: Not an Ed25519 public key, or a key another application already has. }
+        "404": { description: No application by that name. }
+        "409": { description: The application already has a key by that id. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/apps/{name}/keys/{kid}/revoke:
+    post:
+      tags: [apps]
+      summary: Revoke a key from now, optionally reported compromised since a moment (admins only).
+      description: >-
+        Records asserted with a key reported compromised, from that moment, are shown as "asserted by
+        <application> (key reported compromised)", never as plain "asserted".
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: kid, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                compromised_since: { type: string, description: "now, or an RFC 3339 time." }
+      responses:
+        "200": { description: Revoked., content: { application/json: { schema: { $ref: "#/components/schemas/AppChange" } } } }
+        "400": { description: An unreadable time. }
+        "404": { description: No such application, or no such key. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/users:
     get:
       tags: [accounts]
@@ -2330,6 +2443,31 @@ components:
         decidedBy: { type: string, description: "Who made the latest decision; empty if none." }
         decidedAt: { type: string, format: date-time, nullable: true }
         note: { type: string }
+    App:
+      type: object
+      properties:
+        name: { type: string }
+        user_id: { type: integer }
+        account: { type: string, description: The account's email; empty when the account was deleted. }
+        created: { type: integer }
+        max_life_seconds: { type: integer }
+        on_invalid: { type: string, enum: [none, refuse] }
+        keys:
+          type: array
+          items:
+            type: object
+            properties:
+              kid: { type: string }
+              public_key: { type: string, description: 32 bytes, hex. }
+              created: { type: integer }
+              revoked: { type: integer, nullable: true }
+              compromised_since: { type: integer, nullable: true }
+    AppChange:
+      type: object
+      properties:
+        app: { $ref: "#/components/schemas/App" }
+        key: { type: object }
+        unsynced: { type: object, additionalProperties: { type: string }, description: Running branches the change could not reach yet, and why. }
     AccessReview:
       type: object
       properties:

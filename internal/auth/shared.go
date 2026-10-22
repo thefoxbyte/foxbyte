@@ -37,6 +37,8 @@ import (
 //   - pipelines, pipeline_targets, change_requests — authored records. Small,
 //     slow-changing, and losing them to a machine failure would be losing
 //     somebody's work.
+//   - apps, app_keys, install_info — which applications may say whom they act
+//     for, and the install id their tokens name (apps.go).
 //   - sessions: deliberately not. A browser session is minutes old and cheap to
 //     replace; carrying tokens between machines would widen what a stolen
 //     document is worth, for the convenience of not signing in again.
@@ -69,6 +71,12 @@ type mirror struct {
 	// the document "changed" every few seconds for ever, and the node would
 	// ship accounts in a permanent loop to say that somebody used a key.
 	volatile []string
+	// optional tables were added after the document's shape was first
+	// fixed. A document from a node older than them does not carry them, and
+	// applying it leaves this node's rows of them as they are rather than
+	// refusing the whole document: the accounts it does carry still matter
+	// more than a failover in the middle of an upgrade.
+	optional bool
 }
 
 // mirrored is the carried set, in an order that satisfies the foreign keys:
@@ -83,6 +91,13 @@ var mirrored = []mirror{
 	{table: "pipeline_targets", cols: []string{"branch", "pipeline_id"}, pk: []string{"branch"}},
 	{table: "change_requests", cols: []string{"id", "source", "target", "created_by", "created", "status",
 		"fork_after_id", "entries", "decided_by", "decided", "note", "applied"}, pk: []string{"id"}},
+	// Application identity (apps.go): which applications may assert, with
+	// which keys, and the install id their tokens name. Without these a
+	// failover would refuse every application's tokens.
+	{table: "apps", cols: []string{"name", "user_id", "created", "max_life", "on_invalid"}, pk: []string{"name"}, optional: true},
+	{table: "app_keys", cols: []string{"app", "kid", "public_key", "created", "revoked", "compromised_since"},
+		pk: []string{"app", "kid"}, optional: true},
+	{table: "install_info", cols: []string{"key", "value"}, pk: []string{"key"}, optional: true},
 }
 
 // sharedDoc is what crosses between machines.
@@ -247,6 +262,9 @@ func (s *Store) ApplySharedState(doc []byte) (SharedApply, error) {
 	for _, m := range mirrored {
 		t, ok := d.Tables[m.table]
 		if !ok {
+			if m.optional {
+				continue
+			}
 			return SharedApply{}, fmt.Errorf("the shared-state document carries no %s", m.table)
 		}
 		if strings.Join(t.Cols, ",") != strings.Join(m.cols, ",") {
@@ -271,6 +289,9 @@ func (s *Store) ApplySharedState(doc []byte) (SharedApply, error) {
 	// Children first on the way out: a row whose parent is about to go has to
 	// go first, or the foreign key refuses it.
 	for i := len(mirrored) - 1; i >= 0; i-- {
+		if d.Tables[mirrored[i].table] == nil {
+			continue // an optional table the sender does not carry
+		}
 		n, err := deleteMissing(tx, mirrored[i], d.Tables[mirrored[i].table])
 		if err != nil {
 			return SharedApply{}, fmt.Errorf("removing %s rows this node no longer has: %w", mirrored[i].table, err)
@@ -279,6 +300,9 @@ func (s *Store) ApplySharedState(doc []byte) (SharedApply, error) {
 	}
 	// Parents first on the way in, for the same reason in reverse.
 	for _, m := range mirrored {
+		if d.Tables[m.table] == nil {
+			continue
+		}
 		n, err := upsertRows(tx, m, d.Tables[m.table])
 		if err != nil {
 			return SharedApply{}, fmt.Errorf("writing %s: %w", m.table, err)

@@ -46,6 +46,7 @@ export const APP_NAV: NavSection[] = [
     items: [
       { to: '/personal-data', label: 'Personal data', icon: I.IconPersonalData },
       { to: '/access-review', label: 'Access review', icon: I.IconKey },
+      { to: '/applications', label: 'Applications', icon: I.IconKey },
     ],
   },
   {

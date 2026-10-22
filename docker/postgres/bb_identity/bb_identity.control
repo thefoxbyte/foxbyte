@@ -1,0 +1,5 @@
+# bb_identity: Ed25519 verification and the transaction identity F1's application identity needs
+comment = 'Ed25519 verification and transaction identity, for application identity (F1)'
+default_version = '0.1'
+module_pathname = '$libdir/bb_identity'
+relocatable = true

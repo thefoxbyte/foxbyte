@@ -118,7 +118,33 @@ func hostForward(args []string) error {
 		defer f.Close()
 		return forwardStdin(newArgs, f)
 	}
+	if newArgs, f, ok := appKeyLocalFile(args); ok {
+		defer f.Close()
+		return forwardStdin(newArgs, f)
+	}
 	return forward(args)
+}
+
+// appKeyLocalFile detects `fox app register|key add … --key <path>` where
+// <path> is a file on THIS machine, and rewrites it to `--key -`, so the
+// public key is read here and reaches the VM over stdin, from any path.
+// Anything else (a path only the VM has, or - already) is forwarded as it is.
+func appKeyLocalFile(args []string) ([]string, *os.File, bool) {
+	if len(args) < 2 || args[0] != "app" || !(args[1] == "register" || (args[1] == "key" && len(args) > 2 && args[2] == "add")) {
+		return nil, nil, false
+	}
+	for i := 1; i+1 < len(args); i++ {
+		if args[i] != "--key" || args[i+1] == "-" || !regularFile(args[i+1]) {
+			continue
+		}
+		f, err := os.Open(args[i+1])
+		if err != nil {
+			return nil, nil, false
+		}
+		out := append(append(append([]string{}, args[:i+1]...), "-"), args[i+2:]...)
+		return out, f, true
+	}
+	return nil, nil, false
 }
 
 // importLocalFile detects `fox import --from <path>` where <path> is a readable

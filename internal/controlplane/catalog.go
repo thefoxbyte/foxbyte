@@ -101,8 +101,9 @@ type CatalogMember struct {
 // ErrNoObject means there is no such object, or not one the caller may see.
 var ErrNoObject = errors.New("no such object on this branch")
 
-// The schemas Postgres keeps for itself, never shown.
-const userSchemas = `n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\_%'`
+// The schemas Postgres keeps for itself, never shown; nor the engine's private
+// one (application identity's secret), which no client may use.
+const userSchemas = `n.nspname NOT IN ('pg_catalog', 'information_schema', 'bb_f1') AND n.nspname NOT LIKE 'pg\_%'`
 
 // notExtensionMember leaves out what an extension installed, and what
 // Postgres made as part of something else (a range type's constructor

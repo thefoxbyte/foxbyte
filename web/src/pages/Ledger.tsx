@@ -15,6 +15,10 @@ const KIND = ['', 'human', 'agent'] as const
 // The risk values Blackbox records (internal/ledger/ledger.sql).
 const RISK = ['', 'drop', 'drop-column', 'type-change', 'security-definer', 'policy', 'unrecorded', 'kill-switch'] as const
 const PAGE = 25
+// The extra columns asked for: the chain, the declared session, and who each
+// change was made for (application identity). WITH_OLD leaves out the last.
+const WITH = 'session,chain,for'
+const WITH_OLD = 'session,chain'
 // How often the page looks for new entries. The Dashboard already polls at this
 // rate; a record of what just happened has more reason to than a branch list.
 const POLL_MS = 3000
@@ -47,6 +51,30 @@ function Hash({ value }: { value: string | null | undefined }) {
 }
 
 // Turn the {columns, rows} query result into keyed objects.
+// For whom: what an application asserted (or a client claimed) about who a
+// change was made for, beside who made it. Nothing when nothing was said.
+function ForWhom({ r }: { r: Row }) {
+  const state = r.app_state
+  if (!state || (state === 'none' && !r.app_note)) return null
+  if (state === 'none') {
+    return <div className="lg-for muted" title={r.app_note || ''}>for nobody: {r.app_note}</div>
+  }
+  if (state === 'claimed') {
+    return (
+      <div className="lg-for" title="Claimed by the client (bb.claimed_actor), not checked">
+        for <b>{r.app_for}</b> <span className="lg-declared">claimed</span>
+      </div>
+    )
+  }
+  const compromised = state.includes('compromised')
+  return (
+    <div className={'lg-for' + (compromised ? ' compromised' : '')}
+      title={`The application vouched for this user with a token signed by its key${r.app_kid ? ` (${r.app_kid})` : ''}: not proof the user was there`}>
+      for <b>{r.app_for}</b> <span className="muted">{state}</span>
+    </div>
+  )
+}
+
 function toRows(res: QueryResult | null): Row[] {
   if (!res || !res.columns || !res.rows) return []
   return res.rows.map(r => {
@@ -83,6 +111,7 @@ export default function Ledger() {
   const offsetRef = useRef(0)   // next offset to fetch
   const loadingRef = useRef(false)
   const seqRef = useRef(0)      // the latest load; older responses are dropped
+  const withRef = useRef(WITH)  // falls back to WITH_OLD on a branch that cannot say who a change was for
   const sentinel = useRef<HTMLTableRowElement>(null)
   const idsRef = useRef<Set<string>>(new Set())  // ids on screen, so a poll adds only what is new
 
@@ -100,11 +129,18 @@ export default function Ledger() {
     loadingRef.current = true; setBusy(true); setErr('')
     const offset = reset ? 0 : offsetRef.current
     try {
-      const res = await getLedger(branch, {
+      const ask = (w: string) => getLedger(branch, {
         status, kind, actor, table, risk,
         since, until: until ? until + ' 23:59:59' : '',
-        with: 'session,chain', limit: String(PAGE), offset: String(offset),
+        with: w, limit: String(PAGE), offset: String(offset),
       })
+      let res = await ask(withRef.current)
+      // A branch whose Blackbox predates its capture table cannot say who a
+      // change was for; it still lists what changed.
+      if (res.error && /ledger_ext/.test(res.error) && withRef.current !== WITH_OLD) {
+        withRef.current = WITH_OLD
+        res = await ask(WITH_OLD)
+      }
       if (seq !== seqRef.current) return
       if (res.error) throw new Error(res.error)
       const page = toRows(res)
@@ -136,7 +172,7 @@ export default function Ledger() {
       const res = await getLedger(branch, {
         status, kind, actor, table, risk,
         since, until: until ? until + ' 23:59:59' : '',
-        with: 'session,chain', limit: String(PAGE), offset: '0',
+        with: withRef.current, limit: String(PAGE), offset: '0',
       })
       if (res.error) return   // a poll never shows an error; Refresh reports properly
       const fresh = toRows(res).filter(r => r.id && !idsRef.current.has(r.id))
@@ -211,7 +247,7 @@ export default function Ledger() {
         <div className="tools">
           <label className="field-inline">
             <span>Branch</span>
-            <select value={branch} onChange={e => setBranch(e.target.value)}>
+            <select value={branch} onChange={e => { withRef.current = WITH; setBranch(e.target.value) }}>
               {options.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
             </select>
           </label>
@@ -322,7 +358,7 @@ export default function Ledger() {
           <thead>
             <tr>
               <th>Time</th>
-              <th title="Who made the change: the login role the database saw, which a client cannot change">Actor</th>
+              <th title="Who made the change: the login role the database saw, which a client cannot change; and, where an application asserted it, the user it was made for">Actor</th>
               <th title="What the client called itself (application_name) — declared by the client, not verified">Tool <span className="lg-declared">declared</span></th>
               <th>Change</th>
               <th>Status</th>
@@ -340,6 +376,7 @@ export default function Ledger() {
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <span className={'lg-kind ' + (r.actor_kind || 'human')}>{r.actor_kind || 'human'}</span>{' '}
                     <span>{r.actor || '—'}</span>
+                    <ForWhom r={r} />
                   </td>
                   <td className="muted" style={{ whiteSpace: 'nowrap' }}>{r.tool || '—'}</td>
                   <td>

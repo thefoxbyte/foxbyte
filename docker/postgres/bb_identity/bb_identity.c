@@ -1,26 +1,26 @@
 /*
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
- * fox_ed25519: what F1's application identity needs from C
+ * bb_identity: what F1's application identity needs from C
  * (docs/FOX_F1_Identity_Design.md, sections 5, 6 and 13).
  *
- *   fox_ed25519_verify  Ed25519 signature verification. PostgreSQL has none of
+ *   bbid_ed25519_verify  Ed25519 signature verification. PostgreSQL has none of
  *                       its own: pgcrypto does HMAC, not signatures, and
  *                       pgsodium is not in FoxByte's image. OpenSSL is, so this
  *                       is a thin wrapper over its EVP interface: no state, no
  *                       I/O, every length checked before OpenSSL sees a byte.
  *
- *   fox_txn_id          This transaction's identity, which the MAC binds an
+ *   bbid_txn_id          This transaction's identity, which the MAC binds an
  *                       application actor to. The same values are in pg_locks,
  *                       but reading them there costs about 33 microseconds a
  *                       call, and the MAC is checked once for every row a
  *                       tracked table records (the prototype measured it).
  *
- *   fox_app_mac         The MAC over an application actor and this transaction
+ *   bbid_app_mac         The MAC over an application actor and this transaction
  *                       (HMAC-SHA256 under the install secret). Private: only
  *                       bb.act_for calls it, from a schema clients cannot use.
  *
- *   fox_app_actor       bb.app_actor(): this transaction's application actor
+ *   bbid_app_actor       bb.app_actor(): this transaction's application actor
  *                       and its state, with the MAC checked. Public: it only
  *                       reads, and says what a client could find out anyway.
  *                       It remembers the last set of values it checked, so a
@@ -31,14 +31,14 @@
  *                       checked: any change to the transaction or a value is a
  *                       miss, and is checked again.
  *
- *   fox_app_actor_label bb.app_actor_label(): the same answer as one string,
+ *   bbid_app_actor_label bb.app_actor_label(): the same answer as one string,
  *                       what row tracking's last_modified_for holds
  *                       (asserted:<issuer>:<user>, claimed:<user>, or empty).
  *                       A record costs a tuple built and a field taken out of it
  *                       on every call, which was most of what checking the
  *                       actor cost a tracked row; a string does not.
  *
- *   fox_random_bytes    Bytes from the server's strong random source, for the
+ *   bbid_random_bytes    Bytes from the server's strong random source, for the
  *                       install secret.
  */
 #include "postgres.h"
@@ -91,13 +91,13 @@ _PG_init(void)
 		const char *desc;
 		char	  **var;
 	}			vars[] = {
-		{"fox.app.actor", "The application actor bb.act_for asserted for this transaction.", &g_actor},
-		{"fox.app.issuer", "The application that asserted it.", &g_issuer},
-		{"fox.app.kid", "The key the assertion was signed with.", &g_kid},
-		{"fox.app.tenant", "The tenant the assertion named, if any.", &g_tenant},
-		{"fox.app.mac", "The MAC binding the assertion to this transaction.", &g_mac},
-		{"fox.app.failure", "Why the last token in this transaction was refused.", &g_failure},
-		{"fox.claimed_actor", "An application actor the client claims, unchecked.", &g_claimed},
+		{"bb.app.actor", "The application actor bb.act_for asserted for this transaction.", &g_actor},
+		{"bb.app.issuer", "The application that asserted it.", &g_issuer},
+		{"bb.app.kid", "The key the assertion was signed with.", &g_kid},
+		{"bb.app.tenant", "The tenant the assertion named, if any.", &g_tenant},
+		{"bb.app.mac", "The MAC binding the assertion to this transaction.", &g_mac},
+		{"bb.app.failure", "Why the last token in this transaction was refused.", &g_failure},
+		{"bb.claimed_actor", "An application actor the client claims, unchecked.", &g_claimed},
 	};
 
 	for (size_t n = 0; n < lengthof(vars); n++)
@@ -108,17 +108,17 @@ _PG_init(void)
 #define ED25519_KEY_LEN 32
 #define ED25519_SIG_LEN 64
 
-PG_FUNCTION_INFO_V1(fox_ed25519_verify);
+PG_FUNCTION_INFO_V1(bbid_ed25519_verify);
 
 /*
- * fox_ed25519_verify(public_key bytea, message bytea, signature bytea) -> bool
+ * bbid_ed25519_verify(public_key bytea, message bytea, signature bytea) -> bool
  *
  * True only for a 32-byte public key, a 64-byte signature, and a signature that
  * OpenSSL verifies over the message. Anything else is false, never an error:
  * a malformed token is a refused token, and the caller says why.
  */
 Datum
-fox_ed25519_verify(PG_FUNCTION_ARGS)
+bbid_ed25519_verify(PG_FUNCTION_ARGS)
 {
 	bytea	   *key = PG_GETARG_BYTEA_PP(0);
 	bytea	   *msg = PG_GETARG_BYTEA_PP(1);
@@ -159,10 +159,10 @@ fox_ed25519_verify(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(rc == 1);
 }
 
-PG_FUNCTION_INFO_V1(fox_txn_id);
+PG_FUNCTION_INFO_V1(bbid_txn_id);
 
 /*
- * fox_txn_id() -> text
+ * bbid_txn_id() -> text
  *
  * The server's start, this backend's pid, and the virtual transaction id
  * (process number and local transaction id): unique to this transaction for as
@@ -186,7 +186,7 @@ txn_id(char *buf, size_t len)
 }
 
 Datum
-fox_txn_id(PG_FUNCTION_ARGS)
+bbid_txn_id(PG_FUNCTION_ARGS)
 {
 	char		buf[128];
 
@@ -226,7 +226,7 @@ load_secret(void)
 		bytea	   *b;
 
 		if (SPI_connect() != SPI_OK_CONNECT)
-			elog(ERROR, "fox_ed25519: SPI_connect failed");
+			elog(ERROR, "bb_identity: SPI_connect failed");
 		if (SPI_execute("SELECT key FROM bb_f1.secret WHERE id = 1", true, 1) != SPI_OK_SELECT ||
 			SPI_processed != 1)
 			ereport(ERROR,
@@ -301,11 +301,11 @@ mac_hex(const char *txn, const char *issuer, const char *kid, const char *tenant
 	out[MAC_HEX_LEN] = '\0';
 }
 
-PG_FUNCTION_INFO_V1(fox_app_mac);
+PG_FUNCTION_INFO_V1(bbid_app_mac);
 
-/* fox_app_mac(actor, issuer, kid, tenant) -> text: the MAC for this transaction. */
+/* bbid_app_mac(actor, issuer, kid, tenant) -> text: the MAC for this transaction. */
 Datum
-fox_app_mac(PG_FUNCTION_ARGS)
+bbid_app_mac(PG_FUNCTION_ARGS)
 {
 	char		txn[128];
 	char		out[MAC_HEX_LEN + 1];
@@ -428,18 +428,18 @@ checked(const char *a, const char *i, const char *k, const char *t, const char *
 	return ok;
 }
 
-PG_FUNCTION_INFO_V1(fox_app_actor);
+PG_FUNCTION_INFO_V1(bbid_app_actor);
 
 /*
- * fox_app_actor() -> (actor, state, issuer, kid, tenant, note)
+ * bbid_app_actor() -> (actor, state, issuer, kid, tenant, note)
  *
  * The same answer the prototype's PL/pgSQL gave: asserted when the values and
  * their MAC agree; none, with a note, when a value is present and does not;
- * claimed from fox.claimed_actor; none otherwise, with the reason a token was
+ * claimed from bb.claimed_actor; none otherwise, with the reason a token was
  * refused when there was one.
  */
 Datum
-fox_app_actor(PG_FUNCTION_ARGS)
+bbid_app_actor(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
 	Datum		values[6];
@@ -456,7 +456,7 @@ fox_app_actor(PG_FUNCTION_ARGS)
 	char	   *refused = NULL;
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "fox_app_actor must return a record");
+		elog(ERROR, "bbid_app_actor must return a record");
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	if (f != NULL)
@@ -491,17 +491,17 @@ fox_app_actor(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
 
-PG_FUNCTION_INFO_V1(fox_app_actor_label);
+PG_FUNCTION_INFO_V1(bbid_app_actor_label);
 
 /*
- * fox_app_actor_label() -> text
+ * bbid_app_actor_label() -> text
  *
  * asserted:<issuer>:<user> when the values and their MAC agree; claimed:<user>
- * for a client's own word; '' otherwise. The same decision as fox_app_actor,
+ * for a client's own word; '' otherwise. The same decision as bbid_app_actor,
  * read from the same settings and the same memory.
  */
 Datum
-fox_app_actor_label(PG_FUNCTION_ARGS)
+bbid_app_actor_label(PG_FUNCTION_ARGS)
 {
 	const char *a = opt(g_actor);
 	const char *m = opt(g_mac);
@@ -527,11 +527,11 @@ fox_app_actor_label(PG_FUNCTION_ARGS)
 
 /* ---- the secret's bytes -------------------------------------------------- */
 
-PG_FUNCTION_INFO_V1(fox_random_bytes);
+PG_FUNCTION_INFO_V1(bbid_random_bytes);
 
-/* fox_random_bytes(n) -> bytea: n bytes (1 to 1024) from the strong source. */
+/* bbid_random_bytes(n) -> bytea: n bytes (1 to 1024) from the strong source. */
 Datum
-fox_random_bytes(PG_FUNCTION_ARGS)
+bbid_random_bytes(PG_FUNCTION_ARGS)
 {
 	int32		n = PG_GETARG_INT32(0);
 	bytea	   *b;
@@ -539,7 +539,7 @@ fox_random_bytes(PG_FUNCTION_ARGS)
 	if (n < 1 || n > 1024)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("fox_random_bytes: 1 to 1024 bytes, not %d", n)));
+				 errmsg("bbid_random_bytes: 1 to 1024 bytes, not %d", n)));
 	b = (bytea *) palloc(VARHDRSZ + n);
 	SET_VARSIZE(b, VARHDRSZ + n);
 	if (!pg_strong_random(VARDATA(b), n))

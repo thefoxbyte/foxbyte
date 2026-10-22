@@ -20,6 +20,7 @@ import Import from './pages/Import'
 import Pipelines from './pages/Pipelines'
 import PersonalData from './pages/PersonalData'
 import AccessReview from './pages/AccessReview'
+import Applications from './pages/Applications'
 import PipelineEditor from './pages/PipelineEditor'
 import { ConfirmProvider } from './confirm'
 import Dashboard from './pages/Dashboard'
@@ -115,6 +116,7 @@ const router = createBrowserRouter([
       { path: 'pipelines', element: <Pipelines /> },
       { path: 'personal-data', element: <PersonalData /> },
       { path: 'access-review', element: <AccessReview /> },
+      { path: 'applications', element: <Applications /> },
       { path: 'pipelines/:id', element: <PipelineEditor /> },
       { path: 'console', element: <Console /> },
       { path: 'keys', element: <ApiKeys /> },

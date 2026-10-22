@@ -452,6 +452,14 @@
       <li class="ok">A change made with the event triggers stopped is recorded as UNRECORDED</li><li class="ok">Roles, memberships, settings, databases, event triggers: OBSERVED</li>
       <li class="ok">A setting or trigger change that switches the record off: kill-switch</li><li class="ok">Recorded changes, renames, cascades and restarts add nothing</li>
       <li class="ok">Its memory is outside the database; every 5 minutes and <code>fox blackbox scan</code></li><li class="ok">Who and exactly when stay unknown</li></ul></td><td class="tb">Unit; v2 §11</td></tr>
+    <tr data-id="H20" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H20</td><td><b>Application identity: who a change was made for</b> (F1)<ul class="subs">
+      <li class="ok">An application registered against its account and an Ed25519 public key; tokens accepted from that account&rsquo;s own logins only</li>
+      <li class="ok"><code>bb.act_for($1)</code>: signature, header, key, revocation, binding, audience, branch and times checked; one actor per transaction, guarded by a MAC</li>
+      <li class="ok">The Blackbox records whom each change was for, beside who made it; reports never upgrade a state</li>
+      <li class="ok">Copied into every running branch at once, a suspended one on wake, a new one before it is reached</li>
+      <li class="ok">Rotation, revocation, and a key reported compromised from a moment</li>
+      <li class="ok">The extension in every engine image (revision 2); a branch on an older image refuses with the way out</li>
+      <li class="ok">CLI <code>fox app</code>, REST <code>/api/apps</code>, the console&rsquo;s Applications page; <code>for</code> in <code>fox blackbox</code>, <code>?with=for</code> and the Blackbox page</li></ul></td><td class="tb">Unit; f1 suite; §11u; UI</td></tr>
   </table>
 </section>
 

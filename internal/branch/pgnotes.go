@@ -39,8 +39,8 @@ var pgNotes = []PGNote{
 			"unqualified name from another schema fails to build during the upgrade's reload. Qualify the names, or " +
 			"give the function SET search_path.",
 		Probe: `SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-			WHERE i.indexprs IS NOT NULL AND n.nspname NOT IN ('pg_catalog','information_schema','bb')
-			UNION ALL SELECT 1 FROM pg_matviews WHERE schemaname <> 'bb' LIMIT 1`},
+			WHERE i.indexprs IS NOT NULL AND n.nspname NOT IN ('pg_catalog','information_schema','bb','bb_f1')
+			UNION ALL SELECT 1 FROM pg_matviews WHERE schemaname NOT IN ('bb','bb_f1') LIMIT 1`},
 	{Major: "17", ID: "pg17-adminpack-removed", DocURL: pg17Notes,
 		Headline: "The adminpack extension no longer exists",
 		Detail:   "The reload fails on CREATE EXTENSION adminpack. Drop the extension before upgrading.",
@@ -75,7 +75,7 @@ var pgNotes = []PGNote{
 		Detail: "Not the role active when the trigger fires. It matters only for code that changes role between " +
 			"the statement and the end of the transaction.",
 		Probe: `SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-			WHERE NOT t.tgisinternal AND n.nspname <> 'bb' AND (t.tgtype & 66) = 0 LIMIT 1`},
+			WHERE NOT t.tgisinternal AND n.nspname NOT IN ('bb','bb_f1') AND (t.tgtype & 66) = 0 LIMIT 1`},
 	{Major: "18", ID: "pg18-vacuum-inheritance", DocURL: pg18Notes,
 		Headline: "VACUUM and ANALYZE now include inheritance children",
 		Detail:   "Use VACUUM ONLY / ANALYZE ONLY for the old behaviour on a parent table.",

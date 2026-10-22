@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -80,5 +81,41 @@ func TestDownloadFile(t *testing.T) {
 	defer notFound.Close()
 	if err := downloadFile(notFound.URL, filepath.Join(t.TempDir(), "x")); err == nil {
 		t.Error("expected an error for a 404 response")
+	}
+}
+
+// A public key file on this machine reaches the VM over stdin, whatever its
+// path; anything else is forwarded as it is.
+func TestAppKeyLocalFile(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "shop.pub")
+	if err := os.WriteFile(key, []byte("not checked here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		in   []string
+		want []string // nil: forwarded unchanged
+	}{
+		{[]string{"app", "register", "shop", "--account", "a@b.c", "--key", key, "--kid", "k1"},
+			[]string{"app", "register", "shop", "--account", "a@b.c", "--key", "-", "--kid", "k1"}},
+		{[]string{"app", "key", "add", "shop", "--key", key}, []string{"app", "key", "add", "shop", "--key", "-"}},
+		{[]string{"app", "key", "add", "shop", "--key", "-"}, nil},
+		{[]string{"app", "key", "add", "shop", "--key", filepath.Join(dir, "missing.pub")}, nil},
+		{[]string{"app", "key", "revoke", "shop", "--key", key}, nil},
+		{[]string{"import", "--key", key}, nil},
+	} {
+		got, f, ok := appKeyLocalFile(c.in)
+		if f != nil {
+			f.Close()
+		}
+		if c.want == nil {
+			if ok {
+				t.Errorf("%v was rewritten to %v", c.in, got)
+			}
+			continue
+		}
+		if !ok || strings.Join(got, " ") != strings.Join(c.want, " ") {
+			t.Errorf("%v: got %v (%v), want %v", c.in, got, ok, c.want)
+		}
 	}
 }

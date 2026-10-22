@@ -630,6 +630,7 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 	if err := waitReady(newName); err != nil {
 		return fail(err)
 	}
+	syncIdentityBestEffort(newName, true) // restored from main's past: its name and today's keys
 	reconcileGuard(newName)
 
 	return BeforeEntryResult{

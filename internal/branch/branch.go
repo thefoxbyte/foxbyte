@@ -674,11 +674,19 @@ func Ledger(name string, limit int) error {
 	if limit <= 0 {
 		limit = 50
 	}
-	q := fmt.Sprintf(`SELECT to_char(at,'MM-DD HH24:MI:SS') AS time,
-		coalesce(actor,'-') AS actor, actor_kind AS kind, coalesce(tool,'-') AS tool,
-		command_tag AS command, coalesce(object_identity,'') AS object,
-		status, coalesce(risk,'') AS risk
-		FROM bb.schema_ledger ORDER BY at DESC LIMIT %d`, limit)
+	// "for": who the change was made for, where an application said so
+	// (application identity), beside "actor", who made it.
+	appCols, appJoin := AppForSQL("l", compromisedNow())
+	q := fmt.Sprintf(`SELECT time, actor,
+		CASE WHEN app_state IS NULL OR (app_state = 'none' AND app_note IS NULL) THEN '-'
+		     WHEN app_state = 'none' THEN 'none: ' || app_note
+		     ELSE coalesce(app_for || ', ' || app_state, app_state) END AS "for",
+		kind, tool, command, object, status, risk FROM (
+		SELECT to_char(l.at,'MM-DD HH24:MI:SS') AS time, l.at AS sort_at,
+		coalesce(l.actor,'-') AS actor, l.actor_kind AS kind, coalesce(l.tool,'-') AS tool,
+		l.command_tag AS command, coalesce(l.object_identity,'') AS object,
+		l.status, coalesce(l.risk,'') AS risk, %s
+		FROM bb.schema_ledger l%s ORDER BY l.at DESC LIMIT %d) e ORDER BY sort_at DESC`, appCols, appJoin, limit)
 	return run("docker", "exec", "--env-file", pgEnvFile(), container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-P", "pager=off", "-c", q)
 }
@@ -810,7 +818,12 @@ func Create(name, parent string) error {
 	if err := startContainer(name, false); err != nil {
 		return err
 	}
-	return waitReady(name)
+	if err := waitReady(name); err != nil {
+		return err
+	}
+	// Before anyone can reach it: until now it answers to its parent's name.
+	syncIdentityBestEffort(name, true)
+	return nil
 }
 
 // Delete stops a branch's container and destroys its dataset and origin
@@ -1448,7 +1461,13 @@ func Resume(name string) error {
 	if err := run("docker", "start", container(name)); err != nil {
 		return err
 	}
-	return waitReady(name)
+	if err := waitReady(name); err != nil {
+		return err
+	}
+	// Registrations may have changed while it slept: a key revoked then is
+	// refused from its first transaction.
+	syncIdentityBestEffort(name, false)
+	return nil
 }
 
 // EnsureRunning makes sure a branch is running (resuming it if suspended) and
@@ -1490,6 +1509,8 @@ func EnsureRunning(name string) (string, error) {
 		if err := waitReady(name); err != nil {
 			return "", err
 		}
+		// A new container, perhaps from a newer image: the SQL too.
+		syncIdentityBestEffort(name, true)
 		reconcileGuard(name)
 	default: // exited, created, paused, ...
 		if err := Resume(name); err != nil {

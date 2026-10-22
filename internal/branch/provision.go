@@ -92,12 +92,38 @@ func ensureImage() error { return ensureImageRef(pgImage()) }
 // major's image while the install still runs on the old one.
 func ensureImageRef(image string) error {
 	if imageExists(image) {
+		if ours(image) && imageRevision(image) < PGImageRevision {
+			refreshImage(image)
+		}
 		return nil
 	}
 	fmt.Printf("Fetching image %s…\n", image)
-	if run("docker", "pull", image) == nil {
+	if run("docker", "pull", image) == nil && (!ours(image) || imageRevision(image) >= PGImageRevision) {
 		return nil
 	}
+	return buildImage(image)
+}
+
+// refreshImage replaces an engine image older than this fox needs, and never
+// stops the engine starting: the image in hand still runs every database it ran
+// yesterday, and what it lacks (application identity, for revision 2) is
+// refused with a reason where it is asked for. Nothing running is restarted.
+// Each container uses the new image from the next time it is created, which for
+// a running install is `fox stop` and then `fox start`.
+func refreshImage(image string) {
+	fmt.Printf("Updating image %s (this %s needs revision %d; it has %d). Running databases are not restarted.\n",
+		image, brand.CLI, PGImageRevision, imageRevision(image))
+	if run("docker", "pull", image) == nil && imageRevision(image) >= PGImageRevision {
+		return
+	}
+	if err := buildImage(image); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\nThe engine goes on with the image it has.\n", err)
+	}
+}
+
+// buildImage builds one engine image from a context, for when a pull did not
+// give it.
+func buildImage(image string) error {
 	ctx, where := chooseImageContext(envOr(envImageContext, ""), findImageContext())
 	if ctx == "" {
 		dir, err := os.MkdirTemp("", "fox-image-")
@@ -110,7 +136,7 @@ func ensureImageRef(image string) error {
 		}
 		ctx = dir
 	}
-	fmt.Printf("Could not pull %s; building it here from %s instead (a few minutes, once)…\n", image, where)
+	fmt.Printf("Could not pull a current %s; building it here from %s instead (a few minutes, once)…\n", image, where)
 	if err := run("docker", buildImageArgs(image, ctx)...); err != nil {
 		return fmt.Errorf("image %s could not be pulled, and building it here failed too (%v).\n%s", image, err, pullHint)
 	}

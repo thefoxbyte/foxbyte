@@ -4,6 +4,7 @@ package branch
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -200,5 +201,45 @@ func TestPostgresMajorIsInStepEverywhere(t *testing.T) {
 	// wal-g is checked against its published SHA-256 before it is unpacked.
 	if !strings.Contains(docker, "sha256sum -c -") || !strings.Contains(docker, "WALG_SHA256_AMD64=") || !strings.Contains(docker, "WALG_SHA256_ARM64=") {
 		t.Error("docker/postgres/Dockerfile should verify the wal-g download for both architectures")
+	}
+}
+
+// The image's revision label and the revision this fox asks for are one number:
+// a fox that wanted more than the Dockerfile builds would rebuild on every
+// start, and one that wanted less would run without what it relies on.
+func TestImageRevisionInStep(t *testing.T) {
+	b, err := os.ReadFile("../../docker/postgres/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "LABEL " + imageRevisionLabel + "=\"" + strconv.Itoa(PGImageRevision) + "\"\n"
+	if !strings.Contains(string(b), want) {
+		t.Errorf("docker/postgres/Dockerfile should carry %q (PGImageRevision)", strings.TrimSpace(want))
+	}
+}
+
+func TestParseImageRevision(t *testing.T) {
+	for in, want := range map[string]int{
+		"2": 2, " 3\n": 3, "": 1, "<no value>": 1, "0": 1, "-4": 1, "two": 1,
+	} {
+		if got := parseImageRevision(in); got != want {
+			t.Errorf("parseImageRevision(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+// Only the images this fox names are replaced with a newer revision. An image
+// an operator chose with FOX_PG_IMAGE (a mirror, a build of their own) is used
+// as it is.
+func TestOursIsOnlyTheEngineImages(t *testing.T) {
+	for _, m := range SupportedPGMajors {
+		if !ours(PostgresImageFor(m)) {
+			t.Errorf("%s should be ours", PostgresImageFor(m))
+		}
+	}
+	for _, ref := range []string{"registry.example.com/postgres-walg:18", PostgresImageFor("15"), "postgres:18", MinioImage} {
+		if ours(ref) {
+			t.Errorf("%s should not be replaced by fox", ref)
+		}
 	}
 }
