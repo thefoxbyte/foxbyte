@@ -58,7 +58,7 @@ SELECT json_build_object(
       FROM pg_attribute a
       WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
         AND NOT has_column_privilege('db_client', c.oid, a.attnum, 'SELECT')), '[]'::json),
-  'is_system', (n.nspname = 'bb'
+  'is_system', (n.nspname IN ('bb', 'bb_f1')
                 OR n.nspname IN ('pg_catalog','information_schema')
                 OR n.nspname LIKE 'pg\_%'),
   'is_extension_owned', EXISTS (

@@ -1308,3 +1308,10 @@ td button.sm { padding: 2px 10px; font-size: 12px; }
   .access-review .panel { break-inside: avoid; }
   .access-review table { font-size: 11px; }
 }
+
+/* Applications (application identity, F1) */
+.applications .field { display: flex; flex-direction: column; gap: 4px; font-size: var(--t-sm); color: var(--muted); }
+.applications .field input, .applications .field select { min-width: 180px; }
+.applications .ok { color: var(--green); font-size: var(--t-sm); }
+.lg-for { font-size: 12px; margin-top: 2px; white-space: normal; }
+.lg-for.compromised { color: color-mix(in srgb, var(--red) 78%, var(--text)); }

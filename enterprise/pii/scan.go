@@ -297,7 +297,7 @@ func catalog(ctx context.Context, conn *pgx.Conn) ([]table, error) {
 		JOIN pg_type t ON t.oid = a.atttypid
 		WHERE c.relkind IN ('r', 'p', 'm', 'f')
 		  AND NOT c.relispartition
-		  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'bb')
+		  AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'bb', 'bb_f1')
 		  AND n.nspname NOT LIKE 'pg\_%'
 		  AND NOT EXISTS (SELECT 1 FROM pg_depend d
 		                  WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')

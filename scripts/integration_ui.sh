@@ -113,6 +113,27 @@ rtsql "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.pii_people"
 rtsql "CREATE TABLE public.pii_people (id int PRIMARY KEY, aadhaar_no text, email text, card_no text, status text, profile jsonb)"
 rtsql "INSERT INTO public.pii_people VALUES (1, '234567890124', 'a@example.com', '4111111111111111', 'open', '{\"contact\": {\"phone\": \"9876543210\"}, \"theme\": \"dark\"}'), (2, '456789012341', 'b@example.org', NULL, 'closed', '{\"contact\": {\"phone\": \"+91 98765 43211\"}}')"
 
+# Application identity (F1), for the Blackbox's "for" test: a table made on the
+# branch in a transaction that asserted alice, with a token signed by an
+# application registered for this account. Through the Gateway, as an
+# application would; the token is a bind parameter, never in the SQL text.
+F1D="$(mktemp -d)"
+( cd "$ROOT" && go build -o "$F1D/mint" ./scripts/f1/mint ) >/dev/null 2>&1
+"$F1D/mint" keygen "$F1D" ui >"$F1D/ui.pub"
+"$S" app remove uishop >/dev/null 2>&1
+"$S" app register uishop --account "$EMAIL" --key "$F1D/ui.pub" --kid ui >/dev/null 2>&1
+AUD="$("$S" app list --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["install_id"])')"
+FKEY="$("$S" apikey create "$EMAIL" e2e-for 2>/dev/null | grep -o "${DB_KEY_PREFIX}[A-Za-z0-9_-]*")"
+FTOK="$("$F1D/mint" token "$F1D/ui.seed" -kid ui -iss uishop -aud "$AUD" -sub alice)"
+rtsql "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.e2e_for_alice"
+PGPASSWORD="$FKEY" psql "postgresql://dbadmin@127.0.0.1:6432/$BRANCH?sslmode=require" -X -q >/dev/null 2>&1 <<SQL
+BEGIN;
+SELECT bb.act_for(\$1) \bind '$FTOK' \g
+CREATE TABLE public.e2e_for_alice (id int);
+COMMIT;
+SQL
+rm -rf "$F1D"
+
 # The console has to be there: a binary built without `-tags embedui` serves
 # the API but no UI, and every test below would fail on a blank page.
 if ! curl -sk "$API/login" | grep -qi '<div id="root"\|<title'; then
@@ -197,6 +218,7 @@ echo "### cleanup"
 # that asserts main's container arguments are byte-identical to a build with
 # the feed off would otherwise fail for a reason this suite caused.
 "$S" realtime teardown --yes >/dev/null 2>&1
+"$S" app remove uishop >/dev/null 2>&1
 for b in "$BRANCH" "$NEW_BRANCH" e2eui3; do "$S" branch delete "$b" >/dev/null 2>&1; done
 cd "$ROOT" || exit 1
 # A failure leaves the screenshots and traces where CI can collect them.

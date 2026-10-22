@@ -105,6 +105,14 @@ Stack:
                        and who has gone quiet (Enterprise)
   pii unclassified | accept <column-id> [--note "…"]
                        What appeared since a branch's first scan, not reviewed; accept one as holding nothing
+  app [list|show <name>] [--json]
+                       The applications that may say which of their users a transaction
+                       acts for, and the "aud" their tokens name
+  app register <name> --account <email> [--key <file>|-] [--max-life 5m] [--on-invalid none|refuse]
+                       Accept tokens signed by the application's key, from that account's
+                       own logins only; it then calls bb.act_for($1) in each transaction
+  app key add <name> --key <file>|- [--kid k] | key revoke <name> <kid> [--compromised-since <time>|now]
+  app remove <name>    Add, rotate or revoke its keys; reach every running branch at once
   demo seed|drop|sql [branch]
                        The sample tables (users, projects, events). A first start
                        seeds main; FOX_NO_DEMO=1 starts empty
@@ -385,6 +393,8 @@ func main() {
 		piiCmd(os.Args[2:])
 	case "access":
 		accessCmd(os.Args[2:])
+	case "app":
+		appCmd(os.Args[2:])
 	case "check":
 		checkCmd(os.Args[2:])
 	case "connect":

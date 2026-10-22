@@ -39,14 +39,34 @@ CREATE TABLE IF NOT EXISTS bb.ledger_ext (
 );
 CREATE INDEX IF NOT EXISTS ledger_ext_xid_idx ON bb.ledger_ext (xid);
 
--- _ext_hash is the single source of truth for a capture row's hash.
+-- The application actor (F1, identity.sql): who the change was made for, in
+-- the state it was recorded with (asserted, claimed or none), the application
+-- and key that asserted it, and why a value present was not taken. Added
+-- columns: a row recorded before them has none, and its hash is unchanged.
+ALTER TABLE bb.ledger_ext
+  ADD COLUMN IF NOT EXISTS app_actor  text,
+  ADD COLUMN IF NOT EXISTS app_state  text,
+  ADD COLUMN IF NOT EXISTS app_issuer text,
+  ADD COLUMN IF NOT EXISTS app_kid    text,
+  ADD COLUMN IF NOT EXISTS app_tenant text,
+  ADD COLUMN IF NOT EXISTS app_note   text;
+
+-- _ext_hash is the single source of truth for a capture row's hash. The
+-- application actor's fields are hashed only when a row has them, so a row
+-- recorded before they existed hashes exactly as it did then, and every
+-- checkpoint already taken over it still verifies.
 CREATE OR REPLACE FUNCTION bb._ext_hash(e bb.ledger_ext) RETURNS text
 LANGUAGE sql IMMUTABLE AS $$
   SELECT encode(sha256(convert_to(
     coalesce(e.ledger_id::text,'')      || '|' || coalesce(e.xid::text,'')        || '|' ||
     coalesce(e.lsn::text,'')            || '|' || coalesce(e.task_id,'')          || '|' ||
     coalesce(e.parent_session,'')       || '|' || coalesce(e.call_hash,'')        || '|' ||
-    coalesce(e.override_used::text,''), 'UTF8')), 'hex');
+    coalesce(e.override_used::text,'')  ||
+    CASE WHEN e.app_state IS NULL THEN '' ELSE
+      '|' || e.app_state                || '|' || coalesce(e.app_actor,'')        || '|' ||
+      coalesce(e.app_issuer,'')         || '|' || coalesce(e.app_kid,'')          || '|' ||
+      coalesce(e.app_tenant,'')         || '|' || coalesce(e.app_note,'')
+    END, 'UTF8')), 'hex');
 $$;
 
 -- The kill switch. bb.v2 = 'off' is honoured only when it is set for the whole
@@ -66,7 +86,7 @@ $$;
 
 CREATE OR REPLACE FUNCTION bb.capture_ext() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, bb AS $$
-DECLARE e bb.ledger_ext;
+DECLARE e bb.ledger_ext; a record;
 BEGIN
   BEGIN
     IF bb._capture_disabled() THEN
@@ -83,6 +103,22 @@ BEGIN
     e.override_used  := coalesce(nullif(current_setting('bb.allow_destructive', true), ''), 'off')
                           IN ('on','true','1')
                         OR coalesce(current_setting('bb.policy_override_used', true), '') = 'on';
+    -- Who it was for (identity.sql). On its own, so that a branch without
+    -- bb.app_actor() yet still records everything else.
+    BEGIN
+      SELECT * INTO a FROM bb.app_actor();
+      e.app_actor  := a.actor;
+      e.app_state  := a.state;
+      e.app_issuer := a.issuer;
+      e.app_kid    := a.kid;
+      e.app_tenant := nullif(a.tenant, '');
+      e.app_note   := a.note;
+    EXCEPTION WHEN undefined_function OR undefined_file THEN
+      NULL;
+    WHEN OTHERS THEN
+      e.app_state := 'none';
+      e.app_note  := 'the application actor could not be read: ' || SQLERRM;
+    END;
     e.captured_at    := clock_timestamp();
     e.ext_hash       := bb._ext_hash(e);
     INSERT INTO bb.ledger_ext SELECT (e).*;

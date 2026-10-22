@@ -816,3 +816,38 @@ export const getAccessReview = (dormant: number) =>
   req('GET', `${API}/api/access-review?dormant=${dormant}`) as Promise<AccessReview>
 export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches') =>
   `${API}/api/access-review?dormant=${dormant}&format=csv&section=${section}`
+
+// Application identity (F1): the applications that may say which of their
+// users a transaction acts for. Admins only.
+export type AppKey = {
+  kid: string
+  public_key: string
+  created: number
+  revoked?: number | null
+  compromised_since?: number | null
+}
+export type RegisteredApp = {
+  name: string
+  user_id: number
+  account: string
+  created: number
+  max_life_seconds: number
+  on_invalid: 'none' | 'refuse'
+  keys: AppKey[]
+}
+export type AppsReply = {
+  install_id: string
+  apps: RegisteredApp[] | null
+  readiness: Record<string, string> | null
+}
+export type AppChange = { app?: RegisteredApp; key?: AppKey; unsynced?: Record<string, string> | null }
+export const listApps = () => req('GET', `${API}/api/apps`) as Promise<AppsReply>
+export const registerApp = (a: { name: string; account: string; max_life_seconds?: number; on_invalid?: string; public_key?: string; kid?: string }) =>
+  req('POST', `${API}/api/apps`, a) as Promise<AppChange>
+export const removeApp = (name: string) =>
+  req('DELETE', `${API}/api/apps/${encodeURIComponent(name)}`) as Promise<AppChange>
+export const addAppKey = (name: string, public_key: string, kid = '') =>
+  req('POST', `${API}/api/apps/${encodeURIComponent(name)}/keys`, { public_key, kid }) as Promise<AppChange>
+export const revokeAppKey = (name: string, kid: string, compromised_since = '') =>
+  req('POST', `${API}/api/apps/${encodeURIComponent(name)}/keys/${encodeURIComponent(kid)}/revoke`,
+    compromised_since ? { compromised_since } : {}) as Promise<AppChange>

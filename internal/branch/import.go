@@ -293,7 +293,7 @@ func TableCountOK(name string) (int, bool) {
 	out, err := capture("docker", "exec", container(name),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc",
 		`SELECT count(*) FROM information_schema.tables
-		 WHERE table_schema NOT IN ('pg_catalog','information_schema','`+ledger.SchemaName+`')`)
+		 WHERE table_schema NOT IN ('pg_catalog','information_schema','`+ledger.SchemaName+`','`+ledger.PrivateSchemaName+`')`)
 	if err != nil {
 		return 0, false
 	}

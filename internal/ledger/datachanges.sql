@@ -453,7 +453,7 @@ CREATE OR REPLACE FUNCTION bb._data_tables() RETURNS SETOF regclass
 LANGUAGE sql STABLE AS $$
   SELECT c.oid::regclass FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE c.relkind IN ('r','p') AND c.relpersistence <> 't'
-    AND n.nspname NOT IN ('bb','pg_catalog','information_schema','pg_toast')
+    AND n.nspname NOT IN ('bb','bb_f1','pg_catalog','information_schema','pg_toast')
     AND n.nspname NOT LIKE 'pg_temp%' AND n.nspname NOT LIKE 'pg_toast_temp%';
 $$;
 
@@ -475,7 +475,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, bb AS $$
 DECLARE r record; bad text;
 BEGIN
   FOR r IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
-    IF r.object_type NOT IN ('table','trigger') OR r.schema_name IN ('bb','pg_catalog','information_schema')
+    IF r.object_type NOT IN ('table','trigger') OR r.schema_name IN ('bb','bb_f1','pg_catalog','information_schema')
        OR r.schema_name LIKE 'pg_temp%' THEN
       CONTINUE;
     END IF;

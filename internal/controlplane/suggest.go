@@ -105,7 +105,7 @@ func visibleTables(ctx context.Context, conn *pgx.Conn) ([][2]string, error) {
 	rows, err := conn.Query(ctx, `SELECT n.nspname, c.relname FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		WHERE c.relkind IN ('r','p','v','m','f')
-		  AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
+		  AND n.nspname NOT IN ('pg_catalog','information_schema','bb_f1') AND n.nspname NOT LIKE 'pg_toast%'
 		  AND has_table_privilege(c.oid, 'SELECT')
 		LIMIT 20000`)
 	if err != nil {

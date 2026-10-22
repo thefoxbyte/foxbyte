@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# The F1 prototype's suite: Gate 0's exit (docs/FOX_F1_Identity_Design.md,
+# Application identity's SQL suite (F1), first Gate 0's exit (docs/FOX_F1_Identity_Design.md,
 # section 11). An application actor per transaction, asserted with an Ed25519
-# token, checked by the fox_ed25519 extension, guarded by a MAC, and attributed
+# token, checked by the bb_identity extension, guarded by a MAC, and attributed
 # on the Blackbox's DDL record.
 #
-# Self-contained, and touches no install: it builds the engine image WITH_F1=on
-# under a tag of its own, runs a throwaway Postgres from it, installs the
-# Blackbox and the prototype into that, and removes it at the end. The shared
+# Self-contained, and touches no install: it builds the engine image under a tag
+# of its own, runs a throwaway Postgres from it, installs the
+# Blackbox and internal/ledger/identity.sql into that, and removes it at the end. The shared
 # stack in the test VM is never stopped, started or written to.
 #
-# "Every path" (Gateway, console, API, MCP, agent keys) is Gate 1: it needs the
-# product wired, which the prototype deliberately is not.
+# The engine's side (registration, the copy into branches, the Gateway, the
+# console) is integration_test.sh's, section 11u: this suite is the SQL alone.
 #
 #   make integration-f1
 set -uo pipefail
@@ -41,7 +41,7 @@ su() { sudo docker exec "$C" psql -X -q -tA -U dbadmin -d appdb -c "$1" 2>&1; }
 as() { sudo docker exec -i "$C" psql -X -q -tA -U "$1" -d appdb 2>&1; }
 
 # attr <table>: how the Blackbox's record of creating it was attributed.
-attr() { su "SELECT app_state || '|' || coalesce(app_actor, '') || '|' || coalesce(note, '') FROM bb.f1_report WHERE object_identity = 'public.$1' ORDER BY id DESC LIMIT 1"; }
+attr() { su "SELECT app_state || '|' || coalesce(app_actor, '') || '|' || coalesce(note, '') FROM bb.app_report WHERE object_identity = 'public.$1' ORDER BY id DESC LIMIT 1"; }
 
 # one <role> <token> <table>: a transaction that asserts with the token, then
 # makes a table; prints its attribution.
@@ -57,34 +57,33 @@ SQL
 
 digest() { sed -n '/PostgresBaseDigests/,/^}/p' "$REPO/internal/branch/images.go" | grep "\"$1\"" | sed 's/.*"\(sha256:[0-9a-f]*\)".*/\1/'; }
 
-echo "### building the engine image with the extension (WITH_F1=on), under its own tag"
+echo "### building the engine image, which has the extension, under its own tag"
 build_ok=1
 for m in 18 16; do
   tag="fox-f1-proto:$m"
-  if ! sudo docker build -q -t "$tag" --build-arg WITH_F1=on --build-arg PG_MAJOR="$m" --build-arg PG_DIGEST="$(digest $m)" \
+  if ! sudo docker build -q -t "$tag" --build-arg PG_MAJOR="$m" --build-arg PG_DIGEST="$(digest $m)" \
        "$REPO/docker/postgres" >/dev/null 2>"$WORK/build-$m.log"; then
     build_ok=0; tail -20 "$WORK/build-$m.log"
   fi
 done
 assert_eq "the image builds with the extension for Postgres 18 and 16" "$build_ok" "1"
-assert_eq "…and without it, by default, the image has no extension" \
-  "$(sudo docker run --rm "$(sudo docker build -q --build-arg PG_DIGEST="$(digest 18)" "$REPO/docker/postgres" 2>/dev/null)" \
-     sh -c 'ls /usr/lib/postgresql/18/lib/fox_ed25519.so 2>/dev/null | wc -l')" "0"
+assert_eq "…and it is labelled revision 2, the first the engine knows has it" \
+  "$(sudo docker image inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' "$IMG")" "2"
 
-echo "### a throwaway Postgres, with the Blackbox and the prototype"
+echo "### a throwaway Postgres, with the Blackbox and application identity"
 sudo docker rm -f "$C" >/dev/null 2>&1
 sudo docker run -d --name "$C" -e POSTGRES_USER=dbadmin -e POSTGRES_PASSWORD=f1proto -e POSTGRES_DB=appdb "$IMG" >/dev/null
 for _ in $(seq 60); do [ "$(su 'SELECT 1')" = "1" ] && break; sleep 1; done
 # The Blackbox as the engine installs it (EnsureLedgerV2's order): the base,
 # then the richer capture, provenance, the data guardrails, and row tracking,
-# which needs the guardrails' override function. Then the prototype.
+# which needs the guardrails' override function. Then application identity.
 installed=1
 : >"$WORK/install.log"
 for f in internal/ledger/ledger.sql internal/ledger/ledger_ext.sql internal/ledger/provenance.sql \
-         internal/ledger/datachanges.sql internal/ledger/tracking.sql scripts/f1/f1_proto.sql; do
+         internal/ledger/datachanges.sql internal/ledger/tracking.sql internal/ledger/identity.sql; do
   sudo docker exec -i "$C" psql -X -q -U dbadmin -d appdb -v ON_ERROR_STOP=1 < "$REPO/$f" >/dev/null 2>>"$WORK/install.log" || { installed=0; echo "  (installing $f failed)"; }
 done
-assert_eq "the Blackbox and the prototype install" "$installed" "1"
+assert_eq "the Blackbox and application identity install" "$installed" "1"
 [ -s "$WORK/install.log" ] && grep -v '^NOTICE' "$WORK/install.log" | head -5
 
 ( cd "$REPO" && go build -o "$WORK/mint" ./scripts/f1/mint ) || { echo "could not build the mint tool"; exit 1; }
@@ -102,24 +101,24 @@ su "INSERT INTO bb_f1.install VALUES (1, 'fox-test', 'main');
 
 echo "### the extension"
 assert_eq "it verifies RFC 8032's test vectors, and refuses them altered" \
-  "$(su "SELECT bb_f1.fox_ed25519_verify(decode('d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a','hex'), ''::bytea,
+  "$(su "SELECT bb_f1.bbid_ed25519_verify(decode('d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a','hex'), ''::bytea,
            decode('e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b','hex'))
-         || '|' || bb_f1.fox_ed25519_verify(decode('3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c','hex'), decode('72','hex'),
+         || '|' || bb_f1.bbid_ed25519_verify(decode('3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c','hex'), decode('72','hex'),
            decode('92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00','hex'))
-         || '|' || bb_f1.fox_ed25519_verify(decode('3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c','hex'), decode('73','hex'),
+         || '|' || bb_f1.bbid_ed25519_verify(decode('3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c','hex'), decode('73','hex'),
            decode('92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00','hex'))")" \
   "true|true|false"
 assert_eq "…and 20,000 random inputs of every length are refused without crashing a backend" \
-  "$(su "SELECT count(*) FILTER (WHERE bb_f1.fox_ed25519_verify(bb_f1.fox_random_bytes((g % 40) + 12), bb_f1.fox_random_bytes((g % 300) + 1), bb_f1.fox_random_bytes((g % 70) + 1))) FROM generate_series(1, 20000) g")|$(su "SELECT bb_f1.fox_ed25519_verify(''::bytea, ''::bytea, ''::bytea)")|$(su 'SELECT 1')" \
+  "$(su "SELECT count(*) FILTER (WHERE bb_f1.bbid_ed25519_verify(bb_f1.bbid_random_bytes((g % 40) + 12), bb_f1.bbid_random_bytes((g % 300) + 1), bb_f1.bbid_random_bytes((g % 70) + 1))) FROM generate_series(1, 20000) g")|$(su "SELECT bb_f1.bbid_ed25519_verify(''::bytea, ''::bytea, ''::bytea)")|$(su 'SELECT 1')" \
   "0|f|1"
 assert_eq "its private functions are not a client's to call" \
-  "$(echo "SELECT bb_f1.fox_app_mac('a','shop','k1','');" | as shop_app | grep -c 'permission denied for schema bb_f1')" "1"
+  "$(echo "SELECT bb_f1.bbid_app_mac('a','shop','k1','');" | as shop_app | grep -c 'permission denied for schema bb_f1')" "1"
 # Its own link to OpenSSL, not one borrowed from the postgres binary: built
 # with PGXS's MODULES, SHLIB_LINK was ignored and the library had none.
 assert_eq "the library links libcrypto itself, on 18 and 16" \
-  "$(sudo docker run --rm "$IMG" sh -c 'ldd /usr/lib/postgresql/18/lib/fox_ed25519.so | grep -c libcrypto')|$(sudo docker run --rm "$IMG16" sh -c 'ldd /usr/lib/postgresql/16/lib/fox_ed25519.so | grep -c libcrypto')" "1|1"
+  "$(sudo docker run --rm "$IMG" sh -c 'ldd /usr/lib/postgresql/18/lib/bb_identity.so | grep -c libcrypto')|$(sudo docker run --rm "$IMG16" sh -c 'ldd /usr/lib/postgresql/16/lib/bb_identity.so | grep -c libcrypto')" "1|1"
 assert_eq "the Postgres 16 build verifies too" \
-  "$(sudo docker run --rm "$IMG16" sh -c 'ls /usr/lib/postgresql/16/lib/fox_ed25519.so >/dev/null && echo built')" "built"
+  "$(sudo docker run --rm "$IMG16" sh -c 'ls /usr/lib/postgresql/16/lib/bb_identity.so >/dev/null && echo built')" "built"
 
 echo "### signatures"
 assert_eq "a valid token asserts the user" "$(one shop_app "$(tok k1)" s_valid)" "asserted by shop|alice|"
@@ -154,7 +153,7 @@ assert_eq "a branch claim must be this branch" \
   "$(one shop_app "$(tok k1 -branch main)" c_br1)/$(one shop_app "$(tok k1 -branch qa)" c_br2)" \
   "asserted by shop|alice|/none||token refused: wrong branch"
 assert_eq "a tenant is recorded beside the user" \
-  "$(one shop_app "$(tok k1 -tenant acme)" c_tenant >/dev/null; su "SELECT app_tenant FROM bb.f1_report WHERE object_identity = 'public.c_tenant'")" "acme"
+  "$(one shop_app "$(tok k1 -tenant acme)" c_tenant >/dev/null; su "SELECT app_tenant FROM bb.app_report WHERE object_identity = 'public.c_tenant'")" "acme"
 
 echo "### one application actor per transaction"
 assert_contains "a second assertion in a transaction is refused" \
@@ -166,16 +165,16 @@ ROLLBACK;
 SQL
 )" "already acts for alice"
 as shop_app >/dev/null <<SQL
-BEGIN; SELECT set_config('fox.app.actor', 'mallory', true); CREATE TABLE p_handset (id int); COMMIT;
+BEGIN; SELECT set_config('bb.app.actor', 'mallory', true); CREATE TABLE p_handset (id int); COMMIT;
 SQL
 assert_eq "an actor set by hand is not an actor" "$(attr p_handset)" "none||an application actor was present and failed its check"
 as shop_app >/dev/null <<SQL
 BEGIN;
 SELECT bb.act_for(\$1) \bind '$(tok k1)' \g
-SELECT current_setting('fox.app.actor') AS a, current_setting('fox.app.issuer') AS i, current_setting('fox.app.kid') AS k, current_setting('fox.app.mac') AS m \gset
+SELECT current_setting('bb.app.actor') AS a, current_setting('bb.app.issuer') AS i, current_setting('bb.app.kid') AS k, current_setting('bb.app.mac') AS m \gset
 COMMIT;
 BEGIN;
-SELECT set_config('fox.app.actor', :'a', true), set_config('fox.app.issuer', :'i', true), set_config('fox.app.kid', :'k', true), set_config('fox.app.mac', :'m', true);
+SELECT set_config('bb.app.actor', :'a', true), set_config('bb.app.issuer', :'i', true), set_config('bb.app.kid', :'k', true), set_config('bb.app.mac', :'m', true);
 CREATE TABLE p_copied (id int);
 COMMIT;
 SQL
@@ -183,13 +182,13 @@ assert_eq "a valid MAC copied from another transaction fails" "$(attr p_copied)"
 as shop_app >/dev/null <<SQL
 BEGIN;
 SELECT bb.act_for(\$1) \bind '$(tok k1)' \g
-SELECT set_config(n, current_setting(n), false) FROM unnest(ARRAY['fox.app.actor','fox.app.issuer','fox.app.kid','fox.app.tenant','fox.app.mac']) AS n;
+SELECT set_config(n, current_setting(n), false) FROM unnest(ARRAY['bb.app.actor','bb.app.issuer','bb.app.kid','bb.app.tenant','bb.app.mac']) AS n;
 COMMIT;
 CREATE TABLE p_carried (id int);
 SQL
 assert_eq "values carried into the next transaction at session level fail" "$(attr p_carried)" "none||an application actor was present and failed its check"
 as shop_app >/dev/null <<SQL
-SET fox.claimed_actor = 'bob'; CREATE TABLE p_claimed (id int);
+SET bb.claimed_actor = 'bob'; CREATE TABLE p_claimed (id int);
 SQL
 assert_eq "a client's own word is recorded as claimed, never asserted" "$(attr p_claimed)" "claimed|bob|"
 
@@ -226,7 +225,7 @@ COMMIT;
 SQL
 assert_eq "nested: rolled back past the assertion, another may be made" "$(attr sp_nested)" "asserted by shop|bob|"
 assert_eq "no surviving record carries an actor that was not in force when it was written" \
-  "$(su "SELECT count(*) FROM bb.f1_report WHERE object_identity LIKE 'public.sp_%' AND app_state LIKE 'asserted%' AND object_identity NOT IN ('public.sp_in','public.sp_out','public.sp_nested')")" "0"
+  "$(su "SELECT count(*) FROM bb.app_report WHERE object_identity LIKE 'public.sp_%' AND app_state LIKE 'asserted%' AND object_identity NOT IN ('public.sp_in','public.sp_out','public.sp_nested')")" "0"
 
 echo "### one connection, many users (a pool)"
 as shop_app >/dev/null <<SQL
@@ -251,9 +250,9 @@ BEGIN;
 SELECT bb.act_for(\$1) \bind '$(tok k1)' \g
 SELECT bb.app_actor_label();
 COMMIT;
-BEGIN; SET LOCAL fox.claimed_actor = 'bob'; SELECT bb.app_actor_label(); COMMIT;
+BEGIN; SET LOCAL bb.claimed_actor = 'bob'; SELECT bb.app_actor_label(); COMMIT;
 BEGIN; SELECT '[' || bb.app_actor_label() || ']'; COMMIT;
-BEGIN; SELECT set_config('fox.app.actor', 'mallory', true); SELECT '[' || bb.app_actor_label() || ']'; COMMIT;
+BEGIN; SELECT set_config('bb.app.actor', 'mallory', true); SELECT '[' || bb.app_actor_label() || ']'; COMMIT;
 SQL
 )" "alice/asserted:shop:alice/claimed:bob/[]/mallory/[]/"
 
@@ -361,6 +360,41 @@ assert_eq "asking for the actor on every row of a 10,000-row tracked update cost
 # every row is nine checks of every row that all passed.
 assert_eq "…and every row of every run was checked and asserted" \
   "$(su "SELECT count(*) FROM bench_b WHERE v = 9")" "10000"
+
+echo "### a branch whose image predates the extension"
+# An install keeps the image it first fetched, so a branch can run identity.sql
+# with no bb_identity to load. Hidden here by moving its control file aside,
+# which is all pg_available_extensions reads.
+CTL="/usr/share/postgresql/18/extension/bb_identity.control"
+sudo docker exec -u root "$C" mv "$CTL" "$CTL.hidden"
+sudo docker exec -i "$C" psql -X -q -U dbadmin -d appdb -v ON_ERROR_STOP=1 < "$REPO/internal/ledger/identity.sql" >/dev/null 2>"$WORK/fallback.log"
+assert_eq "identity.sql installs where the extension cannot be loaded" "$?" "0"
+assert_eq "…the branch says it cannot check" "$(su "SELECT bb.app_identity_mode()")" "unavailable"
+assert_contains "…asserting is refused, saying how to get it" "$(as shop_app <<SQL
+SELECT bb.act_for(\$1) \bind '$(tok k1)' \g
+SQL
+)" "Restart the engine (stop it, then start it)"
+assert_eq "…a value set by hand is not taken for an assertion" \
+  "$(as shop_app <<'SQL' >/dev/null
+BEGIN;
+SET LOCAL bb.app.actor = 'mallory'; SET LOCAL bb.app.issuer = 'shop'; SET LOCAL bb.app.kid = 'k1';
+CREATE TABLE fb_forged (id int);
+COMMIT;
+SQL
+attr fb_forged)" "none||an application actor was present, and this branch cannot check one"
+assert_eq "…a claimed actor is still recorded as claimed" \
+  "$(as shop_app <<'SQL' >/dev/null
+BEGIN;
+SET LOCAL bb.claimed_actor = 'carol';
+CREATE TABLE fb_claimed (id int);
+COMMIT;
+SQL
+attr fb_claimed)" "claimed|carol|"
+sudo docker exec -u root "$C" mv "$CTL.hidden" "$CTL"
+sudo docker exec -i "$C" psql -X -q -U dbadmin -d appdb -v ON_ERROR_STOP=1 < "$REPO/internal/ledger/identity.sql" >/dev/null 2>>"$WORK/fallback.log"
+assert_eq "once the image has it, the same file puts the checking functions back" \
+  "$(su "SELECT bb.app_identity_mode() || '|' || (SELECT l.lanname FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang WHERE p.oid = 'bb.app_actor()'::regprocedure)")" "checked|c"
+assert_eq "…and an assertion works again" "$(one shop_app "$(tok k1)" fb_back)" "asserted by shop|alice|"
 
 echo
 echo "==== ${PASS} passed, ${FAIL} failed ===="

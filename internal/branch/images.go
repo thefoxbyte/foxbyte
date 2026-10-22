@@ -5,6 +5,7 @@ package branch
 import (
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -72,6 +73,48 @@ var PostgresBaseDigests = map[string]string{
 // it. The release workflow publishes an engine image for each, and a test keeps
 // the workflow, the Dockerfile and the Windows preload in step with this list.
 var SupportedPGMajors = []string{"16", PGMajor}
+
+// PGImageRevision is the engine image this fox needs, as the number the
+// Dockerfile labels it with (dev.dbengine.image-revision). An install keeps the
+// image it first fetched, so an image older than this is fetched again, or
+// built, when the engine starts (ensureImageRef). 2 added bb_identity, which
+// application identity (F1) needs. An image without the label is revision 1.
+const PGImageRevision = 2
+
+// imageRevisionLabel is the label that carries it.
+const imageRevisionLabel = "dev.dbengine.image-revision"
+
+// imageRevision reads an image's revision from its label, without starting a
+// container: 1 when it has none, as every image before the label had none.
+func imageRevision(ref string) int {
+	out, err := capture("docker", "image", "inspect", "-f", "{{index .Config.Labels \""+imageRevisionLabel+"\"}}", ref)
+	if err != nil {
+		return 1
+	}
+	return parseImageRevision(out)
+}
+
+// parseImageRevision is imageRevision's reading of the label, pure so it is
+// tested: anything that is not a positive number is revision 1.
+func parseImageRevision(label string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(label))
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+// ours reports whether an image is one this fox names, and so one it may
+// replace with a newer revision. An image set with FOX_PG_IMAGE is the
+// operator's, and is used as it is.
+func ours(ref string) bool {
+	for _, m := range SupportedPGMajors {
+		if ref == PostgresImageFor(m) {
+			return true
+		}
+	}
+	return false
+}
 
 // PostgresImageFor names the engine image — stock Postgres plus wal-g, built
 // from docker/postgres — for one PostgreSQL major.

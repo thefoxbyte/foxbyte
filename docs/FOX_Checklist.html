@@ -448,6 +448,14 @@
       <li class="ok">Refused on a conflict (both sides changed the same object), on a statement the target's gate blocks, and when there is nothing to promote</li>
       <li class="ok">Approving needs the right to manage the target, so an agent cannot approve its own request</li>
       <li class="ok">Promotion: CLI, REST, MCP and the web Requests page</li></ul></td><td class="tb">Unit; v2 §8, §8b</td></tr>
+    <tr data-id="H19" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H19</td><td><b>Application identity: who a change was made for</b> (F1)<ul class="subs">
+      <li class="ok">An application registered against its account and an Ed25519 public key; tokens accepted from that account&rsquo;s own logins only</li>
+      <li class="ok"><code>bb.act_for($1)</code>: signature, header, key, revocation, binding, audience, branch and times checked; one actor per transaction, guarded by a MAC</li>
+      <li class="ok">The Blackbox records whom each change was for, beside who made it; reports never upgrade a state</li>
+      <li class="ok">Copied into every running branch at once, a suspended one on wake, a new one before it is reached</li>
+      <li class="ok">Rotation, revocation, and a key reported compromised from a moment</li>
+      <li class="ok">The extension in every engine image (revision 2); a branch on an older image refuses with the way out</li>
+      <li class="ok">CLI <code>fox app</code>, REST <code>/api/apps</code>, the console&rsquo;s Applications page; <code>for</code> in <code>fox blackbox</code>, <code>?with=for</code> and the Blackbox page</li></ul></td><td class="tb">Unit; f1 suite; §11u; UI</td></tr>
   </table>
 </section>
 

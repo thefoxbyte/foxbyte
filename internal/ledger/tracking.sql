@@ -145,7 +145,7 @@ DECLARE r record; s record; bad text;
 BEGIN
   SELECT * INTO s FROM bb.track_settings;
   FOR r IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
-    IF r.object_type NOT IN ('table','trigger') OR r.schema_name IN ('bb','pg_catalog','information_schema')
+    IF r.object_type NOT IN ('table','trigger') OR r.schema_name IN ('bb','bb_f1','pg_catalog','information_schema')
        OR r.schema_name LIKE 'pg_temp%' OR r.schema_name LIKE 'bb\_%' THEN
       CONTINUE;
     END IF;

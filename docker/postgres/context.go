@@ -19,7 +19,7 @@ import (
 	"strings"
 )
 
-//go:embed Dockerfile restore-entrypoint.sh fox_ed25519
+//go:embed Dockerfile restore-entrypoint.sh bb_identity
 var files embed.FS
 
 // WriteContext writes the build context into dir, which must exist.

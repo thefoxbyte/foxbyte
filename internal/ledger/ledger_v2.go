@@ -29,3 +29,12 @@ var SchemaData string
 //
 //go:embed tracking.sql
 var SchemaTracking string
+
+// SchemaIdentity is application identity (F1): bb.act_for, which an
+// application calls with a signed token to say which of its users a
+// transaction acts for, and bb.app_actor, which the Blackbox's capture asks.
+// Apply it after SchemaExt, whose capture columns its report reads. Standard:
+// who a change was made for is accountability, like the Blackbox itself.
+//
+//go:embed identity.sql
+var SchemaIdentity string

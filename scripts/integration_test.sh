@@ -508,9 +508,11 @@ assert_eq "the primary carries its accounts into the replicated database" \
 SB=""
 for _ in $(seq 1 15); do SD="$(statedg pg-main)"; SB="$(statedg pg-standby)"; [ -n "$SB" ] && [ "$SB" = "$SD" ] && break; sleep 1; done
 assert_eq "…and the standby has the same document, through replication" "$SB" "$SD"
-assert_eq "…carrying the seven tables a second machine needs" \
+# The applications that may assert their users (F1) ride along: without them a
+# failover would refuse every application's tokens.
+assert_eq "…carrying the tables a second machine needs" \
   "$(sudo docker exec pg-main psql -U dbadmin -d statedb -tAc "SELECT string_agg(k, ',' ORDER BY k) FROM shared, jsonb_object_keys(payload->'tables') k WHERE id=1" 2>/dev/null)" \
-  "api_keys,branch_owners,change_requests,oauth_identities,pipelines,pipeline_targets,users"
+  "api_keys,app_keys,apps,branch_owners,change_requests,install_info,oauth_identities,pipelines,pipeline_targets,users"
 # Sessions are deliberately absent: a browser session is minutes old and cheap
 # to replace, and carrying bearer tokens between machines would widen what a
 # stolen document is worth for the convenience of not signing in again.
@@ -2193,6 +2195,109 @@ sudo docker stop pg-main >/dev/null 2>&1
 assert_eq "…and with main stopped they are still listed, from a container of their own" \
   "$($S check 2>&1 | grep '^[a-z]* *backups ' | grep -c 'could not be listed')" "0"
 $S start >/dev/null 2>&1; sleep 3
+
+echo "### 11u. application identity: an application says which of its users a change was for (F1)"
+# An application registered against the account its connections use calls
+# bb.act_for($1) with a short-lived token signed by its own key, and the
+# Blackbox records each change as made by the account and for the user. The
+# SQL's own cases (signatures, claims, savepoints, pooling, cost) are
+# integration_f1.sh's; these are the engine's: registration, the copy into
+# branches, the Gateway, the API and the console's columns.
+F1D="$(mktemp -d)"
+( cd "$(dirname "$0")/.." && go build -o "$F1D/mint" ./scripts/f1/mint ) || bad "the token tool builds"
+printf 'password123\n' | $S user create shop-svc@foxbyte.dev >/dev/null 2>&1
+SK="$($S apikey create shop-svc@foxbyte.dev app 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+SAK="$($S apikey create shop-svc@foxbyte.dev bot --agent 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+"$F1D/mint" keygen "$F1D" k1 >"$F1D/k1.pub"
+"$F1D/mint" keygen "$F1D" k2 >"$F1D/k2.pub"
+$S app remove shop >/dev/null 2>&1
+for b in f1b f1s; do $S branch delete "$b" >/dev/null 2>&1; done
+assert_eq "the engine image is revision 2, the first with the extension" \
+  "$(sudo docker image inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' "$(sudo docker inspect -f '{{.Config.Image}}' pg-main)")" "2"
+appev() { $S audit --limit 5000 | grep -c "app\.$1"; }
+EV0="$(appev registered)|$(appev key_added)|$(appev key_revoked)|$(appev removed)"
+REG="$($S app register shop --account shop-svc@foxbyte.dev --key "$F1D/k1.pub" --kid k1 2>&1)"
+assert_contains "fox app register registers it, with its key" "$REG" "Added key k1 to shop"
+AUD="$($S app list --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["install_id"])')"
+assert_eq "every running branch can check a token" "$($S app list | grep -c 'Not ready')" "0"
+tok() { local key="$1"; shift; "$F1D/mint" token "$F1D/$key.seed" -kid "$key" -iss shop -aud "$AUD" "$@"; }
+# f1do <key> <branch> <token> <table>: through the Gateway, a transaction that
+# asserts with the token and then makes a table.
+f1do() {
+  PGPASSWORD="$1" psql "$GATEWAY/$2?sslmode=require" -X -q -tA 2>&1 <<SQL
+BEGIN;
+SELECT bb.act_for(\$1) \bind '$3' \g
+CREATE TABLE $4 (id int);
+COMMIT;
+SQL
+}
+# forof <branch> <table>: who the Blackbox says creating it was for.
+forof() { $S blackbox "$1" --limit 30 | grep -w "public.$2" | head -1 | awk -F'|' '{gsub(/^ +| +$/, "", $3); print $3}'; }
+T1="$(tok k1 -sub alice)"
+assert_eq "asserted through the Gateway, the Blackbox records whom the change was for" \
+  "$(f1do "$SK" main "$T1" f1_a >/dev/null; forof main f1_a)" "alice, asserted by shop"
+assert_eq "…beside the account that made it" "$($S blackbox main --limit 30 | grep -w public.f1_a | grep -c shop-svc@foxbyte.dev)" "1"
+assert_eq "the same token from another account is refused, and the change is for nobody" \
+  "$(f1do "$KA" main "$T1" f1_b >/dev/null; forof main f1_b)" "none: token refused: wrong session role"
+if [ -n "$SAK" ]; then
+  assert_eq "…and from the same account's agent key" \
+    "$(f1do "$SAK" main "$T1" f1_c >/dev/null; forof main f1_c)" "none: token refused: wrong session role"
+else
+  bad "an agent key for the application's account could be made"
+fi
+assert_eq "a value set by hand is not taken for an assertion" \
+  "$(PGPASSWORD="$SK" psql "$GATEWAY/main?sslmode=require" -X -q -tA -c "BEGIN; SET LOCAL bb.app.actor = 'mallory'; CREATE TABLE f1_d (id int); COMMIT;" >/dev/null 2>&1; forof main f1_d)" \
+  "none: an application actor was present and failed its check"
+assert_eq "the token is in no log: not the Gateway's, the control plane's, nor Postgres's" \
+  "$(cat "$HOME/$BRAND_STATE_DIR/gateway.log" "$HOME/$BRAND_STATE_DIR/controlplane.log" 2>/dev/null | grep -c -F "$T1")|$(sudo docker logs pg-main 2>&1 | grep -c -F "$T1")" "0|0"
+
+# A branch is a copy of main: it is given its own name before anyone reaches it.
+$S branch create f1b >/dev/null 2>&1
+$S branch owner f1b shop-svc@foxbyte.dev >/dev/null 2>&1
+TB="$(tok k1 -sub bob -branch f1b)"
+assert_eq "a token for one branch is accepted there" "$(f1do "$SK" f1b "$TB" f1_e >/dev/null; forof f1b f1_e)" "bob, asserted by shop"
+assert_eq "…and refused on main" "$(f1do "$SK" main "$TB" f1_f >/dev/null; forof main f1_f)" "none: token refused: wrong branch"
+
+# Rotation, revocation at once on a running branch, and on a suspended one
+# before its first transaction.
+$S app key add shop --key "$F1D/k2.pub" --kid k2 >/dev/null 2>&1
+assert_eq "during a rotation both keys are accepted" \
+  "$(f1do "$SK" main "$(tok k2 -sub carol)" f1_g >/dev/null; forof main f1_g)|$(f1do "$SK" main "$(tok k1 -sub dan)" f1_h >/dev/null; forof main f1_h)" \
+  "carol, asserted by shop|dan, asserted by shop"
+$S branch create f1s >/dev/null 2>&1
+$S branch owner f1s shop-svc@foxbyte.dev >/dev/null 2>&1
+$S branch suspend f1s >/dev/null 2>&1
+$S app key revoke shop k2 >/dev/null 2>&1
+assert_eq "a revoked key is refused from the next transaction on a running branch" \
+  "$(f1do "$SK" main "$(tok k2 -sub carol)" f1_i >/dev/null; forof main f1_i)" "none: token refused: revoked key"
+assert_eq "…and on a branch that was suspended when it was revoked, once woken" \
+  "$(f1do "$SK" f1s "$(tok k2 -sub carol)" f1_j >/dev/null; forof f1s f1_j)" "none: token refused: revoked key"
+
+# A key reported compromised: what it asserted from then on says so.
+SINCE="$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)"
+$S app key revoke shop k1 --compromised-since "$SINCE" >/dev/null 2>&1
+assert_eq "what a key reported compromised asserted is shown so, never as plain asserted" \
+  "$(forof main f1_a)" "alice, asserted by shop (key reported compromised)"
+LJ="$(as "$KEY" "https://localhost:8080/api/branches/main/ledger?with=for&table=f1_a")"
+assert_eq "the API says the same, beside the account" \
+  "$(python3 -c 'import sys,json; d=json.load(sys.stdin); r=dict(zip(d["columns"], d["rows"][0])); print(r["actor"], r["app_for"], r["app_state"], r["app_kid"])' <<<"$LJ")" \
+  "shop-svc@foxbyte.dev alice asserted by shop (key reported compromised) k1"
+assert_eq "the default listing is unchanged" \
+  "$(as "$KEY" "https://localhost:8080/api/branches/main/ledger?table=f1_a" | python3 -c 'import sys,json; print("app_for" in json.load(sys.stdin)["columns"])')" "False"
+
+AP=https://localhost:8080/api/apps
+assert_eq "the API lists the applications to an admin, and to no one else" \
+  "$(code "$KEY" "$AP")|$(as "$KEY" "$AP" | python3 -c 'import sys,json; d=json.load(sys.stdin); a=d["apps"][0]; print(a["name"], a["account"], len(a["keys"]), d["install_id"] == "'"$AUD"'")')|$(code "$KA" "$AP")" \
+  "200|shop shop-svc@foxbyte.dev 2 True|403"
+$S app remove shop >/dev/null 2>&1
+assert_eq "each registration, key, revocation and removal is in the security log" \
+  "$(awk -F'|' -v a="$(appev registered)" -v b="$(appev key_added)" -v c="$(appev key_revoked)" -v d="$(appev removed)" '{print a-$1 "|" b-$2 "|" c-$3 "|" d-$4}' <<<"$EV0")" "1|2|2|1"
+assert_eq "removing an application refuses its tokens, and keeps what it asserted" \
+  "$(f1do "$SK" main "$(tok k1 -sub erin)" f1_k >/dev/null; forof main f1_k)|$($S blackbox main --limit 60 | grep -w public.f1_g | grep -c 'carol, asserted by shop')" \
+  "none: token refused: unknown key|1"
+PGPASSWORD="$KEY" psql "$GATEWAY/main?sslmode=require" -X -q -c "SET bb.allow_destructive=on; DROP TABLE IF EXISTS f1_a, f1_b, f1_c, f1_d, f1_f, f1_g, f1_h, f1_i, f1_k" >/dev/null 2>&1
+for b in f1b f1s; do $S branch delete "$b" >/dev/null 2>&1; done
+rm -rf "$F1D"
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

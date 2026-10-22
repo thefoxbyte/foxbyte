@@ -183,7 +183,7 @@ func VerifyRestore(logf func(string, ...any)) (RestoreCheck, error) {
 			"across WAL that was archived somewhere else", firstLine(got), brand.CLI))
 	}
 	if n, err := probeQuery(`SELECT count(*) FROM information_schema.tables
-		WHERE table_schema NOT IN ('pg_catalog','information_schema','` + ledger.SchemaName + `')`); err == nil {
+		WHERE table_schema NOT IN ('pg_catalog','information_schema','` + ledger.SchemaName + `','` + ledger.PrivateSchemaName + `')`); err == nil {
 		c.Tables, _ = strconv.Atoi(strings.TrimSpace(n))
 	}
 	logf("The probe row is in the restored copy: the backups restore.\n")

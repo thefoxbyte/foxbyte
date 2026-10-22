@@ -49,11 +49,18 @@ func EnsureLedgerV2(name string) error {
 		// Row tracking (points 5 and 6): who changed each row and when, on
 		// the tables someone opted in. Free, like the guardrails.
 		{"row tracking", ledger.SchemaTracking},
+		// Application identity (F1): which of an application's users a
+		// transaction acts for, asserted with a signed token. Free: who a
+		// change was made for is accountability, like the Blackbox. After the
+		// capture above, whose columns its report reads.
+		{"application identity", ledger.SchemaIdentity},
 	} {
 		if err := psqlStdin(name, s.sql); err != nil {
 			return fmt.Errorf("installing %s on %q: %w", s.what, name, err)
 		}
 	}
+	// And this branch's copy of the registrations, with its own name.
+	syncIdentityBestEffort(name, false)
 	// And the paid half, when this build has it and a licence covers it.
 	if installPaidSchema == nil {
 		return nil
