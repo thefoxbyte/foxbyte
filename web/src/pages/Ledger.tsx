@@ -5,10 +5,15 @@ import { useBranches } from '../useBranches'
 
 type Row = Record<string, string | null>
 
-const STATUS = ['', 'APPLIED', 'FLAGGED', 'BLOCKED'] as const
+// UNRECORDED and OBSERVED are written by the catalog scan, after the fact
+// (internal/ledger/catalogscan.go): a change made with the event triggers
+// stopped, and a change to a role, a membership, a database or a setting.
+const STATUS = ['', 'APPLIED', 'FLAGGED', 'BLOCKED', 'UNRECORDED', 'OBSERVED'] as const
+// Entries the catalog scan wrote: no statement anyone ran, and no moment to go back to.
+const fromScan = (status: string | null) => status === 'UNRECORDED' || status === 'OBSERVED'
 const KIND = ['', 'human', 'agent'] as const
 // The risk values Blackbox records (internal/ledger/ledger.sql).
-const RISK = ['', 'drop', 'drop-column', 'type-change', 'security-definer', 'policy'] as const
+const RISK = ['', 'drop', 'drop-column', 'type-change', 'security-definer', 'policy', 'unrecorded', 'kill-switch'] as const
 const PAGE = 25
 // The extra columns asked for: the chain, the declared session, and who each
 // change was made for (application identity). WITH_OLD leaves out the last.
@@ -204,7 +209,7 @@ export default function Ledger() {
   // change that should not have happened. Only main can be the source: it is the
   // only branch that archives WAL, so it is the only one with a point to go back
   // to (internal/branch/branch_before.go).
-  const canRewind = (r: Row) => branch === 'main' && !!r.id && r.status !== 'BLOCKED'
+  const canRewind = (r: Row) => branch === 'main' && !!r.id && r.status !== 'BLOCKED' && !fromScan(r.status)
   const askRewind = (r: Row) => {
     setRewind(r); setRewindName(''); setRewound(null); setRewindErr('')
   }
@@ -421,6 +426,16 @@ export default function Ledger() {
                       )}
                       {r.status === 'BLOCKED' && (
                         <div className="lg-actions muted">This change was refused, so there is nothing to go back to.</div>
+                      )}
+                      {r.status === 'UNRECORDED' && (
+                        <div className="lg-actions muted">
+                          Nobody's statement: the catalog scan found this change after it was made, with the event triggers stopped. Who made it, and exactly when, is unknown.
+                        </div>
+                      )}
+                      {r.status === 'OBSERVED' && (
+                        <div className="lg-actions muted">
+                          Event triggers never see this kind of change, so the catalog scan recorded it after the fact. Who made it is unknown.
+                        </div>
                       )}
                       {branch !== 'main' && r.id && (
                         <div className="lg-actions muted">

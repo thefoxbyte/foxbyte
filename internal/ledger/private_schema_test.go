@@ -30,7 +30,8 @@ func TestFiltersLeaveOutThePrivateSchema(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			for i, line := range strings.Split(string(b), "\n") {
+			lines := strings.Split(string(b), "\n")
+			for i, line := range lines {
 				code, _, _ := strings.Cut(line, "--")
 				if strings.HasSuffix(p, ".go") {
 					code, _, _ = strings.Cut(line, "//")
@@ -48,7 +49,15 @@ func TestFiltersLeaveOutThePrivateSchema(t *testing.T) {
 				// A filter of user schemas (several names, the system ones among
 				// them) must name the private schema as well.
 				if strings.Contains(m[2], "pg_catalog") || strings.Contains(m[2], "information_schema") {
-					if !strings.Contains(m[2], "'"+PrivateSchemaName+"'") {
+					// Named, or every bb_ schema left out by a pattern on the
+					// same line or the next (as the catalog scan does).
+					next := ""
+					if i+1 < len(lines) {
+						next = lines[i+1]
+					}
+					covered := strings.Contains(m[2], "'"+PrivateSchemaName+"'") ||
+						strings.Contains(code+next, "|bb_)") || strings.Contains(code+next, `'bb\_%'`)
+					if !covered {
 						t.Errorf("%s:%d leaves the Blackbox's schema out of a user's but not %s: %s",
 							p, i+1, PrivateSchemaName, strings.TrimSpace(line))
 					}

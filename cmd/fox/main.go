@@ -168,6 +168,8 @@ Blackbox — the database's record of every schema change (RECORD layer; fox led
   blackbox anchor-target [show | set s3://… | none]
                                   Keep every anchor in a bucket under Object Lock (COMPLIANCE), out of the admin's reach
   blackbox integrity [branch]     Check the record against its anchors (detects rewritten history)
+  blackbox scan [branch]          Record what the event triggers missed: changes made with them stopped,
+                                  and roles, memberships, databases and settings (runs every 5 minutes)
   blackbox export [branch]        Write every entry as JSON lines (for fox-verify / audits)
   blackbox entries [branch]       Newest entries with their ids (--limit N)
   blackbox sessions [branch]      Agent sessions: agent, task, parent session, entries (--limit N)

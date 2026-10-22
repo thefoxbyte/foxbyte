@@ -609,6 +609,8 @@ td.cell-picked { outline: 2px solid var(--accent); outline-offset: -2px; }
 .lg-status.APPLIED { color: var(--green); background: color-mix(in srgb, var(--green) 15%, transparent); }
 .lg-status.FLAGGED { color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, transparent); }
 .lg-status.BLOCKED { color: var(--red); background: color-mix(in srgb, var(--red) 16%, transparent); }
+.lg-status.UNRECORDED { color: var(--red); background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 55%, transparent); }
+.lg-status.OBSERVED { color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
 
 /* form fields (import wizard etc.) */
 .fld { display: flex; flex-direction: column; gap: 6px; }

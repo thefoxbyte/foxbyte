@@ -448,7 +448,11 @@
       <li class="ok">Refused on a conflict (both sides changed the same object), on a statement the target's gate blocks, and when there is nothing to promote</li>
       <li class="ok">Approving needs the right to manage the target, so an agent cannot approve its own request</li>
       <li class="ok">Promotion: CLI, REST, MCP and the web Requests page</li></ul></td><td class="tb">Unit; v2 §8, §8b</td></tr>
-    <tr data-id="H19" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H19</td><td><b>Application identity: who a change was made for</b> (F1)<ul class="subs">
+    <tr data-id="H19" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H19</td><td><b>The catalog scan: what the event triggers did not record</b><ul class="subs">
+      <li class="ok">A change made with the event triggers stopped is recorded as UNRECORDED</li><li class="ok">Roles, memberships, settings, databases, event triggers: OBSERVED</li>
+      <li class="ok">A setting or trigger change that switches the record off: kill-switch</li><li class="ok">Recorded changes, renames, cascades and restarts add nothing</li>
+      <li class="ok">Its memory is outside the database; every 5 minutes and <code>fox blackbox scan</code></li><li class="ok">Who and exactly when stay unknown</li></ul></td><td class="tb">Unit; v2 §11</td></tr>
+    <tr data-id="H20" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H20</td><td><b>Application identity: who a change was made for</b> (F1)<ul class="subs">
       <li class="ok">An application registered against its account and an Ed25519 public key; tokens accepted from that account&rsquo;s own logins only</li>
       <li class="ok"><code>bb.act_for($1)</code>: signature, header, key, revocation, binding, audience, branch and times checked; one actor per transaction, guarded by a MAC</li>
       <li class="ok">The Blackbox records whom each change was for, beside who made it; reports never upgrade a state</li>
