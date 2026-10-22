@@ -18,31 +18,20 @@
 CREATE SCHEMA IF NOT EXISTS bb_f1;
 REVOKE ALL ON SCHEMA bb_f1 FROM PUBLIC;
 
--- Ed25519: the fox_ed25519 extension (docker/postgres/fox_ed25519), new, so it
--- can live in the private schema.
+-- The fox_ed25519 extension (docker/postgres/fox_ed25519): Ed25519, the
+-- transaction's identity, the MAC, and the secret's random bytes, all in C.
+-- New, so it can live in the private schema. pgcrypto is not needed: the first
+-- prototype used it for the MAC, and had to call it by a qualified name found
+-- at install, since a database has pgcrypto at most once, usually in public,
+-- where clients can create functions.
 CREATE EXTENSION IF NOT EXISTS fox_ed25519 WITH SCHEMA bb_f1;
-
--- HMAC: pgcrypto, which a database can have only once and may already have
--- somewhere else (public, usually). Called by its qualified name, found here,
--- so nothing on a search path a client can write to is ever resolved.
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-DO $do$
-DECLARE s text;
-BEGIN
-  SELECT n.nspname INTO s FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
-  WHERE e.extname = 'pgcrypto';
-  EXECUTE format($f$CREATE OR REPLACE FUNCTION bb_f1.hmac256(data bytea, key bytea) RETURNS bytea
-    LANGUAGE sql IMMUTABLE STRICT SET search_path = pg_catalog AS 'SELECT %I.hmac(data, key, ''sha256'')'$f$, s);
-  EXECUTE format($f$CREATE OR REPLACE FUNCTION bb_f1.random_bytes(n int) RETURNS bytea
-    LANGUAGE sql VOLATILE STRICT SET search_path = pg_catalog AS 'SELECT %I.gen_random_bytes(n)'$f$, s);
-END $do$;
 
 -- The install secret the MACs are made with. Readable by its owner only.
 CREATE TABLE IF NOT EXISTS bb_f1.secret (
   id  int   PRIMARY KEY CHECK (id = 1),
   key bytea NOT NULL CHECK (length(key) = 32)
 );
-INSERT INTO bb_f1.secret VALUES (1, bb_f1.random_bytes(32)) ON CONFLICT DO NOTHING;
+INSERT INTO bb_f1.secret VALUES (1, bb_f1.fox_random_bytes(32)) ON CONFLICT DO NOTHING;
 
 -- What a token's aud and branch claims are checked against. The engine fills
 -- this in Gate 1; the test fills it here.
@@ -83,66 +72,31 @@ EXCEPTION WHEN others THEN
   RETURN NULL;
 END $$;
 
--- The MAC over an application actor and the transaction it was asserted in:
--- fox_txn_id() (the server's start, the backend, the virtual transaction id).
--- Each field is length-prefixed, so no choice of a user's name can make two
--- different assertions read the same.
---
--- Written out with pgcrypto's qualified name and no SET clause, so it costs
--- one HMAC and little else: it is checked once for every row a tracked table
--- records. The first version, through a wrapper and pg_locks, cost 51 µs a
--- call; most of that was reading the transaction's identity from pg_locks.
-DO $do$
-DECLARE s text;
-BEGIN
-  SELECT n.nspname INTO s FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
-  WHERE e.extname = 'pgcrypto';
-  EXECUTE format($f$CREATE OR REPLACE FUNCTION bb_f1.mac(actor text, issuer text, kid text, tenant text) RETURNS text
-    LANGUAGE sql VOLATILE AS $b$
-      SELECT encode(%I.hmac(
-        convert_to(length(t) || ':' || t || length(issuer) || ':' || issuer || length(kid) || ':' || kid
-                   || length(tenant) || ':' || tenant || length(actor) || ':' || actor, 'UTF8'),
-        (SELECT key FROM bb_f1.secret WHERE id = 1), 'sha256'), 'hex')
-      FROM (SELECT bb_f1.fox_txn_id() AS t) x
-    $b$$f$, s);
-END $do$;
-
 -- ── The two public functions ────────────────────────────────────────────────
 
 -- bb.app_actor(): the application actor of this transaction, and its state.
--- What every recording function calls. The values are ordinary settings, which
--- a session can overwrite, so they are not trusted as values: the MAC is
--- recomputed on every call, and a value that does not match it is 'none'.
+-- What every recording function calls, once for every row a tracked table
+-- records. The values are ordinary settings, which a session can overwrite, so
+-- they are not trusted as values: the MAC is checked, and a value that does not
+-- match it is 'none'.
+--
+-- In C (fox_ed25519's fox_app_actor), which remembers the last set of values
+-- it checked: a statement touching ten thousand rows pays for one HMAC. The
+-- PL/pgSQL version this replaces cost 12.7 µs a call (design, section 13).
+-- Public: it only reads, and says nothing a client could not find out.
 CREATE OR REPLACE FUNCTION bb.app_actor(
   OUT actor text, OUT state text, OUT issuer text, OUT kid text, OUT tenant text, OUT note text
-) LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
-DECLARE
-  a text := nullif(current_setting('fox.app.actor', true), '');
-  i text := nullif(current_setting('fox.app.issuer', true), '');
-  k text := nullif(current_setting('fox.app.kid', true), '');
-  t text := coalesce(current_setting('fox.app.tenant', true), '');
-  m text := nullif(current_setting('fox.app.mac', true), '');
-  f text := nullif(current_setting('fox.app.failure', true), '');
-  c text := nullif(current_setting('fox.claimed_actor', true), '');
-BEGIN
-  IF a IS NOT NULL OR m IS NOT NULL THEN
-    IF a IS NOT NULL AND i IS NOT NULL AND k IS NOT NULL AND m IS NOT NULL
-       AND m = bb_f1.mac(a, i, k, t) THEN
-      actor := a; state := 'asserted'; issuer := i; kid := k; tenant := nullif(t, '');
-      RETURN;
-    END IF;
-    state := 'none';
-    note := 'an application actor was present and failed its check';
-    RETURN;
-  END IF;
-  IF c IS NOT NULL THEN
-    actor := c; state := 'claimed';
-    note := CASE WHEN f IS NOT NULL THEN 'token refused: ' || f END;
-    RETURN;
-  END IF;
-  state := 'none';
-  note := CASE WHEN f IS NOT NULL THEN 'token refused: ' || f END;
-END $$;
+) RETURNS record
+AS '$libdir/fox_ed25519', 'fox_app_actor'
+LANGUAGE C VOLATILE PARALLEL UNSAFE;
+
+-- bb.app_actor_label(): the same decision as one string, what row tracking's
+-- last_modified_for will hold: asserted:<issuer>:<user>, claimed:<user>, or
+-- ''. What a recording trigger asks on every row: a record costs a tuple
+-- built and a field taken out of it per call, a string does not.
+CREATE OR REPLACE FUNCTION bb.app_actor_label() RETURNS text
+AS '$libdir/fox_ed25519', 'fox_app_actor_label'
+LANGUAGE C VOLATILE PARALLEL UNSAFE;
 
 -- bb.act_for(token): assert this transaction's application actor. The token is
 -- passed as a bind parameter, never in the SQL text. Returns the user it now
@@ -266,7 +220,7 @@ BEGIN
           set_config('fox.app.kid', k.kid, true),
           set_config('fox.app.tenant', tenant, true),
           set_config('fox.app.failure', '', true);
-  PERFORM set_config('fox.app.mac', bb_f1.mac(sub, k.issuer, k.kid, tenant), true);
+  PERFORM set_config('fox.app.mac', bb_f1.fox_app_mac(sub, k.issuer, k.kid, tenant), true);
   RETURN sub;
 END $fn$;
 
