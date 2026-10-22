@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // Blackbox 2.0: branch from just before a ledger entry.
@@ -534,6 +536,11 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 	}
 	if e.Status == "BLOCKED" {
 		return BeforeEntryResult{}, fmt.Errorf("%w: entry %d was BLOCKED — that change never happened, so there is nothing to branch before", ErrInvalidRequest, entryID)
+	}
+	if ledger.IsScanStatus(e.Status) {
+		// The catalog scan writes its entry when it finds a change, some time
+		// after the change was made; "just before the entry" would already hold it.
+		return BeforeEntryResult{}, fmt.Errorf("%w: entry %d is %s — the catalog scan found that change after it was made, and the Blackbox does not know when, so there is no moment just before it to go back to", ErrInvalidRequest, entryID, e.Status)
 	}
 	kind, target := recoveryTarget(e)
 	if kind == "time" {

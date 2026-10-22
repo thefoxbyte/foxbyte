@@ -135,6 +135,18 @@ recorded actor is the login identity: a client cannot forge who made a change,
 even by `SET`-ting a session variable. There is a **Blackbox** page in the web
 console too.
 
+**And what the event triggers miss.** The record is written by event triggers,
+and a database superuser can stop them (`SET event_triggers = off`, `SET
+session_replication_role = replica`, `ALTER EVENT TRIGGER … DISABLE`); roles,
+role memberships, databases and settings never reach them at all. So every five
+minutes the engine compares the catalogue with what it saw last time, and writes
+what no entry accounts for into the Blackbox: `UNRECORDED` for a change made
+with the triggers stopped, `OBSERVED` for a role, a membership or a setting, and
+risk `kill-switch` for one that switches the record off. Who made such a change
+is unknown, but it is on the record. `fox blackbox scan` runs it now, and
+[docs/blackbox-coverage.md](docs/blackbox-coverage.md) lists exactly what the
+Blackbox records and what it does not.
+
 **Undo a change you should not have made.** Because every entry carries the
 transaction that made it, and `main` archives its write-ahead log, the record is
 not only evidence — it is a way back. Point at an entry and get a **new branch

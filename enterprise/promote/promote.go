@@ -16,6 +16,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // init registers both halves with internal/branch, which is how the free side
@@ -83,6 +84,9 @@ func build(source, target string, history []auth.ChangeRequest) (entries []branc
 	for _, r := range srcRows[n:] {
 		if r.Status == "BLOCKED" {
 			continue // it never happened, so there is nothing to carry over
+		}
+		if ledger.IsScanStatus(r.Status) {
+			continue // found by the catalog scan: no statement anyone ran, so nothing to replay
 		}
 		if promoted[r.ID] {
 			continue // the target already has this one, from an earlier request

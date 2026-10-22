@@ -1416,6 +1416,69 @@ assert_eq "execute_change's spending is in the agent's own name" \
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS v2bgx" >/dev/null
 curl -sk -o /dev/null -H "$AUTH" -X DELETE "$AGENTS/agents/v2bg/branch"
 
+echo "### 11. the catalog scan: what the event triggers did not record"
+# A superuser can stop the event triggers for a session, and roles, memberships
+# and settings never reach them. The scan compares the catalogue with what it
+# saw last time and records what no entry explains. A branch of its own, so its
+# roles and settings stay off main and the scan starts from nothing.
+$S branch create v2scan >/dev/null 2>&1
+sc() { $S blackbox scan v2scan 2>&1; }
+since() { pg pg-v2scan "SELECT coalesce(string_agg(status||'|'||command_tag||'|'||coalesce(object_identity,'')||'|'||coalesce(risk,''), ',' ORDER BY id), '') FROM bb.schema_ledger WHERE id > $1"; }
+top() { pg pg-v2scan 'SELECT coalesce(max(id),0) FROM bb.schema_ledger'; }
+assert_eq "the first scan of a branch compares nothing" "$(sc | grep -c 'nothing compared (first scan of this branch)')" "1"
+pg pg-v2scan "CREATE TABLE s_ok (a int)" >/dev/null
+T0="$(top)"
+assert_eq "a change the event triggers recorded is not recorded again" \
+  "$(sc | grep -c 'Every change since the last scan is in the Blackbox')|$(since "$T0")" "1|"
+pg pg-v2scan "SET session_replication_role = replica; CREATE TABLE s_hidden (a int); ALTER TABLE s_ok ADD COLUMN b int" >/dev/null
+assert_eq "with session_replication_role = replica, the event triggers record nothing (why the scan exists)" \
+  "$(pg pg-v2scan "SELECT count(*) FROM bb.schema_ledger WHERE object_identity = 'public.s_hidden'")" "0"
+T0="$(top)"
+OUT="$(sc)"
+assert_eq "the scan records both changes as UNRECORDED" \
+  "$(since "$T0")" "UNRECORDED|ALTER TABLE|public.s_ok|unrecorded,UNRECORDED|CREATE TABLE|public.s_hidden|unrecorded"
+assert_eq "…and says so" "$(echo "$OUT" | grep -c 'Recorded 2 changes the event triggers did not')" "1"
+assert_eq "…with no actor, the scan as the tool, and a statement that is only a comment" \
+  "$(pg pg-v2scan "SELECT count(*) FILTER (WHERE actor IS NULL AND tool = 'blackbox-scan' AND statement LIKE '-- Not recorded when it was made: table public.s_hidden was created.%') FROM bb.schema_ledger WHERE id > $T0")" "1"
+if [ "$(pg pg-v2scan 'SHOW server_version_num' | cut -c1-2)" -ge 17 ]; then
+  pg pg-v2scan "SET event_triggers = off; CREATE FUNCTION s_fn() RETURNS int LANGUAGE sql AS 'SELECT 1'; GRANT SELECT ON s_ok TO PUBLIC" >/dev/null
+  T0="$(top)"; sc >/dev/null
+  assert_eq "with event_triggers = off: a new function and a GRANT, found" \
+    "$(since "$T0")" "UNRECORDED|GRANT|public.s_ok|unrecorded,UNRECORDED|CREATE FUNCTION|public.s_fn()|unrecorded"
+fi
+pg pg-v2scan "CREATE ROLE s_mallory LOGIN; GRANT db_admin TO s_mallory; ALTER ROLE s_mallory SET session_replication_role = replica" >/dev/null
+T0="$(top)"; sc >/dev/null
+assert_eq "a role, its membership and a setting that silences the triggers: OBSERVED, the setting as a kill switch" \
+  "$(since "$T0")" "OBSERVED|GRANT|s_mallory in db_admin|membership,OBSERVED|CREATE ROLE|s_mallory|role,OBSERVED|ALTER ROLE|role s_mallory|kill-switch"
+pg pg-v2scan "CREATE VIEW s_view AS SELECT a FROM s_ok; ALTER TABLE s_ok RENAME TO s_ok2" >/dev/null
+pg pg-v2scan "SET bb.allow_destructive = on; DROP TABLE s_ok2 CASCADE" >/dev/null
+T0="$(top)"; sc >/dev/null
+assert_eq "a recorded rename, and a recorded DROP … CASCADE that took a view with it: nothing to add" "$(since "$T0")" ""
+pg pg-v2scan "ALTER EVENT TRIGGER bb_log_end DISABLE" >/dev/null
+T0="$(top)"; sc >/dev/null
+assert_eq "a Blackbox event trigger switched off is held for a second look (a start re-creates them)" "$(since "$T0")" ""
+sc >/dev/null
+assert_eq "…and recorded as a kill switch when it is still off" "$(since "$T0")" "OBSERVED|ALTER EVENT TRIGGER|bb_log_end|kill-switch"
+pg pg-v2scan "ALTER EVENT TRIGGER bb_log_end ENABLE" >/dev/null
+sc >/dev/null; sc >/dev/null
+$S stop >/dev/null 2>&1; $S start >/dev/null 2>&1; main_ready; $S branch resume v2scan >/dev/null 2>&1
+T0="$(top)"; sc >/dev/null; sc >/dev/null
+assert_eq "a stop and start gives the scan nothing to record" "$(since "$T0")" ""
+assert_eq "the scan's entries are part of the hash chain" "$($S blackbox verify v2scan 2>&1 | grep -ci 'intact')" "1"
+$S stop >/dev/null 2>&1
+FOX_BLACKBOX_SCAN=on FOX_BLACKBOX_SCAN_INTERVAL=5s $S start >/dev/null 2>&1; main_ready; $S branch resume v2scan >/dev/null 2>&1
+sleep 12
+pg pg-v2scan "SET session_replication_role = replica; CREATE TABLE s_sched (a int)" >/dev/null
+N=0
+for i in $(seq 1 12); do
+  N="$(pg pg-v2scan "SELECT count(*) FROM bb.schema_ledger WHERE status = 'UNRECORDED' AND object_identity = 'public.s_sched'")"
+  [ "$N" = "1" ] && break
+  sleep 5
+done
+assert_eq "the scheduler finds it on its own" "$N" "1"
+$S stop >/dev/null 2>&1; $S start >/dev/null 2>&1; main_ready
+$S branch delete v2scan >/dev/null 2>&1
+
 echo
 echo "==== ${PASS} passed, ${FAIL} failed ===="
 vm_pause_report
