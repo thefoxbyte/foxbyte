@@ -38,6 +38,20 @@ echo "### setup: a running stack, an account, a clean branch"
 "$S" stop >/dev/null 2>&1
 "$S" start >/dev/null 2>&1
 for _ in $(seq 60); do curl -sk "$API/api/status" >/dev/null 2>&1 && break; sleep 1; done
+# The gateway is swapped for one that never suspends a branch. Its reaper stops
+# a branch two minutes after the last connection, and stopping a container
+# changes the host's network interfaces, which makes Chromium abort every
+# request in flight. $NEW_BRANCH, made by the dashboard test, went idle that
+# way about two and a half minutes in, and the reaper stopped it under
+# whichever spec was running by then: the recurring "Failed to fetch". The
+# reaper has its own tests in integration_test.sh. Written to the same pid file
+# so `fox stop` stops this one too.
+GW_PID="$HOME/$BRAND_STATE_DIR/gateway.pid"
+kill "$(cat "$GW_PID" 2>/dev/null)" 2>/dev/null
+for _ in $(seq 30); do ss -ltn | grep -q ':6432 ' || break; sleep 0.2; done
+setsid nohup "$S" gateway --addr "${FOX_LISTEN:-127.0.0.1}:6432" --idle 0 \
+	>>"$HOME/$BRAND_STATE_DIR/gateway.log" 2>&1 </dev/null &
+echo $! >"$GW_PID"
 printf '%s\n' "$PASSWORD" | "$S" user create "$EMAIL" >/dev/null 2>&1
 # An install admin from the start: the access review report (point 4.8) is for
 # admins only, and no spec depends on this account not being one. The upgrade
@@ -119,21 +133,35 @@ npx --yes playwright install --with-deps chromium >/dev/null 2>&1 || {
 	echo "could not install Chromium"; exit 1; }
 
 echo "### the console's smoke tests"
-# A retry in the log is expected in CI and is not the console misbehaving: the
-# engine's short-lived containers change the host's network interfaces, and
-# Chromium aborts requests in flight when they do. web/playwright.config.ts
-# has the detail. A test that fails twice running is a real failure.
+# A retry in the log means a container started or stopped while a spec ran,
+# which changes the host's network interfaces, and Chromium aborts requests in
+# flight when they do. The known causes are removed (the gateway above, and
+# backups listed inside main); web/playwright.config.ts has the detail. A
+# test that fails twice running is a real failure.
 #
 # This comment used to sit *inside* the command below, after a line ending in a
 # backslash. Bash ends a command at a `#`, so the first line's FOX_E2E_URL,
 # FOX_E2E_EMAIL and FOX_E2E_PASSWORD were set as shell variables and never
 # reached Playwright — which went on working only because its defaults happen
 # to be the same values. A FOX_API_URL pointing anywhere else was ignored.
+#
+# Every container start and stop meanwhile is recorded, and printed if a spec
+# fails, so the next cause of an aborted request names itself.
+EVLOG="$(mktemp)"
+sudo docker events --filter type=container --filter event=start --filter event=die \
+	--format '{{.Time}} {{.Action}} {{.Actor.Attributes.name}}' >"$EVLOG" 2>/dev/null &
+EVP=$!
 FOX_E2E_URL="$API" FOX_E2E_EMAIL="$EMAIL" FOX_E2E_PASSWORD="$PASSWORD" \
 	FOX_E2E_BRANCH="$BRANCH" FOX_E2E_NEW_BRANCH="$NEW_BRANCH" FOX_E2E_TABLE="$TABLE" \
 	FOX_E2E_TARGET_BRANCH="$TARGET_BRANCH" FOX_E2E_RT_BRANCH="$BRANCH" \
 	npx playwright test --grep-invert "licence file uploaded"
 rc=$?
+sudo kill "$EVP" 2>/dev/null
+if [ "$rc" != 0 ]; then
+	echo "  containers started (start) or stopped (die) during the specs:"
+	while read -r t a n; do echo "    $(date -d "@$t" +%T) $a $n"; done <"$EVLOG"
+fi
+rm -f "$EVLOG"
 
 # Upgrading needs a starting point with no licence, and every spec above needs
 # one — so it runs last, on its own, with the licence taken away first and put

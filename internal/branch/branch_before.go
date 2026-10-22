@@ -283,8 +283,8 @@ func walgEnvFor(prefix string) []string {
 	return []string{"-e", "WALG_S3_PREFIX=" + prefix, "--env-file", s3EnvFile()}
 }
 
-// listBaseBackups lists base backups from a throwaway container, so it works
-// whichever container is primary and whatever environment it was started with.
+// listBaseBackups lists base backups: inside the running primary when there is
+// one, else from a throwaway container (listBaseBackupsWithin says why).
 func listBaseBackups() ([]walgBackup, error) { return listBaseBackupsWithin(execQuick) }
 
 // listBaseBackupsWithin is that listing, bounded by d.
@@ -302,7 +302,25 @@ func listBaseBackups() ([]walgBackup, error) { return listBaseBackupsWithin(exec
 // given up on left a Postgres container up, holding the same bucket, outliving
 // the process that asked — so the name is removed here, and the label means
 // `stop` sweeps one that escaped anyway.
+//
+// Inside the running primary first, with `docker exec`. The primary archives
+// with wal-g, so it already carries the archive's environment, and an exec
+// starts no container. A throwaway container on the bridge network creates and
+// destroys a network interface, and a browser on the same machine (the
+// console's own tests, and anyone using the console on the engine's host) takes
+// that for the network changing and aborts every request it has in flight:
+// "Failed to fetch". The Dashboard lists backups on every visit and the status
+// health check every minute, so the console's suite saw one every three to five
+// seconds, 36 in two and a half minutes, and failed a test at random most runs.
+// The throwaway container stays for when no primary is running: the backups are
+// in object storage, and listing them must not need the stack up.
 func listBaseBackupsWithin(d time.Duration) ([]walgBackup, error) {
+	if primary := PrimaryContainer(); containerRunning(primary) {
+		bs, err, ok := listBaseBackupsIn(primary, d)
+		if ok {
+			return bs, err
+		}
+	}
 	name := backupListContainer()
 	args := append([]string{"run", "--rm", "--name", name, "--label", managedLabel, "--network", network}, walgEnv()...)
 	args = append(args, pgImage(), "wal-g", "backup-list", "--json", "--detail")
@@ -331,6 +349,36 @@ func listBaseBackupsWithin(d time.Duration) ([]walgBackup, error) {
 		return nil, nil
 	}
 	return nil, fmt.Errorf("listing base backups: %w", err)
+}
+
+// listBaseBackupsIn lists base backups by running wal-g inside a running
+// container. ok is false when the exec itself could not run (the container
+// stopped between the check and the call, say), and the caller should fall back
+// to a throwaway container; a listing that ran and failed is an answer.
+func listBaseBackupsIn(c string, d time.Duration) (bs []walgBackup, err error, ok bool) {
+	cmd, ctx, cancel := sudoCmd(d, "docker", "exec", c, "wal-g", "backup-list", "--json", "--detail")
+	defer cancel()
+	out, errOut, err := captureToFiles(cmd, "backup-list")
+	switch {
+	case err == nil:
+		bs, err = parseBackups(out)
+		return bs, err, true
+	case ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
+		// Nothing to remove: an exec starts no container, and wal-g gives up
+		// inside the primary on its own.
+		return nil, fmt.Errorf("the backup store did not answer within %s", d), true
+	case strings.Contains(string(errOut), "No backups found"):
+		return nil, nil, true
+	case strings.Contains(string(errOut), "is not running") || strings.Contains(string(errOut), "No such container"):
+		return nil, nil, false
+	}
+	return nil, fmt.Errorf("listing base backups: %w", err), true
+}
+
+// containerRunning reports whether a container is running, by name.
+func containerRunning(c string) bool {
+	out, err := capture("docker", "inspect", "-f", "{{.State.Running}}", c)
+	return err == nil && out == "true"
 }
 
 // captureToFiles runs cmd with its output going to temporary files instead of
