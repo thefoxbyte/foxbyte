@@ -125,11 +125,17 @@ F1D="$(mktemp -d)"
 AUD="$("$S" app list --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["install_id"])')"
 FKEY="$("$S" apikey create "$EMAIL" e2e-for 2>/dev/null | grep -o "${DB_KEY_PREFIX}[A-Za-z0-9_-]*")"
 FTOK="$("$F1D/mint" token "$F1D/ui.seed" -kid ui -iss uishop -aud "$AUD" -sub alice)"
-rtsql "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.e2e_for_alice"
+rtsql "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.e2e_for_alice, public.e2e_for_rows"
+# And a tracked table with a row changed in such a transaction, for row
+# tracking's last_modified_for (point 5.2).
+rtsql "CREATE TABLE public.e2e_for_rows (id int PRIMARY KEY, v text)"
+rtsql "GRANT ALL ON public.e2e_for_rows TO db_client"
+"$S" track e2e_for_rows --branch "$BRANCH" >/dev/null 2>&1
 PGPASSWORD="$FKEY" psql "postgresql://dbadmin@127.0.0.1:6432/$BRANCH?sslmode=require" -X -q >/dev/null 2>&1 <<SQL
 BEGIN;
 SELECT bb.act_for(\$1) \bind '$FTOK' \g
 CREATE TABLE public.e2e_for_alice (id int);
+INSERT INTO public.e2e_for_rows VALUES (1, 'for alice');
 COMMIT;
 SQL
 rm -rf "$F1D"

@@ -730,10 +730,13 @@ paths:
       tags: [branches]
       summary: Row tracking on the branch, which tables keep who changed each row and when.
       description: >-
-        A tracked table has created_at, updated_at and last_modified_by (names
-        chosen when tracking starts), kept by a trigger that overrides whatever a
-        statement writes there. last_modified_by is session_user, the login,
-        which a session cannot change. track_new says whether tables made from
+        A tracked table has created_at, updated_at, last_modified_by and
+        last_modified_for (names chosen when tracking starts), kept by a trigger
+        that overrides whatever a statement writes there. last_modified_by is
+        session_user, the login, which a session cannot change;
+        last_modified_for is whom the change was for, where an application
+        asserted it with a signed token (asserted:<app>:<user>) or a client
+        claimed it (claimed:<user>), and null otherwise. track_new says whether tables made from
         now on are tracked as they are made.
       parameters: [{ $ref: "#/components/parameters/BranchName" }]
       responses:
@@ -750,8 +753,9 @@ paths:
         signed-in user. Rows already there are left empty unless
         label_existing, which gives them this moment. A column that exists
         must be of the right type. The body is optional; the default names are
-        created_at, updated_at and last_modified_by, and an empty name is a
-        column not kept.
+        created_at, updated_at, last_modified_by and last_modified_for, and an
+        empty name is a column not kept. A table tracked already only gains the
+        for column, when it is asked for and the table lacks it.
       parameters:
         - { $ref: "#/components/parameters/BranchName" }
         - { name: schema, in: path, required: true, schema: { type: string } }
@@ -2377,6 +2381,7 @@ components:
         created: { type: string, default: created_at, description: "Set when a row is made, never after. Empty: not kept." }
         updated: { type: string, default: updated_at, description: "Set when a row is made and each time it changes. Empty: not kept." }
         by: { type: string, default: last_modified_by, description: "The login that last changed the row. Empty: not kept." }
+        for: { type: string, default: last_modified_for, description: "Whom the row was last changed for, where the transaction said so (application identity): asserted:<app>:<user>, claimed:<user>, or null. Empty: not kept. Asked of a table tracked already, it adds this column and changes nothing else." }
         label_existing: { type: boolean, default: false, description: Give rows already there this moment instead of leaving them empty. }
     Tracking:
       type: object
@@ -2388,6 +2393,7 @@ components:
             created: { type: string }
             updated: { type: string }
             by: { type: string }
+            for: { type: string }
         tables:
           type: array
           items:
@@ -2398,6 +2404,7 @@ components:
               created: { type: string }
               updated: { type: string }
               by: { type: string }
+              for: { type: string, description: "Empty when the table does not keep it." }
     PersonalData:
       type: object
       properties:

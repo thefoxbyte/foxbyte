@@ -442,9 +442,9 @@ export const getObject = (branch: string, kind: CatalogKind, oid: number) =>
 
 // Row tracking (points 5.1, 6.1): who changed each row and when, kept by
 // Postgres on the tables someone chose. Changing it is the branch owner's.
-export type TrackOptions = { created: string; updated: string; by: string; label_existing?: boolean }
-export type TrackedTable = { schema: string; name: string; created: string; updated: string; by: string }
-export type Tracking = { settings: { track_new: boolean; created: string; updated: string; by: string }; tables: TrackedTable[] }
+export type TrackOptions = { created: string; updated: string; by: string; for: string; label_existing?: boolean }
+export type TrackedTable = { schema: string; name: string; created: string; updated: string; by: string; for?: string }
+export type Tracking = { settings: { track_new: boolean; created: string; updated: string; by: string; for?: string }; tables: TrackedTable[] }
 export const getTracking = (branch: string) => req('GET', `${API}/api/branches/${branch}/tracking`) as Promise<Tracking>
 export const trackTable = (branch: string, schema: string, table: string, o: TrackOptions) =>
   req('PUT', `${API}/api/branches/${branch}/tracking/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`, o) as Promise<Tracking>

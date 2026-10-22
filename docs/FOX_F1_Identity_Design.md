@@ -3,7 +3,8 @@
 **Status:** agreed as recommended (22 October 2026, #175). The Gate 0 prototype
 is built and its suite passes (#176); what it found is in section 13. Gate 1's
 first step, the check in C with its cache, is in section 14 (#177). The second,
-applications asserting their user in the product, is in section 15. Written against
+applications asserting their user in the product, is in section 15 (#180). The
+third, row tracking's `last_modified_for` (point 5.2), is in section 16. Written against
 `main` at `d93492c`. It answers Gate 0's F1 item in the review plan
 (`docs/FOX_Expert_Review_Plan.md`, sections 4 and 5): the token protocol written
 down, the signature-checking choice made, and the prototype and its tests
@@ -554,3 +555,54 @@ register an account of the application's own, never a person's.
 - G1's remainder (section 9);
 - SDK helpers;
 - the public wording.
+
+---
+
+## 16. Gate 1, step 3: whom each row was changed for (point 5.2)
+
+**What a user can now do.** A tracked table keeps a fourth column,
+`last_modified_for`, beside `last_modified_by`:
+
+| Value | Means |
+|---|---|
+| `asserted:<application>:<user>` | The transaction asserted its user with a valid token (section 5) |
+| `claimed:<user>` | The client said so with `bb.claimed_actor`, and nothing checked it |
+| NULL | Nobody: nothing was said, or what was said failed its check |
+
+**What was built** (`feat/f1-row-for`):
+
+- **The row trigger writes it** from `bb.app_actor_label()` (section 14), in the
+  same patch as the other columns, overriding whatever a statement wrote.
+- **New tracking keeps it by default.** `fox track <table> --no-for` leaves it
+  out, and a table tracked so has the three-argument trigger it always had.
+- **A table tracked before gains it by being tracked again.** `fox track
+  <table>`, or the console's Add whom for, adds the column and replaces the
+  trigger with `CREATE OR REPLACE TRIGGER`. So the trigger is never dropped,
+  its protection is never asked, and nothing else about the table changes.
+- **New tables**: `fox track --new on` keeps it on tables made from then. A
+  branch whose settings predate it keeps its choice until it is set again.
+- **The trigger builds its patch in one `jsonb_build_object` call**, not one per
+  column joined with `||`, each of which copied the patch. This change paid
+  for the fourth column.
+
+**The 5% bound (section 11), as measured** on the test VM, the fastest of nine
+alternating 10,000-row updates in an asserted transaction:
+
+| Trigger | Time |
+|---|---|
+| Before this step (three columns, one call per column) | 95–97 ms |
+| Now, three columns | 71–73 ms |
+| Now, keeping `last_modified_for` | 76–81 ms (+7% to +11% over three columns; 15% to 21% less than before) |
+
+Two runs, both shown: the fourth column's own cost moved between 7% and 11%
+from run to run, and the bound held in both.
+
+The suite holds the bound as the design wrote it: a tracked update that keeps
+`last_modified_for` costs within 5% of a tracked update before it. It costs
+less. It also prints the fourth column's own cost, so the number is never
+hidden behind the faster trigger.
+
+**Moved out of this step:** agent provenance's four fields. An agent session is
+recorded by the engine, not in the application's transaction, so it needs the
+token to be presented to the Agent API and checked by the engine. That is a
+second verifier, and it is its own step.

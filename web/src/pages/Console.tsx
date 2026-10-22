@@ -273,7 +273,7 @@ export default function Console() {
     const locked = new Map<string, string>()
     // Columns row tracking keeps: Postgres writes them on every change.
     const tr = trackedOf(tracking, sel.schema, sel.name)
-    for (const c of [tr?.created, tr?.updated, tr?.by]) if (c) locked.set(c, 'Kept by row tracking: Postgres writes it on every change')
+    for (const c of [tr?.created, tr?.updated, tr?.by, tr?.for]) if (c) locked.set(c, 'Kept by row tracking: Postgres writes it on every change')
     if (obj) {
       try {
         const d = await getObject(branch, 'table', obj.oid)

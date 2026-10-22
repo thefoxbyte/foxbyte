@@ -30,6 +30,7 @@ describe('TrackingControl', () => {
     expect((screen.getByLabelText('Column for when made') as HTMLInputElement).value).toBe('created_at')
     expect((screen.getByLabelText('Column for when last changed') as HTMLInputElement).value).toBe('updated_at')
     expect((screen.getByLabelText('Column for who last changed it') as HTMLInputElement).value).toBe('last_modified_by')
+    expect((screen.getByLabelText('Column for whom for') as HTMLInputElement).value).toBe('last_modified_for')
     expect(dlg.textContent).toMatch(/INSERT written without a column list/)
   })
 
@@ -42,13 +43,13 @@ describe('TrackingControl', () => {
     fireEvent.click(screen.getByLabelText('Label with this moment'))
     fireEvent.click(screen.getByRole('button', { name: 'Track' }))
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(tracked))
-    expect(trackTable).toHaveBeenCalledWith('dev', 'public', 'orders', { created: '', updated: 'updated_at', by: 'changed_by', label_existing: true })
+    expect(trackTable).toHaveBeenCalledWith('dev', 'public', 'orders', { created: '', updated: 'updated_at', by: 'changed_by', for: 'last_modified_for', label_existing: true })
   })
 
   it('needs at least one column', () => {
     control(none)
     fireEvent.click(screen.getByRole('button', { name: 'Track changes…' }))
-    for (const k of ['Keep when made', 'Keep when last changed', 'Keep who last changed it']) fireEvent.click(screen.getByLabelText(k))
+    for (const k of ['Keep when made', 'Keep when last changed', 'Keep who last changed it', 'Keep whom for']) fireEvent.click(screen.getByLabelText(k))
     expect((screen.getByRole('button', { name: 'Track' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
@@ -77,7 +78,22 @@ describe('TrackingControl', () => {
     control(none)
     fireEvent.click(screen.getByRole('button', { name: 'Track changes…' }))
     fireEvent.click(screen.getByLabelText(/track every new table on dev/i))
-    await waitFor(() => expect(setTrackNew).toHaveBeenCalledWith('dev', true, { created: 'created_at', updated: 'updated_at', by: 'last_modified_by' }))
+    await waitFor(() => expect(setTrackNew).toHaveBeenCalledWith('dev', true, { created: 'created_at', updated: 'updated_at', by: 'last_modified_by', for: 'last_modified_for' }))
+  })
+
+  it('a table tracked before whom-for existed is offered it, and gains only that', async () => {
+    const withFor: Tracking = { ...none, tables: [{ ...tracked.tables[0], for: 'last_modified_for' }] }
+    vi.mocked(trackTable).mockResolvedValue(withFor)
+    const onChange = control(tracked)
+    fireEvent.click(screen.getByRole('button', { name: 'Add whom for' }))
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(withFor))
+    expect(trackTable).toHaveBeenCalledWith('dev', 'public', 'orders', { created: '', updated: '', by: '', for: 'last_modified_for' })
+  })
+
+  it('a table keeping whom-for shows it, and is not offered it again', () => {
+    control({ ...none, tables: [{ ...tracked.tables[0], for: 'last_modified_for' }] })
+    expect(screen.getByText('last_modified_for')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Add whom for' })).toBeNull()
   })
 })
 

@@ -4,18 +4,25 @@
 -- and when it was made and last changed, kept by Postgres itself. Installed
 -- after datachanges.sql, on every start; idempotent; touches no user table.
 --
--- A tracked table has three columns (names chosen when tracking starts):
+-- A tracked table has up to four columns (names chosen when tracking starts):
 --
---   created_at        timestamptz  set on INSERT, never changed after
---   updated_at        timestamptz  set on INSERT and on every UPDATE
---   last_modified_by  text         session_user: the login that changed the row
+--   created_at         timestamptz  set on INSERT, never changed after
+--   updated_at         timestamptz  set on INSERT and on every UPDATE
+--   last_modified_by   text         session_user: the login that changed the row
+--   last_modified_for  text         whom it was changed for, where the
+--                                   transaction said so (application identity,
+--                                   identity.sql): asserted:<app>:<user>,
+--                                   claimed:<user>, or NULL
 --
 -- and one row trigger, bb_track, that writes them. It overrides whatever a
 -- statement put there, so a client cannot backdate a row or name someone else.
 -- session_user is the authenticated login, which a session cannot change
 -- (SET ROLE changes current_user; SET SESSION AUTHORIZATION needs a
 -- superuser). Who a login was acting for, an application's own user, is
--- last_modified_for, which needs the expert review plan's F1: not here.
+-- last_modified_for: bb.app_actor_label(), which checks the transaction's
+-- assertion against its MAC, so a value set by hand never lands there as
+-- asserted. In C, and remembered across rows: a statement that changes ten
+-- thousand rows pays for one check (F1 design, section 14).
 --
 -- Opt-in, per table. Adding columns to a table that exists breaks an INSERT
 -- written without a column list and changes SELECT *, so it is never done
@@ -40,36 +47,47 @@ CREATE TABLE IF NOT EXISTS bb.track_settings (
   by_col text NOT NULL DEFAULT 'last_modified_by'
 );
 INSERT INTO bb.track_settings DEFAULT VALUES ON CONFLICT (id) DO NOTHING;
+-- The fourth column for new tables (point 5.2). '' on a branch that chose its
+-- columns before it existed, so turning on "track new tables" again is what
+-- adds it, not an upgrade.
+ALTER TABLE bb.track_settings ADD COLUMN IF NOT EXISTS for_col text NOT NULL DEFAULT '';
 
--- The row trigger. Its arguments are the three column names; an empty one is
--- a column this table does not keep.
+-- The row trigger. Its arguments are the column names; an empty one is a
+-- column this table does not keep. A trigger made before last_modified_for
+-- has three.
 CREATE OR REPLACE FUNCTION bb.track_row() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
-DECLARE patch jsonb := '{}';
 BEGIN
-  IF TG_ARGV[0] <> '' THEN
-    IF TG_OP = 'INSERT' THEN
-      patch := patch || jsonb_build_object(TG_ARGV[0], now());
-    ELSE
-      patch := patch || jsonb_build_object(TG_ARGV[0], to_jsonb(OLD) -> TG_ARGV[0]);
-    END IF;
-  END IF;
-  IF TG_ARGV[1] <> '' THEN
-    patch := patch || jsonb_build_object(TG_ARGV[1], now());
-  END IF;
-  IF TG_ARGV[2] <> '' THEN
-    patch := patch || jsonb_build_object(TG_ARGV[2], session_user::text);
-  END IF;
-  NEW := jsonb_populate_record(NEW, patch);
+  -- One jsonb_build_object for every column, not one per column joined with
+  -- ||: each join copies the patch, and a trigger runs once per row. Measured
+  -- on a 10,000-row UPDATE, 97 ms became 79, and the for column then cost
+  -- nothing that could be measured. A column this table does not keep has
+  -- the name '', which jsonb_populate_record matches to nothing.
+  NEW := jsonb_populate_record(NEW, jsonb_build_object(
+    -- created: now on INSERT; on UPDATE what it was, whatever the statement said
+    TG_ARGV[0], CASE WHEN TG_OP = 'INSERT' THEN to_jsonb(now()) ELSE to_jsonb(OLD) -> TG_ARGV[0] END,
+    TG_ARGV[1], now(),
+    TG_ARGV[2], session_user,
+    -- for: the asserted or claimed application actor, NULL for nobody
+    CASE WHEN TG_NARGS > 3 THEN TG_ARGV[3] ELSE '' END,
+    CASE WHEN TG_NARGS > 3 AND TG_ARGV[3] <> '' THEN nullif(bb.app_actor_label(), '') END));
   RETURN NEW;
 END;
 $$;
 
--- What a tracked table keeps: its trigger's arguments, read back.
+-- What a tracked table keeps: its trigger's arguments, read back. Made again
+-- when it predates for_col, since a function's columns cannot be replaced.
+DO $do$
+BEGIN
+  IF pg_get_function_result(to_regprocedure('bb.tracked_tables()')) NOT LIKE '%for_col%' THEN
+    DROP FUNCTION bb.tracked_tables();
+  END IF;
+END
+$do$;
 CREATE OR REPLACE FUNCTION bb.tracked_tables()
-RETURNS TABLE (rel regclass, created_col text, updated_col text, by_col text, enabled boolean)
+RETURNS TABLE (rel regclass, created_col text, updated_col text, by_col text, enabled boolean, for_col text)
 LANGUAGE sql STABLE AS $$
-  SELECT t.tgrelid::regclass, a[1], a[2], a[3], t.tgenabled <> 'D'
+  SELECT t.tgrelid::regclass, a[1], a[2], a[3], t.tgenabled <> 'D', coalesce(a[4], '')
   FROM pg_trigger t,
        LATERAL (SELECT string_to_array(encode(t.tgargs, 'escape'), '\000') AS a) x
   -- A partitioned table's partitions carry clones of its trigger: one entry, the table's.
@@ -81,24 +99,53 @@ $$;
 -- rows already there the moment tracking began (a stable default, so the table
 -- is not rewritten), and the default is taken off again at once.
 --
+-- A table tracked already, without the for column, gains it (point 5.2): the
+-- column is added and the trigger replaced in place (CREATE OR REPLACE, so it
+-- is never dropped and its protection is not asked). Nothing else about a
+-- tracked table is changed by tracking it again.
+--
 -- Not SECURITY DEFINER: run by the engine as a superuser, or by the event
 -- trigger below (which is), and anyone else needs to own the table.
-CREATE OR REPLACE FUNCTION bb.track_table(rel regclass, created_col text, updated_col text, by_col text, label_existing boolean)
+CREATE OR REPLACE FUNCTION bb.track_table(rel regclass, created_col text, updated_col text, by_col text, for_col text, label_existing boolean)
 RETURNS void LANGUAGE plpgsql SET search_path = pg_catalog AS $$
-DECLARE c record; typ text; adds text[] := '{}'; drops text[] := '{}';
+DECLARE c record; typ text; adds text[] := '{}'; drops text[] := '{}'; cur text[];
 BEGIN
   IF (SELECT relkind FROM pg_class WHERE oid = rel) NOT IN ('r','p') THEN
     RAISE EXCEPTION '% is not a table', rel;
   END IF;
-  IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = rel AND tgfoid = 'bb.track_row()'::regprocedure) THEN
-    RETURN; -- already tracked
+  IF coalesce(for_col, '') <> '' AND to_regprocedure('bb.app_actor_label()') IS NULL THEN
+    RAISE EXCEPTION 'this branch predates application identity, which % needs', for_col
+      USING HINT = 'Upgrade its Blackbox (fox ledger upgrade <branch>), or track the table without it.';
   END IF;
-  IF coalesce(created_col, '') = '' AND coalesce(updated_col, '') = '' AND coalesce(by_col, '') = '' THEN
+  SELECT string_to_array(encode(t.tgargs, 'escape'), '\000') INTO cur FROM pg_trigger t
+    WHERE t.tgrelid = rel AND t.tgfoid = 'bb.track_row()'::regprocedure AND NOT t.tgisinternal LIMIT 1;
+  IF cur IS NOT NULL THEN
+    -- Tracked already. Only the for column is added to it, and only once.
+    IF coalesce(for_col, '') = '' OR coalesce(cur[4], '') <> '' THEN
+      RETURN;
+    END IF;
+    created_col := cur[1]; updated_col := cur[2]; by_col := cur[3];
+    IF for_col IN (created_col, updated_col, by_col) THEN
+      RAISE EXCEPTION 'column % of % is tracked already, as another of its columns', for_col, rel;
+    END IF;
+    SELECT format_type(atttypid, atttypmod) INTO typ FROM pg_attribute
+      WHERE attrelid = rel AND attname = for_col AND attnum > 0 AND NOT attisdropped;
+    IF typ IS NULL THEN
+      EXECUTE format('ALTER TABLE %s ADD COLUMN %I text', rel, for_col);
+    ELSIF typ <> 'text' THEN
+      RAISE EXCEPTION 'column % of % is %, and tracking keeps text there', for_col, rel, typ;
+    END IF;
+    EXECUTE format('CREATE OR REPLACE TRIGGER bb_track BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION bb.track_row(%L, %L, %L, %L)',
+                   rel, created_col, updated_col, by_col, for_col);
+    RETURN;
+  END IF;
+  IF coalesce(created_col, '') = '' AND coalesce(updated_col, '') = '' AND coalesce(by_col, '') = '' AND coalesce(for_col, '') = '' THEN
     RAISE EXCEPTION 'tracking keeps at least one column';
   END IF;
   FOR c IN SELECT * FROM (VALUES (created_col, 'timestamp with time zone', true),
                                  (updated_col, 'timestamp with time zone', true),
-                                 (by_col, 'text', false)) v(name, want, stamp)
+                                 (by_col, 'text', false),
+                                 (for_col, 'text', false)) v(name, want, stamp)
            WHERE coalesce(v.name, '') <> '' LOOP
     SELECT format_type(atttypid, atttypmod) INTO typ FROM pg_attribute
       WHERE attrelid = rel AND attname = c.name AND attnum > 0 AND NOT attisdropped;
@@ -121,9 +168,22 @@ BEGIN
   IF cardinality(drops) > 0 THEN
     EXECUTE format('ALTER TABLE %s %s', rel, array_to_string(drops, ', '));
   END IF;
-  EXECUTE format('CREATE TRIGGER bb_track BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION bb.track_row(%L, %L, %L)',
-                 rel, coalesce(created_col, ''), coalesce(updated_col, ''), coalesce(by_col, ''));
+  -- Three arguments when there is no for column, as before it existed, so a
+  -- table tracked without one is the table it always was.
+  IF coalesce(for_col, '') = '' THEN
+    EXECUTE format('CREATE TRIGGER bb_track BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION bb.track_row(%L, %L, %L)',
+                   rel, coalesce(created_col, ''), coalesce(updated_col, ''), coalesce(by_col, ''));
+  ELSE
+    EXECUTE format('CREATE TRIGGER bb_track BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION bb.track_row(%L, %L, %L, %L)',
+                   rel, coalesce(created_col, ''), coalesce(updated_col, ''), coalesce(by_col, ''), for_col);
+  END IF;
 END;
+$$;
+
+-- The five-argument form, from before last_modified_for: the same, without it.
+CREATE OR REPLACE FUNCTION bb.track_table(rel regclass, created_col text, updated_col text, by_col text, label_existing boolean)
+RETURNS void LANGUAGE sql SET search_path = pg_catalog AS $$
+  SELECT bb.track_table(rel, created_col, updated_col, by_col, '', label_existing);
 $$;
 
 -- Stop tracking: the trigger goes, the columns and what they hold stay.
@@ -151,7 +211,8 @@ BEGIN
     END IF;
     IF s.track_new AND r.object_type = 'table' AND r.command_tag IN ('CREATE TABLE','CREATE TABLE AS','SELECT INTO')
        AND (SELECT relkind IN ('r','p') AND NOT relispartition AND relpersistence <> 't' FROM pg_class WHERE oid = r.objid) THEN
-      PERFORM bb.track_table(r.objid::regclass, s.created_col, s.updated_col, s.by_col, false);
+      PERFORM bb.track_table(r.objid::regclass, s.created_col, s.updated_col, s.by_col,
+                             CASE WHEN to_regprocedure('bb.app_actor_label()') IS NULL THEN '' ELSE s.for_col END, false);
     END IF;
     -- Disabled, made replica-only, or renamed: refused, as for the guardrails.
     IF r.command_tag IN ('ALTER TABLE','ALTER TRIGGER') AND NOT bb._override_in_force() THEN

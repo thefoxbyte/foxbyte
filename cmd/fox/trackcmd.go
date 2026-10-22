@@ -14,13 +14,15 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 )
 
-// trackCmd is `fox track` (points 5.1, 6.1, and 5.2's last_modified_by): who
-// changed each row of a table, and when, kept by Postgres.
+// trackCmd is `fox track` (points 5.1, 5.2 and 6.1): who changed each row of
+// a table, whom for, and when, kept by Postgres.
 //
 //	fox track [--branch b]                         what is tracked, and whether new tables are
 //	fox track <table> [--branch b] [--label-existing]
-//	          [--created c] [--updated u] [--by col] [--no-created] [--no-updated] [--no-by]
-//	                                               start tracking a table
+//	          [--created c] [--updated u] [--by col] [--for col]
+//	          [--no-created] [--no-updated] [--no-by] [--no-for]
+//	                                               start tracking a table; on one tracked
+//	                                               already, add the for column it lacks
 //	fox track <table> --off                        stop; the columns and what they hold stay
 //	fox track --new on|off [--created …]           track every table made from now on
 //
@@ -32,7 +34,7 @@ func trackCmd(args []string) {
 		b = "main"
 	}
 	o := trackOptions(args)
-	ps := positionals(args, "--branch", "--created", "--updated", "--by", "--new")
+	ps := positionals(args, "--branch", "--created", "--updated", "--by", "--for", "--new")
 	me := cliActor()
 	switch {
 	case optValue(args, "--new") != "":
@@ -59,14 +61,42 @@ func trackCmd(args []string) {
 			fmt.Printf("%s.%s is no longer tracked. Its columns, and what they hold, are still there.\n", schema, table)
 			return
 		}
+		// Whether it was tracked already decides what tracking it did: a
+		// table tracked before only gains the for column.
+		was, _ := trackedAs(b, schema, table)
 		must(branch.TrackTable(b, schema, table, o, me, "fox track"))
-		auditTracking(me, b, "started tracking "+schema+"."+table)
-		existing := "Rows already there are left empty."
-		if o.LabelExisting {
-			existing = "Rows already there are labelled with this moment."
+		now, ok := trackedAs(b, schema, table)
+		switch {
+		case was != nil && ok && was.For == "" && now.For != "":
+			auditTracking(me, b, "added "+now.For+" to the tracking of "+schema+"."+table)
+			fmt.Printf("%s.%s was tracked already, and now keeps %s too: whom each row was changed for, where an application said so. Its rows are left empty there until they next change.\n",
+				schema, table, now.For)
+		case was != nil:
+			fmt.Printf("%s.%s is tracked already: %s. Nothing was changed.\n", schema, table,
+				trackCols(branch.TrackOptions{Created: was.Created, Updated: was.Updated, By: was.By, For: was.For}))
+		default:
+			auditTracking(me, b, "started tracking "+schema+"."+table)
+			existing := "Rows already there are left empty."
+			if o.LabelExisting {
+				existing = "Rows already there are labelled with this moment."
+			}
+			fmt.Printf("%s.%s is tracked: %s. %s\n", schema, table, trackCols(o), existing)
 		}
-		fmt.Printf("%s.%s is tracked: %s. %s\n", schema, table, trackCols(o), existing)
 	}
+}
+
+// trackedAs is how a table is tracked, or nil when it is not.
+func trackedAs(b, schema, table string) (*branch.TrackedTable, bool) {
+	t, err := branch.TrackingOf(b)
+	if err != nil {
+		return nil, false
+	}
+	for i := range t.Tables {
+		if t.Tables[i].Schema == schema && t.Tables[i].Name == table {
+			return &t.Tables[i], true
+		}
+	}
+	return nil, true
 }
 
 // trackOptions reads the column names, the defaults unless changed or dropped.
@@ -75,7 +105,8 @@ func trackOptions(args []string) branch.TrackOptions {
 	for _, f := range []struct {
 		flag, no string
 		to       *string
-	}{{"--created", "--no-created", &o.Created}, {"--updated", "--no-updated", &o.Updated}, {"--by", "--no-by", &o.By}} {
+	}{{"--created", "--no-created", &o.Created}, {"--updated", "--no-updated", &o.Updated}, {"--by", "--no-by", &o.By},
+		{"--for", "--no-for", &o.For}} {
 		if v := optValue(args, f.flag); v != "" {
 			*f.to = v
 		}
@@ -107,6 +138,9 @@ func trackCols(o branch.TrackOptions) string {
 	if o.By != "" {
 		c = append(c, o.By+" (who last changed it)")
 	}
+	if o.For != "" {
+		c = append(c, o.For+" (whom for, where an application said so)")
+	}
 	return strings.Join(c, ", ")
 }
 
@@ -121,7 +155,7 @@ func printTracking(w io.Writer, t branch.Tracking, b string) {
 		return
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TABLE\tCREATED\tUPDATED\tBY")
+	fmt.Fprintln(tw, "TABLE\tCREATED\tUPDATED\tBY\tFOR")
 	dash := func(s string) string {
 		if s == "" {
 			return "-"
@@ -129,7 +163,7 @@ func printTracking(w io.Writer, t branch.Tracking, b string) {
 		return s
 	}
 	for _, x := range t.Tables {
-		fmt.Fprintf(tw, "%s.%s\t%s\t%s\t%s\n", x.Schema, x.Name, dash(x.Created), dash(x.Updated), dash(x.By))
+		fmt.Fprintf(tw, "%s.%s\t%s\t%s\t%s\t%s\n", x.Schema, x.Name, dash(x.Created), dash(x.Updated), dash(x.By), dash(x.For))
 	}
 	tw.Flush()
 }
