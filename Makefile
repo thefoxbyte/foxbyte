@@ -3,7 +3,7 @@
 # FoxByte runs inside the Linux dev VM (ZFS + Docker); day-to-day operation is
 # via `lima /tmp/fox <command>`. This Makefile just builds/checks the CLI.
 
-.PHONY: license-key license-samples integration-realtime integration-upgrade integration-sdks integration-ui release-key build build-enterprise vet vet-enterprise fmt vm-build test test-enterprise integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade integration-editions test-vm test-vm-stop test-vm-delete
+.PHONY: integration-f1 license-key license-samples integration-realtime integration-upgrade integration-sdks integration-ui release-key build build-enterprise vet vet-enterprise fmt vm-build test test-enterprise integration web-dev web-build release release-linux wsl-zfs wsl-distro feature-doc integration-v2 integration-update integration-pg-upgrade integration-editions test-vm test-vm-stop test-vm-delete
 
 VERSION ?= 0.1.0
 LDFLAGS := -s -w -X github.com/thefoxbyte/foxbyte/internal/version.Version=$(VERSION)
@@ -149,6 +149,9 @@ integration-ui: web-build test-vm ## Run the web console's Playwright tests in t
 # repository or in CI, and a suite that needed it could never run here.
 integration-realtime: test-vm ## Run the realtime change-feed checks in the test VM
 	$(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_realtime.sh"
+
+integration-f1: test-vm ## Run the F1 identity prototype's checks in the test VM (a throwaway container; no install touched)
+	$(IN_TEST_VM) bash "$(CURDIR)/scripts/integration_f1.sh"
 
 integration-editions: ## Check the edition boundary against the built binaries
 	bash scripts/test_editions.sh

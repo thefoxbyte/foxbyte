@@ -6,7 +6,7 @@
 // The published image is an optimisation, not a dependency: a registry that is
 // unreachable, a package that is private, or a release whose image job has not
 // finished all used to end a first install with `unauthorized` and a request to
-// set a variable the Mac cannot pass into its VM. The context is two small files,
+// set a variable the Mac cannot pass into its VM. The context is a few small files,
 // read from this directory at build time, so it cannot drift from the release
 // it ships in.
 package postgres
@@ -19,7 +19,7 @@ import (
 	"strings"
 )
 
-//go:embed Dockerfile restore-entrypoint.sh
+//go:embed Dockerfile restore-entrypoint.sh fox_ed25519
 var files embed.FS
 
 // WriteContext writes the build context into dir, which must exist.
@@ -30,6 +30,10 @@ func WriteContext(dir string) error {
 		}
 		b, err := files.ReadFile(p)
 		if err != nil {
+			return err
+		}
+		// The F1 prototype's extension is a directory of its own.
+		if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(p)), 0o755); err != nil {
 			return err
 		}
 		mode := os.FileMode(0o644)

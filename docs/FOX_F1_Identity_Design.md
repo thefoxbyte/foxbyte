@@ -1,7 +1,8 @@
 # F1: identity and attribution — design
 
-**Status:** draft for review, 22 October 2026. Written against `main` at
-`d93492c`. It answers Gate 0's F1 item in the review plan
+**Status:** agreed as recommended (22 October 2026, #175). The Gate 0 prototype
+is built and its suite passes; what it found is in section 13. Written against
+`main` at `d93492c`. It answers Gate 0's F1 item in the review plan
 (`docs/FOX_Expert_Review_Plan.md`, sections 4 and 5): the token protocol written
 down, the signature-checking choice made, and the prototype and its tests
 defined.
@@ -316,3 +317,88 @@ test in the test VM:
 
 - Whether `asserted` tokens should also be accepted from a customer's OIDC provider in Gate 1, or later.
 - Whether `refuse` should become the default for applications registered after a date.
+
+---
+
+## 13. What the prototype found (Gate 0)
+
+**What was built** (`feat/f1-prototype`):
+
+- **The extension:** `docker/postgres/fox_ed25519`, built into the image only when
+  it is built `WITH_F1=on`. The default image is the image it was before.
+- **The prototype's SQL:** `scripts/f1/f1_proto.sql`.
+- **A minting tool for the tests:** `scripts/f1/mint`.
+- **The suite:** `scripts/integration_f1.sh` (`make integration-f1`).
+
+The suite runs in a throwaway container of its own, and no install is touched.
+
+**The suite passes, 47 of 47.** It covers every row of section 11 but "every
+path", which needs the product wired and is Gate 1:
+
+- **The extension:** the RFC 8032 test vectors, and 20,000 random inputs with no
+  crash.
+- **Signatures:** a valid token, a changed bit, another key, an unknown key, five
+  wrong headers, and malformed and oversized tokens.
+- **Binding:** another application's role, and the superuser.
+- **Claims:** expiry, not yet valid, the skew either way, a life over the limit,
+  another install's audience, the branch, and the tenant.
+- **The transaction:** a second assertion; a value set by hand; a valid MAC
+  copied from another transaction; values carried over at session level;
+  `claimed`.
+- **Savepoints:** rolled back, released, and nested.
+- **A pool:** three users on one connection.
+- **Keys:** rotation, revocation, compromise marking, and `refuse`.
+- **Logs:** the token is in neither `current_query()`, the Blackbox nor the
+  server log.
+- **Cost.**
+
+**Four things it changed in this design:**
+
+1. **The extension has a second function, `fox_txn_id()`.** The MAC's
+   transaction identity (5.2) was first read from `pg_locks`, which cost about
+   33 µs a call: it copies the lock table. The same values come from the
+   backend's own memory in C, for 0.3 µs, and handle PostgreSQL 17's move of
+   them into `MyProc->vxid`.
+
+   The MAC fell from 51 µs to about 7. `bb.app_actor()`, what each recorded row
+   pays, fell from 58.6 µs to 12.7.
+
+2. **The secret and the MAC live in a schema of their own (`bb_f1`), with
+   `USAGE` revoked.** `ledger.sql` grants `db_client` `EXECUTE` on every function
+   in `bb` at every start, and a client able to call the MAC function could
+   forge an actor.
+
+   For the same reason, pgcrypto is called by its qualified name, found when the
+   SQL is installed. A database can have pgcrypto only once, and usually in
+   `public`, where clients can create functions.
+
+3. **A record is attributed by "not yet attributed", not by transaction id.** A
+   row written inside a savepoint carries the savepoint's own transaction id. The
+   first version matched the top-level id, and attributed nothing written in a
+   savepoint. `bb.session` was rejected too, because a client can set it to
+   another session's name.
+
+   The rows not yet attributed are exactly this transaction's own: another
+   transaction's are invisible until it commits, and commit with their
+   attributions. Gate 1 records the application actor in the Blackbox's own
+   trigger, which makes the question go away.
+
+4. **The per-row cost needs one more step before row tracking uses it.**
+   12.7 µs a row is about 130 ms on a 10,000-row update, well over section 11's
+   5%.
+
+   Gate 1 adds a cache inside the extension. It remembers the last
+   (transaction, actor, issuer, key, tenant, MAC) it verified, and re-runs the
+   HMAC only when any of them changes. A client cannot write to a backend's C
+   memory, as it can to a setting, so the cache cannot be poisoned. This is the
+   first acceptance test of the Gate 1 work that wires row tracking.
+
+**Measured**, on the test VM, in the throwaway container (Postgres 18.6, arm64):
+
+| What | Cost |
+|---|---|
+| A transaction (`BEGIN; SELECT 1; COMMIT`) | 0.123 ms |
+| The same with `bb.act_for(token)` | 0.395 ms (+0.27 ms, under 0.5) |
+| `bb.app_actor()`, asserted, per call | 12.7 µs |
+| `fox_txn_id()`, per call | 0.3 µs |
+

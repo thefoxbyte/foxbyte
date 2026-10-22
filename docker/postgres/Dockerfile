@@ -26,6 +26,34 @@
 
 ARG PG_MAJOR=18
 ARG PG_DIGEST=sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+
+# ── F1 prototype: the fox_ed25519 extension, only when asked for ─────────────
+# Ed25519 verification for F1's application identity tokens
+# (docs/FOX_F1_Identity_Design.md, section 6). A prototype: off unless the build
+# says WITH_F1=on, so a published image is the image it was before.
+#
+# The check is inside the stage, not a choice between stages: Docker's legacy
+# builder (the test VM's) builds every stage whether it is used or not, so off
+# has to mean "this stage does nothing", or every local build would install a
+# compiler. Built against the server headers of the image's own major, from the
+# PGDG apt repository the official image already trusts, and linked to the
+# OpenSSL that image already carries; only the .so, the control file and the SQL
+# file reach the final image.
+FROM postgres:${PG_MAJOR}-bookworm@${PG_DIGEST} AS f1-build
+ARG PG_MAJOR
+ARG WITH_F1=off
+COPY fox_ed25519/ /src/fox_ed25519/
+RUN set -eux; \
+    mkdir -p /out; \
+    if [ "${WITH_F1}" = "on" ]; then \
+      apt-get update; \
+      apt-get install -y --no-install-recommends build-essential "postgresql-server-dev-${PG_MAJOR}" libssl-dev; \
+      rm -rf /var/lib/apt/lists/*; \
+      make -C /src/fox_ed25519; \
+      make -C /src/fox_ed25519 install DESTDIR=/out; \
+      test -f "/out/usr/lib/postgresql/${PG_MAJOR}/lib/fox_ed25519.so"; \
+    fi
+
 FROM postgres:${PG_MAJOR}-bookworm@${PG_DIGEST}
 
 # PG_MAJOR was consumed by FROM; re-declared so the layers below can use it.
@@ -68,6 +96,10 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}-pgvector=${PGVECTOR_VERSION}"; \
     rm -rf /var/lib/apt/lists/*; \
     ls /usr/share/postgresql/"${PG_MAJOR}"/extension/vector.control
+
+# The F1 prototype's extension when built WITH_F1=on; nothing otherwise (/out
+# is empty).
+COPY --from=f1-build /out/ /
 
 # Disposable point-in-time restore entrypoint (used by scripts/pitr_restore.sh).
 COPY restore-entrypoint.sh /usr/local/bin/restore-entrypoint.sh
