@@ -1308,6 +1308,30 @@ assert_eq "fox check reports that a restore has been proven" \
 assert_eq "…and it records nothing in the Blackbox" \
   "$($S blackbox main --limit 200 2>/dev/null | grep -c 'restore_probe')" "0"
 
+# A check that main's restart interrupts is not a restore that failed. The
+# scheduled check once ran while §11c restarted main, wrote "writing the probe
+# row: exit status 128" as the last check, and `fox check` reported "restore
+# proven" as FAIL for the next hour. Now a check waits for main to be up, and one
+# that cannot reach it says so and records nothing.
+main_up() { for i in $(seq 1 60); do sudo docker exec pg-main pg_isready -h 127.0.0.1 -q 2>/dev/null && return 0; sleep 1; done; return 1; }
+sudo docker stop pg-main >/dev/null 2>&1
+( sleep 6; sudo docker start pg-main >/dev/null 2>&1 ) &
+VERIFY="$($S backup verify 2>&1)"; VERIFY_RC=$?
+wait
+assert_eq "a check started while main is down waits for it, then proves the restore" \
+  "$VERIFY_RC|$(grep -c 'Waiting for main to be up' <<<"$VERIFY")|$(grep -c 'the probe row was there' <<<"$VERIFY")" "0|1|1"
+[ "$VERIFY_RC" = 0 ] || { echo "--- what it said ---"; tail -12 <<<"$VERIFY"; echo "--- end ---"; }
+TOKEN_BEFORE="$(python3 -c "import json;print(json.load(open('$HOME/$BRAND_STATE_DIR/restore-check.json'))['token'])")"
+sudo docker stop pg-main >/dev/null 2>&1
+VERIFY="$($S backup verify 2>&1)"; VERIFY_RC=$?
+sudo docker start pg-main >/dev/null 2>&1; main_up
+assert_eq "one that main never comes back for fails, saying it could not check and recorded nothing" \
+  "$VERIFY_RC|$(grep -c 'could not check: main was not available' <<<"$VERIFY")|$(grep -c 'nothing was recorded' <<<"$VERIFY")|$(grep -c 'did not restore' <<<"$VERIFY")" "1|1|1|0"
+assert_eq "…the last real check is still the one on record" \
+  "$(python3 -c "import json;d=json.load(open('$HOME/$BRAND_STATE_DIR/restore-check.json'));print(d['token']=='$TOKEN_BEFORE', d['ok'])")" "True True"
+assert_eq "…so fox check still reports the restore as proven" \
+  "$($S check 2>&1 | grep -c 'restore proven .*yes')" "1"
+
 echo "### 11e2. a removed container takes its volume with it"
 # The Postgres image declares VOLUME /var/lib/postgresql, so every branch
 # container comes with an anonymous volume. Removing a container without -v

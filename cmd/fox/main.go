@@ -430,6 +430,11 @@ func main() {
 			// own, and look for the row.
 			fmt.Println("Proving a restore works. This restores a full copy of main, so it takes a while.")
 			c, err := branch.VerifyRestore(func(f string, a ...any) { fmt.Printf(f, a...) })
+			if errors.Is(err, branch.ErrPrimaryUnavailable) {
+				// Not a verdict on the backups, and not recorded as one: run it
+				// again once main is back.
+				must(fmt.Errorf("could not check: %w", err))
+			}
 			if err != nil {
 				must(fmt.Errorf("the backups did not restore: %w", err))
 			}
