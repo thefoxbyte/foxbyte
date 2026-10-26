@@ -353,7 +353,11 @@ echo "### 5b. continuous import: status and cutover from the API (I8)"
 IMG="$(sudo docker inspect -f '{{.Config.Image}}' pg-main)"
 sudo docker rm -f itsrc >/dev/null 2>&1; $S branch delete itrep >/dev/null 2>&1
 sudo docker run -d --name itsrc --network "$DB_NETWORK" -e POSTGRES_PASSWORD=srcpw "$IMG" postgres -c wal_level=logical >/dev/null
-for i in $(seq 1 60); do sudo docker exec itsrc pg_isready -U postgres -q && break; sleep 1; done
+# Over TCP, not the socket: on a container's first start the entrypoint runs a
+# temporary server that answers on the socket and then shuts down, and a probe
+# that passes then lets the next psql land in the gap (the engine's waitReady
+# says the same). Seen on a fresh VM, failing every check in this section.
+for i in $(seq 1 60); do sudo docker exec itsrc pg_isready -h 127.0.0.1 -U postgres -q && break; sleep 1; done
 sudo docker exec itsrc psql -U postgres -q -c "CREATE TABLE items(id int PRIMARY KEY, v text); INSERT INTO items VALUES (1,'a'),(2,'b'),(3,'c');" >/dev/null
 SSE="$(curl -sk -N --max-time 180 -H "$AUTH" -H 'Content-Type: application/json' -X POST \
   -d '{"source":"postgresql://postgres:srcpw@itsrc:5432/postgres","target":"itrep","continuous":true}' https://localhost:8080/api/import)"
@@ -2383,6 +2387,58 @@ $S track --new off >/dev/null
 $S app remove trkapp >/dev/null 2>&1
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS trk_f, trk_g" >/dev/null
 rm -rf "$F5D"
+
+echo "### 11w. agent provenance: whom an agent's session was started for (F1, Agent API act_for)"
+# An application that starts an agent through the Agent API may say which of
+# its users it acts for, with the same token bb.act_for takes. The engine
+# checks it by the same rules (the account, never its agent key; this install;
+# the agent's own branch) and records the verdict on the session, never the
+# token. What the agent then changes shows the session's whom-for.
+F6D="$(mktemp -d)"
+( cd "$(dirname "$0")/.." && go build -o "$F6D/mint" ./scripts/f1/mint ) || bad "the token tool builds"
+printf 'password123\n' | $S user create agt-svc@foxbyte.dev >/dev/null 2>&1
+AK="$($S apikey create agt-svc@foxbyte.dev app 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+AAK="$($S apikey create agt-svc@foxbyte.dev bot --agent 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+"$F6D/mint" keygen "$F6D" k1 >"$F6D/k1.pub"
+"$F6D/mint" keygen "$F6D" ks >"$F6D/ks.pub"
+for a in agentapp strictapp; do $S app remove $a >/dev/null 2>&1; done
+$S app register agentapp --account agt-svc@foxbyte.dev --key "$F6D/k1.pub" --kid k1 >/dev/null 2>&1
+$S app register strictapp --account agt-svc@foxbyte.dev --key "$F6D/ks.pub" --kid ks --on-invalid refuse >/dev/null 2>&1
+AUD6="$($S app list --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["install_id"])')"
+mint6() { local k="$1" iss="$2"; shift 2; "$F6D/mint" token "$F6D/$k.seed" -kid "$k" -iss "$iss" -aud "$AUD6" "$@"; }
+AGAPI=https://localhost:8088/agents
+for a in f1ag f1ag2 f1ag3 f1ag4; do curl -sk -o /dev/null -H "Authorization: Bearer $AK" -X DELETE "$AGAPI/$a/branch"; done
+T6="$(mint6 k1 agentapp -sub alice)"
+R6="$(curl -sk -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' -X POST \
+  -d '{"task_id":"t-f1","act_for":"'"$T6"'"}' "$AGAPI/f1ag/branch")"
+assert_eq "an agent started with act_for says whom its session is for" \
+  "$(python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("app_for"), d.get("app_state"), d.get("task_id"))' <<<"$R6")" "alice asserted by agentapp t-f1"
+assert_eq "…and fox blackbox sessions says so" \
+  "$($S blackbox sessions agent-f1ag | grep -c 'alice, asserted by agentapp')" "1"
+assert_eq "…and the API" \
+  "$(as "$KEY" https://localhost:8080/api/branches/agent-f1ag/ledger/sessions | python3 -c 'import sys,json; s=json.load(sys.stdin)[0]; print(s["app_for"], s["app_state"], s["app_kid"])')" "alice asserted by agentapp k1"
+DSN6="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["dsn"])' <<<"$R6")"
+psql "$DSN6" -q -c "CREATE TABLE f1_agent_did (id int)" >/dev/null 2>&1
+assert_eq "what the agent then changes is shown as made in a session for alice" \
+  "$($S blackbox agent-f1ag --limit 20 | grep -w public.f1_agent_did | awk -F'|' '{gsub(/^ +| +$/, "", $3); print $3}')" "session for alice, asserted by agentapp"
+assert_eq "the token is kept nowhere: not on the session, not in a log" \
+  "$(pg pg-agent-f1ag "SELECT count(*) FROM bb.agent_sessions WHERE row_to_json(agent_sessions)::text LIKE '%$(cut -d. -f3 <<<"$T6" | cut -c1-20)%'")|$(cat "$HOME/$BRAND_STATE_DIR/api.log" 2>/dev/null | grep -c -F "$T6")" "0|0"
+R7="$(curl -sk -H "Authorization: Bearer $AAK" -H 'Content-Type: application/json' -X POST \
+  -d '{"act_for":"'"$(mint6 k1 agentapp -sub alice)"'"}' "$AGAPI/f1ag2/branch")"
+assert_eq "from the application's own agent key it is not taken, and the session says why" \
+  "$(python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("app_for"), d.get("app_state"), d.get("app_note"))' <<<"$R7")" "None none token refused: wrong session role"
+R8="$(curl -sk -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' -X POST \
+  -d '{"act_for":"'"$(mint6 k1 agentapp -sub alice -branch agent-other)"'"}' "$AGAPI/f1ag3/branch")"
+assert_eq "a token for another branch is not taken" \
+  "$(python3 -c 'import sys,json; print(json.load(sys.stdin).get("app_note"))' <<<"$R8")" "token refused: wrong branch"
+assert_eq "an application that registered refuse is refused, and no branch is made" \
+  "$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' -X POST \
+      -d '{"act_for":"'"$(mint6 ks strictapp -sub alice -aud install-other)"'"}' "$AGAPI/f1ag4/branch")|$($S branch list 2>/dev/null | grep -c 'agent-f1ag4')" "403|0"
+assert_eq "without act_for an agent's session says nothing about whom it is for" \
+  "$(curl -sk -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' -X POST -d '{"task_id":"t-plain"}' "$AGAPI/f1ag4/branch" | python3 -c 'import sys,json; d=json.load(sys.stdin); print("app_state" in d)')|$($S blackbox sessions agent-f1ag4 | awk 'NR==2 {print $3}')" "False|-"
+for a in f1ag f1ag2 f1ag3 f1ag4; do curl -sk -o /dev/null -H "Authorization: Bearer $AK" -X DELETE "$AGAPI/$a/branch"; done
+for a in agentapp strictapp; do $S app remove $a >/dev/null 2>&1; done
+rm -rf "$F6D"
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

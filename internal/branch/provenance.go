@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
@@ -32,11 +33,17 @@ type Provenance struct {
 	SessionID       string `json:"session_id,omitempty"`
 	TaskID          string `json:"task_id,omitempty"`
 	ParentSessionID string `json:"parent_session_id,omitempty"`
+	// ActFor is an application identity token naming whom the session is
+	// started for (F1). Checked by the caller (auth.CheckAppToken), whose
+	// verdict is App; the token itself is never stored.
+	ActFor string `json:"act_for,omitempty"`
+	// App is that verdict. Never read from a request: only the engine sets it.
+	App *auth.AppAssertion `json:"-"`
 }
 
 // Requested reports whether the caller supplied any provenance.
 func (p Provenance) Requested() bool {
-	return p.SessionID != "" || p.TaskID != "" || p.ParentSessionID != ""
+	return p.SessionID != "" || p.TaskID != "" || p.ParentSessionID != "" || p.ActFor != ""
 }
 
 func (p Provenance) validate() error {
@@ -58,6 +65,16 @@ type AgentSession struct {
 	Tool            *string `json:"tool"`
 	StartedAt       string  `json:"started_at,omitempty"`
 	Entries         int     `json:"entries"`
+	// Whom the session was started for, where an application said so:
+	// app_state is "asserted by <application>" (with "(key reported
+	// compromised)" where that applies) or "none", and absent for a session
+	// nobody said anything about.
+	AppFor   *string `json:"app_for,omitempty"`
+	AppState *string `json:"app_state,omitempty"`
+	AppKid   *string `json:"app_kid,omitempty"`
+	AppNote  *string `json:"app_note,omitempty"`
+	// app is the verdict to record when the session is started.
+	app *auth.AppAssertion
 }
 
 // ValidProvenanceID reports whether s may be used as a session, task or parent
@@ -105,9 +122,20 @@ func CallHash(tool, branchName, sql, taskID, parentSessionID string) string {
 }
 
 func startSessionSQL(s AgentSession) string {
-	return fmt.Sprintf(`INSERT INTO bb.agent_sessions (session_id, agent_id, parent_session_id, task_id, tool)
+	if s.app == nil {
+		return fmt.Sprintf(`INSERT INTO bb.agent_sessions (session_id, agent_id, parent_session_id, task_id, tool)
 VALUES (%s, %s, %s, %s, %s) ON CONFLICT (session_id) DO NOTHING`,
-		quoteLiteral(s.SessionID), quoteLiteral(s.AgentID), sqlTextOrNull(s.ParentSessionID), sqlTextOrNull(s.TaskID), sqlTextOrNull(s.Tool))
+			quoteLiteral(s.SessionID), quoteLiteral(s.AgentID), sqlTextOrNull(s.ParentSessionID), sqlTextOrNull(s.TaskID), sqlTextOrNull(s.Tool))
+	}
+	// Named only when there is something to record, so a branch whose
+	// sessions table predates them still records the rest.
+	a := s.app
+	return fmt.Sprintf(`INSERT INTO bb.agent_sessions (session_id, agent_id, parent_session_id, task_id, tool,
+  app_actor, app_state, app_issuer, app_kid, app_tenant, app_note)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (session_id) DO NOTHING`,
+		quoteLiteral(s.SessionID), quoteLiteral(s.AgentID), sqlTextOrNull(s.ParentSessionID), sqlTextOrNull(s.TaskID), sqlTextOrNull(s.Tool),
+		sqlTextOrNull(strPtr(a.Actor)), quoteLiteral(a.State), sqlTextOrNull(strPtr(a.Issuer)), sqlTextOrNull(strPtr(a.Kid)),
+		sqlTextOrNull(strPtr(a.Tenant)), sqlTextOrNull(strPtr(a.Note)))
 }
 
 func provenanceErr(name string, err error) error {
@@ -144,11 +172,7 @@ func AgentSessions(name string, limit int) ([]AgentSession, error) {
 	if limit > 1000 {
 		limit = 1000
 	}
-	lines, err := ledgerLines(name, fmt.Sprintf(`SELECT row_to_json(x) FROM (
-  SELECT a.session_id, a.agent_id, a.parent_session_id, a.task_id, a.tool,
-         to_char(a.started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
-         (SELECT count(*) FROM bb.schema_ledger s WHERE s.session = a.session_id) AS entries
-  FROM bb.agent_sessions a ORDER BY a.started_at DESC LIMIT %d) x`, limit))
+	lines, err := ledgerLines(name, agentSessionsSQL(limit, compromisedNow()))
 	if err != nil {
 		return nil, provenanceErr(name, err)
 	}
@@ -166,6 +190,35 @@ func AgentSessions(name string, limit int) ([]AgentSession, error) {
 	return out, nil
 }
 
+// agentSessionsSQL reads the newest sessions. Whom each was for is read through
+// to_jsonb, so a branch whose table predates those columns lists them as
+// absent rather than failing; a key reported compromised from a moment is
+// said so, as the Blackbox's own listing does (AppForSQL).
+func agentSessionsSQL(limit int, compromised []CompromisedKey) string {
+	vals := "SELECT NULL::text, NULL::text, NULL::bigint WHERE false"
+	if len(compromised) > 0 {
+		rows := make([]string, len(compromised))
+		for i, c := range compromised {
+			rows[i] = fmt.Sprintf("(%s, %s, %d::bigint)", quoteLiteral(c.Issuer), quoteLiteral(c.Kid), c.Since)
+		}
+		vals = "VALUES " + strings.Join(rows, ", ")
+	}
+	return fmt.Sprintf(`SELECT row_to_json(x) FROM (
+  SELECT a.session_id, a.agent_id, a.parent_session_id, a.task_id, a.tool,
+         to_char(a.started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS started_at,
+         (SELECT count(*) FROM bb.schema_ledger s WHERE s.session = a.session_id) AS entries,
+         to_jsonb(a) ->> 'app_actor' AS app_for,
+         CASE WHEN to_jsonb(a) ->> 'app_state' = 'asserted' AND EXISTS (
+                SELECT 1 FROM (%s) c(issuer, kid, since)
+                 WHERE c.issuer = to_jsonb(a) ->> 'app_issuer' AND c.kid = to_jsonb(a) ->> 'app_kid'
+                   AND extract(epoch FROM a.started_at) >= c.since)
+              THEN 'asserted by ' || (to_jsonb(a) ->> 'app_issuer') || ' (key reported compromised)'
+              WHEN to_jsonb(a) ->> 'app_state' = 'asserted' THEN 'asserted by ' || (to_jsonb(a) ->> 'app_issuer')
+              ELSE to_jsonb(a) ->> 'app_state' END AS app_state,
+         to_jsonb(a) ->> 'app_kid' AS app_kid, to_jsonb(a) ->> 'app_note' AS app_note
+  FROM bb.agent_sessions a ORDER BY a.started_at DESC LIMIT %d) x`, vals, limit)
+}
+
 // FormatAgentSessions renders sessions as a text table.
 func FormatAgentSessions(ss []AgentSession) string {
 	if len(ss) == 0 {
@@ -173,12 +226,26 @@ func FormatAgentSessions(ss []AgentSession) string {
 	}
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SESSION\tAGENT\tTASK\tPARENT SESSION\tTOOL\tSTARTED (UTC)\tENTRIES")
+	fmt.Fprintln(tw, "SESSION\tAGENT\tFOR\tTASK\tPARENT SESSION\tTOOL\tSTARTED (UTC)\tENTRIES")
 	for _, s := range ss {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n", s.SessionID, s.AgentID, str(s.TaskID), str(s.ParentSessionID), str(s.Tool), s.StartedAt, s.Entries)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n", s.SessionID, s.AgentID, sessionFor(s), str(s.TaskID), str(s.ParentSessionID), str(s.Tool), s.StartedAt, s.Entries)
 	}
 	_ = tw.Flush()
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// sessionFor is whom a session was started for, as fox blackbox's for column
+// says it: "alice, asserted by shop", "none: <why>", or "-".
+func sessionFor(s AgentSession) string {
+	switch {
+	case s.AppState == nil:
+		return "-"
+	case *s.AppState == "none":
+		return "none: " + str(s.AppNote)
+	case s.AppFor != nil:
+		return *s.AppFor + ", " + *s.AppState
+	}
+	return *s.AppState
 }
 
 func sessionDefaultsSQL(p Provenance) string {
@@ -219,6 +286,14 @@ func CreateAgentBranchWithProvenanceFor(owner int64, agentID string, p Provenanc
 	s := AgentSession{
 		SessionID: p.SessionID, AgentID: agentBranch(agentID),
 		TaskID: strPtr(p.TaskID), ParentSessionID: strPtr(p.ParentSessionID), Tool: strPtr("agent-api"),
+		app: p.App,
+	}
+	if a := p.App; a != nil {
+		state := a.State
+		if state == "asserted" {
+			state = "asserted by " + a.Issuer
+		}
+		s.AppFor, s.AppState, s.AppKid, s.AppNote = strPtr(a.Actor), &state, strPtr(a.Kid), strPtr(a.Note)
 	}
 	err = StartAgentSession(info.Branch, s)
 	if err == nil {

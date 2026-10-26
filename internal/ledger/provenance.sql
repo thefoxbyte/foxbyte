@@ -23,6 +23,17 @@ CREATE TABLE IF NOT EXISTS bb.agent_sessions (
   started_at        timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX IF NOT EXISTS agent_sessions_task_idx ON bb.agent_sessions (task_id);
+-- Whom the session was started for (application identity, F1): an application
+-- that created the agent's branch through the Agent API with a token naming its
+-- user, checked by the engine by bb.act_for's rules. asserted, or none with why.
+-- Added columns: a session recorded before them has none.
+ALTER TABLE bb.agent_sessions
+  ADD COLUMN IF NOT EXISTS app_actor  text,
+  ADD COLUMN IF NOT EXISTS app_state  text,
+  ADD COLUMN IF NOT EXISTS app_issuer text,
+  ADD COLUMN IF NOT EXISTS app_kid    text,
+  ADD COLUMN IF NOT EXISTS app_tenant text,
+  ADD COLUMN IF NOT EXISTS app_note   text;
 CREATE INDEX IF NOT EXISTS agent_sessions_parent_idx ON bb.agent_sessions (parent_session_id);
 
 CREATE OR REPLACE TRIGGER key_agent_sessions_append_only BEFORE UPDATE OR DELETE ON bb.agent_sessions

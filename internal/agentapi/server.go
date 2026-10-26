@@ -111,6 +111,20 @@ func Serve(addr string) error {
 			writeJSON(w, http.StatusCreated, info)
 			return
 		}
+		// Whom the session is for (application identity, F1): checked here,
+		// before anything is made, by bb.act_for's rules. The token is never
+		// kept, only the verdict; a failure is recorded as "none" with why,
+		// unless the application registered failures to be refused.
+		if p.ActFor != "" {
+			a := store.CheckAppToken(p.ActFor, u, auth.ViaAgentKey(r.Context()), "agent-"+r.PathValue("id"), time.Now())
+			p.ActFor = ""
+			if a.Refuse {
+				store.Audit(auth.EvDenied, u.Email, "agent-"+r.PathValue("id"), r.RemoteAddr, "agent branch refused: application identity "+a.Note)
+				writeErr(w, http.StatusForbidden, fmt.Errorf("application identity refused: %s", strings.TrimPrefix(a.Note, "token refused: ")))
+				return
+			}
+			p.App = &a
+		}
 		info, s, err := branch.CreateAgentBranchWithProvenanceFor(u.ID, r.PathValue("id"), p)
 		if err != nil {
 			code := http.StatusConflict
@@ -122,10 +136,13 @@ func Serve(addr string) error {
 		}
 		writeJSON(w, http.StatusCreated, struct {
 			branch.Info
-			SessionID       string `json:"session_id"`
-			TaskID          string `json:"task_id,omitempty"`
-			ParentSessionID string `json:"parent_session_id,omitempty"`
-		}{info, s.SessionID, p.TaskID, p.ParentSessionID})
+			SessionID       string  `json:"session_id"`
+			TaskID          string  `json:"task_id,omitempty"`
+			ParentSessionID string  `json:"parent_session_id,omitempty"`
+			AppFor          *string `json:"app_for,omitempty"`
+			AppState        *string `json:"app_state,omitempty"`
+			AppNote         *string `json:"app_note,omitempty"`
+		}{info, s.SessionID, p.TaskID, p.ParentSessionID, s.AppFor, s.AppState, s.AppNote})
 	})
 	agents.HandleFunc("DELETE /agents/{id}/branch", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")

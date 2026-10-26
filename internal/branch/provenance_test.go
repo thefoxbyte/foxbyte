@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 )
 
 func TestValidProvenanceID(t *testing.T) {
@@ -120,5 +121,59 @@ func TestFormatAgentSessions(t *testing.T) {
 	out := FormatAgentSessions([]AgentSession{{SessionID: "mcp-1", AgentID: "claude", TaskID: &task, Entries: 3}})
 	if !strings.Contains(out, "mcp-1") || !strings.Contains(out, "task-1") || !strings.HasSuffix(out, "3") {
 		t.Errorf("table:\n%s", out)
+	}
+}
+
+// Whom a session was started for (F1): recorded only when something was said,
+// so a branch whose sessions table predates the columns still records the rest.
+func TestStartSessionSQLWithApp(t *testing.T) {
+	plain := startSessionSQL(AgentSession{SessionID: "s1", AgentID: "agent-a"})
+	if strings.Contains(plain, "app_") {
+		t.Errorf("a session nobody said anything about names the app columns:\n%s", plain)
+	}
+	with := startSessionSQL(AgentSession{SessionID: "s1", AgentID: "agent-a", Tool: strPtr("agent-api"),
+		app: &auth.AppAssertion{Actor: "o'neil", State: "asserted", Issuer: "shop", Kid: "k1", Tenant: "acme"}})
+	for _, want := range []string{"app_actor, app_state, app_issuer, app_kid, app_tenant, app_note",
+		"'o''neil', 'asserted', 'shop', 'k1', 'acme', NULL"} {
+		if !strings.Contains(with, want) {
+			t.Errorf("should contain %q:\n%s", want, with)
+		}
+	}
+	refused := startSessionSQL(AgentSession{SessionID: "s1", AgentID: "agent-a",
+		app: &auth.AppAssertion{State: "none", Note: "token refused: expired"}})
+	if !strings.Contains(refused, "NULL, 'none', NULL, NULL, NULL, 'token refused: expired'") {
+		t.Errorf("a refused token is none with why, and no actor:\n%s", refused)
+	}
+}
+
+func TestAgentSessionsSQL(t *testing.T) {
+	q := agentSessionsSQL(50, []CompromisedKey{{Issuer: "shop", Kid: "k1", Since: 1792659600}})
+	for _, want := range []string{"to_jsonb(a) ->> 'app_actor' AS app_for", "VALUES ('shop', 'k1', 1792659600::bigint)",
+		"(key reported compromised)", "LIMIT 50"} {
+		if !strings.Contains(q, want) {
+			t.Errorf("should contain %q:\n%s", want, q)
+		}
+	}
+	if q := agentSessionsSQL(5, nil); !strings.Contains(q, "WHERE false") {
+		t.Errorf("no compromised key is an empty list:\n%s", q)
+	}
+}
+
+func TestSessionFor(t *testing.T) {
+	for _, c := range []struct {
+		s    AgentSession
+		want string
+	}{
+		{AgentSession{}, "-"},
+		{AgentSession{AppFor: strPtr("alice"), AppState: strPtr("asserted by shop")}, "alice, asserted by shop"},
+		{AgentSession{AppState: strPtr("none"), AppNote: strPtr("token refused: expired")}, "none: token refused: expired"},
+	} {
+		if got := sessionFor(c.s); got != c.want {
+			t.Errorf("sessionFor(%+v) = %q, want %q", c.s, got, c.want)
+		}
+	}
+	out := FormatAgentSessions([]AgentSession{{SessionID: "s1", AgentID: "agent-a", AppFor: strPtr("alice"), AppState: strPtr("asserted by shop")}})
+	if !strings.Contains(out, "FOR") || !strings.Contains(out, "alice, asserted by shop") {
+		t.Errorf("the listing says whom for:\n%s", out)
 	}
 }
