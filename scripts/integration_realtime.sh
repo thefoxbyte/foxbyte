@@ -796,7 +796,9 @@ sudo docker rm -f rtsrc >/dev/null 2>&1
 "$S" branch delete rtimp >/dev/null 2>&1
 sudo docker run -d --name rtsrc --network "$DB_NETWORK" -e POSTGRES_PASSWORD=srcpw \
   "$IMG" postgres -c wal_level=logical >/dev/null
-for i in $(seq 1 60); do sudo docker exec rtsrc pg_isready -U postgres -q && break; sleep 1; done
+# Over TCP, not the socket: the first start's temporary server answers there
+# and then shuts down (see integration_test.sh §5b).
+for i in $(seq 1 60); do sudo docker exec rtsrc pg_isready -h 127.0.0.1 -U postgres -q && break; sleep 1; done
 sudo docker exec rtsrc psql -U postgres -q -c \
   "CREATE TABLE items(id int PRIMARY KEY, v text); INSERT INTO items VALUES (1,'a'),(2,'b'),(3,'c');" >/dev/null
 "$S" import --from "postgresql://postgres:srcpw@rtsrc:5432/postgres" --continuous --as rtimp >/tmp/rt-import.log 2>&1

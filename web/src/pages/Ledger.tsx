@@ -55,7 +55,18 @@ function Hash({ value }: { value: string | null | undefined }) {
 // change was made for, beside who made it. Nothing when nothing was said.
 function ForWhom({ r }: { r: Row }) {
   const state = r.app_state
-  if (!state || (state === 'none' && !r.app_note)) return null
+  if (!state || (state === 'none' && !r.app_note)) {
+    // Nothing said in the change's own transaction: whom the agent session it
+    // was made in was started for, if an application said so (Agent API).
+    if (!r.session_for) return null
+    return (
+      <div className={'lg-for' + (r.session_for.includes('compromised') ? ' compromised' : '') + (r.session_for.startsWith('none') ? ' muted' : '')}
+        title="Said when the agent session was started (Agent API act_for), not in this change's own transaction">
+        session for {r.session_for.startsWith('none') ? r.session_for : <>
+          <b>{r.session_for.split(', ')[0]}</b> <span className="muted">{r.session_for.split(', ').slice(1).join(', ')}</span></>}
+      </div>
+    )
+  }
   if (state === 'none') {
     return <div className="lg-for muted" title={r.app_note || ''}>for nobody: {r.app_note}</div>
   }
@@ -137,7 +148,7 @@ export default function Ledger() {
       let res = await ask(withRef.current)
       // A branch whose Blackbox predates its capture table cannot say who a
       // change was for; it still lists what changed.
-      if (res.error && /ledger_ext/.test(res.error) && withRef.current !== WITH_OLD) {
+      if (res.error && /ledger_ext|agent_sessions/.test(res.error) && withRef.current !== WITH_OLD) {
         withRef.current = WITH_OLD
         res = await ask(WITH_OLD)
       }

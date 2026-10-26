@@ -4,7 +4,8 @@
 is built and its suite passes (#176); what it found is in section 13. Gate 1's
 first step, the check in C with its cache, is in section 14 (#177). The second,
 applications asserting their user in the product, is in section 15 (#180). The
-third, row tracking's `last_modified_for` (point 5.2), is in section 16. Written against
+third, row tracking's `last_modified_for` (point 5.2), is in section 16 (#181),
+and 3b, an agent session's whom-for, in section 17. Written against
 `main` at `d93492c`. It answers Gate 0's F1 item in the review plan
 (`docs/FOX_Expert_Review_Plan.md`, sections 4 and 5): the token protocol written
 down, the signature-checking choice made, and the prototype and its tests
@@ -606,3 +607,44 @@ hidden behind the faster trigger.
 recorded by the engine, not in the application's transaction, so it needs the
 token to be presented to the Agent API and checked by the engine. That is a
 second verifier, and it is its own step.
+
+---
+
+## 17. Gate 1, step 3b: whom an agent's session was started for
+
+**The question.** Section 8 said agent provenance (`bb.agent_sessions`) records
+the same four fields. A session is written by the engine, not in an
+application's transaction, so `bb.act_for` cannot vouch for it. The token has
+to be presented to the engine and checked there.
+
+**What was built** (`feat/f1-agent-for`):
+
+- **`act_for` on the Agent API.** `POST /agents/{id}/branch` takes a token in
+  its body, never a URL.
+- **A second verifier, written to be the same check:** `auth.CheckAppToken`.
+  - **Same rules, same order, same words as `bb.act_for`:**
+    - the fixed header;
+    - a registered key;
+    - the signature, then revocation;
+    - binding;
+    - `sub`, `aud`, `branch`, then the times.
+    - The refusal reasons are the same words.
+  - **Claims are read as Postgres's `->>` reads them**, so a number where a
+    string was expected means the same in both.
+  - **Its unit test** walks the same cases the SQL suite does.
+- **Binding:** the caller must be the application's own account, and not its
+  agent key. The Agent API accepts agent keys, so it now marks the requests
+  that use one (`auth.ViaAgentKey`). A token's `branch` claim is checked
+  against the agent's branch.
+- **The verdict, never the token, is recorded** on the session, in six new
+  columns of `bb.agent_sessions`:
+  - a failure is `none` with why;
+  - for an application registered `refuse`, the answer is 403 and nothing is
+    made.
+- **Where it shows:**
+  - `fox blackbox sessions` and the sessions API say whom for;
+  - a Blackbox entry the agent makes says "session for alice, asserted by
+    shop", kept apart from what a change's own transaction asserted.
+
+**Not covered:** MCP sessions. The MCP server is started by whoever runs it,
+with no application in between, so there is nobody to assert.
