@@ -59,7 +59,125 @@ const (
 	// archiveWait is how long to wait for the probe's WAL segment to reach the
 	// archive before giving up.
 	archiveWait = 120 * time.Second
+	// primaryWait is how long a check waits for the primary to be up and
+	// accepting connections before it starts.
+	primaryWait = 90 * time.Second
+	// retryAfterUnavailable is when the scheduler tries again after a check that
+	// could not run because the primary was down or restarting: soon, since a
+	// restart takes seconds, rather than at the next hourly look.
+	retryAfterUnavailable = 5 * time.Minute
 )
+
+// ErrPrimaryUnavailable marks a check that never reached its question: the
+// primary was not up, or went away while the probe row was being written.
+//
+// That says nothing about whether the backups restore, so it is not recorded as
+// the last check. It used to be, and then `fox check` reported "restore proven"
+// as failed until the next check: main restarts on `fox backup target set`,
+// `fox realtime setup`, HA and `fox pg upgrade`, and a scheduled check that
+// landed in that window wrote "writing the probe row: exit status 128".
+var ErrPrimaryUnavailable = errors.New("the primary was not available")
+
+// primaryUnavailableError is ErrPrimaryUnavailable with the step that failed.
+type primaryUnavailableError struct {
+	primary string
+	err     error
+}
+
+func (e *primaryUnavailableError) Error() string {
+	return fmt.Sprintf("%s was not available, so the check did not run (%v); nothing was recorded", e.primary, e.err)
+}
+func (e *primaryUnavailableError) Unwrap() error        { return e.err }
+func (e *primaryUnavailableError) Is(target error) bool { return target == ErrPrimaryUnavailable }
+
+// primaryState is what docker and pg_isready say about the primary at a moment.
+// ID and StartedAt tell one run of the container from the next: a restart that
+// has already finished by the time anyone looks again changes StartedAt, and a
+// container removed and created again changes both.
+type primaryState struct {
+	ID        string
+	Status    string // docker's State.Status: "running", "restarting", "exited", "absent", …
+	StartedAt string
+	Ready     bool // pg_isready over TCP
+}
+
+func (s primaryState) up() bool { return s.Status == "running" && s.Ready }
+
+func readPrimaryState(name string) primaryState {
+	out, err := capture("docker", "inspect", "-f", "{{.Id}} {{.State.Status}} {{.State.StartedAt}}", container(name))
+	if err != nil {
+		return primaryState{Status: "absent"}
+	}
+	f := strings.Fields(out)
+	if len(f) < 3 {
+		return primaryState{Status: "unknown"}
+	}
+	s := primaryState{ID: f[0], Status: f[1], StartedAt: f[2]}
+	if s.Status == "running" {
+		// TCP, as waitReady does: the socket answers during the entrypoint's
+		// temporary server and during a shutdown's last moments. Bounded, so a
+		// wedged container cannot hold the check open.
+		cmd, _, cancel := sudoCmd(execQuick, "docker", "exec", container(name),
+			"pg_isready", "-h", "127.0.0.1", "-U", pgUser, "-d", pgDatabase)
+		s.Ready = cmd.Run() == nil
+		cancel()
+	}
+	return s
+}
+
+// waitPrimary waits for the primary to be up, for at most primaryWait.
+func waitPrimary(name string, logf func(string, ...any)) (primaryState, error) {
+	deadline := time.Now().Add(primaryWait)
+	s := readPrimaryState(name)
+	if !s.up() {
+		logf("Waiting for %s to be up (it is %s) …\n", name, describeState(s))
+	}
+	for !s.up() {
+		if time.Now().After(deadline) {
+			return s, &primaryUnavailableError{name, fmt.Errorf("it was still %s after %s", describeState(s), primaryWait)}
+		}
+		time.Sleep(2 * time.Second)
+		s = readPrimaryState(name)
+	}
+	return s, nil
+}
+
+func describeState(s primaryState) string {
+	if s.Status == "running" && !s.Ready {
+		return "running but not accepting connections"
+	}
+	return s.Status
+}
+
+// primaryWentAway reports whether the primary stopped being the same, working
+// server between the start of a check and a failure: not running now, not
+// accepting connections, or a different run of the container. Then a failed step
+// on the primary is the restart's doing, not the backups'.
+func primaryWentAway(before, after primaryState) bool {
+	return !after.up() || after.ID != before.ID || after.StartedAt != before.StartedAt
+}
+
+// onPrimary classifies a failure in a step that runs on the primary: one the
+// primary's going away explains is ErrPrimaryUnavailable, anything else stands
+// as a failed check.
+func onPrimary(name string, err error, before, after primaryState) error {
+	if err == nil || !primaryWentAway(before, after) {
+		return err
+	}
+	return &primaryUnavailableError{name, fmt.Errorf("%w; it is now %s", err, describeState(after))}
+}
+
+// recordable reports whether a check's outcome is written down as the last
+// check. Everything is except a check the primary's absence stopped.
+func recordable(err error) bool { return !errors.Is(err, ErrPrimaryUnavailable) }
+
+// nextLook is how long the scheduler sleeps after a look at the schedule.
+func nextLook(err error) time.Duration {
+	if errors.Is(err, ErrPrimaryUnavailable) {
+		return retryAfterUnavailable
+	}
+	return time.Hour
+}
 
 func restoreCheckPath() string { return brand.StatePath("restore-check.json") }
 
@@ -112,19 +230,12 @@ func VerifyRestore(logf func(string, ...any)) (RestoreCheck, error) {
 	}
 	started := time.Now()
 	c := RestoreCheck{At: started.UTC().Format(time.RFC3339), Target: target().Describe()}
-	finish := func(err error) (RestoreCheck, error) {
-		c.Seconds = int(time.Since(started).Seconds())
-		c.OK = err == nil
-		if err != nil {
-			c.Err = err.Error()
-		}
-		saveRestoreCheck(c)
-		return c, err
-	}
+	finish := func(err error) (RestoreCheck, error) { return conclude(c, started, err) }
 
 	primary := strings.TrimPrefix(PrimaryContainer(), containerPrefix)
-	if ContainerState(primary) != "running" {
-		return finish(fmt.Errorf("the primary is not running, so there is nothing to check"))
+	before, err := waitPrimary(primary, logf)
+	if err != nil {
+		return finish(err)
 	}
 	if ContainerState(restoreCheckContainer) != "absent" {
 		removeContainer(container(restoreCheckContainer))
@@ -140,7 +251,7 @@ func VerifyRestore(logf func(string, ...any)) (RestoreCheck, error) {
 	if err := SQL(primary, fmt.Sprintf(
 		`CREATE TABLE IF NOT EXISTS %s (id bigserial PRIMARY KEY, token text NOT NULL, at timestamptz NOT NULL DEFAULT now());
 		 INSERT INTO %s (token) VALUES (%s);`, probeTable, probeTable, quoteLiteral(token))); err != nil {
-		return finish(fmt.Errorf("writing the probe row: %w", err))
+		return finish(onPrimary(primary, fmt.Errorf("writing the probe row: %w", err), before, readPrimaryState(primary)))
 	}
 
 	// 2. Its WAL segment has to be in the archive, or a restore cannot replay it.
@@ -148,7 +259,7 @@ func VerifyRestore(logf func(string, ...any)) (RestoreCheck, error) {
 	//    switch in the same string would run before the insert commits.
 	logf("Waiting for its WAL segment to reach the archive …\n")
 	if err := waitArchived(primary); err != nil {
-		return finish(err)
+		return finish(onPrimary(primary, err, before, readPrimaryState(primary)))
 	}
 
 	// 3. Restore the newest base backup into a container of its own and replay.
@@ -188,6 +299,20 @@ func VerifyRestore(logf func(string, ...any)) (RestoreCheck, error) {
 	}
 	logf("The probe row is in the restored copy: the backups restore.\n")
 	return finish(nil)
+}
+
+// conclude fills in how a check ended and records it, unless it is a check the
+// primary's absence stopped (recordable).
+func conclude(c RestoreCheck, started time.Time, err error) (RestoreCheck, error) {
+	c.Seconds = int(time.Since(started).Seconds())
+	c.OK = err == nil
+	if err != nil {
+		c.Err = err.Error()
+	}
+	if recordable(err) {
+		saveRestoreCheck(c)
+	}
+	return c, err
 }
 
 // probeQuery asks the restored copy one question, unaligned so the answer is the
@@ -249,15 +374,20 @@ func StartRestoreVerifier() {
 	go func() {
 		time.Sleep(5 * time.Minute)
 		for {
+			var err error
 			if due(iv) {
-				c, err := VerifyRestore(func(f string, a ...any) { log.Printf("restore check: "+strings.TrimRight(f, "\n"), a...) })
-				if err != nil {
+				var c RestoreCheck
+				c, err = VerifyRestore(func(f string, a ...any) { log.Printf("restore check: "+strings.TrimRight(f, "\n"), a...) })
+				switch {
+				case errors.Is(err, ErrPrimaryUnavailable):
+					log.Printf("restore check: not run: %v; trying again in %s", err, nextLook(err))
+				case err != nil:
 					log.Printf("restore check: FAILED after %ds: %v", c.Seconds, err)
-				} else {
+				default:
 					log.Printf("restore check: the backups restore (%ds, from %s)", c.Seconds, c.BaseBackup)
 				}
 			}
-			time.Sleep(time.Hour)
+			time.Sleep(nextLook(err))
 		}
 	}()
 }
