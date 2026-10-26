@@ -204,7 +204,10 @@ func CompromisedKeys(apps []auth.App) []CompromisedKey {
 // a join, and the columns app_for (the user), app_state ("asserted by
 // <application>", with "(key reported compromised)" for what a compromised key
 // asserted after it was reported; "claimed"; "none"; or NULL for a record made
-// before application identity), app_kid and app_note.
+// before application identity), app_kid and app_note; and session_for, whom
+// the agent session the change was made in was started for ("alice, asserted
+// by shop", or "none: <why>"), where an application said so (Agent API
+// act_for), else NULL.
 //
 // Read through to_jsonb, so a branch whose capture table predates these columns
 // lists them as NULL rather than failing. The compromised keys are written into
@@ -220,7 +223,9 @@ func AppForSQL(ledgerTable string, compromised []CompromisedKey) (cols, join str
 		}
 		vals = "VALUES " + strings.Join(rows, ", ")
 	}
-	join = fmt.Sprintf(" LEFT JOIN LATERAL (SELECT to_jsonb(x) AS j FROM bb.ledger_ext x WHERE x.ledger_id = %s.id) app_ext ON true", ledgerTable)
+	join = fmt.Sprintf(" LEFT JOIN LATERAL (SELECT to_jsonb(x) AS j FROM bb.ledger_ext x WHERE x.ledger_id = %s.id) app_ext ON true"+
+		" LEFT JOIN LATERAL (SELECT to_jsonb(y) AS j FROM bb.agent_sessions y WHERE y.session_id = %s.session) app_sess ON true",
+		ledgerTable, ledgerTable)
 	cols = fmt.Sprintf(`app_ext.j->>'app_actor' AS app_for,
 		CASE WHEN app_ext.j->>'app_state' = 'asserted' AND EXISTS (
 		       SELECT 1 FROM (%s) c(issuer, kid, since)
@@ -229,7 +234,13 @@ func AppForSQL(ledgerTable string, compromised []CompromisedKey) (cols, join str
 		     THEN 'asserted by ' || (app_ext.j->>'app_issuer') || ' (key reported compromised)'
 		     WHEN app_ext.j->>'app_state' = 'asserted' THEN 'asserted by ' || (app_ext.j->>'app_issuer')
 		     ELSE app_ext.j->>'app_state' END AS app_state,
-		app_ext.j->>'app_kid' AS app_kid, app_ext.j->>'app_note' AS app_note`, vals, ledgerTable)
+		app_ext.j->>'app_kid' AS app_kid, app_ext.j->>'app_note' AS app_note,
+		CASE WHEN app_sess.j->>'app_state' = 'asserted' THEN (app_sess.j->>'app_actor') || ', asserted by ' || (app_sess.j->>'app_issuer') ||
+		       CASE WHEN EXISTS (SELECT 1 FROM (%s) c(issuer, kid, since)
+		                          WHERE c.issuer = app_sess.j->>'app_issuer' AND c.kid = app_sess.j->>'app_kid'
+		                            AND extract(epoch FROM (app_sess.j->>'started_at')::timestamptz) >= c.since)
+		            THEN ' (key reported compromised)' ELSE '' END
+		     WHEN app_sess.j->>'app_state' = 'none' THEN 'none: ' || (app_sess.j->>'app_note') END AS session_for`, vals, ledgerTable, vals)
 	return cols, join
 }
 

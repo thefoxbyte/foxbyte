@@ -678,9 +678,10 @@ func Ledger(name string, limit int) error {
 	// (application identity), beside "actor", who made it.
 	appCols, appJoin := AppForSQL("l", compromisedNow())
 	q := fmt.Sprintf(`SELECT time, actor,
-		CASE WHEN app_state IS NULL OR (app_state = 'none' AND app_note IS NULL) THEN '-'
-		     WHEN app_state = 'none' THEN 'none: ' || app_note
-		     ELSE coalesce(app_for || ', ' || app_state, app_state) END AS "for",
+		CASE WHEN app_state = 'none' AND app_note IS NOT NULL THEN 'none: ' || app_note
+		     WHEN app_state IS NOT NULL AND app_state <> 'none' THEN coalesce(app_for || ', ' || app_state, app_state)
+		     WHEN session_for IS NOT NULL THEN 'session for ' || session_for
+		     ELSE '-' END AS "for",
 		kind, tool, command, object, status, risk FROM (
 		SELECT to_char(l.at,'MM-DD HH24:MI:SS') AS time, l.at AS sort_at,
 		coalesce(l.actor,'-') AS actor, l.actor_kind AS kind, coalesce(l.tool,'-') AS tool,

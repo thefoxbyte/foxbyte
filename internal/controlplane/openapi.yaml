@@ -977,7 +977,7 @@ paths:
         - { name: kind, in: query, schema: { type: string, enum: [human, agent] } }
         - { name: since, in: query, description: "Only entries at or after this time.", schema: { type: string } }
         - { name: until, in: query, description: "Only entries at or before this time.", schema: { type: string } }
-        - { name: with, in: query, description: "Extra columns, comma-separated: session, chain (id, prev_hash, row_hash), for (app_for, app_state, app_kid, app_note: who the change was made for, where an application asserted it; app_state is 'asserted by <application>', with '(key reported compromised)' where that applies, 'claimed', 'none', or null for a record made before application identity). The default columns never change.", schema: { type: string, example: "session,chain,for" } }
+        - { name: with, in: query, description: "Extra columns, comma-separated: session, chain (id, prev_hash, row_hash), for (app_for, app_state, app_kid, app_note, session_for: who the change was made for, where an application asserted it, and whom its agent session was started for; app_state is 'asserted by <application>', with '(key reported compromised)' where that applies, 'claimed', 'none', or null for a record made before application identity). The default columns never change.", schema: { type: string, example: "session,chain,for" } }
         - { name: limit, in: query, schema: { type: integer, default: 200, maximum: 2000 } }
         - { name: offset, in: query, schema: { type: integer } }
       responses:
@@ -1121,6 +1121,10 @@ paths:
                     tool: { type: [string, "null"] }
                     started_at: { type: string, format: date-time }
                     entries: { type: integer }
+                    app_for: { type: string, description: "Whom the session was started for, where an application asserted it (act_for)." }
+                    app_state: { type: string, description: "asserted by <application>, with (key reported compromised) where that applies; or none. Absent when nothing was said." }
+                    app_kid: { type: string }
+                    app_note: { type: string, description: Why a token was not taken. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/branches/{name}/impact:
@@ -2229,10 +2233,29 @@ paths:
                 task_id: { type: string, maxLength: 200 }
                 parent_session_id: { type: string, maxLength: 200 }
                 session_id: { type: string, maxLength: 200, description: "Your own session id (default: generated)" }
+                act_for:
+                  type: string
+                  description: >-
+                    An application identity token (fox app) naming whom the agent's session is started for.
+                    Checked by the engine by bb.act_for's rules, with the caller as the application's
+                    account (never its agent key) and the agent's branch as the branch claim. The session
+                    records the verdict, never the token: asserted, or none with the reason. An application
+                    registered with on_invalid refuse gets 403 instead, and nothing is made.
       responses:
         "201":
           description: Created
-          content: { application/json: { schema: { $ref: "#/components/schemas/AgentBranch" } } }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/AgentBranch" }
+                  - type: object
+                    properties:
+                      session_id: { type: string }
+                      app_for: { type: string, description: The user the session was started for, when asserted. }
+                      app_state: { type: string, description: "asserted by <application>, or none" }
+                      app_note: { type: string, description: Why a token was not taken. }
+        "403": { description: "act_for refused, for an application that registered on_invalid refuse; nothing was made." }
         "401": { $ref: "#/components/responses/Unauthorized" }
     delete:
       tags: [agents]

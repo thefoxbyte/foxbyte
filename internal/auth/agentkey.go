@@ -56,6 +56,7 @@ func (s *Store) AuthnAgents(next http.Handler) http.Handler {
 			if key := requestKey(r); key != "" {
 				if ku, scope, kind, kok := s.VerifyKeyKind(key); kok && scope == "" && kind == KindAgent {
 					u, ok = ku, true
+					r = r.WithContext(context.WithValue(r.Context(), agentKeyCtx, true))
 				}
 			}
 		}
@@ -65,6 +66,19 @@ func (s *Store) AuthnAgents(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
 	})
+}
+
+type agentKeyCtxKey struct{}
+
+var agentKeyCtx agentKeyCtxKey
+
+// ViaAgentKey reports whether a request AuthnAgents let through came with an
+// agent key rather than the account's own credential. Application identity
+// needs to know: an agent key of an application's account is not the
+// application (CheckAppToken).
+func ViaAgentKey(ctx context.Context) bool {
+	v, _ := ctx.Value(agentKeyCtx).(bool)
+	return v
 }
 
 // requestKey is the API key a request carries, as a bearer token or in

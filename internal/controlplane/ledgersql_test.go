@@ -88,8 +88,15 @@ func TestLedgerSQLWithFor(t *testing.T) {
 			t.Errorf("with=for should contain %q:\n%s", want, sql)
 		}
 	}
-	if strings.Count(sql, "LEFT JOIN LATERAL") != 1 {
-		t.Errorf("one join, however the columns were asked for:\n%s", ledgerSQL(url.Values{"with": {"for,for"}}))
+	twice := ledgerSQL(url.Values{"with": {"for,for"}})
+	if strings.Count(twice, ") app_ext ON true") != 1 || strings.Count(twice, ") app_sess ON true") != 1 {
+		t.Errorf("each join once, however the columns were asked for:\n%s", twice)
+	}
+	// Whom the agent session was started for (Agent API act_for).
+	for _, want := range []string{"FROM bb.agent_sessions y WHERE y.session_id = bb.schema_ledger.session", "AS session_for"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("with=for should contain %q:\n%s", want, sql)
+		}
 	}
 	compromisedKeys = func() []branch.CompromisedKey { return nil }
 	if sql := ledgerSQL(url.Values{"with": {"for"}}); !strings.Contains(sql, "SELECT NULL::text, NULL::text, NULL::bigint WHERE false") {
