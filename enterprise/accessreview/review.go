@@ -26,7 +26,10 @@ type inputs struct {
 	queries  map[string]time.Time // email → last query history kept
 	branches []branch.BranchInfo
 	admins   map[string][]string // running branch → db_admin members
-	limits   []string            // what gathering could not read
+	apps     []auth.App
+	// asserted is, by running branch, what each application key asserted.
+	asserted map[string]map[[2]string]branch.Asserted
+	limits   []string // what gathering could not read
 }
 
 func review(store *auth.Store, o access.ReviewOptions) (access.Review, error) {
@@ -74,6 +77,25 @@ func gather(store *auth.Store) (inputs, error) {
 		if a, err := branch.ListAdmins(b); err == nil {
 			in.admins[b] = a
 		}
+	}
+	if in.apps, err = store.Apps(); err != nil {
+		return in, fmt.Errorf("listing applications: %w", err)
+	}
+	in.asserted = map[string]map[[2]string]branch.Asserted{}
+	var notCounted []string
+	if len(in.apps) > 0 {
+		for _, b := range running {
+			c, ok, err := branch.AssertedCounts(b)
+			if err != nil || !ok {
+				notCounted = append(notCounted, b)
+				continue
+			}
+			in.asserted[b] = c
+		}
+	}
+	if len(notCounted) > 0 {
+		sort.Strings(notCounted)
+		in.limits = append(in.limits, fmt.Sprintf("What applications asserted could not be counted on %v: a branch whose Blackbox predates application identity records none (fox ledger upgrade).", notCounted))
 	}
 	return in, nil
 }
@@ -215,14 +237,93 @@ func build(in inputs, dormantDays int, now time.Time) access.Review {
 		return r.Branches[i].Name < r.Branches[j].Name
 	})
 
+	r.Applications = buildApps(in, installAdmins, dormantDays, now)
+	for _, a := range r.Applications {
+		if len(a.Findings) > 0 {
+			r.Summary.AppsWithFinding++
+		}
+	}
+
 	r.Summary.Accounts, r.Summary.Keys, r.Summary.Branches = len(r.Accounts), len(r.Keys), len(r.Branches)
+	r.Summary.Applications = len(r.Applications)
 	r.Limits = append([]string{
 		"No masking is in place yet (point 7), so there are no unmask rights to review: every account sees, unmasked, what the branches it reaches hold.",
 		fmt.Sprintf("Last active is the newest of a console sign-in, a key's use (recorded to the minute) and a query kept in history. Dormant means no activity FoxByte saw in %d days: a role someone made directly in Postgres is not seen.", dormantDays),
-		"Identity is what each credential is: an agent key marks an agent by how it logs in. A signed identity for each transaction (F1) is not in place yet.",
+		"Identity is what each credential is: an agent key marks an agent by how it logs in. Whom a change was made for is what a registered application asserted with its key (Applications), which means the application vouched for the user, not that the user was there.",
+		"What an application's key asserted is counted in the Blackbox and the agent sessions of running branches. A branch made from main holds main's records from before it was made, so two branches' counts can overlap; rows whose last_modified_for names an application are not counted.",
 	}, in.limits...)
 	if notAsked > 0 {
 		r.Limits = append(r.Limits, fmt.Sprintf("%d branch(es) were not running, so who may override their guardrails was not read: a suspended branch is not woken for a report.", notAsked))
 	}
 	return r
+}
+
+// buildApps is the Applications table: each registration, its keys with their
+// age and state and what each asserted, and what a reviewer should question.
+func buildApps(in inputs, installAdmins map[string]bool, dormantDays int, now time.Time) []access.ReviewApp {
+	out := []access.ReviewApp{}
+	unix := func(v *int64) *time.Time {
+		if v == nil {
+			return nil
+		}
+		t := time.Unix(*v, 0).UTC()
+		return &t
+	}
+	for _, a := range in.apps {
+		ra := access.ReviewApp{Name: a.Name, Account: a.Account, Created: time.Unix(a.Created, 0).UTC(),
+			MaxLifeSeconds: a.MaxLife, OnInvalid: a.OnInvalid, Keys: []access.ReviewAppKey{}, Findings: []string{}}
+		active := 0
+		for _, k := range a.Keys {
+			rk := access.ReviewAppKey{Kid: k.Kid, Created: time.Unix(k.Created, 0).UTC(), Active: k.Active(),
+				Revoked: unix(k.Revoked), CompromisedSince: unix(k.CompromisedSince),
+				Records: map[string]int{}, Sessions: map[string]int{}}
+			rk.AgeDays = int(now.Sub(rk.Created).Hours() / 24)
+			var last time.Time
+			for b, counts := range in.asserted {
+				c, ok := counts[[2]string{a.Name, k.Kid}]
+				if !ok {
+					continue
+				}
+				if c.Records > 0 {
+					rk.Records[b] = c.Records
+				}
+				if c.Sessions > 0 {
+					rk.Sessions[b] = c.Sessions
+				}
+				if c.Last.After(last) {
+					last = c.Last
+				}
+			}
+			if !last.IsZero() {
+				rk.LastAsserted = &last
+			}
+			if rk.Active {
+				active++
+				switch {
+				case rk.AgeDays > dormantDays && rk.LastAsserted == nil:
+					ra.Findings = append(ra.Findings, fmt.Sprintf("Key %s has asserted nothing on a running branch in its %d days: is it still needed?", k.Kid, rk.AgeDays))
+				case rk.AgeDays > dormantDays:
+					ra.Findings = append(ra.Findings, fmt.Sprintf("Key %s is %d days old: rotate it (fox app key add, then revoke the old one).", k.Kid, rk.AgeDays))
+				}
+			}
+			if rk.CompromisedSince != nil {
+				ra.Findings = append(ra.Findings, fmt.Sprintf("Key %s was reported compromised: what it asserted from %s is shown as such.", k.Kid, rk.CompromisedSince.Format("2 Jan 2006 15:04 UTC")))
+			}
+			ra.Keys = append(ra.Keys, rk)
+		}
+		switch {
+		case a.Account == "":
+			ra.Findings = append(ra.Findings, "Its account no longer exists, so nothing can assert for it: remove it (fox app remove).")
+		case !in.signIns[a.Account].IsZero():
+			ra.Findings = append(ra.Findings, "Its account signs in to the console: an application should have an account of its own, never a person's, or that person can assert any user.")
+		}
+		if installAdmins[a.Account] {
+			ra.Findings = append(ra.Findings, "Its account is an install admin: an application needs no more than the branches it writes to.")
+		}
+		if active == 0 && a.Account != "" {
+			ra.Findings = append(ra.Findings, "It has no active key, so nothing it sends is taken.")
+		}
+		out = append(out, ra)
+	}
+	return out
 }

@@ -2176,6 +2176,41 @@ assert_eq "…as CSV too, and refuses a window or a table it does not know" \
   "$(curl -sk -o /dev/null -w '%{content_type}' -H "Authorization: Bearer $KEY" "$AR?format=csv&section=accounts")|$(as "$KEY" "$AR?format=csv&section=branches" | head -1)|$(code "$KEY" "$AR?dormant=0")|$(code "$KEY" "$AR?format=csv&section=passwords")" \
   "text/csv; charset=utf-8|branch,state,owner,admins,admins_read|400|400"
 $S branch delete arq >/dev/null 2>&1
+# The applications (F1): each registration, its keys and what each asserted,
+# and what a reviewer should question.
+ARD="$(mktemp -d)"
+( cd "$(dirname "$0")/.." && go build -o "$ARD/mint" ./scripts/f1/mint ) || bad "the token tool builds"
+printf 'password123\n' | $S user create rev-svc@foxbyte.dev >/dev/null 2>&1
+RK="$($S apikey create rev-svc@foxbyte.dev app 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+"$ARD/mint" keygen "$ARD" k1 >"$ARD/k1.pub"; "$ARD/mint" keygen "$ARD" k2 >"$ARD/k2.pub"
+for a in revapp adminapp; do $S app remove $a >/dev/null 2>&1; done
+$S app register revapp --account rev-svc@foxbyte.dev --key "$ARD/k1.pub" --kid k1 >/dev/null 2>&1
+$S app register adminapp --account test@foxbyte.dev --key "$ARD/k2.pub" --kid k2 >/dev/null 2>&1
+ARAUD="$($S app list --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["install_id"])')"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ar_f1_a, ar_f1_b" >/dev/null
+PGPASSWORD="$RK" psql "$GATEWAY/main?sslmode=require" -X -q >/dev/null 2>&1 <<SQL
+BEGIN;
+SELECT bb.act_for(\$1) \bind '$("$ARD/mint" token "$ARD/k1.seed" -kid k1 -iss revapp -aud "$ARAUD" -sub alice)' \g
+CREATE TABLE ar_f1_a (id int);
+CREATE TABLE ar_f1_b (id int);
+COMMIT;
+SQL
+ARJ="$($S access review --json 2>/dev/null)"
+arapp() { python3 -c "import sys,json; d=json.load(sys.stdin); a=[x for x in d['applications'] if x['name']=='$1'][0]; print($2)" <<<"$ARJ"; }
+assert_eq "the report lists each application with its account and keys" \
+  "$(arapp revapp "a['account'], [k['kid'] for k in a['keys']], a['keys'][0]['active']")" "rev-svc@foxbyte.dev ['k1'] True"
+assert_eq "…what each key asserted, on main" "$(arapp revapp "a['keys'][0]['records'].get('main', 0) >= 2, a['keys'][0]['lastAsserted'] is not None")" "True True"
+assert_eq "…and what a reviewer should question: an application on an install admin's account" \
+  "$(arapp adminapp "any('install admin' in f for f in a['findings'])")|$(arapp revapp "len(a['findings'])")" "True|0"
+assert_eq "the summary counts them" "$(python3 -c 'import sys,json; s=json.load(sys.stdin)["summary"]; print(s["applications"] >= 2, s["appsWithFindings"] >= 1)' <<<"$ARJ")" "True True"
+assert_eq "fox access review prints them, with the findings" \
+  "$($S access review | grep -c '^APPLICATIONS$')|$($S access review | grep -c '! adminapp: Its account is an install admin')" "1|1"
+assert_eq "…and as CSV, one row per key" \
+  "$($S access review --csv applications | head -1)|$($S access review --csv applications | grep -c '^revapp,rev-svc@foxbyte.dev,none,300,k1,')" \
+  "application,account,on_invalid,token_life_seconds,kid,key_created,key_age_days,active,revoked,compromised_since,records,sessions,last_asserted,findings|1"
+for a in revapp adminapp; do $S app remove $a >/dev/null 2>&1; done
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ar_f1_a, ar_f1_b" >/dev/null
+rm -rf "$ARD"
 
 echo "### 11t. listing backups starts no container while main runs"
 # A throwaway container on the bridge network creates and destroys a network

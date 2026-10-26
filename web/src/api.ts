@@ -803,18 +803,42 @@ export type ReviewKey = {
   why?: string
 }
 export type ReviewBranch = { name: string; state: string; owner: string; admins: string[] | null; asked: boolean }
+export type ReviewAppKey = {
+  kid: string
+  created: string
+  ageDays: number
+  active: boolean
+  revoked: string | null
+  compromisedSince: string | null
+  records: Record<string, number> | null
+  sessions: Record<string, number> | null
+  lastAsserted: string | null
+}
+export type ReviewApp = {
+  name: string
+  account: string
+  created: string
+  maxLifeSeconds: number
+  onInvalid: 'none' | 'refuse'
+  keys: ReviewAppKey[] | null
+  findings: string[] | null
+}
 export type AccessReview = {
   generated: string
   dormantDays: number
-  summary: { accounts: number; admins: number; dormant: number; keys: number; agentKeys: number; staleKeys: number; branches: number; unowned: number }
+  summary: {
+    accounts: number; admins: number; dormant: number; keys: number; agentKeys: number; staleKeys: number; branches: number; unowned: number
+    applications?: number; appsWithFindings?: number
+  }
   accounts: ReviewAccount[] | null
   keys: ReviewKey[] | null
   branches: ReviewBranch[] | null
+  applications?: ReviewApp[] | null
   limits: string[] | null
 }
 export const getAccessReview = (dormant: number) =>
   req('GET', `${API}/api/access-review?dormant=${dormant}`) as Promise<AccessReview>
-export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches') =>
+export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches' | 'applications') =>
   `${API}/api/access-review?dormant=${dormant}&format=csv&section=${section}`
 
 // Application identity (F1): the applications that may say which of their

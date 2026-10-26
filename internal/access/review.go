@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,10 @@ type Review struct {
 	Accounts    []ReviewAccount `json:"accounts"`
 	Keys        []ReviewKey     `json:"keys"`
 	Branches    []ReviewBranch  `json:"branches"`
+	// Applications are the applications that may say which of their users
+	// a transaction acts for (application identity, fox app), with their
+	// keys and what each has asserted.
+	Applications []ReviewApp `json:"applications"`
 	// Limits are what the report cannot claim, in sentences, as a
 	// personal-data scan's are.
 	Limits []string `json:"limits"`
@@ -53,6 +58,10 @@ type ReviewSummary struct {
 	StaleKeys int `json:"staleKeys"`
 	Branches  int `json:"branches"`
 	Unowned   int `json:"unowned"`
+	// Applications registered, and how many of them a reviewer should look
+	// at (they have findings).
+	Applications    int `json:"applications"`
+	AppsWithFinding int `json:"appsWithFindings"`
 }
 
 // ReviewAccount is one account and what it can reach.
@@ -110,6 +119,36 @@ type ReviewBranch struct {
 	Asked bool `json:"asked"`
 }
 
+// ReviewApp is one registered application: the account its tokens are
+// accepted from, its keys, and what a reviewer should question.
+type ReviewApp struct {
+	Name           string         `json:"name"`
+	Account        string         `json:"account"` // "" when the account is gone
+	Created        time.Time      `json:"created"`
+	MaxLifeSeconds int64          `json:"maxLifeSeconds"`
+	OnInvalid      string         `json:"onInvalid"`
+	Keys           []ReviewAppKey `json:"keys"`
+	// Findings are what a reviewer should question, each one sentence.
+	Findings []string `json:"findings"`
+}
+
+// ReviewAppKey is one of an application's keys, and what it asserted.
+type ReviewAppKey struct {
+	Kid              string     `json:"kid"`
+	Created          time.Time  `json:"created"`
+	AgeDays          int        `json:"ageDays"`
+	Active           bool       `json:"active"`
+	Revoked          *time.Time `json:"revoked"`
+	CompromisedSince *time.Time `json:"compromisedSince"`
+	// Records and Sessions are what it asserted, by running branch: Blackbox
+	// records, and agent sessions started for a user (Agent API act_for).
+	// A branch made from main holds main's records from before it was
+	// made, so two branches' counts can overlap.
+	Records      map[string]int `json:"records"`
+	Sessions     map[string]int `json:"sessions"`
+	LastAsserted *time.Time     `json:"lastAsserted"`
+}
+
 var reviewer func(store *auth.Store, o ReviewOptions) (Review, error)
 
 // SetReviewer installs the report. Called from enterprise/accessreview's init,
@@ -141,12 +180,13 @@ func ProduceReview(store *auth.Store, o ReviewOptions) (Review, error) {
 
 // LogLine is the security log's line for a report.
 func (r Review) LogLine() string {
-	return fmt.Sprintf("%d account(s), %d dormant after %d days; %d key(s), %d stale; %d branch(es), %d unowned",
-		r.Summary.Accounts, r.Summary.Dormant, r.DormantDays, r.Summary.Keys, r.Summary.StaleKeys, r.Summary.Branches, r.Summary.Unowned)
+	return fmt.Sprintf("%d account(s), %d dormant after %d days; %d key(s), %d stale; %d branch(es), %d unowned; %d application(s), %d with findings",
+		r.Summary.Accounts, r.Summary.Dormant, r.DormantDays, r.Summary.Keys, r.Summary.StaleKeys, r.Summary.Branches, r.Summary.Unowned,
+		r.Summary.Applications, r.Summary.AppsWithFinding)
 }
 
 // ReviewSections are the report's tables, each its own CSV.
-var ReviewSections = []string{"accounts", "keys", "branches"}
+var ReviewSections = []string{"accounts", "keys", "branches", "applications"}
 
 // CSV writes one section of the report. Each value goes through csvCell, so
 // a name a person chose cannot become a formula in a spreadsheet.
@@ -186,6 +226,23 @@ func (r Review) CSV(section string, w io.Writer) error {
 		for _, b := range r.Branches {
 			rows = append(rows, []string{b.Name, b.State, b.Owner, strings.Join(b.Admins, " "), yes(b.Asked)})
 		}
+	case "applications":
+		// One row per key, the application's columns repeated: what a
+		// spreadsheet filters and sorts best.
+		rows = append(rows, []string{"application", "account", "on_invalid", "token_life_seconds", "kid", "key_created",
+			"key_age_days", "active", "revoked", "compromised_since", "records", "sessions", "last_asserted", "findings"})
+		for _, a := range r.Applications {
+			if len(a.Keys) == 0 {
+				rows = append(rows, []string{a.Name, a.Account, a.OnInvalid, strconv.FormatInt(a.MaxLifeSeconds, 10),
+					"", "", "", "", "", "", "", "", "", strings.Join(a.Findings, " ")})
+			}
+			for _, k := range a.Keys {
+				rows = append(rows, []string{a.Name, a.Account, a.OnInvalid, strconv.FormatInt(a.MaxLifeSeconds, 10),
+					k.Kid, k.Created.UTC().Format(time.RFC3339), strconv.Itoa(k.AgeDays), yes(k.Active), when(k.Revoked),
+					when(k.CompromisedSince), countsCell(k.Records), countsCell(k.Sessions), when(k.LastAsserted),
+					strings.Join(a.Findings, " ")})
+			}
+		}
 	default:
 		return fmt.Errorf("%w: a section is %s, not %q", ErrBadReview, strings.Join(ReviewSections, ", "), section)
 	}
@@ -199,6 +256,19 @@ func (r Review) CSV(section string, w io.Writer) error {
 	}
 	cw.Flush()
 	return cw.Error()
+}
+
+// countsCell is "main:12 qa:3", branches in order, or "" for none.
+func countsCell(m map[string]int) string {
+	bs := make([]string, 0, len(m))
+	for b := range m {
+		bs = append(bs, b)
+	}
+	sort.Strings(bs)
+	for i, b := range bs {
+		bs[i] = b + ":" + strconv.Itoa(m[b])
+	}
+	return strings.Join(bs, " ")
 }
 
 // csvCell neutralises a value a spreadsheet would run as a formula: a key's

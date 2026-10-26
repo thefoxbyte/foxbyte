@@ -67,6 +67,37 @@ describe('Access review page', () => {
     expect(screen.getByRole('link', { name: 'Keys' }).getAttribute('href')).toMatch(/\/api\/access-review\?dormant=30&format=csv&section=keys$/)
   })
 
+  it('shows the applications, each key with what it asserted by branch, and what to look at', async () => {
+    vi.mocked(getAccessReview).mockResolvedValue({
+      ...report,
+      summary: { ...report.summary, applications: 2, appsWithFindings: 1 },
+      applications: [
+        { name: 'shop', account: 'shop-svc@example.com', created: '2026-01-01T00:00:00Z', maxLifeSeconds: 300, onInvalid: 'none', findings: ['Key k-now is 120 days old: rotate it.'],
+          keys: [
+            { kid: 'k-now', created: '2026-06-01T00:00:00Z', ageDays: 120, active: true, revoked: null, compromisedSince: null,
+              records: { qa: 15, main: 12 }, sessions: { main: 1 }, lastAsserted: '2026-10-21T00:00:00Z' },
+            { kid: 'k-old', created: '2026-05-01T00:00:00Z', ageDays: 150, active: false, revoked: '2026-10-17T00:00:00Z', compromisedSince: '2026-10-02T00:00:00Z',
+              records: { main: 3 }, sessions: null, lastAsserted: null },
+          ] },
+        { name: 'orphan', account: '', created: '2026-10-01T00:00:00Z', maxLifeSeconds: 300, onInvalid: 'none', findings: [], keys: [] },
+      ],
+    })
+    page()
+    const apps = await screen.findByRole('table', { name: 'Applications' })
+    expect(apps.textContent).toMatch(/shop.*shop-svc@example\.com.*k-now.*120d.*active.*main 12, qa 15.*main 1/)
+    expect(apps.textContent).toMatch(/k-old.*revoked.*reported compromised.*main 3/)
+    expect(apps.textContent).toMatch(/orphan.*\(account gone\).*no key/)
+    expect(screen.getByRole('list', { name: 'Application findings' }).textContent).toContain('shop: Key k-now is 120 days old')
+    expect(screen.getByRole('link', { name: 'Applications' }).getAttribute('href')).toMatch(/section=applications$/)
+  })
+
+  it('says so when no application is registered', async () => {
+    page()
+    await screen.findByRole('table', { name: 'Accounts' })
+    expect(screen.getByText('No application is registered.')).toBeTruthy()
+    expect(screen.queryByRole('table', { name: 'Applications' })).toBeNull()
+  })
+
   it('refuses a window outside 1 to 3,650 days without asking', async () => {
     page()
     await screen.findByRole('table', { name: 'Accounts' })

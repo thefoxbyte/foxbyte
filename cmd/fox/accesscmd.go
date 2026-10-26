@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -19,14 +20,14 @@ import (
 
 // accessCmd is `fox access` (point 4.8).
 //
-//	fox access review [--dormant 90] [--json] [--csv accounts|keys|branches]
+//	fox access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
 //
 // The access review report: every account, what it can reach and with which
-// credentials, who may override the guardrails where, and who has gone quiet.
-// At this machine the operator is an admin already, as for `fox user list`.
+// credentials, who may override the guardrails where, who has gone quiet, and
+// the applications that may say whom a change was for. At this machine the operator is an admin already, as for `fox user list`.
 func accessCmd(args []string) {
 	if len(args) == 0 || args[0] != "review" {
-		fmt.Fprintf(os.Stderr, "usage: %s access review [--dormant 90] [--json] [--csv accounts|keys|branches]\n", brand.CLI)
+		fmt.Fprintf(os.Stderr, "usage: %s access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]\n", brand.CLI)
 		os.Exit(2)
 	}
 	requireFeature(edition.AccessReview)
@@ -81,8 +82,8 @@ func printReview(w io.Writer, r access.Review) {
 	}
 	sm := r.Summary
 	fmt.Fprintf(w, "Access review, %s (dormant after %d days)\n", r.Generated.Local().Format("2 Jan 2006 15:04"), r.DormantDays)
-	fmt.Fprintf(w, "  %d account(s): %d admin, %d dormant · %d key(s): %d agent, %d stale · %d branch(es): %d unowned\n",
-		sm.Accounts, sm.Admins, sm.Dormant, sm.Keys, sm.AgentKeys, sm.StaleKeys, sm.Branches, sm.Unowned)
+	fmt.Fprintf(w, "  %d account(s): %d admin, %d dormant · %d key(s): %d agent, %d stale · %d branch(es): %d unowned · %d application(s): %d to look at\n",
+		sm.Accounts, sm.Admins, sm.Dormant, sm.Keys, sm.AgentKeys, sm.StaleKeys, sm.Branches, sm.Unowned, sm.Applications, sm.AppsWithFinding)
 
 	fmt.Fprintln(w, "\nACCOUNTS")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -124,9 +125,60 @@ func printReview(w io.Writer, r access.Review) {
 	}
 	tw.Flush()
 
+	printReviewApps(w, r.Applications, day)
+
 	fmt.Fprintln(w, "\nWhat this report cannot claim:")
 	for _, l := range r.Limits {
 		fmt.Fprintf(w, "  - %s\n", l)
 	}
 	fmt.Fprintf(w, "\nThe tables as CSV: %s access review --csv accounts|keys|branches\n", brand.CLI)
+}
+
+// printReviewApps is the report's Applications table: one line per key, then
+// what a reviewer should question about the application.
+func printReviewApps(w io.Writer, apps []access.ReviewApp, day func(*time.Time) string) {
+	fmt.Fprintln(w, "\nAPPLICATIONS")
+	if len(apps) == 0 {
+		fmt.Fprintf(w, "  none registered (%s app register)\n", brand.CLI)
+		return
+	}
+	counts := func(m map[string]int) string {
+		if len(m) == 0 {
+			return "-"
+		}
+		bs := make([]string, 0, len(m))
+		for b, n := range m {
+			bs = append(bs, fmt.Sprintf("%s %d", b, n))
+		}
+		sort.Strings(bs)
+		return strings.Join(bs, ", ")
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "APPLICATION\tACCOUNT\tKEY\tAGE\tSTATE\tRECORDS\tSESSIONS\tLAST ASSERTED")
+	for _, a := range apps {
+		acct := a.Account
+		if acct == "" {
+			acct = "(gone)"
+		}
+		if len(a.Keys) == 0 {
+			fmt.Fprintf(tw, "%s\t%s\t-\t\t\t\t\t\n", a.Name, acct)
+		}
+		for _, k := range a.Keys {
+			state := "active"
+			if !k.Active {
+				state = "revoked " + day(k.Revoked)
+			}
+			if k.CompromisedSince != nil {
+				state += ", compromised"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%dd\t%s\t%s\t%s\t%s\n", a.Name, acct, k.Kid, k.AgeDays, state,
+				counts(k.Records), counts(k.Sessions), day(k.LastAsserted))
+		}
+	}
+	tw.Flush()
+	for _, a := range apps {
+		for _, f := range a.Findings {
+			fmt.Fprintf(w, "  ! %s: %s\n", a.Name, f)
+		}
+	}
 }

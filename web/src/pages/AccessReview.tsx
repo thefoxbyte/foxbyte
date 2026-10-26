@@ -8,6 +8,10 @@ import { useFeatures, why } from '../features'
 // and Enterprise. The tables download as CSV; the page prints, for a PDF.
 
 const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : 'never')
+const counts = (m: Record<string, number> | null) => {
+  const e = Object.entries(m ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  return e.length ? e.map(([b, n]) => `${b} ${n}`).join(', ') : '–'
+}
 
 export default function AccessReview() {
   const [dormant, setDormant] = useState('90')
@@ -45,7 +49,8 @@ export default function AccessReview() {
     <div className="fade-up access-review">
       <h1>Access review</h1>
       <p className="lead" style={{ marginTop: -2 }}>
-        Every account, what it can reach and with which keys, who may override the guardrails, and who has gone quiet.
+        Every account, what it can reach and with which keys, who may override the guardrails, who has gone quiet, and
+        the applications that say whom a change was made for.
       </p>
 
       {edition && !licensed && (
@@ -61,7 +66,7 @@ export default function AccessReview() {
           {report && (
             <>
               <span className="muted" style={{ fontSize: 13, marginLeft: 8 }}>CSV:</span>
-              {(['accounts', 'keys', 'branches'] as const).map(sec => (
+              {(['accounts', 'keys', 'branches', 'applications'] as const).map(sec => (
                 <a key={sec} className="btn ghost" href={accessReviewCsvUrl(days, sec)} download>{sec[0].toUpperCase() + sec.slice(1)}</a>
               ))}
               <button className="ghost" onClick={() => window.print()}>Print or save as PDF</button>
@@ -81,6 +86,7 @@ export default function AccessReview() {
             {stat('Accounts', s.accounts)}{stat('Admins', s.admins)}{stat('Dormant', s.dormant)}
             {stat('Keys', s.keys)}{stat('Agent keys', s.agentKeys)}{stat('Stale keys', s.staleKeys)}
             {stat('Branches', s.branches)}{stat('Unowned', s.unowned)}
+            {stat('Applications', s.applications ?? 0)}{stat('To look at', s.appsWithFindings ?? 0)}
           </div>
 
           <h2 style={{ marginTop: 22 }}>Accounts</h2>
@@ -140,6 +146,48 @@ export default function AccessReview() {
               </tbody>
             </table>
           </div>
+
+          <h2 style={{ marginTop: 22 }}>Applications</h2>
+          <p className="muted" style={{ marginTop: -4 }}>
+            Applications that say which of their users a transaction acts for, with a key only they hold. What each key
+            asserted is counted on running branches: Blackbox records, and agent sessions started for a user.
+          </p>
+          {(report.applications ?? []).length === 0 ? <p className="muted">No application is registered.</p> : (
+            <>
+              <div className="table-wrap">
+                <table aria-label="Applications">
+                  <thead><tr><th>Application</th><th>Account</th><th>Key</th><th className="num">Age</th><th>State</th><th>Records</th><th>Sessions</th><th>Last asserted</th></tr></thead>
+                  <tbody>
+                    {report.applications!.flatMap(a => {
+                      const keys = a.keys ?? []
+                      const acct = a.account || <span className="muted">(account gone)</span>
+                      if (keys.length === 0) {
+                        return [<tr key={a.name}><td>{a.name}</td><td>{acct}</td><td className="muted">no key</td><td /><td /><td /><td /><td /></tr>]
+                      }
+                      return keys.map(k => (
+                        <tr key={a.name + '/' + k.kid}>
+                          <td>{a.name}</td>
+                          <td>{acct}</td>
+                          <td><code>{k.kid}</code></td>
+                          <td className="num">{k.ageDays}d</td>
+                          <td>{k.active ? 'active' : <span className="badge">revoked {day(k.revoked)}</span>}
+                            {k.compromisedSince && <> <span className="badge">reported compromised</span></>}</td>
+                          <td>{counts(k.records)}</td>
+                          <td>{counts(k.sessions)}</td>
+                          <td>{day(k.lastAsserted)}</td>
+                        </tr>
+                      ))
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {report.applications!.some(a => (a.findings ?? []).length > 0) && (
+                <ul className="ar-findings" aria-label="Application findings">
+                  {report.applications!.flatMap(a => (a.findings ?? []).map(f => <li key={a.name + f}><b>{a.name}</b>: {f}</li>))}
+                </ul>
+              )}
+            </>
+          )}
 
           <div className="panel" style={{ marginTop: 14 }}>
             <h3 style={{ marginTop: 0 }}>What this report cannot claim</h3>

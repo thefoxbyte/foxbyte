@@ -5,7 +5,8 @@ is built and its suite passes (#176); what it found is in section 13. Gate 1's
 first step, the check in C with its cache, is in section 14 (#177). The second,
 applications asserting their user in the product, is in section 15 (#180). The
 third, row tracking's `last_modified_for` (point 5.2), is in section 16 (#181),
-and 3b, an agent session's whom-for, in section 17. Written against
+3b, an agent session's whom-for, in section 17 (#182), and 4, the access review's
+Applications table, in section 18. Written against
 `main` at `d93492c`. It answers Gate 0's F1 item in the review plan
 (`docs/FOX_Expert_Review_Plan.md`, sections 4 and 5): the token protocol written
 down, the signature-checking choice made, and the prototype and its tests
@@ -648,3 +649,41 @@ to be presented to the engine and checked there.
 
 **Not covered:** MCP sessions. The MCP server is started by whoever runs it,
 with no application in between, so there is nobody to assert.
+
+---
+
+## 18. Gate 1, step 4: the access review's Applications table
+
+Section 8 asked the access review (point 4.8) for "an Applications table: each
+registration, its role, keys and their age, revocations, and how many records
+were asserted under each key". Built as the report's fourth table, in the
+Enterprise edition with the rest of the report (`feat/f1-review-apps`).
+
+**What it lists:**
+
+- Each application: the account its tokens are accepted from, its token life,
+  and what an invalid token does.
+- Each key:
+  - its age;
+  - whether it is active;
+  - when it was revoked, and whether it was reported compromised;
+  - what it asserted, by running branch: Blackbox records and agent sessions
+    (section 17);
+  - when it last asserted.
+
+**Counts and overlap.** A branch made from main holds main's records from
+before it was made. The counts are per branch and are not summed, and the
+report says why. Rows whose `last_modified_for` names an application are not
+counted: reading every tracked table is not a report's job.
+
+**The findings it raises** are the questions section 10's threat model leaves
+to a person:
+
+- an application whose account signs in to the console, which is likely a
+  person's account, and that person could assert any user;
+- an account that is an install admin;
+- an account that no longer exists;
+- no active key;
+- a key older than the review window, which should be rotated, or one that
+  asserted nothing in that time;
+- a key reported compromised.

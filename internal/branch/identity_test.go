@@ -57,3 +57,16 @@ func TestIdentityBranch(t *testing.T) {
 		}
 	}
 }
+
+func TestParseAsserted(t *testing.T) {
+	m := parseAsserted("shop|k1|12|2|1792659600\nshop|k0|0|1|1792600000\n\nmalformed|line\n")
+	if a := m[[2]string{"shop", "k1"}]; a.Records != 12 || a.Sessions != 2 || a.Last.Unix() != 1792659600 {
+		t.Errorf("shop k1: %+v", a)
+	}
+	if a := m[[2]string{"shop", "k0"}]; a.Records != 0 || a.Sessions != 1 {
+		t.Errorf("shop k0: %+v", a)
+	}
+	if len(m) != 2 {
+		t.Errorf("a malformed line was read: %v", m)
+	}
+}
