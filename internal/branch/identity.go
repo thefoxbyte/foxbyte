@@ -5,6 +5,7 @@ package branch
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -253,4 +254,64 @@ func compromisedNow() []CompromisedKey {
 		return nil
 	}
 	return CompromisedKeys(st.apps)
+}
+
+// Asserted is what one application key asserted on a branch: Blackbox records
+// and agent sessions, and when it last did.
+type Asserted struct {
+	Records  int
+	Sessions int
+	Last     time.Time
+}
+
+// assertedSQL counts what each key asserted, from the Blackbox's capture rows
+// and the agent sessions. One row per key, as issuer|kid|records|sessions|last
+// (Unix seconds). Each half only where its table has the columns, so a branch
+// whose Blackbox predates application identity counts nothing rather than
+// failing.
+const assertedSQL = `
+WITH r AS (
+  SELECT x.app_issuer AS issuer, x.app_kid AS kid, count(*) AS n, max(x.captured_at) AS last
+    FROM bb.ledger_ext x WHERE x.app_state = 'asserted' GROUP BY 1, 2
+), s AS (
+  SELECT y.app_issuer AS issuer, y.app_kid AS kid, count(*) AS n, max(y.started_at) AS last
+    FROM bb.agent_sessions y WHERE y.app_state = 'asserted' GROUP BY 1, 2
+)
+SELECT coalesce(r.issuer, s.issuer) || '|' || coalesce(r.kid, s.kid) || '|' || coalesce(r.n, 0) || '|' || coalesce(s.n, 0)
+       || '|' || floor(extract(epoch FROM greatest(r.last, s.last)))::bigint
+  FROM r FULL JOIN s ON s.issuer = r.issuer AND s.kid = r.kid`
+
+// AssertedCounts reads, for one running branch, what each application key
+// asserted, keyed issuer and kid. ok is false when the branch's Blackbox
+// predates application identity, so nothing could be counted there.
+func AssertedCounts(name string) (counts map[[2]string]Asserted, ok bool, err error) {
+	have, err := Query(name, `SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'bb' AND column_name = 'app_state' AND table_name IN ('ledger_ext', 'agent_sessions')`)
+	if err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(have) != "2" {
+		return map[[2]string]Asserted{}, false, nil
+	}
+	out, err := Query(name, assertedSQL)
+	if err != nil {
+		return nil, false, err
+	}
+	return parseAsserted(out), true, nil
+}
+
+// parseAsserted reads assertedSQL's lines. Pure, so it is tested.
+func parseAsserted(out string) map[[2]string]Asserted {
+	m := map[[2]string]Asserted{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.Split(line, "|")
+		if len(f) != 5 {
+			continue
+		}
+		recs, _ := strconv.Atoi(f[2])
+		sess, _ := strconv.Atoi(f[3])
+		last, _ := strconv.ParseInt(f[4], 10, 64)
+		m[[2]string{f[0], f[1]}] = Asserted{Records: recs, Sessions: sess, Last: time.Unix(last, 0).UTC()}
+	}
+	return m
 }

@@ -101,9 +101,9 @@ Stack:
                        What scans have found on a branch; --state suggested is the review queue
   pii show <id> | samples <id> [--n 5] | mark <id> confirm|reject|reopen [--note "…"]
                        One finding and its decisions; masked samples to decide by; decide (Enterprise)
-  access review [--dormant 90] [--json] [--csv accounts|keys|branches]
+  access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
-                       and who has gone quiet (Enterprise)
+                       who has gone quiet, and the applications that assert their users (Enterprise)
   pii unclassified | accept <column-id> [--note "…"]
                        What appeared since a branch's first scan, not reviewed; accept one as holding nothing
   app [list|show <name>] [--json]

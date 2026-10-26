@@ -1952,7 +1952,7 @@ paths:
       parameters:
         - { name: dormant, in: query, schema: { type: integer, minimum: 1, maximum: 3650, default: 90 }, description: "Days without activity that make an account dormant and a key stale." }
         - { name: format, in: query, schema: { type: string, enum: [json, csv], default: json } }
-        - { name: section, in: query, schema: { type: string, enum: [accounts, keys, branches], default: accounts }, description: "The table, for CSV." }
+        - { name: section, in: query, schema: { type: string, enum: [accounts, keys, branches, applications], default: accounts }, description: "The table, for CSV. applications is one row per key." }
       responses:
         "200":
           description: The report.
@@ -2514,6 +2514,8 @@ components:
             staleKeys: { type: integer }
             branches: { type: integer }
             unowned: { type: integer }
+            applications: { type: integer }
+            appsWithFindings: { type: integer }
         accounts:
           type: array
           items:
@@ -2560,6 +2562,36 @@ components:
               owner: { type: string }
               admins: { type: array, items: { type: string } }
               asked: { type: boolean }
+        applications:
+          type: array
+          description: >-
+            The applications that may say whom a change was made for (fox app), each with its keys,
+            what each key asserted on running branches (Blackbox records and agent sessions; a branch
+            made from main holds main's records from before it was made, so counts can overlap), and
+            findings a reviewer should question.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              account: { type: string, description: Empty when the account no longer exists. }
+              created: { type: string, format: date-time }
+              maxLifeSeconds: { type: integer }
+              onInvalid: { type: string, enum: [none, refuse] }
+              findings: { type: array, items: { type: string } }
+              keys:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    kid: { type: string }
+                    created: { type: string, format: date-time }
+                    ageDays: { type: integer }
+                    active: { type: boolean }
+                    revoked: { type: string, format: date-time, nullable: true }
+                    compromisedSince: { type: string, format: date-time, nullable: true }
+                    records: { type: object, additionalProperties: { type: integer }, description: By running branch. }
+                    sessions: { type: object, additionalProperties: { type: integer }, description: By running branch. }
+                    lastAsserted: { type: string, format: date-time, nullable: true }
         limits: { type: array, items: { type: string } }
     PersonalDataColumn:
       type: object

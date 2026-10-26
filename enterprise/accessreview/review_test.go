@@ -173,3 +173,103 @@ func TestCSV(t *testing.T) {
 		t.Fatal("an unknown section is refused")
 	}
 }
+
+// The Applications table (F1): each registration with its keys and what each
+// asserted, and the findings a reviewer should question.
+func TestApplications(t *testing.T) {
+	in := fixture()
+	rev, comp := daysAgo(5).Unix(), daysAgo(20).Unix()
+	in.accounts = append(in.accounts, auth.Account{ID: 5, Email: "shop-svc@example.com", Created: daysAgo(200).Unix()})
+	in.apps = []auth.App{
+		{Name: "shop", Account: "shop-svc@example.com", Created: daysAgo(200).Unix(), MaxLife: 300, OnInvalid: "none", Keys: []auth.AppKey{
+			{Kid: "k-old", Created: daysAgo(150).Unix(), Revoked: &rev, CompromisedSince: &comp},
+			{Kid: "k-now", Created: daysAgo(120).Unix()},
+		}},
+		{Name: "idle", Account: "shop-svc@example.com", Created: daysAgo(10).Unix(), MaxLife: 60, OnInvalid: "refuse", Keys: []auth.AppKey{
+			{Kid: "k1", Created: daysAgo(100).Unix()},
+		}},
+		{Name: "personal", Account: "dev@example.com", Created: daysAgo(5).Unix(), MaxLife: 300, OnInvalid: "none"},
+		{Name: "admins", Account: "admin@example.com", Created: daysAgo(5).Unix(), MaxLife: 300, OnInvalid: "none", Keys: []auth.AppKey{
+			{Kid: "k1", Created: daysAgo(5).Unix()},
+		}},
+		{Name: "orphan", Account: "", Created: daysAgo(5).Unix(), MaxLife: 300, OnInvalid: "none"},
+	}
+	in.asserted = map[string]map[[2]string]branch.Asserted{
+		"main": {{"shop", "k-now"}: {Records: 12, Sessions: 1, Last: daysAgo(1)}, {"shop", "k-old"}: {Records: 3, Last: daysAgo(30)}},
+		"qa":   {{"shop", "k-now"}: {Records: 15, Last: daysAgo(2)}},
+	}
+	r := build(in, 90, now)
+	app := func(name string) access.ReviewApp {
+		for _, a := range r.Applications {
+			if a.Name == name {
+				return a
+			}
+		}
+		t.Fatalf("no application %q in %+v", name, r.Applications)
+		return access.ReviewApp{}
+	}
+	has := func(a access.ReviewApp, want string) bool {
+		for _, f := range a.Findings {
+			if strings.Contains(f, want) {
+				return true
+			}
+		}
+		return false
+	}
+
+	shop := app("shop")
+	if len(shop.Keys) != 2 || shop.Account != "shop-svc@example.com" {
+		t.Fatalf("shop: %+v", shop)
+	}
+	now1 := shop.Keys[1]
+	if now1.Kid != "k-now" || !now1.Active || now1.AgeDays != 120 ||
+		!reflect.DeepEqual(now1.Records, map[string]int{"main": 12, "qa": 15}) || !reflect.DeepEqual(now1.Sessions, map[string]int{"main": 1}) ||
+		now1.LastAsserted == nil || !now1.LastAsserted.Equal(daysAgo(1)) {
+		t.Errorf("an active key and what it asserted, by branch: %+v", now1)
+	}
+	old := shop.Keys[0]
+	if old.Active || old.Revoked == nil || old.CompromisedSince == nil || old.Records["main"] != 3 {
+		t.Errorf("a revoked, compromised key: %+v", old)
+	}
+	if !has(shop, "Key k-now is 120 days old: rotate it") || !has(shop, "Key k-old was reported compromised") {
+		t.Errorf("shop's findings: %v", shop.Findings)
+	}
+	if has(shop, "signs in") || has(shop, "install admin") || has(shop, "no active key") {
+		t.Errorf("shop's account is its own, not an admin, and has a key: %v", shop.Findings)
+	}
+	if !has(app("idle"), "Key k1 has asserted nothing on a running branch in its 100 days") {
+		t.Errorf("an old key that asserted nothing: %v", app("idle").Findings)
+	}
+	if p := app("personal"); !has(p, "signs in to the console") || !has(p, "no active key") {
+		t.Errorf("a person's account, no key: %v", p.Findings)
+	}
+	if !has(app("admins"), "install admin") {
+		t.Errorf("an admin's account: %v", app("admins").Findings)
+	}
+	if o := app("orphan"); !has(o, "no longer exists") || has(o, "no active key") {
+		t.Errorf("an account gone is said once, as that: %v", o.Findings)
+	}
+	if r.Summary.Applications != 5 || r.Summary.AppsWithFinding != 5 {
+		t.Errorf("summary: %+v", r.Summary)
+	}
+
+	var b bytes.Buffer
+	if err := r.CSV("applications", &b); err != nil {
+		t.Fatal(err)
+	}
+	csv := b.String()
+	for _, want := range []string{"application,account,on_invalid,token_life_seconds,kid",
+		"shop,shop-svc@example.com,none,300,k-now,", ",main:12 qa:15,main:1,", "personal,dev@example.com,none,300,,,,,,,,,,"} {
+		if !strings.Contains(csv, want) {
+			t.Errorf("the CSV should contain %q:\n%s", want, csv)
+		}
+	}
+}
+
+// No application registered: an empty table, never null.
+func TestApplicationsEmpty(t *testing.T) {
+	r := build(fixture(), 90, now)
+	if r.Applications == nil || len(r.Applications) != 0 || r.Summary.Applications != 0 {
+		t.Errorf("no applications: %+v", r.Applications)
+	}
+}

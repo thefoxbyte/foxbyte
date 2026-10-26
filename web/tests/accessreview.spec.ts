@@ -47,3 +47,25 @@ test('the access review lists accounts, keys and branches, follows a new window,
   expect(csv.headers()['content-type']).toContain('text/csv')
   expect((await csv.text()).split('\n')[0]).toBe('id,name,prefix,owner,kind,identity,reach,created,last_used,age_days,stale,why')
 })
+
+// The Applications table (F1): integration_ui.sh registered uishop for this
+// account and asserted alice in a change on the suite's branch, so the report
+// shows the key, what it asserted there, and why a reviewer should look: the
+// account signs in here and is an install admin, which an application's
+// account should be neither.
+test('the access review lists the applications, what each key asserted, and what to question', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Access review' }).click()
+  const apps = page.getByRole('table', { name: 'Applications' })
+  const row = apps.locator('tr', { hasText: 'uishop' })
+  await expect(row).toContainText(email, { timeout: 30_000 })
+  await expect(row).toContainText('ui')
+  await expect(row).toContainText('active')
+  await expect(row).toContainText(branch)
+  const findings = page.getByRole('list', { name: 'Application findings' })
+  await expect(findings).toContainText('uishop: Its account signs in to the console')
+  await expect(findings).toContainText('install admin')
+  // The sidebar has an Applications link too: the CSV one is the report's.
+  const csv = page.locator('.access-review a.btn', { hasText: 'Applications' })
+  await expect(csv).toHaveAttribute('href', /section=applications$/)
+})
