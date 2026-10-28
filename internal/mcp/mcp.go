@@ -403,10 +403,11 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		if strings.TrimSpace(a.SQL) == "" {
 			return "", fmt.Errorf("sql is required")
 		}
-		// Run as the non-superuser agent role (db_agent, or db_client on a branch
-		// whose Blackbox predates it), so an agent's SQL is subject to the
+		// Run as the account's agent role (agent:<email>, or an agent branch's
+		// own role), never a superuser, so an agent's SQL is subject to the
 		// guardrails and the ledger's append-only protection like any other
-		// client's, and is an agent's by login.
+		// client's, and is that agent's by login: nothing it sets changes the
+		// name on the record (branch/engineagent.go).
 		if branch.MCPSuperuser() {
 			return branch.QueryText(a.Branch, a.SQL)
 		}
@@ -467,7 +468,7 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		os.Stdout = os.Stderr
 		res, err := branch.ExecuteChange(branch.ExecuteChangeRequest{
 			Branch: a.Branch, SQL: a.SQL, TaskID: a.TaskID, ParentSessionID: a.ParentSessionID, DryRun: a.DryRun,
-			SessionID: sid, AgentID: clientName, Tool: "mcp",
+			SessionID: sid, AgentID: clientName, Account: me.Actor, Tool: "mcp",
 		})
 		os.Stdout = stdout
 		if err != nil {

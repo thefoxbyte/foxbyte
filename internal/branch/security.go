@@ -78,19 +78,18 @@ func ClientQueryTextAs(branchName, sql, tool, actor string) (string, error) {
 	if actor == "" {
 		actor = tool
 	}
+	// As the agent's own role where there is one, so the Blackbox reads the
+	// agent from session_user and the SQL it runs cannot say otherwise
+	// (engineagent.go). The name travels as a setting only on a branch whose
+	// Blackbox predates agent roles, or as a claim when the role could not be
+	// had.
+	login := engineAgentLogin(branchName, actor)
 	args := []string{"docker", "exec", "-e", "PGAPPNAME=" + tool}
-	if !strings.HasPrefix(branchName, "agent-") {
-		// An agent branch carries its actor and session as database defaults
-		// (sessionDefaultsSQL), so injecting here would override them.
-		args = append(args, "-e", fmt.Sprintf("PGOPTIONS=-c bb.actor=%s -c bb.actor_kind=agent", actor))
+	if opts := engineSessionOptions(login, branchName, actor); opts != "" {
+		args = append(args, "-e", "PGOPTIONS="+opts)
 	}
-	// As db_agent where the branch's Blackbox knows it, so the session is an
-	// agent by login and the SQL it runs cannot say otherwise (agentrole.go).
-	// The injected kind above stays for a branch that does not, which logs in
-	// as db_client exactly as before.
-	role, _ := agentLoginRole(branchName)
 	args = append(args, container(branchName),
-		"psql", "-U", role, "-d", pgDatabase, "-P", "pager=off", "-c", sql)
+		"psql", "-U", login.role, "-d", pgDatabase, "-P", "pager=off", "-c", sql)
 	out, err := captureCombined(args[0], args[1:]...)
 	if err != nil {
 		return out, fmt.Errorf("%s", out)

@@ -5,8 +5,8 @@ is built and its suite passes (#176); what it found is in section 13. Gate 1's
 first step, the check in C with its cache, is in section 14 (#177). The second,
 applications asserting their user in the product, is in section 15 (#180). The
 third, row tracking's `last_modified_for` (point 5.2), is in section 16 (#181),
-3b, an agent session's whom-for, in section 17 (#182), and 4, the access review's
-Applications table, in section 18. Written against
+3b, an agent session's whom-for, in section 17 (#182), 4, the access review's
+Applications table, in section 18 (#184), and 5, G1's remainder, in section 19. Written against
 `main` at `d93492c`. It answers Gate 0's F1 item in the review plan
 (`docs/FOX_Expert_Review_Plan.md`, sections 4 and 5): the token protocol written
 down, the signature-checking choice made, and the prototype and its tests
@@ -687,3 +687,45 @@ to a person:
 - a key older than the review window, which should be rotated, or one that
   asserted nothing in that time;
 - a key reported compromised.
+
+---
+
+## 19. Gate 1, step 5: G1's remainder, as built
+
+Section 9 planned a role per engine agent session, `agent-session:<agent id>`.
+The engine already had the role it needed: `agent:<email>`.
+
+- An agent key has logged in through the Gateway as `agent:<email>` since #144.
+- It is a member of `db_client` and `db_agent`, and never of `db_admin`.
+- Its password is derived.
+- It already stands for "an agent acting with this account's access".
+
+MCP is started with an account's key, so its sessions are exactly that. A role
+named for the MCP client's self-given name would have been named by the client.
+
+**What changed** (`feat/f1-g1-roles`):
+
+- **MCP `run_sql` and `execute_change`** log in as the key's account's agent
+  role, and on an agent's own branch as that branch's role, as before.
+  - The Blackbox reads the agent from `session_user`.
+  - `SET bb.actor = 'mallory'` in the agent's SQL no longer changes the name on
+    the record. Before this, it did.
+  - The row budget is keyed on the login, and shared with the same account's
+    agent key.
+  - `execute_change` records the role, not the client's name. The client's name
+    stays on the session (`agent_sessions.agent_id`), which is what a client
+    may only say.
+- **Fallbacks:**
+  - a branch whose Blackbox predates agent roles keeps the old path until
+    `fox ledger upgrade`;
+  - a role that cannot be made leaves the name as a claim (`bb.claimed_actor`),
+    never as the actor.
+- **The console** refuses, with the reason, instead of running a signed-in
+  user's SQL as the shared role.
+
+**What still names an actor by setting:**
+
+- the engine's own superuser changes (policy, tracking, pipelines), as section
+  9 said;
+- `fox sql` run by whoever administers the machine, who is labelled `cli:<user>`
+  and is root-equivalent there.
