@@ -74,6 +74,7 @@ func checks() []check {
 		one("licence", checkLicense),
 		one("web console", checkConsoleEmbedded),
 		one("storage", checkStorage),
+		group("storage health", checkPoolAndDisk),
 		one("main", checkMain),
 		group("servers", checkServers),
 		group("ports", checkPorts),
@@ -334,6 +335,130 @@ func checkStorage() checkLine {
 		return fail("storage", "no branch storage pool found", fmt.Sprintf("%s setup", brand.CLI))
 	}
 	return ok("storage", fmt.Sprintf("%s used, %s free", s.Used, s.Avail))
+}
+
+// The pool's health and the disk under it, which the storage line does not
+// cover: a pool in a sparse file counts its whole size as free however full the
+// disk holding that file is, and a full disk is how a pool gets suspended, after
+// which everything on it hangs (internal/branch/poolhealth.go).
+func checkPoolAndDisk() []checkLine {
+	d := probeBudget(checkTimeout())
+	h := branch.PoolHealthProbe(d)
+	disks, err := branch.DiskSpaceProbe(d, h)
+	return append([]checkLine{poolHealthLine(h, disks)}, diskLines(disks, h, err)...)
+}
+
+// Free space below these is a warning, and below the second pair a failure:
+// whichever of the share and the absolute amount says so first. Both, because a
+// share alone is too eager on a large disk and an amount alone is too late on a
+// small one.
+const (
+	diskWarnPercent, diskFailPercent = 10, 3
+	diskWarnBytes, diskFailBytes     = 5 << 30, 2 << 30
+)
+
+func diskState(d branch.DiskSpace) int {
+	switch {
+	case d.Avail < diskFailBytes || d.Avail*100 < d.Size*diskFailPercent:
+		return stateFail
+	case d.Avail < diskWarnBytes || d.Avail*100 < d.Size*diskWarnPercent:
+		return stateWarn
+	}
+	return stateOK
+}
+
+func holdsPool(d branch.DiskSpace) bool {
+	for _, h := range d.Holds {
+		if h == branch.HoldsPool {
+			return true
+		}
+	}
+	return false
+}
+
+// diskFix names the safe cleanups: the anonymous volumes and dangling images
+// nothing uses, and branches. Never `prune -a`, which would also take the object
+// store's volume, holding every backup, whenever it is stopped.
+const diskFix = "docker volume prune   and   docker image prune   (unused anonymous volumes and dangling images only; never -a), " +
+	"and delete branches you no longer need"
+
+func poolHealthLine(h branch.PoolHealth, disks []branch.DiskSpace) checkLine {
+	const name = "pool health"
+	if h.Missing {
+		return warn(name, "there is no storage pool to check (see the storage line)", "")
+	}
+	if h.State == "" {
+		return warn(name, "could not be read: "+h.Err, "")
+	}
+	clearCmd := "sudo zpool clear " + branch.Pool
+	full := ""
+	for _, d := range disks {
+		if holdsPool(d) && diskState(d) == stateFail {
+			full = d.Mount
+		}
+	}
+	switch h.State {
+	case "ONLINE", "mounted":
+		return ok(name, fmt.Sprintf("%s (%s)", h.State, h.Driver))
+	case "DEGRADED":
+		return warn(name, "DEGRADED: a device in the pool has errors, though its data is still served",
+			"sudo zpool status -v "+branch.Pool)
+	case "SUSPENDED":
+		fix := clearCmd + "   then   sudo zpool status -v " + branch.Pool + "   (it lists any file a failed write damaged)"
+		if full != "" {
+			fix = "free space on " + full + " first (" + diskFix + "), then: " + fix
+		}
+		return fail(name, "SUSPENDED after failed writes: every write to the pool waits, so main and every branch hang until it is cleared", fix)
+	case "read-only":
+		fix := "sudo dmesg | grep -i btrfs   (for why), then restart the machine"
+		if full != "" {
+			fix = "free space on " + full + " (" + diskFix + "), then: " + fix
+		}
+		return fail(name, "mounted read-only: btrfs does that after a failed write, and every write to a database now fails", fix)
+	case "not mounted":
+		return fail(name, "the btrfs image is not mounted, so no branch has its data", fmt.Sprintf("%s start", brand.CLI))
+	}
+	return fail(name, h.State+": the pool cannot be used", "sudo zpool status -v "+branch.Pool)
+}
+
+func diskLines(disks []branch.DiskSpace, h branch.PoolHealth, err error) []checkLine {
+	if len(disks) == 0 {
+		detail := "could not be determined"
+		if err != nil {
+			detail += ": " + firstLine(err.Error())
+		}
+		return []checkLine{warn("disk space", detail, "")}
+	}
+	var out []checkLine
+	for _, d := range disks {
+		name := "disk " + d.Mount
+		used := 0
+		if d.Size > 0 {
+			used = int(100 - d.Avail*100/d.Size)
+		}
+		detail := fmt.Sprintf("%s free of %s (%d%% used), holding %s",
+			branch.HumanBytes(d.Avail), branch.HumanBytes(d.Size), used, strings.Join(d.Holds, " and "))
+		st := diskState(d)
+		// The number the storage line shows is the pool's, and a pool in a
+		// sparse file counts space its disk may no longer have.
+		if st != stateOK && holdsPool(d) && h.Free > d.Avail {
+			detail += fmt.Sprintf("; the pool counts %s free, but its file can grow by only %s more",
+				branch.HumanBytes(h.Free), branch.HumanBytes(d.Avail))
+		}
+		switch st {
+		case stateFail:
+			why := "nearly full"
+			if holdsPool(d) {
+				why = "nearly full: once the pool's file cannot grow, the pool stops taking writes (ZFS suspends it) and everything on it hangs"
+			}
+			out = append(out, fail(name, why+" — "+detail, diskFix))
+		case stateWarn:
+			out = append(out, warn(name, "filling up — "+detail, diskFix))
+		default:
+			out = append(out, ok(name, detail))
+		}
+	}
+	return out
 }
 
 // main has to be running and answering SQL; a container that is up but not
