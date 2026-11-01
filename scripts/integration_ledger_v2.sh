@@ -160,15 +160,16 @@ assert_eq "agent cannot override the guardrail" \
   "$(psql "$DSN" -tAc "SET bb.allow_destructive=on; DROP TABLE a" 2>&1 | grep -c 'blocked by policy')" "1"
 assert_eq "MCP list_branches does not expose a password" \
   "$(mcp_call list_branches '{}' | grep -c 'postgresql://agent-v2itest@')" "1"
-# G1: as the agent role (db_agent), a member of db_client with its access
-# exactly — no longer db_client itself, whose kind a session could change.
-assert_eq "MCP run_sql runs as the agent role" "$(mcp_call run_sql '{"sql":"SELECT session_user"}' | grep -c 'db_agent')" "1"
+# G1: as the key's account's agent role (agent:<email>), a member of db_agent
+# and db_client with that access exactly: no longer db_client, whose kind a
+# session could change, nor the shared db_agent, whose name a session could.
+assert_eq "MCP run_sql runs as the account's agent role" "$(mcp_call run_sql '{"sql":"SELECT session_user"}' | grep -c "agent:$USER_EMAIL")" "1"
 assert_eq "MCP run_sql cannot disable triggers" \
   "$(mcp_call run_sql '{"sql":"SET session_replication_role=replica"}' | grep -c 'permission denied')" "1"
 # Audit v2 G05: the switch is compiled out of release builds (this suite runs
 # one), so setting it changes nothing.
 assert_eq "FOX_MCP_SUPERUSER=1 is ignored by a release build" \
-  "$(mcp_call run_sql '{"sql":"SELECT session_user"}' FOX_MCP_SUPERUSER=1 | grep -c 'db_agent')" "1"
+  "$(mcp_call run_sql '{"sql":"SELECT session_user"}' FOX_MCP_SUPERUSER=1 | grep -c "agent:$USER_EMAIL")" "1"
 # K6: the MCP server acts as an API key's account, and refuses to run without one.
 assert_eq "fox mcp without a key exits non-zero" \
   "$(printf '' | $S mcp >/dev/null 2>/tmp/mcpnokey.log; echo $?)" "1"
@@ -181,8 +182,13 @@ $S branch create v2h3 >/dev/null 2>&1
 # A branch made at the CLI is an admin's (audit v2 G02); this suite's user is
 # not one, so the branches it works on are handed to it.
 $S branch owner v2h3 "$USER_EMAIL" >/dev/null 2>&1
-assert_eq "MCP run_sql records the key's account as the actor" \
-  "$(mcp_call run_sql '{"branch":"v2h3","sql":"CREATE TABLE h3mcp(x int)"}' >/dev/null; pg pg-v2h3 "SELECT DISTINCT actor||'/'||actor_kind FROM bb.schema_ledger WHERE object_identity='public.h3mcp'")" "$USER_EMAIL/agent"
+# An agent acting with the key's account: the account's agent role, as an agent
+# key is through the Gateway (G1's remainder, F1 design section 9). It used to
+# be the account's email in bb.actor, which the agent's own SQL could change.
+assert_eq "MCP run_sql records the agent of the key's account, by its login" \
+  "$(mcp_call run_sql '{"branch":"v2h3","sql":"CREATE TABLE h3mcp(x int)"}' >/dev/null; pg pg-v2h3 "SELECT DISTINCT actor||'/'||actor_kind FROM bb.schema_ledger WHERE object_identity='public.h3mcp'")" "agent:$USER_EMAIL/agent"
+assert_eq "…and its own SQL cannot put another name on the record" \
+  "$(mcp_call run_sql '{"branch":"v2h3","sql":"SET bb.actor = '"'"'mallory'"'"'; CREATE TABLE h3mcpname(x int)"}' >/dev/null; pg pg-v2h3 "SELECT DISTINCT actor FROM bb.schema_ledger WHERE object_identity='public.h3mcpname'")" "agent:$USER_EMAIL"
 # A branch-scoped key (an agent's) reaches its own branch and nothing else.
 # With no branch argument a tool would default to main; a scoped key's call
 # must land in its own branch instead.
@@ -209,7 +215,7 @@ assert_eq "an agent claiming to be human is still recorded as an agent" \
 # agent-only guardrails.
 mcp_call run_sql '{"branch":"v2h3","sql":"SET bb.actor_kind = human; CREATE TABLE h3mcpesc(x int); INSERT INTO h3mcpesc VALUES (1),(2)"}' >/dev/null
 assert_eq "an MCP session claiming to be human is still recorded as an agent" \
-  "$(pg pg-v2h3 "SELECT DISTINCT actor||'/'||actor_kind FROM bb.schema_ledger WHERE object_identity='public.h3mcpesc'")" "$USER_EMAIL/agent"
+  "$(pg pg-v2h3 "SELECT DISTINCT actor||'/'||actor_kind FROM bb.schema_ledger WHERE object_identity='public.h3mcpesc'")" "agent:$USER_EMAIL/agent"
 assert_eq "…and the agent guardrail still refuses its DELETE with no WHERE" \
   "$(mcp_call run_sql '{"branch":"v2h3","sql":"SET bb.actor_kind = human; DELETE FROM h3mcpesc"}' | grep -c 'with no WHERE is blocked')|$(pg pg-v2h3 'SELECT count(*) FROM h3mcpesc')" "1|2"
 
@@ -880,7 +886,7 @@ jf() { python3 -c 'import sys,json; d=json.load(sys.stdin); print(eval(sys.argv[
 LONGID="$(printf 'x%.0s' $(seq 1 201))"   # one character over the 200 limit
 for a in v2plain v2prov v2bad; do curl -sk -H "$AUTH" -X DELETE "$AGENTS/agents/$a/branch" >/dev/null 2>&1; done
 $S policy warn drop-column >/dev/null 2>&1
-pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS v2exec; DROP TABLE IF EXISTS v2exec_dry" >/dev/null
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS v2exec; DROP TABLE IF EXISTS v2exec_dry; DROP TABLE IF EXISTS v2execname" >/dev/null
 
 assert_eq "agent sessions table is installed" "$(pg pg-main "SELECT to_regclass('bb.agent_sessions') IS NOT NULL")" "t"
 assert_eq "clients can't write agent sessions" \
@@ -916,9 +922,14 @@ EID="$(echo "$R" | jf 'd["blackbox_entries"][0] if d["blackbox_entries"] else 0'
 MSID="$(echo "$R" | jf 'd["session_id"]')"
 HASH="$(echo "$R" | jf 'd["call_hash"]')"
 assert_eq "…and returns the Blackbox entry it wrote" "$([ "${EID:-0}" -gt 0 ] && echo yes)" "yes"
+# The agent by its login (the key's account's agent role); the name the MCP
+# client gave itself is the session's, which is what a client may only say.
 assert_eq "the entry carries agent, tool, session, task, parent and call hash" \
   "$(pg pg-main "SELECT s.actor||'/'||s.actor_kind||'/'||s.tool||'/'||s.session||'/'||e.task_id||'/'||e.parent_session||'/'||e.call_hash FROM bb.schema_ledger s JOIN bb.ledger_ext e ON e.ledger_id=s.id WHERE s.id=${EID:-0}")" \
-  "v2test-agent/agent/mcp/$MSID/task-88/sess-p/$HASH"
+  "agent:$USER_EMAIL/agent/mcp/$MSID/task-88/sess-p/$HASH"
+R2="$(mcp_exec '{"sql":"SET bb.actor = '"'"'mallory'"'"'; CREATE TABLE v2execname(a int)"}')"
+assert_eq "…and the change it runs cannot put another name on the record" \
+  "$(pg pg-main "SELECT DISTINCT actor FROM bb.schema_ledger WHERE object_identity='public.v2execname'")" "agent:$USER_EMAIL"
 assert_eq "the MCP session is recorded" \
   "$(pg pg-main "SELECT agent_id||'/'||tool||'/'||task_id FROM bb.agent_sessions WHERE session_id='$MSID'")" "v2test-agent/mcp/task-88"
 assert_eq "execute_change runs without superuser rights" \
@@ -1412,7 +1423,7 @@ assert_eq "the agent cannot raise its own budget, or forget what it spent" \
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS v2bgx; CREATE TABLE v2bgx(id int); INSERT INTO v2bgx SELECT generate_series(1,5)" >/dev/null
 mcp_exec '{"sql":"UPDATE v2bgx SET id = id + 10 WHERE id <= 5"}' >/dev/null
 assert_eq "execute_change's spending is in the agent's own name" \
-  "$(pg pg-main "SELECT actor||'|'||n FROM bb.dml_spent ORDER BY at DESC LIMIT 1")" "v2test-agent|5"
+  "$(pg pg-main "SELECT actor||'|'||n FROM bb.dml_spent ORDER BY at DESC LIMIT 1")" "agent:$USER_EMAIL|5"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS v2bgx" >/dev/null
 curl -sk -o /dev/null -H "$AUTH" -X DELETE "$AGENTS/agents/v2bg/branch"
 

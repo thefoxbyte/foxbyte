@@ -739,6 +739,14 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 // else as the shared client role, labelled for the Blackbox, with the session
 // settings this run asked for. Shared by a query and an export, so the two log
 // in identically.
+// ensureUserRole is branch.EnsureUserRole, a variable so the refusal below is
+// tested without an engine.
+var ensureUserRole = branch.EnsureUserRole
+
+// errNoOwnRole is a console session refused because the signed-in user's own
+// role could not be made or reached.
+var errNoOwnRole = errors.New("could not log you in as your own role")
+
 func openSession(ctx context.Context, addr string, as queryAs) (*pgx.Conn, error) {
 	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/%s", addr, branch.Database))
 	if err != nil {
@@ -756,11 +764,15 @@ func openSession(ctx context.Context, addr string, as queryAs) (*pgx.Conn, error
 		// session_user is the user. Every console session used to be db_client,
 		// which is never in db_admin — so no one, not even an admin, could
 		// override the guardrail from the console.
-		if err := branch.EnsureUserRole(as.Branch, as.Actor); err != nil {
-			log.Printf("console: per-user role %q on %s: %v (using db_client)", as.Actor, as.Branch, err)
-		} else {
-			cfg.User, cfg.Password = as.Actor, branch.UserRolePassword(as.Actor)
+		//
+		// Refused, rather than run as db_client, when that role cannot be
+		// had: the shared role would record the change under bb.actor, a
+		// setting the user's own SQL can change (G1; F1 design, section 9).
+		if err := ensureUserRole(as.Branch, as.Actor); err != nil {
+			log.Printf("console: per-user role %q on %s: %v (refused)", as.Actor, as.Branch, err)
+			return nil, fmt.Errorf("%w on %q: %v. The console runs SQL only as your own role, so the Blackbox records it under a name your session cannot change; it does not fall back to the shared role", errNoOwnRole, as.Branch, err)
 		}
+		cfg.User, cfg.Password = as.Actor, branch.UserRolePassword(as.Actor)
 	}
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
