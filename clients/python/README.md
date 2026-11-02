@@ -37,6 +37,50 @@ db.blackbox("qa", kind="agent", limit=20) # who changed what (Blackbox)
 db.verify_blackbox("qa")                   # tamper-evidence check (ledger()/verify_ledger() still work)
 ```
 
+## Acting for your application's users
+
+When your application changes data on behalf of one of its users, it can say
+which: register the application once (`fox app register shop --account
+shop-svc@example.com --key shop.pub`), sign a short-lived Ed25519 token for each
+user with its private key (any JWT library that does EdDSA, such as PyJWT), and
+pass it with the change. The Blackbox and row tracking then record the change as
+made by your application's account **for** that user, "asserted by" your
+application.
+
+```python
+db = FoxByte(api_key=os.environ["FOX_KEY"])   # your application's account key
+with db.with_actor(token) as acting:
+    acting.query("main", "UPDATE orders SET status = 'paid' WHERE id = 7")
+```
+
+Each query in `with_actor` is its own transaction that asserts the token first.
+A token the engine does not take (expired, another install's, a revoked key) is
+refused and nothing runs. `db.query(branch, sql, act_for=token)` does the same
+for one query without refusing: its result's `act_for` says whom it ran for, or
+why the token was not taken.
+
+The token travels in the request body and the engine binds it as a parameter,
+so it is never in a URL, the SQL text, query history or `pg_stat_statements`.
+
+### With your own Postgres connection
+
+An application connected through the Gateway with a driver of its own can use
+`with_actor_transaction`:
+
+```python
+import psycopg
+from foxbyte import with_actor_transaction
+
+with psycopg.connect(dsn) as conn:
+    with with_actor_transaction(conn, token) as cur:
+        cur.execute("UPDATE orders SET status = %s WHERE id = %s", ("paid", 7))
+```
+
+Use a driver that binds parameters on the server, as psycopg 3 does
+(`paramstyle="$1"` for one that numbers them). psycopg2 is refused: it writes
+parameters into the SQL text it sends, which would put the token in the
+server's logs.
+
 ## The change feed (Enterprise)
 
 Subscribe to a branch and be told when rows change. Give an application a

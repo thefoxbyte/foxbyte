@@ -21,6 +21,51 @@ console.log(await db.verifyBlackbox("qa"))   // tamper-evidence check (verifyLed
 > The engine serves a self-signed cert by default. In Node, point at a host with
 > a real cert, or set `NODE_TLS_REJECT_UNAUTHORIZED=0` for local development only.
 
+## Acting for your application's users
+
+When your application changes data on behalf of one of its users, it can say
+which: register the application once (`fox app register shop --account
+shop-svc@example.com --key shop.pub`), sign a short-lived Ed25519 token for each
+user with its private key (any JWT library that does EdDSA, such as `jose`), and
+pass it with the change. The Blackbox and row tracking then record the change as
+made by your application's account **for** that user, "asserted by" your
+application.
+
+```ts
+const db = new FoxByte(process.env.FOX_KEY!)   // your application's account key
+await db.withActor(token, async (as) => {
+  await as.query("main", "UPDATE orders SET status = 'paid' WHERE id = 7")
+})
+```
+
+Each query in `withActor` is its own transaction that asserts the token first. A
+token the engine does not take (expired, another install's, a revoked key) is
+refused and nothing runs. `db.query(branch, sql, { actFor: token })` does the
+same for one query without refusing: its result's `act_for` says whom it ran
+for, or why the token was not taken.
+
+The token travels in the request body and the engine binds it as a parameter,
+so it is never in a URL, the SQL text, query history or `pg_stat_statements`.
+
+### With your own Postgres connection
+
+An application connected through the Gateway with a driver of its own (here
+node-postgres) can use `withActorTransaction`, which works with any client whose
+`query(text, params)` binds parameters:
+
+```ts
+import { withActorTransaction } from "@foxbyte/client"
+const client = await pool.connect()
+try {
+  await withActorTransaction(client, token, (c) => c.query("UPDATE orders SET status = $1 WHERE id = $2", ["paid", 7]))
+} finally {
+  client.release()
+}
+```
+
+It sends `BEGIN`, `SELECT bb.act_for($1)` with the token as the parameter, your
+statements, then `COMMIT`, or `ROLLBACK` if anything throws.
+
 ## The change feed (Enterprise)
 
 Subscribe to a branch and be told when rows change. Give an application a
