@@ -32,7 +32,7 @@ bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 assert_contains() { case "$2" in *"$3"*) ok "$1";; *) bad "$1 (got '$2', want something containing '$3')";; esac; }
 
-cleanup() { sudo docker rm -f "$C" >/dev/null 2>&1; rm -rf "$WORK"; }
+cleanup() { sudo docker rm -fv "$C" >/dev/null 2>&1; rm -rf "$WORK"; }
 trap cleanup EXIT
 
 # su: a statement as the superuser. as: a script (stdin) as a role, over the
@@ -71,7 +71,7 @@ assert_eq "…and it is labelled revision 2, the first the engine knows has it" 
   "$(sudo docker image inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' "$IMG")" "2"
 
 echo "### a throwaway Postgres, with the Blackbox and application identity"
-sudo docker rm -f "$C" >/dev/null 2>&1
+sudo docker rm -fv "$C" >/dev/null 2>&1
 sudo docker run -d --name "$C" -e POSTGRES_USER=dbadmin -e POSTGRES_PASSWORD=f1proto -e POSTGRES_DB=appdb "$IMG" >/dev/null
 for _ in $(seq 60); do [ "$(su 'SELECT 1')" = "1" ] && break; sleep 1; done
 # The Blackbox as the engine installs it (EnsureLedgerV2's order): the base,
