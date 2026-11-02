@@ -40,10 +40,31 @@
  *
  *   bbid_random_bytes    Bytes from the server's strong random source, for the
  *                       install secret.
+ *
+ * And, only when the library is preloaded (shared_preload_libraries), what
+ * audit coverage needs (docs/FOX_F6_Audit_Design.md, sections 6 and 7):
+ *
+ *   the log hook         The server log's copy of anything a client session,
+ *                       background worker or autovacuum worker reports is
+ *                       replaced by its severity and SQLSTATE, so no value a
+ *                       statement held reaches the log: not in a message, a
+ *                       detail, a context or the statement. The client still
+ *                       gets the whole error. pgAudit's own lines pass as they
+ *                       are; a line that only looks like one does not.
+ *
+ *   the transaction line One line when a transaction that had an audit line
+ *                       ends: COMMIT, ROLLBACK or PREPARE, its virtual
+ *                       transaction, and whom it was for (F1), checked as
+ *                       bb.app_actor() checks it. pgAudit logs a statement when
+ *                       it starts and never says whether it took effect.
+ *
+ * Loaded on demand instead, as every install before audit loads it, the
+ * library installs neither, and behaves exactly as it did.
  */
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/xact.h"
 #include "catalog/pg_authid_d.h"
 #include "executor/spi.h"
 #include "fmgr.h"
@@ -51,12 +72,19 @@
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "port.h"
+#include "postmaster/postmaster.h"
 #include "storage/proc.h"
 #include "utils/builtins.h"
+#include "utils/elog.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
 #include "varatt.h"
+
+/* Exported by the postmaster on every major; declared in a header only from 17. */
+#if PG_VERSION_NUM < 170000
+extern bool redirection_done;
+#endif
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -82,6 +110,8 @@ static char *g_claimed = NULL;
 
 void		_PG_init(void);
 
+static void audit_init(void);
+
 void
 _PG_init(void)
 {
@@ -103,6 +133,9 @@ _PG_init(void)
 	for (size_t n = 0; n < lengthof(vars); n++)
 		DefineCustomStringVariable(vars[n].name, vars[n].desc, NULL, vars[n].var, "",
 								   PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+
+	if (process_shared_preload_libraries_in_progress)
+		audit_init();
 }
 
 #define ED25519_KEY_LEN 32
@@ -545,4 +578,301 @@ bbid_random_bytes(PG_FUNCTION_ARGS)
 	if (!pg_strong_random(VARDATA(b), n))
 		ereport(ERROR, (errmsg("the server's strong random source failed")));
 	PG_RETURN_BYTEA_P(b);
+}
+
+/* ---- audit coverage (F6), when preloaded -------------------------------- */
+
+static emit_log_hook_type prev_emit_log_hook = NULL;
+
+/* True while this library writes a line of its own, which the hook passes. */
+static bool writing_own = false;
+
+/*
+ * The transaction being audited: whether it has had an audit line, its virtual
+ * transaction as the audit lines carry it (gone from the process by the time a
+ * commit's callback runs), whom it was for, and how many audit lines it has
+ * had, so a rolled-back savepoint can say how many it undid.
+ */
+static struct
+{
+	bool		seen;
+	char		vxid[32];
+	char		who[512];
+	int			lines;
+}			txn;
+
+#define MAX_SUB_LEVELS 64
+static int	sub_start[MAX_SUB_LEVELS];
+
+static bool
+starts_with(const char *s, const char *prefix)
+{
+	return s != NULL && strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+/*
+ * pgAudit's own lines, and only those. Anyone can RAISE LOG 'AUDIT: …' from
+ * SQL, with whatever values they like in it; that line comes from PL/pgSQL,
+ * not pgaudit.c, and is redacted like any other.
+ */
+static bool
+is_pgaudit_line(const ErrorData *e)
+{
+	const char *base;
+
+	if (!starts_with(e->message, "AUDIT: ") || e->filename == NULL)
+		return false;
+	base = strrchr(e->filename, '/');
+	base = base ? base + 1 : e->filename;
+	return strcmp(base, "pgaudit.c") == 0;
+}
+
+/* A CSV field, after a comma, quoted as pgAudit quotes its own. */
+static void
+csv_field(StringInfo buf, const char *v)
+{
+	appendStringInfoChar(buf, ',');
+	if (v == NULL)
+		return;
+	if (strpbrk(v, ",\"\r\n") == NULL)
+	{
+		appendStringInfoString(buf, v);
+		return;
+	}
+	appendStringInfoChar(buf, '"');
+	for (const char *p = v; *p; p++)
+	{
+		if (*p == '"')
+			appendStringInfoChar(buf, '"');
+		appendStringInfoChar(buf, *p);
+	}
+	appendStringInfoChar(buf, '"');
+}
+
+/*
+ * Whom this transaction is for, as state,issuer,actor, by bb.app_actor()'s
+ * rules. The install secret is never read from here: a MAC this transaction
+ * holds was made by this backend, which loaded the secret to make it, so
+ * values with a MAC and no secret loaded were set by hand, and are none.
+ */
+static void
+whom(char *out, size_t len)
+{
+	const char *a = opt(g_actor);
+	const char *m = opt(g_mac);
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	if (a != NULL || m != NULL)
+	{
+		const char *i = opt(g_issuer);
+		const char *k = opt(g_kid);
+		const char *t = opt(g_tenant);
+
+		if (a != NULL && i != NULL && k != NULL && m != NULL && secret_loaded &&
+			checked(a, i, k, t ? t : "", m))
+		{
+			appendStringInfoString(&buf, "asserted");
+			csv_field(&buf, i);
+			csv_field(&buf, a);
+		}
+		else
+			appendStringInfoString(&buf, "none,,");
+	}
+	else if (opt(g_claimed) != NULL)
+	{
+		appendStringInfoString(&buf, "claimed,");
+		csv_field(&buf, g_claimed);
+	}
+	else
+		appendStringInfoString(&buf, "none,,");
+	strlcpy(out, buf.data, len);
+	pfree(buf.data);
+}
+
+/* This transaction's virtual id, as the log's vxid field writes it. */
+static void
+vxid_now(char *out, size_t len)
+{
+#if PG_VERSION_NUM >= 170000
+	snprintf(out, len, "%d/%u", (int) MyProc->vxid.procNumber, (unsigned int) MyProc->vxid.lxid);
+#else
+	snprintf(out, len, "%d/%u", (int) MyProc->backendId, (unsigned int) MyProc->lxid);
+#endif
+}
+
+static void
+note_audit_line(void)
+{
+	if (MyProc == NULL)
+		return;
+	if (!txn.seen)
+	{
+		txn.seen = true;
+		vxid_now(txn.vxid, sizeof(txn.vxid));
+	}
+	txn.lines++;
+	whom(txn.who, sizeof(txn.who));
+}
+
+/* One line of this library's own, through the server's normal reporting. */
+static void
+own_line(const char *line)
+{
+	writing_own = true;
+	PG_TRY();
+	{
+		ereport(LOG, (errmsg_internal("%s", line), errhidestmt(true), errhidecontext(true)));
+	}
+	PG_FINALLY();
+	{
+		writing_own = false;
+	}
+	PG_END_TRY();
+}
+
+static const char *
+severity(int elevel)
+{
+	switch (elevel)
+	{
+		case DEBUG1:
+		case DEBUG2:
+		case DEBUG3:
+		case DEBUG4:
+		case DEBUG5:
+			return "DEBUG";
+		case LOG:
+		case LOG_SERVER_ONLY:
+			return "LOG";
+		case INFO:
+			return "INFO";
+		case NOTICE:
+			return "NOTICE";
+		case WARNING:
+		case WARNING_CLIENT_ONLY:
+			return "WARNING";
+		case ERROR:
+			return "ERROR";
+		case FATAL:
+			return "FATAL";
+		case PANIC:
+			return "PANIC";
+	}
+	return "LOG";
+}
+
+/*
+ * The server log's copy of a report, with nothing a statement held: its
+ * severity and SQLSTATE, and the fields every line has (time, login, session,
+ * virtual transaction). Written the way the server writes its own, to each
+ * destination it writes to.
+ */
+static void
+write_redacted(const ErrorData *edata)
+{
+	ErrorData	r = *edata;
+
+	r.message = psprintf("%s,%s,%s", edata->elevel >= ERROR ? "AUDIT: OUTCOME" : "REDACTED",
+						 severity(edata->elevel), unpack_sql_state(edata->sqlerrcode));
+	r.message_id = NULL;
+	r.detail = r.detail_log = r.hint = r.context = r.backtrace = r.internalquery = NULL;
+	r.schema_name = r.table_name = r.column_name = r.datatype_name = r.constraint_name = NULL;
+	r.cursorpos = r.internalpos = 0;
+	r.hide_stmt = r.hide_ctx = true;
+
+	if ((Log_destination & LOG_DESTINATION_JSONLOG) && redirection_done)
+		write_jsonlog(&r);
+	if ((Log_destination & LOG_DESTINATION_CSVLOG) && redirection_done)
+		write_csvlog(&r);
+	if ((Log_destination & LOG_DESTINATION_STDERR) || !redirection_done)
+		write_stderr("%s:  %s\n", severity(r.elevel), r.message);
+	pfree(r.message);
+}
+
+static void
+audit_emit_log(ErrorData *edata)
+{
+	if (prev_emit_log_hook)
+		prev_emit_log_hook(edata);
+	if (!edata->output_to_server || writing_own)
+		return;
+	if (is_pgaudit_line(edata))
+	{
+		note_audit_line();
+		return;
+	}
+	/* Startup, checkpoints, replication and the like hold no statement's
+	 * values, and are what an operator reads. */
+	if (MyBackendType != B_BACKEND && MyBackendType != B_BG_WORKER &&
+		MyBackendType != B_AUTOVAC_WORKER)
+		return;
+	write_redacted(edata);
+	edata->output_to_server = false;
+}
+
+static void
+audit_xact(XactEvent event, void *arg)
+{
+	const char *outcome;
+	char		line[700];
+
+	switch (event)
+	{
+		case XACT_EVENT_PRE_COMMIT:
+		case XACT_EVENT_PRE_PREPARE:
+			/* Whom for, decided while the transaction and its settings are
+			 * still what they finally are: after a savepoint's rollback, and
+			 * before the commit clears the virtual transaction the MAC binds. */
+			if (txn.seen)
+				whom(txn.who, sizeof(txn.who));
+			return;
+		case XACT_EVENT_COMMIT:
+			outcome = "COMMIT";
+			break;
+		case XACT_EVENT_ABORT:
+			outcome = "ROLLBACK";
+			break;
+		case XACT_EVENT_PREPARE:
+			outcome = "PREPARE";
+			break;
+		default:
+			return;
+	}
+	if (txn.seen)
+	{
+		snprintf(line, sizeof(line), "AUDIT: TXN,%s,%s,%s", txn.vxid, outcome, txn.who);
+		memset(&txn, 0, sizeof(txn));
+		own_line(line);
+	}
+}
+
+static void
+audit_subxact(SubXactEvent event, SubTransactionId mySubid,
+			  SubTransactionId parentSubid, void *arg)
+{
+	int			level = GetCurrentTransactionNestLevel();
+	char		line[128];
+
+	if (level < 0 || level >= MAX_SUB_LEVELS)
+		return;
+	if (event == SUBXACT_EVENT_START_SUB)
+		sub_start[level] = txn.lines;
+	else if (event == SUBXACT_EVENT_ABORT_SUB && txn.seen && txn.lines > sub_start[level])
+	{
+		/* The last n audit lines of this transaction did not take effect. */
+		snprintf(line, sizeof(line), "AUDIT: TXN,%s,SUBROLLBACK,%d", txn.vxid,
+				 txn.lines - sub_start[level]);
+		txn.lines = sub_start[level];
+		own_line(line);
+	}
+}
+
+static void
+audit_init(void)
+{
+	prev_emit_log_hook = emit_log_hook;
+	emit_log_hook = audit_emit_log;
+	RegisterXactCallback(audit_xact, NULL);
+	RegisterSubXactCallback(audit_subxact, NULL);
 }
