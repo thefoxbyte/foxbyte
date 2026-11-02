@@ -110,7 +110,7 @@ assert_eq "PITR restores 3 rows" "$(pg pg-restore 'SELECT count(*) FROM v2pit')"
 assert_eq "restore no longer prints a hardcoded password" "$(echo "$RESTORE_OUT" | grep -c 'PGPASSWORD=foxbyte')" "0"
 assert_eq "restore container has no minioadmin credentials" \
   "$(sudo docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' pg-restore 2>/dev/null | grep -c '=minioadmin$')" "0"
-sudo docker rm -f pg-restore >/dev/null 2>&1
+sudo docker rm -fv pg-restore >/dev/null 2>&1
 
 echo "### 1b. H2: only superusers and db_admin members may override the guardrail"
 assert_eq "ledger upgrade succeeds on main" "$($S ledger upgrade main >/dev/null 2>&1; echo $?)" "0"
