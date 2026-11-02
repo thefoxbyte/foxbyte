@@ -4,7 +4,7 @@ import { useAuth } from '../auth-context'
 const features: [string, string, string][] = [
   ['🛡️', 'Every change, recorded', 'Each CREATE, ALTER, DROP and GRANT is written to an append-only hash chain as it happens, attributed to the login that made it. Verify it whenever you like.'],
   ['🤖', 'A database per agent', 'Each AI agent gets an isolated, disposable database over a simple HTTP call — and you can see exactly what it did to it.'],
-  ['🚦', 'Refused, not regretted', 'A policy gate stops a destructive change before it runs. An unqualified DELETE or a DROP TABLE from an agent does not reach your data.'],
+  ['🚦', 'Refused, not regretted', 'Guardrails refuse a destructive change before it runs: a DROP TABLE or TRUNCATE unless an admin overrides it, and from an agent a DELETE or UPDATE with no WHERE, or one that changes more rows than the table allows.'],
   ['🌿', 'Instant branches', 'Copy-on-write clones of your entire database in seconds — near-zero extra space.'],
   ['⏱️', 'Time-travel', 'Restore to any point within the archived WAL window. Undo mistakes.'],
   ['💤', 'Scale to zero', 'Idle branches suspend automatically; the gateway wakes them on the next connection, at one stable address.'],

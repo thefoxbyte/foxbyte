@@ -6,7 +6,7 @@ first step, the check in C with its cache, is in section 14 (#177). The second,
 applications asserting their user in the product, is in section 15 (#180). The
 third, row tracking's `last_modified_for` (point 5.2), is in section 16 (#181),
 3b, an agent session's whom-for, in section 17 (#182), 4, the access review's
-Applications table, in section 18 (#184), and 5, G1's remainder, in section 19. Written against
+Applications table, in section 18 (#184), 5, G1's remainder, in section 19 (#188), and 7, the public wording, in section 21, which completes Gate 1 (6, the SDK helpers, is section 20 with #190). Written against
 `main` at `d93492c`. It answers Gate 0's F1 item in the review plan
 (`docs/FOX_Expert_Review_Plan.md`, sections 4 and 5): the token protocol written
 down, the signature-checking choice made, and the prototype and its tests
@@ -729,3 +729,50 @@ named for the MCP client's self-given name would have been named by the client.
   9 said;
 - `fox sql` run by whoever administers the machine, who is labelled `cli:<user>`
   and is root-equivalent there.
+
+---
+
+## 21. Gate 1, step 7: the public wording, and Gate 1 complete
+
+The review plan's section 3 named four lines of public wording that claimed
+more than the product did. Its four gaps are closed:
+
+- G1: #144 and #188;
+- G2: #145, rows counted, not `WHERE` clauses read;
+- G3: #146 and #147, anchors in a locked bucket;
+- G4: #144.
+
+So the wording can now say more than "less". It says exactly what is true.
+
+| Where | Was | Now |
+|---|---|---|
+| README, "What you get" | the actor is "non-forgeable" | the login the session authenticated as, which nothing it runs changes; an application's user, asserted by the application |
+| README, the Blackbox | "a client cannot forge who made a change" | each kind of login named; a database superuser is outside it, which is what anchors held elsewhere are for |
+| README, what is recorded | (no "for whom") | "for whom": asserted by an application, or claimed |
+| Console landing page | an unqualified DELETE "does not reach your data" | the guardrails named: DROP TABLE and TRUNCATE without an admin's override; from an agent, DELETE or UPDATE with no WHERE or past the row limit |
+
+The other two lines were already right: the editions table, and `verify`
+"checks the hash chain".
+
+The website, its own repository, was checked line by line and needs no change.
+The investor deck and community posts are outside the code and need the same
+check by the people who own them.
+
+**Gate 1 is complete.** Section 12's work list, in order:
+
+| Item | PR |
+|---|---|
+| The check in C, remembered across rows | #177 |
+| Applications assert their user | #180 |
+| Point 5.2's `last_modified_for` | #181 |
+| An agent session's whom-for | #182 |
+| The access review's Applications table | #184 |
+| G1's remainder | #188 |
+| SDK helpers | #190 |
+| The public wording | this step |
+
+Still open for the founders or the expert, from section 12:
+
+- tokens from a customer's own OIDC provider;
+- whether `refuse` should become the default for applications registered from
+  a date.
