@@ -313,9 +313,14 @@ type ExecuteChangeRequest struct {
 	TaskID          string
 	ParentSessionID string
 	SessionID       string // the caller's session (for MCP: one per server process)
-	AgentID         string // recorded as the Blackbox actor
-	Tool            string // application_name and agent_sessions.tool, e.g. "mcp"
-	DryRun          bool
+	AgentID         string // the agent's name for itself: agent_sessions.agent_id
+	// Account is who the session acts for: an email, or an agent key's
+	// "agent:<email>". The agent logs in as that account's agent role, so the
+	// Blackbox records it by login (engineagent.go). Empty: the shared role,
+	// with AgentID as the actor, as before.
+	Account string
+	Tool    string // application_name and agent_sessions.tool, e.g. "mcp"
+	DryRun  bool
 }
 
 // ChangeNotice is a notice or warning the database sent while running the change.
@@ -449,22 +454,39 @@ func ExecuteChange(req ExecuteChangeRequest) (ExecuteChangeResult, error) {
 	if err := EnsureAppRole(name); err != nil {
 		return ExecuteChangeResult{}, err
 	}
-	// An agent by login where the branch's Blackbox knows db_agent: the
-	// bb.actor_kind set below is then only a label, and the agent's SQL cannot
-	// change what it is recorded as (agentrole.go).
-	role, asAgent := agentLoginRole(name)
-	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s@%s/%s", role, addr, pgDatabase))
+	// As the account's agent role where the session acts for an account: the
+	// Blackbox then reads the agent from session_user, and keys its budget on
+	// it, and nothing the agent's SQL sets changes either (engineagent.go).
+	// Without an account, or on a branch whose Blackbox predates agent roles,
+	// the shared role it always used, with the name at login: the budget is
+	// keyed on the login value (bb._budget_actor).
+	login := engineLogin{mode: loginLegacy}
+	if req.Account != "" {
+		login = engineAgentLogin(name, req.Account)
+	} else {
+		role, asAgent := agentLoginRole(name)
+		login.role, login.password = role, ClientRolePassword()
+		if asAgent {
+			login.password = AgentClientRolePassword()
+		}
+	}
+	// The user is set below, not in the URL: an agent role's name holds ':' and '@'.
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/%s", addr, pgDatabase))
 	if err != nil {
 		return ExecuteChangeResult{}, err
 	}
-	cfg.Password = ClientRolePassword()
-	if asAgent {
-		cfg.Password = AgentClientRolePassword()
+	cfg.User, cfg.Password = login.role, login.password
+	actorSetting := req.AgentID
+	switch login.mode {
+	case loginLegacy:
+		cfg.RuntimeParams["bb.actor"] = req.AgentID
+	case loginClaimed:
+		// Said, not proven: recorded as a claim, never as the actor.
+		cfg.RuntimeParams["bb.claimed_actor"] = req.Account
+		actorSetting = ""
+	case loginOwn:
+		actorSetting = "" // session_user says it; a setting would only be noise
 	}
-	// The agent's name at login, not only by set_config below: the Blackbox
-	// keys an agent's budget across statements on the login value, which the
-	// agent's own SQL cannot change (bb._budget_actor).
-	cfg.RuntimeParams["bb.actor"] = req.AgentID
 	cfg.OnNotice = func(_ *pgconn.PgConn, n *pgconn.Notice) { res.Notices = append(res.Notices, noticeFrom(n)) }
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
@@ -474,7 +496,7 @@ func ExecuteChange(req ExecuteChangeRequest) (ExecuteChangeResult, error) {
 	if _, err := conn.Exec(ctx, `SELECT set_config('bb.actor', $1, false), set_config('bb.actor_kind', 'agent', false),
   set_config('application_name', $2, false), set_config('bb.session', $3, false), set_config('bb.task', $4, false),
   set_config('bb.parent_session', $5, false), set_config('bb.call_hash', $6, false)`,
-		req.AgentID, req.Tool, req.SessionID, req.TaskID, req.ParentSessionID, res.CallHash); err != nil {
+		actorSetting, req.Tool, req.SessionID, req.TaskID, req.ParentSessionID, res.CallHash); err != nil {
 		return ExecuteChangeResult{}, fmt.Errorf("setting provenance: %w", err)
 	}
 
