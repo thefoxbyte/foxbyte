@@ -114,7 +114,8 @@ func ensureAgentRoles(name string) error {
 	if strings.TrimSpace(out) != "t" {
 		return ErrAgentRolesNeedUpgrade
 	}
-	if err := psqlStdin(name, agentClientRoleSQL(AgentClientRolePassword())); err != nil {
+	defer lockRole("agent\x00" + name + "\x00" + AgentClientRole)()
+	if err := provisionRole(name, agentClientRoleSQL(AgentClientRolePassword())); err != nil {
 		return err
 	}
 	if cacheable {
@@ -125,14 +126,11 @@ func ensureAgentRoles(name string) error {
 
 // agentClientRoleSQL creates db_agent if it is missing and sets its password.
 func agentClientRoleSQL(password string) string {
-	return fmt.Sprintf(`DO $do$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %[1]s) THEN
-    EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client', %[1]s);
-  END IF;
-  EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', %[1]s, %[2]s);
-  EXECUTE format('ALTER ROLE %%I SET role = db_client', %[1]s);
-END $do$;`, quoteLiteral(AgentClientRole), quoteLiteral(password))
+	return retryingRoleDO("", fmt.Sprintf(`      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %[1]s) THEN
+        EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client', %[1]s);
+      END IF;
+      EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', %[1]s, %[2]s);
+      EXECUTE format('ALTER ROLE %%I SET role = db_client', %[1]s);`, quoteLiteral(AgentClientRole), quoteLiteral(password)))
 }
 
 // agentKeyRoleSQL creates an agent key's role if it is missing and sets its
@@ -140,15 +138,11 @@ END $do$;`, quoteLiteral(AgentClientRole), quoteLiteral(password))
 // db_agent so the Blackbox records it as an agent. Never of db_admin: an agent
 // holding an admin's key still cannot override a guardrail.
 func agentKeyRoleSQL(role, password string) string {
-	return fmt.Sprintf(`DO $do$
-DECLARE r text := %s;
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-    EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client, %s', r);
-  END IF;
-  EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', r, %s);
-  EXECUTE format('ALTER ROLE %%I SET role = db_client', r);
-END $do$;`, quoteLiteral(role), AgentClientRole, quoteLiteral(password))
+	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(role)), fmt.Sprintf(`      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client, %s', r);
+      END IF;
+      EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', r, %s);
+      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, AgentClientRole, quoteLiteral(password)))
 }
 
 // EnsureAgentKeyRole makes sure the role an agent key belonging to email logs
@@ -168,7 +162,13 @@ func EnsureAgentKeyRole(branchName, email string) error {
 			return nil
 		}
 	}
-	if err := psqlStdin(branchName, agentKeyRoleSQL(role, AgentKeyRolePassword(email))); err != nil {
+	defer lockRole("agent\x00" + branchName + "\x00" + role)()
+	if cacheable {
+		if _, ok := agentRolesReady.Load(key); ok {
+			return nil
+		}
+	}
+	if err := provisionRole(branchName, agentKeyRoleSQL(role, AgentKeyRolePassword(email))); err != nil {
 		return err
 	}
 	if cacheable {
