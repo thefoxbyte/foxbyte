@@ -225,7 +225,7 @@
       <li class="ok"><b>A failing command keeps what it said</b> (13 Oct 2026, the other half of the same report): <code>capture</code>, the engine&rsquo;s way of asking a container a question at 42 call sites, dropped the stderr <code>cmd.Output()</code> had already collected, so <code>check</code>&rsquo;s Blackbox line could only say &ldquo;verify query: exit status 1&rdquo; while psql had written the reason to the other stream. The first line of stderr now reaches the error &mdash; one line, bounded at 300 runes and cut by rune &mdash; for every caller at once, while parsing stays on stdout so a <code>NOTICE</code> cannot corrupt output that callers split on separators</li>
       <li class="ok"><code>fox connect [branch]</code> prints the application's connection string, then opens psql; <code>fox psql</code> takes a branch</li>
       <li class="ok"><code>fox branch create</code> ends with the connection string and how long it took</li>
-      <li class="ok">Plain-English errors in the CLI and the console (<code>internal/errhint</code>, <code>web/src/errhint.ts</code>)</li></ul></td><td class="tb">Unit; v1 §11d</td></tr>
+      <li class="ok">Plain-English errors in the CLI and the console (<code>internal/errhint</code>, <code>web/src/errhint.ts</code>)</li><li class="ok"><code>fox check</code> reports the storage pool&rsquo;s health (a suspended or faulted pool fails, with the way out) and the free space on the disk under the pool&rsquo;s file and Docker&rsquo;s data</li></ul></td><td class="tb">Unit; v1 §11d</td></tr>
   </table>
 </section>
 

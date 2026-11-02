@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -513,4 +514,117 @@ func TestParseWindow(t *testing.T) {
 	if window(3600) != "hour" || window(1800) != "30 minutes" || window(172800) != "2 days" {
 		t.Error("window names")
 	}
+}
+
+// The pool's health and the disk under it.
+//
+// On 2026-10-26 the test VM's disk filled, ZFS suspended the pool its branches
+// live on, and every postgres on it hung in the kernel for eight hours. The
+// storage line said "29.5G free" throughout: that is the pool's own count, and a
+// pool in a sparse file counts space its disk no longer has.
+func TestPoolAndDiskLines(t *testing.T) {
+	const gib = uint64(1) << 30
+	full := branch.DiskSpace{Mount: "/", Size: 38 * gib, Avail: gib + gib/2, Holds: []string{branch.HoldsPool, branch.HoldsDocker}}
+	roomy := branch.DiskSpace{Mount: "/", Size: 38 * gib, Avail: 24 * gib, Holds: []string{branch.HoldsPool, branch.HoldsDocker}}
+	suspended := branch.PoolHealth{Driver: "zfs", State: "SUSPENDED", Free: 29 * gib, Backing: "/var/lib/dbpool-zpool.img"}
+
+	t.Run("a suspended pool fails, says what that does, and how to get out", func(t *testing.T) {
+		got := poolHealthLine(suspended, []branch.DiskSpace{full})
+		if got.state != stateFail {
+			t.Fatalf("state %d, want a failure", got.state)
+		}
+		if !strings.Contains(got.detail, "hang") {
+			t.Errorf("detail %q does not say that everything hangs", got.detail)
+		}
+		// Space first: clearing a pool whose disk is still full suspends it again.
+		for _, want := range []string{"free space on /", "volume prune", "zpool clear dbpool", "zpool status -v"} {
+			if !strings.Contains(got.fix, want) {
+				t.Errorf("fix %q does not mention %q", got.fix, want)
+			}
+		}
+		if strings.Index(got.fix, "volume prune") > strings.Index(got.fix, "zpool clear") {
+			t.Errorf("fix %q clears before freeing space", got.fix)
+		}
+		if strings.Contains(got.fix, "-a ") || strings.HasSuffix(got.fix, "-a") {
+			t.Errorf("fix %q names a prune -a, which would take the object store's volume", got.fix)
+		}
+	})
+
+	t.Run("…and with room on the disk, just how to clear it", func(t *testing.T) {
+		got := poolHealthLine(suspended, []branch.DiskSpace{roomy})
+		if got.state != stateFail || strings.Contains(got.fix, "free space") {
+			t.Errorf("got %+v", got)
+		}
+	})
+
+	t.Run("the other states", func(t *testing.T) {
+		for _, c := range []struct {
+			h    branch.PoolHealth
+			want int
+		}{
+			{branch.PoolHealth{Driver: "zfs", State: "ONLINE"}, stateOK},
+			{branch.PoolHealth{Driver: "zfs", State: "DEGRADED"}, stateWarn},
+			{branch.PoolHealth{Driver: "zfs", State: "FAULTED"}, stateFail},
+			{branch.PoolHealth{Driver: "zfs", State: "UNAVAIL"}, stateFail},
+			{branch.PoolHealth{Driver: "btrfs", State: "mounted"}, stateOK},
+			{branch.PoolHealth{Driver: "btrfs", State: "read-only"}, stateFail},
+			{branch.PoolHealth{Driver: "btrfs", State: "not mounted"}, stateFail},
+			// Not this line's to fail: the storage line already does.
+			{branch.PoolHealth{Driver: "zfs", Missing: true, Err: "cannot open 'dbpool': no such pool"}, stateWarn},
+			{branch.PoolHealth{Driver: "zfs", Err: "zpool did not finish within 5s"}, stateWarn},
+		} {
+			if got := poolHealthLine(c.h, nil); got.state != c.want {
+				t.Errorf("%+v: state %d, want %d (%s)", c.h, got.state, c.want, got.detail)
+			}
+		}
+	})
+
+	t.Run("a nearly full disk under the pool fails, and says the pool's count is not the disk's", func(t *testing.T) {
+		lines := diskLines([]branch.DiskSpace{full}, suspended, nil)
+		if len(lines) != 1 || lines[0].state != stateFail {
+			t.Fatalf("got %+v", lines)
+		}
+		for _, want := range []string{"1.5G free of 38.0G", "97% used", "the storage pool's file and Docker's images and volumes",
+			"the pool counts 29.0G free, but its file can grow by only 1.5G more", "ZFS suspends it"} {
+			if !strings.Contains(lines[0].detail, want) {
+				t.Errorf("detail %q does not mention %q", lines[0].detail, want)
+			}
+		}
+		if lines[0].name != "disk /" {
+			t.Errorf("name %q", lines[0].name)
+		}
+	})
+
+	t.Run("thresholds: a share or an amount, whichever says so first", func(t *testing.T) {
+		for _, c := range []struct {
+			size, avail uint64
+			want        int
+		}{
+			{38 * gib, 24 * gib, stateOK},
+			{38 * gib, 4 * gib, stateWarn},     // under 5G
+			{1000 * gib, 90 * gib, stateWarn},  // under 10%
+			{1000 * gib, 20 * gib, stateFail},  // under 3%
+			{38 * gib, gib + gib/2, stateFail}, // under 2G
+			{2000 * gib, 300 * gib, stateOK},   // plenty either way
+		} {
+			d := branch.DiskSpace{Mount: "/", Size: c.size, Avail: c.avail, Holds: []string{branch.HoldsDocker}}
+			if got := diskLines([]branch.DiskSpace{d}, branch.PoolHealth{}, nil)[0].state; got != c.want {
+				t.Errorf("%dG free of %dG: state %d, want %d", c.avail/gib, c.size/gib, got, c.want)
+			}
+		}
+	})
+
+	t.Run("plenty of room is one ok line per filesystem, with no note about the pool", func(t *testing.T) {
+		lines := diskLines([]branch.DiskSpace{roomy}, branch.PoolHealth{Driver: "zfs", State: "ONLINE", Free: 29 * gib}, nil)
+		if len(lines) != 1 || lines[0].state != stateOK || strings.Contains(lines[0].detail, "pool counts") {
+			t.Errorf("got %+v", lines)
+		}
+	})
+
+	t.Run("a disk that cannot be read is a warning, never a hang or a failure", func(t *testing.T) {
+		lines := diskLines(nil, branch.PoolHealth{}, errors.New("asking Docker where it keeps its data: Cannot connect"))
+		if len(lines) != 1 || lines[0].state != stateWarn || !strings.Contains(lines[0].detail, "Cannot connect") {
+			t.Errorf("got %+v", lines)
+		}
+	})
 }
