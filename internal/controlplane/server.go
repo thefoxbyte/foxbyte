@@ -372,6 +372,15 @@ func registerAPI(mux *http.ServeMux) {
 			// (point 8.1): the console's own reads of a table, which nobody
 			// typed. Anything else is kept, so the SDKs record without asking.
 			History *bool `json:"history"`
+			// ActFor is an application identity token (F1): the query runs
+			// in one transaction acting for the user it names, recorded so
+			// in the Blackbox and row tracking. Never kept anywhere.
+			ActFor string `json:"act_for"`
+			// ActForRequired refuses the query, with nothing run, when the
+			// token is not taken, whatever the application registered: for
+			// a caller that would rather fail than record a change for
+			// nobody (the SDKs' withActor).
+			ActForRequired bool `json:"act_for_required"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if strings.TrimSpace(body.SQL) == "" {
@@ -391,7 +400,8 @@ func registerAPI(mux *http.ServeMux) {
 			}
 		}
 		start := time.Now()
-		res := runQuery(addr, body.SQL, queryAs{Branch: name, Actor: u.Email, AllowDestructive: body.AllowDestructive, AllowRules: body.AllowRules})
+		res := runQuery(addr, body.SQL, queryAs{Branch: name, Actor: u.Email, AllowDestructive: body.AllowDestructive,
+			AllowRules: body.AllowRules, ActFor: body.ActFor, ActForRequired: body.ActForRequired})
 		if body.History == nil || *body.History {
 			rows, errText := queryOutcome(res)
 			recordQuery(auth.HistoryEntry{Actor: u.Email, Branch: name, Source: auth.RequestSource(r), SQL: body.SQL,
@@ -667,6 +677,12 @@ type queryAs struct {
 	// by whoever administers the machine: the Blackbox records it as the
 	// actor, and App as the tool. Only when Actor is empty.
 	Label, App string
+	// ActFor is an application identity token (F1): the query then runs in one
+	// transaction that first asserts the user it names, with the token bound
+	// as a parameter, never in the SQL text.
+	ActFor string
+	// ActForRequired: a token not taken refuses the query instead.
+	ActForRequired bool
 }
 
 // runQuery executes SQL against a branch backend and returns columns/rows (or an
@@ -680,7 +696,53 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 		return map[string]any{"error": err.Error()}
 	}
 	defer conn.Close(ctx)
+	if as.ActFor != "" {
+		return runActingFor(ctx, conn, sql, as.ActFor, as.ActForRequired)
+	}
+	return runOn(ctx, conn, sql)
+}
 
+// runActingFor runs sql in one transaction that first asserts the application
+// actor a token names (bb.act_for, internal/ledger/identity.sql), so every
+// change it makes is recorded for that user. The token goes as a bind
+// parameter, so it is in neither the SQL text, query history, nor
+// pg_stat_statements. The reply says whom it acted for, or why the token was
+// not taken; an application registered to refuse an invalid token gets the
+// refusal as the query's error, and nothing runs.
+func runActingFor(ctx context.Context, conn *pgx.Conn, sql, token string, required bool) map[string]any {
+	if _, err := conn.Exec(ctx, "BEGIN"); err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	var user *string
+	var why string
+	if err := conn.QueryRow(ctx, "SELECT bb.act_for($1), coalesce(current_setting('bb.app.failure', true), '')", token).Scan(&user, &why); err != nil {
+		_, _ = conn.Exec(ctx, "ROLLBACK")
+		out := queryErr(err)
+		return out
+	}
+	acting := map[string]any{"user": nil}
+	if user != nil {
+		acting["user"] = *user
+	} else {
+		acting["refused"] = why
+		if required {
+			_, _ = conn.Exec(ctx, "ROLLBACK")
+			return map[string]any{"error": "application identity refused: " + why + " (act_for_required: nothing was run)", "act_for": acting}
+		}
+	}
+	out := runOn(ctx, conn, sql)
+	if _, failed := out["error"]; failed {
+		_, _ = conn.Exec(ctx, "ROLLBACK")
+	} else if _, err := conn.Exec(ctx, "COMMIT"); err != nil {
+		out = queryErr(err)
+	}
+	out["act_for"] = acting
+	return out
+}
+
+// runOn runs sql on an open session: one statement through the extended
+// protocol, or a script when Postgres refuses that.
+func runOn(ctx context.Context, conn *pgx.Conn, sql string) map[string]any {
 	rows, err := conn.Query(ctx, sql)
 	if err != nil {
 		// Postgres refuses more than one command in the extended protocol, which
