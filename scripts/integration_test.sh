@@ -1272,6 +1272,32 @@ $S start >/dev/null 2>&1; sleep 3
 CHECK="$($S check 2>&1)"; CHECK_RC=$?
 assert_eq "…and it passes again once the stack is back" "$CHECK_RC" "0"
 [ "$CHECK_RC" = 0 ] || { echo "--- what failed ---"; grep -A1 '^FAIL' <<<"$CHECK"; echo "--- end ---"; }
+# The pool's health and the disk under it. On 2026-10-26 this VM's disk filled,
+# ZFS suspended the pool, and every postgres on it hung for eight hours while the
+# storage line still said the pool had 29G free: a pool in a sparse file counts
+# space its disk no longer has. A real suspension would take this suite with it,
+# so that path is unit-tested (TestPoolAndDiskLines); here the disk is filled to
+# a warning, well short of where the pool's file could no longer grow.
+assert_eq "fox check reports the pool's health" "$(grep -c '^ok    pool health  *ONLINE (zfs)' <<<"$CHECK")" "1"
+assert_eq "…and the disk under the pool's file and Docker's data" \
+  "$(grep -c "^ok    disk / .*free of .*holding the storage pool's file and Docker's images and volumes" <<<"$CHECK")" "1"
+FILLER=/var/tmp/fox-it-disk-filler
+AVAIL_K="$(df -P -k / | awk 'NR==2 {print $4}')"
+FILL_K=$((AVAIL_K - 3500 * 1024))
+if [ "$FILL_K" -gt 0 ] && sudo fallocate -l "${FILL_K}K" "$FILLER"; then
+  CHECK="$($S check 2>&1)"; CHECK_RC=$?
+  sudo rm -f "$FILLER"
+  assert_eq "a disk filling up under the pool is a warning, not yet a failure" \
+    "$CHECK_RC|$(grep -c '^warn  disk / .*filling up' <<<"$CHECK")" "0|1"
+  assert_eq "…which says the pool's own count of free space is not the disk's" \
+    "$(grep -c 'the pool counts .* free, but its file can grow by only' <<<"$CHECK")" "1"
+  assert_eq "…and names only the safe cleanups" \
+    "$(grep -A1 '^warn  disk /' <<<"$CHECK" | grep -c 'docker volume prune')|$(grep -A1 '^warn  disk /' <<<"$CHECK" | grep -c 'prune -a')" "1|0"
+  assert_eq "…and it is ok again once the space is back" "$($S check 2>&1 | grep -c '^ok    disk / ')" "1"
+else
+  sudo rm -f "$FILLER"
+  bad "could not fill the disk to test the disk-space line (avail ${AVAIL_K}K)"
+fi
 $S branch delete demoseed >/dev/null 2>&1
 
 echo "### 11e. the claims are checkable (onboarding batch 3)"
