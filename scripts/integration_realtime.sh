@@ -792,7 +792,7 @@ echo "11. a continuous import still works, and is decodable"
 # something other than queries: its apply worker has no client connection of
 # its own, which is the reason canSuspend asks about replication at all.
 IMG="$(sudo docker inspect -f '{{.Config.Image}}' pg-main)"
-sudo docker rm -f rtsrc >/dev/null 2>&1
+sudo docker rm -fv rtsrc >/dev/null 2>&1
 "$S" branch delete rtimp >/dev/null 2>&1
 sudo docker run -d --name rtsrc --network "$DB_NETWORK" -e POSTGRES_PASSWORD=srcpw \
   "$IMG" postgres -c wal_level=logical >/dev/null
@@ -845,7 +845,7 @@ assert_eq "a replicated-in row arrives on the change feed" \
 
 "$S" realtime disable items --branch rtimp >/dev/null 2>&1
 "$S" branch delete rtimp >/dev/null 2>&1
-sudo docker rm -f rtsrc >/dev/null 2>&1
+sudo docker rm -fv rtsrc >/dev/null 2>&1
 
 # ── 12. The neighbours: backups, and a failover that keeps the feed ─────────
 echo
@@ -861,7 +861,7 @@ assert_eq "…and a restore from it is proved to work" "$VRC" "0"
 # log: a restore that refuses has one cause and the assertion carries none of
 # it, and this one has failed once for a reason nobody could name afterwards.
 [ "$VRC" = 0 ] || { echo "  (backup verify said:)"; sed 's/^/    /' <<<"$VERIFY" | tail -20; }
-sudo docker rm -f pg-restore >/dev/null 2>&1
+sudo docker rm -fv pg-restore >/dev/null 2>&1
 
 # Kept, like the failback below: when a standby fails to build, every assertion
 # in the rest of this section fails for that one reason and none of them says

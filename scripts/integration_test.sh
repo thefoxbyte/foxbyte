@@ -52,7 +52,7 @@ echo "### 0. a foreign container named \"minio\" does not break the stack"
 # foreign one, skipped creating its own, and then waited for ever for it on a
 # network it was never attached to -- printing one DNS error per second.
 $S stop >/dev/null 2>&1; sleep 1
-sudo docker rm -f minio >/dev/null 2>&1
+sudo docker rm -fv minio >/dev/null 2>&1
 sudo docker run -d --name minio --network bridge alpine:3 sleep 600 >/dev/null 2>&1
 START_OUT="$(timeout 600 $S start 2>&1)"; START_RC=$?
 [ "$START_RC" = 0 ] || { echo "--- start output ---"; echo "$START_OUT" | tail -20; echo "--- end ---"; }
@@ -63,7 +63,7 @@ sleep 5
 assert_eq "…and the object store is ours, on our network" \
   "$(sudo docker inspect -f '{{.State.Running}}' "$DB_OBJECT_STORE" 2>/dev/null)|$(sudo docker inspect -f '{{json .NetworkSettings.Networks}}' "$DB_OBJECT_STORE" 2>/dev/null | grep -c "$DB_NETWORK")" "true|1"
 assert_eq "…and the foreign container is untouched" "$(sudo docker inspect -f '{{.State.Running}}' minio 2>/dev/null)" "true"
-sudo docker rm -f minio >/dev/null 2>&1
+sudo docker rm -fv minio >/dev/null 2>&1
 
 echo "### 1. fresh start + auth"
 $S stop >/dev/null 2>&1; sleep 1
@@ -294,7 +294,7 @@ $S backup create >/dev/null 2>&1
 pg pg-main "SELECT pg_switch_wal();" >/dev/null; sleep 3
 $S restore --to latest >/dev/null 2>&1; sleep 1
 assert_eq "PITR restores 3 rows" "$(pg pg-restore 'SELECT count(*) FROM pit')" "3"
-sudo docker rm -f pg-restore >/dev/null 2>&1
+sudo docker rm -fv pg-restore >/dev/null 2>&1
 
 echo "### 3b. PITR to a point before the newest base backup (D3)"
 # The restore used to fetch LATEST whatever the target was, so a point earlier
@@ -317,7 +317,7 @@ OUT="$($S restore --to "$T1" 2>&1)"; sleep 1
 assert_eq "restore says which base backup it starts from" "$(echo "$OUT" | grep -c 'starting from base backup')" "1"
 assert_eq "…and it is not the newest one" "$(echo "$OUT" | grep -c "$NEWEST")" "0"
 assert_eq "PITR reaches a point before the newest backup (3 rows, not 9)" "$(pg pg-restore 'SELECT count(*) FROM tt')" "3"
-sudo docker rm -f pg-restore >/dev/null 2>&1
+sudo docker rm -fv pg-restore >/dev/null 2>&1
 # A point no base backup precedes is refused, saying what the archive reaches.
 OLD="$($S restore --to '2020-01-01 00:00:00+00' 2>&1)"
 assert_eq "a point before every base backup is refused" "$(echo "$OLD" | grep -c 'no base backup had finished by')" "1"
@@ -326,7 +326,7 @@ assert_eq "…and nothing was left behind" "$(sudo docker ps -aq --filter 'name=
 # latest still works exactly as before.
 $S restore --to latest >/dev/null 2>&1; sleep 1
 assert_eq "restore --to latest still reaches the end of the archive (9 rows)" "$(pg pg-restore 'SELECT count(*) FROM tt')" "9"
-sudo docker rm -f pg-restore >/dev/null 2>&1
+sudo docker rm -fv pg-restore >/dev/null 2>&1
 
 echo "### 4. suspend / resume"
 $S branch suspend itb >/dev/null 2>&1
@@ -351,7 +351,7 @@ echo "### 5b. continuous import: status and cutover from the API (I8)"
 # A real PostgreSQL source with logical replication, on the stack's network,
 # running the same image main does.
 IMG="$(sudo docker inspect -f '{{.Config.Image}}' pg-main)"
-sudo docker rm -f itsrc >/dev/null 2>&1; $S branch delete itrep >/dev/null 2>&1
+sudo docker rm -fv itsrc >/dev/null 2>&1; $S branch delete itrep >/dev/null 2>&1
 sudo docker run -d --name itsrc --network "$DB_NETWORK" -e POSTGRES_PASSWORD=srcpw "$IMG" postgres -c wal_level=logical >/dev/null
 # Over TCP, not the socket: on a container's first start the entrypoint runs a
 # temporary server that answers on the socket and then shuts down, and a probe
@@ -421,7 +421,7 @@ assert_eq "cutting over again is refused (409)" \
   "$(curl -sk -o /dev/null -w '%{http_code}' -H "$AUTH" -X POST https://localhost:8080/api/branches/itrep/replication/cutover)" "409"
 assert_eq "cutover of a branch that never replicated is refused (409)" \
   "$(curl -sk -o /dev/null -w '%{http_code}' -H "$AUTH" -X POST https://localhost:8080/api/branches/itb/replication/cutover)" "409"
-$S branch delete itrep >/dev/null 2>&1; sudo docker rm -f itsrc >/dev/null 2>&1
+$S branch delete itrep >/dev/null 2>&1; sudo docker rm -fv itsrc >/dev/null 2>&1
 
 echo "### 6. HA: replication + failover + failback"
 $S ha enable >/dev/null 2>&1; sleep 2
@@ -807,7 +807,7 @@ $S branch suspend standby >/dev/null 2>&1
 assert_eq "suspending the promoted standby is refused" "$?" "1"
 assert_eq "promoted standby still running" "$(sudo docker inspect -f '{{.State.Status}}' pg-standby 2>/dev/null)" "running"
 # `fox stop` removes containers; `fox up` must bring the promoted standby back, not the old main.
-sudo docker rm -f pg-standby >/dev/null 2>&1
+sudo docker rm -fv pg-standby >/dev/null 2>&1
 $S up >/dev/null 2>&1; sleep 2
 assert_eq "up recreates the promoted standby" "$(sudo docker inspect -f '{{.State.Status}}' pg-standby 2>/dev/null)" "running"
 assert_eq "up leaves the old main stopped" "$(sudo docker inspect -f '{{.State.Status}}' pg-main 2>/dev/null)" "exited"
@@ -831,7 +831,7 @@ assert_eq "status names the container serving main" "$($S status 2>/dev/null | g
 pg pg-standby "SELECT pg_switch_wal()" >/dev/null; sleep 5
 $S restore --to latest >/dev/null 2>&1; sleep 1
 assert_eq "PITR reaches a write made after the failover" "$(pg pg-restore 'SELECT count(*) FROM pit WHERE id=101')" "1"
-sudo docker rm -f pg-restore >/dev/null 2>&1
+sudo docker rm -fv pg-restore >/dev/null 2>&1
 $S ha failback >/tmp/failback.log 2>&1
 assert_eq "ha failback exits 0" "$?" "0"
 assert_eq "main is primary again (not in recovery)" "$(pg pg-main 'SELECT pg_is_in_recovery()')" "f"
@@ -986,7 +986,7 @@ $S branch delete rgn >/dev/null 2>&1
 $S ha sync on >/dev/null 2>&1
 assert_eq "the mode is on before the standby goes" \
   "$(pg pg-main "SELECT current_setting('synchronous_standby_names')")" "ANY 1 (fox_standby)"
-sudo docker rm -f pg-standby >/dev/null 2>&1
+sudo docker rm -fv pg-standby >/dev/null 2>&1
 timeout 240 "$S" up >/tmp/sync-restart.log 2>&1
 assert_eq "\`up\` returns instead of hanging on a commit nothing can satisfy" "$?" "0"
 assert_eq "…having cleared the setting before its first write" \
@@ -1017,7 +1017,7 @@ assert_eq "hash chain verifies intact (0 broken rows)" \
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ledg" >/dev/null 2>&1
 
 echo "### 9. ETL pipeline (extract -> transform -> test)"
-sudo docker rm -f mongo-src >/dev/null 2>&1
+sudo docker rm -fv mongo-src >/dev/null 2>&1
 sudo docker run -d --name mongo-src --network "$DB_NETWORK" mongo:7 >/dev/null 2>&1
 for i in $(seq 1 40); do sudo docker exec mongo-src mongosh --quiet --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 && break; sleep 1; done
 sudo docker exec mongo-src mongosh --quiet shop --eval \
@@ -1102,7 +1102,7 @@ MINIO_IMG="$(sudo docker inspect -f '{{.Config.Image}}' "$DB_OBJECT_STORE")"
 # listed with the tag <none>, and "repo:<none>" is not a reference docker runs.
 MC_IMG="$(sudo docker images --digests --format '{{.Repository}}@{{.Digest}}' | grep -m1 '/mc@' | grep -v '@<none>')"
 [ -n "$MC_IMG" ] || MC_IMG="$(sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep -m1 '/mc:' | grep -v ':<none>')"
-sudo docker rm -f "$RS" >/dev/null 2>&1
+sudo docker rm -fv "$RS" >/dev/null 2>&1
 sudo docker run -d --name "$RS" --network "$DB_NETWORK" -e MINIO_ROOT_USER="$RAK" -e MINIO_ROOT_PASSWORD="$RSK" "$MINIO_IMG" server /data >/dev/null
 rmc() { sudo docker run --rm --network "$DB_NETWORK" -e MC_HOST_r="http://$RAK:$RSK@$RS:9000" "$MC_IMG" "$@" 2>&1; }
 for i in $(seq 1 20); do rmc ls r >/dev/null 2>&1 && break; sleep 1; done
@@ -1124,7 +1124,7 @@ sleep 8
 assert_eq "WAL archives to the remote bucket" "$(rmc ls --recursive r/itremote/fox/wal_005/ | grep -c . | awk '{print ($1>0)}')" "1"
 $S restore --to latest >/dev/null 2>&1; sleep 1
 assert_eq "point-in-time restore reads from the remote target" "$(pg pg-restore 'SELECT count(*) FROM remote_t')" "4"
-sudo docker rm -f pg-restore >/dev/null 2>&1
+sudo docker rm -fv pg-restore >/dev/null 2>&1
 $S blackbox checkpoint main >/dev/null 2>&1; $S audit checkpoint >/dev/null 2>&1
 assert_eq "anchors are copied to the target, under Object Lock" \
   "$(rmc ls --recursive r/itremote/fox/anchors/main/ | grep -c '.json' | awk '{print ($1>0)}')|$(rmc retention info --recursive r/itremote/fox/anchors/main/ | grep -c GOVERNANCE | awk '{print ($1>0)}')" "1|1"
@@ -1202,7 +1202,7 @@ assert_eq "…and fox check warns again" "$($S check 2>&1 | grep -c '^warn  anch
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS anchor_target_t" >/dev/null
 assert_eq "going back to the local store works" "$($S backup target local 2>&1 | grep -c 'local object store')" "1"
 assert_eq "…and main archives there again" "$($S backup target | grep -c 'local object store')" "1"
-sudo docker rm -f "$RS" >/dev/null 2>&1
+sudo docker rm -fv "$RS" >/dev/null 2>&1
 
 echo "### 11d. the first run: sample data, check, connect (onboarding batch 1)"
 # The suites run with FOX_NO_DEMO=1 (scripts/lib/test_guard.sh), so the seed is
@@ -2556,7 +2556,7 @@ $S branch delete itb >/dev/null 2>&1
 $S branch delete etltest >/dev/null 2>&1
 $S branch delete etlfail >/dev/null 2>&1
 $S branch delete faithtest >/dev/null 2>&1
-sudo docker rm -f mongo-src >/dev/null 2>&1
+sudo docker rm -fv mongo-src >/dev/null 2>&1
 for b in impbad impok jsonbad jsonok; do $S branch delete "$b" >/dev/null 2>&1; done
 rm -f /tmp/imp_bad.sql /tmp/imp_ok.sql /tmp/imp_bad.json /tmp/imp_ok.json /tmp/failback.log
 
