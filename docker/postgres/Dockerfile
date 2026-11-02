@@ -89,6 +89,24 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ls /usr/share/postgresql/"${PG_MAJOR}"/extension/vector.control
 
+# pgAudit, from the same repository (audit coverage, F6;
+# docs/FOX_F6_Audit_Design.md). Nothing is enabled by it: the server loads it
+# only when started with it in shared_preload_libraries, which no install does
+# until its owner turns audit on. Pinned per major, as its versions follow the
+# server's.
+ARG PGAUDIT_VERSION_16=16.1-2.pgdg12+1
+ARG PGAUDIT_VERSION_18=18.0-3.pgdg12+1
+RUN set -eux; \
+    case "${PG_MAJOR}" in \
+      16) v="${PGAUDIT_VERSION_16}" ;; \
+      18) v="${PGAUDIT_VERSION_18}" ;; \
+      *) echo "no pinned pgaudit for PostgreSQL ${PG_MAJOR}" >&2; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}-pgaudit=${v}"; \
+    rm -rf /var/lib/apt/lists/*; \
+    ls /usr/lib/postgresql/"${PG_MAJOR}"/lib/pgaudit.so
+
 COPY --from=f1-build /out/ /
 
 # What this image has, as a number the engine reads without starting a

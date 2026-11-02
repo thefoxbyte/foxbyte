@@ -1,6 +1,9 @@
 # F6: audit coverage — design
 
-**Status:** for review. Written against `main` at `d80f6e9`. It answers Gate 0's
+**Status:** agreed as recommended (2 November 2026, #193). The Gate 0
+prototype is built and its suite passes; what it found is in section 19, and
+it changes sections 6, 7, 12 and 13 where marked. Written against `main` at
+`d80f6e9`. It answers Gate 0's
 F6 item in the review plan (`docs/FOX_Expert_Review_Plan.md`, sections 4 and
 5): "the audit design, shown to keep no personal data it doesn't need". Gate 1
 then ships pgAudit in Standard, in the default mode this describes.
@@ -355,6 +358,10 @@ never implying more:
   - anything a database superuser does after turning auditing off for their
     session.
 - **Checked:** delivery and gaps, as section 13.
+- **Found by the prototype (section 19):** the statements inside a `SECURITY
+  DEFINER` function are not in pgAudit's object audit, whoever owns the
+  function. A definer function that writes a marked table is a gap, and the
+  status says so. Section 19 lists the options.
 
 The superuser limit is the same as the Blackbox's. A superuser can `SET
 pgaudit.log = 'none'` for their own session. FoxByte's own superuser is the
@@ -505,8 +512,141 @@ Its suite will contain:
 | 1 | How values are kept out of error lines | The log hook in `bb_identity` (section 6); `log_min_messages=log` only if the hook proves unsafe |
 | 2 | Where logs live | A dataset of their own, with a quota; collected, chained, forwarded (section 9) |
 | 3 | Existing installs | Opt-in with `fox audit-log setup --yes` (restarts `main`) |
-| 4 | New installs | On by default if section 17 is within budget |
+| 4 | New installs | On by default if section 17 is within budget. **It is not** (section 19, item 5), so opt-in, as for existing installs |
 | 5 | Retention | 1 year default mode, 30 days forensic, 2 days raw |
 | 6 | Reads before masking | Per table, for everyone, with `--reads` |
 | 7 | Command name | `fox audit-log` (`fox audit` stays the security log) |
 | 8 | Editions | pgAudit, marking, the store, the chain and forwarding in Standard. Automatic marks, anchors and the evidence export in Enterprise |
+
+---
+
+## 19. What the prototype found (Gate 0)
+
+The prototype adds three things:
+
+- pgAudit in the engine image, pinned per major;
+- the log hook and the transaction line in `bb_identity`, installed only when
+  the library is preloaded;
+- `scripts/integration_f6.sh` (`make integration-f6`).
+
+The suite builds the image for PostgreSQL 18 and 16 and runs throwaway
+servers with audit on. It touches no install.
+
+**The Gate 0 exit holds.** A workload as an application's role sent
+synthetic values (Verhoeff-valid Aadhaar numbers, Luhn-valid card numbers, a
+PAN, an email, a phone number) through simple and extended queries, `COPY`
+and PL/pgSQL. It raised ten kinds of error, and `RAISE` at every level. The
+whole server log held none of the values, and neither did the containers' own
+output, on both majors. Neither held the F1 token. No line carried a detail,
+a context, a hint or a statement. The client still got every error whole.
+
+What it changed or added:
+
+1. **The hook redacts more than errors** (section 6). Anything a client
+   session, background worker or autovacuum worker sends to the server log is
+   redacted to its severity and SQLSTATE: errors, warnings, and `RAISE LOG`.
+   A function can `RAISE LOG` any value it likes, at a level the server logs.
+   Only pgAudit's own lines pass, recognised by the file that raised them
+   (`pgaudit.c`). `RAISE LOG 'AUDIT: OBJECT,…'` with a value in it is
+   redacted like anything else, so a forged audit line cannot carry data.
+2. **The transaction line carries its own virtual transaction** (section 7).
+   By the time a commit's callback runs, the process has cleared it, and the
+   log's `vxid` field reads `n/0`. The line therefore says which transaction
+   it closes: `AUDIT: TXN,5/2,COMMIT,asserted,shop,alice`.
+   - A virtual transaction id is reused by a later session in the same slot,
+     so records join on `session_id` and the virtual transaction together.
+   - A rolled-back savepoint adds `AUDIT: TXN,5/2,SUBROLLBACK,2`: the last
+     two audit lines did not take effect.
+   - Whom-for is decided at pre-commit, so an assertion undone with its
+     savepoint is none, as F1's design section 5.3 has it.
+3. **Coverage, measured** (section 12):
+
+   | Path | Logged |
+   |---|---|
+   | Through a view | yes, writes and reads |
+   | A CTE | yes |
+   | A trigger (invoker's rights) | yes |
+   | `COPY … FROM` | yes |
+   | `TRUNCATE` | no. Refused by the Blackbox by default |
+   | **Inside a `SECURITY DEFINER` function** | **no**, whether the owner is a superuser or not |
+
+   **The last row is new, and a real gap.** Options for Gate 1, to decide
+   there:
+   - log `FUNCTION` calls for definer functions only, by marking them;
+   - refuse to mark a table that a definer function writes, until the
+     function is reviewed;
+   - state it, and have `fox audit-log status` list the definer functions
+     that touch marked tables.
+
+   The last costs nothing and is honest either way.
+4. **A full log is silent** (section 13). With the log's space full, every
+   write still succeeded (4,000 of 4,000) and the server kept answering.
+   - Only 1,301 of the 4,000 audit lines reached the log.
+   - Nothing said so: not the server's own output, and not its stderr file.
+   - Once space was freed, lines were logged again.
+
+   So the gap is found only by the collector's own checks: free space,
+   statement numbers and the heartbeat. This is now required, not optional.
+5. **Cost: over budget, so audit stays opt-in.** pgbench on PostgreSQL 18,
+   16 clients on the test VM's 4 CPUs, so the CPUs are full, logs on disk.
+   Three rounds per mode, medians:
+
+   | Mode | Write capacity (TPC-B) | Read capacity (`-S`) | Log per write transaction |
+   |---|---|---|---|
+   | pgAudit alone, every statement audited | −16% to −32% | −23% to −49% | 2,204 bytes |
+   | Default mode (pgAudit, hook, transaction line), every statement audited | −13% to −48% | −36% to −65% | 2,577 bytes |
+   | Default mode, one write in five audited | −13% to −29% | not audited: +12% to −22% | 820 bytes |
+   | Forensic mode, every statement audited | −13% to −37% | −35% to −58% | 2,869 bytes |
+
+   - **Measured:** each figure is the median of three rounds against audit
+     off, and the range is over five such runs.
+   - **The VM is noisy.** The read column for one write in five audits no
+     reads at all, yet it moved from 12% faster to 22% slower than audit off.
+   - **Log sizes were counted line by line**, not estimated. In 128,451
+     transactions of default mode and 83,834 of forensic mode:
+     - every audited statement had its line;
+     - every transaction had its transaction line;
+     - no line was cut off.
+
+     Under load, PostgreSQL's logging process slows the server rather than
+     drop a line. The suite now checks this every run.
+
+   - **The cost is the log's volume.** Each audited statement is one line of
+     about 430 bytes. Every line goes through PostgreSQL's single logging
+     process, which slows the server rather than lose one.
+   - **The hook's own share could not be separated from the noise.** Across the
+     five runs it ranged from nothing to 16 points on writes. On single-statement
+     reads it adds a second line per transaction, the transaction line,
+     which shows in both.
+   - **The 5% budget is not met** with every statement audited, nor with one
+     write in five. A precise figure needs a quiet machine, not the shared
+     test VM, and that is a Gate 1 item. The answer does not depend on the
+     precision: the cost is far above 5%.
+   - **How it was measured matters.** With 4 clients the runs were bound by
+     round trips, not CPU, and audited reads came out *faster* than
+     unaudited. A busy logging process keeps the virtual CPUs awake. The
+     figures above are capacity with the CPUs full: the fair measure, and the
+     worst.
+
+   **What follows:**
+
+   - Section 15 put audit on by default for new installs only within budget.
+     It is not, so **audit is opt-in everywhere**, and the console says what
+     it costs before turning it on.
+   - For Gate 1:
+     - a shorter line format: `stderr` with a compact prefix, against
+       `jsonlog`'s ~500 bytes;
+     - a transaction line only for transactions that wrote, or that read for
+       an asserted user;
+     - reads audited only for tables marked for reads, which section 8
+       already makes the rule.
+
+6. **Two values a client controls stay in the raw log.** `application_name`
+   and the client address are written by PostgreSQL itself, beside every
+   line, and no hook can change them. The collector drops them (section 5),
+   and raw files live at most 2 days.
+7. **Passwords:** pgAudit redacts them even in forensic mode
+   (`PASSWORD <REDACTED>`). Parameters stay out in both modes: a read with a
+   bound card number logged the read and not the number.
+
+Everything else in sections 1 to 18 held as written.
