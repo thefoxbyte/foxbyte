@@ -9,6 +9,7 @@ control-plane REST API (see internal/controlplane/openapi.yaml).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import ssl
 import urllib.error
@@ -18,7 +19,7 @@ import urllib.request
 # The one place this package's version is written. pyproject.toml reads it from
 # here, so a release cannot ship a wheel whose metadata disagrees with what the
 # package reports about itself.
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 
 # The change feed. See foxbyte/realtime.py — a subscriber has several details
@@ -38,6 +39,67 @@ from foxbyte.realtime import (  # noqa: E402,F401
 
 class FoxByteError(Exception):
     """An API request failed (non-2xx response)."""
+
+
+class ActingClient:
+    """What ``FoxByte.with_actor`` yields: queries that all act for one user."""
+
+    def __init__(self, db: "FoxByte", token: str) -> None:
+        self._db = db
+        self._token = token
+
+    def query(self, branch: str, sql: str):
+        return self._db.query(branch, sql, act_for=self._token, act_for_required=True)
+
+
+@contextlib.contextmanager
+def with_actor_transaction(conn, token: str, paramstyle: str = "%s"):
+    """One transaction on a Postgres connection of your own (through the
+    Gateway, logged in with your application's account key), after saying
+    which of your users it acts for: ``SELECT bb.act_for(...)`` with the token
+    as a parameter. Commits when the block ends, rolls back when it raises.
+    Every change made in it is recorded for that user::
+
+        with with_actor_transaction(conn, token) as cur:
+            cur.execute("UPDATE orders SET paid = true WHERE id = %s", (7,))
+
+    ``conn`` is a DB-API connection whose driver binds parameters on the
+    server (psycopg 3 does; use ``paramstyle="$1"`` for one that numbers
+    them). psycopg2 is refused: it writes parameters into the SQL text it
+    sends, which would put the token in ``current_query()``, the server's
+    logs and ``pg_stat_statements``.
+    """
+    if not token:
+        raise FoxByteError("with_actor_transaction needs a token")
+    if type(conn).__module__.split(".")[0] in ("psycopg2", "pgdb", "pg8000"):
+        raise FoxByteError(
+            f"{type(conn).__module__} sends parameters inside the SQL text, so the token would be "
+            "logged with it: use psycopg 3 (server-side binding), or FoxByte.with_actor over the API"
+        )
+    placeholder = {"%s": "%s", "$1": "$1", "?": "?", ":1": ":1"}.get(paramstyle)
+    if placeholder is None:
+        raise FoxByteError(f"paramstyle is %s, $1, ? or :1, not {paramstyle!r}")
+    # A connection in autocommit mode is given its transaction by hand; one
+    # that is not already opens one with its first statement (DB-API), and is
+    # ended the driver's way.
+    manual = bool(getattr(conn, "autocommit", False))
+    cur = conn.cursor()
+    try:
+        if manual:
+            cur.execute("BEGIN")
+        cur.execute(f"SELECT bb.act_for({placeholder})", (token,))
+        yield cur
+        cur.execute("COMMIT") if manual else conn.commit()
+    except BaseException:
+        try:
+            cur.execute("ROLLBACK") if manual else conn.rollback()
+        finally:
+            raise
+    finally:
+        try:
+            cur.close()
+        except Exception:  # noqa: BLE001 - the original outcome matters more
+            pass
 
 
 class FoxByte:
@@ -89,9 +151,36 @@ class FoxByte:
     def resume(self, name: str):
         return self._request("POST", f"/api/branches/{name}/resume")
 
-    def query(self, branch: str, sql: str):
-        """Run SQL on a branch. Returns {"columns": [...], "rows": [...]} or {"error": ...}."""
-        return self._request("POST", f"/api/branches/{branch}/query", {"sql": sql})
+    def query(self, branch: str, sql: str, act_for: str | None = None, act_for_required: bool = False):
+        """Run SQL on a branch. Returns {"columns": [...], "rows": [...]} or {"error": ...}.
+
+        ``act_for`` is an application identity token (``fox app``): the query
+        then runs in one transaction that first says which of your users it
+        acts for, so the Blackbox and row tracking record each change for them.
+        The reply's ``act_for`` says whom it ran for, or why the token was not
+        taken; ``act_for_required`` refuses the query instead, running nothing.
+        """
+        body: dict = {"sql": sql}
+        if act_for:
+            body["act_for"] = act_for
+            if act_for_required:
+                body["act_for_required"] = True
+        return self._request("POST", f"/api/branches/{branch}/query", body)
+
+    @contextlib.contextmanager
+    def with_actor(self, token: str):
+        """Queries that all act for the user a token names (register your
+        application with ``fox app register``, and sign a short-lived token for
+        each user with its key). Each query is its own transaction, asserted
+        afresh; one the engine does not take is refused, with nothing run, so a
+        change is never recorded for nobody by mistake::
+
+            with db.with_actor(token) as acting:
+                acting.query("main", "UPDATE orders SET status = 'paid' WHERE id = 7")
+        """
+        if not token:
+            raise FoxByteError("with_actor needs a token")
+        yield ActingClient(self, token)
 
     # --- Blackbox (the record of schema changes; ledger* names still work) ---
     def ledger(self, branch: str = "main", **filters):
