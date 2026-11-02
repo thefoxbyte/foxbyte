@@ -1,6 +1,6 @@
 {
   "name": "@foxbyte/client",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "TypeScript client for FoxByte \u2014 Postgres with instant branching and Blackbox, a tamper-evident record of every schema change.",
   "license": "Apache-2.0",
   "type": "module",

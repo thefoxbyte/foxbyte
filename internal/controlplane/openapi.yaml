@@ -557,9 +557,30 @@ paths:
                     console's own reads of a table send it). History keeps the
                     SQL, branch, time, duration, row count and outcome, never a
                     result; see /api/history.
+                act_for:
+                  type: string
+                  description: >-
+                    An application identity token (fox app): the query runs in one
+                    transaction that first asserts the user it names (bb.act_for), so
+                    the Blackbox and row tracking record each change as made by this
+                    key's account and for that user. Sent as a bind parameter, so it
+                    is in neither the SQL, query history nor pg_stat_statements. The
+                    reply's act_for says whom it ran for, or why the token was not
+                    taken; for an application registered to refuse an invalid token,
+                    the refusal is the query's error and nothing runs.
+                act_for_required:
+                  type: boolean
+                  default: false
+                  description: >-
+                    With act_for: when the token is not taken, refuse the query (nothing
+                    runs) rather than run it for nobody, whatever the application
+                    registered. The SDKs' withActor sends it.
       responses:
         "200":
-          description: Columns and rows, or an error message.
+          description: >-
+            Columns and rows, or an error message. With act_for, also
+            act_for: {user} when the token was taken, {user: null, refused: <why>}
+            when it was not.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/QueryResult" }
@@ -2648,6 +2669,12 @@ components:
         columns: { type: array, items: { type: string } }
         rows: { type: array, items: { type: array } }
         error: { type: string }
+        act_for:
+          type: object
+          description: Present when the request sent act_for.
+          properties:
+            user: { type: string, nullable: true, description: The user the query ran for, or null when the token was not taken. }
+            refused: { type: string, description: "Why it was not taken: bad signature, expired, wrong session role, …" }
         suggestion:
           type: object
           description: >-

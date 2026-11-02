@@ -285,6 +285,71 @@ if (txs.length) {
 	fi
 fi
 
+echo "### 4. application identity through the clients (F1)"
+# An application registered with fox app passes a token naming its user, and
+# the engine records each change for that user. Through the clients: a query's
+# act_for, and withActor / with_actor, which require the token to be taken.
+F1D="$(mktemp -d)"
+( cd "$ROOT" && go build -o "$F1D/mint" ./scripts/f1/mint ) || bad "the token tool builds"
+"$F1D/mint" keygen "$F1D" k1 >"$F1D/k1.pub"
+"$S" app remove sdkapp >/dev/null 2>&1
+"$S" app register sdkapp --account "$EMAIL" --key "$F1D/k1.pub" --kid k1 >/dev/null 2>&1
+SDKAUD="$("$S" app list --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["install_id"])')"
+TOK="$("$F1D/mint" token "$F1D/k1.seed" -kid k1 -iss sdkapp -aud "$SDKAUD" -sub alice)"
+BADTOK="$("$F1D/mint" token "$F1D/k1.seed" -kid k1 -iss sdkapp -aud install-other -sub alice)"
+RTSQL "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.sdk_f1_py, public.sdk_f1_ts, public.sdk_f1_rows, public.sdk_f1_no; CREATE TABLE public.sdk_f1_rows (id int PRIMARY KEY); GRANT ALL ON public.sdk_f1_rows TO db_client"
+"$S" track sdk_f1_rows >/dev/null 2>&1
+forof() { "$S" blackbox main --limit 60 | grep -w "public.$1" | head -1 | awk -F'|' '{gsub(/^ +| +$/, "", $3); print $3}'; }
+F1PY="$(FOX_KEY="$KEY" FOX_API="$API" TOK="$TOK" BADTOK="$BADTOK" python3 - "$ROOT/clients/python" <<'PY' 2>&1
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from foxbyte import FoxByte
+db = FoxByte(os.environ["FOX_KEY"], os.environ["FOX_API"], verify_tls=False)
+say = lambda n, got, want: print(("PASS" if got == want else "FAIL") + f"|{n}|{got!r}|{want!r}")
+r = db.query("main", "CREATE TABLE sdk_f1_py (id int)", act_for=os.environ["TOK"])
+say("python: a query acting for a user says whom it ran for", (r.get("error"), r.get("act_for")), (None, {"user": "alice"}))
+with db.with_actor(os.environ["TOK"]) as acting:
+    r = acting.query("main", "INSERT INTO sdk_f1_rows VALUES (1)")
+say("python: with_actor's query runs for the user", r.get("error"), None)
+with db.with_actor(os.environ["BADTOK"]) as acting:
+    r = acting.query("main", "CREATE TABLE sdk_f1_no (id int)")
+say("python: with_actor refuses a token the engine does not take, and runs nothing",
+    ("refused" in (r.get("error") or ""), (r.get("act_for") or {}).get("refused")), (True, "wrong audience"))
+r = db.query("main", "SELECT 1", act_for=os.environ["BADTOK"])
+say("python: without required, a query runs for nobody and says why", (r.get("error"), (r.get("act_for") or {}).get("refused")), (None, "wrong audience"))
+PY
+)"
+while IFS='|' read -r st name got want; do
+	case "$st" in PASS) ok "$name" ;; FAIL) bad "$name (got $got, want $want)" ;; esac
+done <<<"$F1PY"
+grep -q '^PASS|' <<<"$F1PY" || { bad "python: application identity stopped part way"; tail -5 <<<"$F1PY" | sed 's/^/      /'; }
+if [ -f "$TS/dist/index.js" ]; then
+	F1TS="$(cd "$TS" && npx --yes tsc >/dev/null 2>&1; FOX_KEY="$KEY" FOX_API="$API" TOK="$TOK" BADTOK="$BADTOK" NODE_TLS_REJECT_UNAUTHORIZED=0 node --input-type=module -e '
+import { FoxByte } from "./dist/index.js"
+const db = new FoxByte(process.env.FOX_KEY, process.env.FOX_API)
+const say = (name, got, want) => console.log(`${JSON.stringify(got) === JSON.stringify(want) ? "PASS" : "FAIL"}|${name}|${JSON.stringify(got)}|${JSON.stringify(want)}`)
+const r = await db.withActor(process.env.TOK, (as) => as.query("main", "CREATE TABLE sdk_f1_ts (id int)"))
+say("typescript: withActor runs for the user", [r.error ?? null, r.act_for], [null, { user: "alice" }])
+await db.withActor(process.env.TOK, (as) => as.query("main", "UPDATE sdk_f1_rows SET id = 2 WHERE id = 1"))
+const bad = await db.withActor(process.env.BADTOK, (as) => as.query("main", "CREATE TABLE sdk_f1_no (id int)"))
+say("typescript: withActor refuses a token the engine does not take, and runs nothing", [/refused/.test(bad.error ?? ""), bad.act_for?.refused], [true, "wrong audience"])
+' 2>&1)"
+	while IFS='|' read -r st name got want; do
+		case "$st" in PASS) ok "$name" ;; FAIL) bad "$name (got $got, want $want)" ;; esac
+	done <<<"$F1TS"
+	grep -q '^PASS|' <<<"$F1TS" || { bad "typescript: application identity stopped part way"; tail -5 <<<"$F1TS" | sed 's/^/      /'; }
+fi
+assert_eq "the Blackbox records what the clients ran as made for alice" \
+  "$(forof sdk_f1_py)|$(forof sdk_f1_ts)" "alice, asserted by sdkapp|alice, asserted by sdkapp"
+assert_eq "…a refused token ran nothing" "$(RTQ "SELECT to_regclass('public.sdk_f1_no') IS NULL")" "t"
+assert_eq "…and a tracked row keeps whom it was changed for" \
+  "$(RTQ "SELECT last_modified_for FROM public.sdk_f1_rows")" "asserted:sdkapp:alice"
+assert_eq "…and no token is in the account's query history" \
+  "$("$S" history --user "$EMAIL" --limit 200 2>/dev/null | grep -c -F "$(cut -d. -f3 <<<"$TOK" | cut -c1-24)")" "0"
+"$S" app remove sdkapp >/dev/null 2>&1
+RTSQL "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.sdk_f1_py, public.sdk_f1_ts, public.sdk_f1_rows, public.sdk_f1_no"
+rm -rf "$F1D"
+
 echo "### cleanup"
 "$S" realtime disable sdk_rt >/dev/null 2>&1
 RTSQL "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.sdk_rt CASCADE"

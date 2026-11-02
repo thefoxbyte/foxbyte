@@ -6,7 +6,7 @@ first step, the check in C with its cache, is in section 14 (#177). The second,
 applications asserting their user in the product, is in section 15 (#180). The
 third, row tracking's `last_modified_for` (point 5.2), is in section 16 (#181),
 3b, an agent session's whom-for, in section 17 (#182), 4, the access review's
-Applications table, in section 18 (#184), and 5, G1's remainder, in section 19. Written against
+Applications table, in section 18 (#184), 5, G1's remainder, in section 19 (#188), and 6, the SDK helpers, in section 20. Written against
 `main` at `d93492c`. It answers Gate 0's F1 item in the review plan
 (`docs/FOX_Expert_Review_Plan.md`, sections 4 and 5): the token protocol written
 down, the signature-checking choice made, and the prototype and its tests
@@ -729,3 +729,41 @@ named for the MCP client's self-given name would have been named by the client.
   9 said;
 - `fox sql` run by whoever administers the machine, who is labelled `cli:<user>`
   and is root-equivalent there.
+
+---
+
+## 20. Gate 1, step 6: the SDK helpers
+
+**The constraint.** The published clients are thin REST clients, and each REST
+query is its own connection, so they cannot hold a transaction open across
+calls. The helper is therefore built on one control-plane option: `POST /query`
+takes `act_for`.
+
+- The engine opens a transaction and runs `SELECT bb.act_for($1)` with the
+  token bound, then runs the SQL, then commits.
+- The reply says whom it ran for, or why the token was not taken.
+- `act_for_required` refuses the query instead, with nothing run, whatever the
+  application registered.
+
+**What was built** (`feat/f1-sdk-actor`), in both clients (0.8.0):
+
+- **`withActor(token, fn)` / `with_actor(token)`:** a client whose every query
+  acts for the user. Each query is its own transaction and is required to be
+  taken, so a change is never recorded for nobody by mistake.
+- **`query(…, actFor)` / `act_for=`:** one query, without refusing.
+- **`withActorTransaction(client, token, fn)` / `with_actor_transaction(conn,
+  token)`:** for an application with its own Postgres connection through the
+  Gateway. They wrap `BEGIN`, `SELECT bb.act_for($1)`, the caller's statements,
+  and `COMMIT` or `ROLLBACK`.
+  - Dependency-free, for any client that binds parameters: node-postgres, or
+    psycopg 3.
+  - The Python helper refuses psycopg2. It writes parameters into the SQL text,
+    which section 5.4 forbids for the token.
+
+**What was not built:** minting. A token is signed with the application's
+private key, which stays with the application.
+
+- Python's standard library has no Ed25519.
+- Node's `crypto` would tie the TypeScript client to Node.
+- The READMEs point to `jose` and PyJWT, as section 3 says any EdDSA library
+  will do.
