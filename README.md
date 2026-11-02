@@ -51,8 +51,13 @@ separate dev server to run.
 
 - **[Blackbox](#blackbox)** — every `CREATE`/`ALTER`/`DROP`/`GRANT`
   recorded with the actor (human or agent), tool, and branch; **tamper-evident**
-  (hash-chained, append-only, `fox blackbox verify`) and **non-forgeable** (clients
-  connect as a per-user role, so the recorded actor is the login identity).
+  (hash-chained and append-only, checked by `fox blackbox verify`, with signed
+  anchors for what a database superuser could rewrite). The actor is the login
+  the session authenticated as, which nothing the session runs can change:
+  people and agents each log in through the gateway as a role of their own.
+  Where an application acts for one of its users, it can say which with a signed
+  token, and the record shows the change was made *for* that user, asserted by
+  the application.
 - **Instant branching** — `fox branch create qa` clones the whole database in
   seconds (copy-on-write), fully isolated; `main` is untouched. Plus
   `fox branch reset` (start over) and `fox branch diff` (what changed, from Blackbox).
@@ -89,6 +94,9 @@ inherited by every branch, capture **every** schema change and attribute it:
 
 - **who** — the actor (a human email, or `agent-alice`) and whether it was a
   human or an agent;
+- **for whom** — where an application said so, the user it acted for:
+  `asserted by shop` when the application vouched with a token signed by its
+  key, or `claimed` when a client only said so;
 - **what** — the command, the object, and the full statement;
 - **context** — the tool (`application_name`, e.g. `cursor/opus`), the branch,
   and the session;
@@ -131,9 +139,24 @@ a bucket of its own, ideally one the database administrators do not control,
 locked in Object Lock's COMPLIANCE mode for a year so nobody can remove or
 rewrite it; `fox check` warns while there is none. And
 because the gateway logs each client in as a **per-user Postgres role**, the
-recorded actor is the login identity: a client cannot forge who made a change,
-even by `SET`-ting a session variable. There is a **Blackbox** page in the web
-console too.
+recorded actor is the login the session authenticated as, and no `SET` in the
+session changes it: a person's own role, an agent key's agent role
+(`agent:<email>`), an agent branch's role (`agent-<id>`), and for MCP the key's
+account's agent role. A database superuser is outside that, as for any record a
+database keeps about itself: they can attribute anything to anyone, which is
+what anchors held where they cannot reach are for. There is a **Blackbox** page
+in the web console too.
+
+**Who a change was for.** An application that serves many people through one
+account can say, per transaction, which of its users a change is for. Register
+it once (`fox app register shop --account shop-svc@example.com --key shop.pub`),
+sign a short-lived token per user with its private key, and pass it with the
+change (`SELECT bb.act_for($1)`, or `withActor` in the clients). The record then
+shows `alice, asserted by shop`. That means the application vouched for alice,
+with a key only it holds and from its own login, not that alice was present:
+the application, or whoever holds both its key and its credentials, can assert
+anyone, which is why a key can be revoked and reported compromised from a given
+moment. A value a client sets by hand is never taken for an assertion.
 
 **And what the event triggers miss.** The record is written by event triggers,
 and a database superuser can stop them (`SET event_triggers = off`, `SET
