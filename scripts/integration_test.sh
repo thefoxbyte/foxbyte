@@ -2501,6 +2501,31 @@ for a in f1ag f1ag2 f1ag3 f1ag4; do curl -sk -o /dev/null -H "Authorization: Bea
 for a in agentapp strictapp; do $S app remove $a >/dev/null 2>&1; done
 rm -rf "$F6D"
 
+echo "### 11x. a new account's role is made once, however many ask at once"
+# A console page sends several requests together, and each logs in as the
+# user's own role, made on first use. Made by several at once, Postgres refused
+# all but one ("tuple concurrently updated"); while the console fell back to the
+# shared role nobody saw it, and since it refuses instead, a person was told
+# they could not be logged in as themselves.
+printf 'password123\n' | $S user create racer@foxbyte.dev >/dev/null 2>&1
+RKEY="$($S apikey create racer@foxbyte.dev race 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+$S branch delete racebr >/dev/null 2>&1; $S branch create racebr >/dev/null 2>&1; $S branch owner racebr racer@foxbyte.dev >/dev/null 2>&1
+RD="$(mktemp -d)"
+for i in $(seq 1 20); do
+  as "$RKEY" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT session_user"}' https://localhost:8080/api/branches/racebr/query >"$RD/q$i" &
+done
+wait
+assert_eq "twenty console queries at once, on first use, all run as the user's own role" \
+  "$(cat "$RD"/q* | grep -c '"racer@foxbyte.dev"')|$(cat "$RD"/q* | grep -c '"error"')" "20|0"
+$S branch delete racebr2 >/dev/null 2>&1; $S branch create racebr2 >/dev/null 2>&1; $S branch owner racebr2 racer@foxbyte.dev >/dev/null 2>&1
+for i in $(seq 1 10); do
+  PGPASSWORD="$RKEY" psql "$GATEWAY/racebr2?sslmode=require" -X -tAc 'SELECT session_user' >"$RD/g$i" 2>&1 &
+done
+wait
+assert_eq "…and ten Gateway logins at once" "$(cat "$RD"/g* | grep -c '^racer@foxbyte.dev$')" "10"
+rm -rf "$RD"
+for b in racebr racebr2; do $S branch delete "$b" >/dev/null 2>&1; done
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

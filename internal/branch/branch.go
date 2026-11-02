@@ -603,20 +603,27 @@ func EnsureUserRole(branchName, email string) error {
 	if _, ok := ensuredRoles.Load(k); ok {
 		return nil
 	}
-	sql := fmt.Sprintf(`DO $do$
-DECLARE r text := %s;
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-    EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB INHERIT IN ROLE db_client', r);
-  END IF;
-  EXECUTE format('ALTER ROLE %%I WITH LOGIN PASSWORD %%L', r, %s);
-  EXECUTE format('ALTER ROLE %%I SET role = db_client', r);
-END $do$;`, quoteLiteral(email), quoteLiteral(UserRolePassword(email)))
-	if err := psqlStdin(branchName, sql); err != nil {
+	// One at a time per branch and role, and the one that waited finds the
+	// work done (roleguard.go).
+	defer lockRole("user\x00" + k)()
+	if _, ok := ensuredRoles.Load(k); ok {
+		return nil
+	}
+	if err := provisionRole(branchName, userRoleSQL(email, UserRolePassword(email))); err != nil {
 		return err
 	}
 	ensuredRoles.Store(k, struct{}{})
 	return nil
+}
+
+// userRoleSQL makes a person's login role if it is missing and sets its
+// password, tolerating another session doing the same at that moment.
+func userRoleSQL(email, password string) string {
+	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(email)), fmt.Sprintf(`      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB INHERIT IN ROLE db_client', r);
+      END IF;
+      EXECUTE format('ALTER ROLE %%I WITH LOGIN PASSWORD %%L', r, %s);
+      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, quoteLiteral(password)))
 }
 
 // syncRolePassword sets the Postgres role password to the per-install secret.
