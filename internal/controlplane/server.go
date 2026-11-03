@@ -99,6 +99,7 @@ func Serve(addr string) error {
 	registerApps(api, store)           // /api/apps* (admins; application identity, F1)
 	registerAuditLog(api)              // /api/audit-log (admins; the databases' audit log, F6)
 	registerAuditMarks(api)            // /api/branches/{name}/audit/tables* (F6: marked tables)
+	registerAuditRecords(api)          // /api/audit-log/records (admins; F6: the records)
 	registerRequests(api, store)       // /api/branches/{name}/request, /api/requests*
 	registerLicense(api)               // /api/license
 	registerHistory(api, store)        // /api/history* (the caller's own query history)
@@ -122,6 +123,9 @@ func Serve(addr string) error {
 	// stopped, and roles, memberships, databases and settings, which they never
 	// see. Free in every edition.
 	branch.StartCatalogScanner()
+	// The audit log's raw lines into its hash-chained store (F6), every
+	// minute, and the raw files away once they are two days old.
+	branch.StartAuditCollector()
 	// Base backups on a schedule, pruned to a retention (audit v2 G19).
 	branch.StartBackupScheduler()
 	// And proof that they restore: a backup nothing has ever restored is a hope,

@@ -3,10 +3,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
@@ -31,6 +35,17 @@ func auditLogCmd(args []string) error {
 		return auditLogSetup(args[1:])
 	case "off":
 		return auditLogOff(args[1:])
+	case "show":
+		return auditLogShow(args[1:])
+	case "verify":
+		return auditLogVerify()
+	case "collect":
+		res, err := branch.CollectAudit()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%d record(s) collected; %d raw file(s) removed; %d day(s) past retention removed.\n", res.Records, res.Removed, res.Pruned)
+		return nil
 	case "tables":
 		return auditLogTables(args[1:])
 	case "table":
@@ -44,6 +59,9 @@ func auditLogUsage() string {
 	return fmt.Sprintf(`%[1]s audit-log status        whether the databases are audited, where the log is, and its space
 %[1]s audit-log setup [--yes] turn it on (restarts main)
 %[1]s audit-log off [--yes]   turn it off (restarts main)
+%[1]s audit-log show [--branch b] [--table t] [--user u] [--since 1h|2026-11-04] [--limit n] [--errors] [--json]
+                                                  the newest records: who did what to which object, how it ended, whom for
+%[1]s audit-log verify                                check the records' hash chain
 %[1]s audit-log tables [--branch b]                  the tables whose writes (and reads) are audited
 %[1]s audit-log table <table> [--reads] [--branch b]  audit a table's writes, and with --reads its reads
 %[1]s audit-log table <table> --off [--branch b]      stop auditing it`, brand.CLI)
@@ -71,7 +89,8 @@ func auditLogStatus() error {
 	if marks, err := branch.AuditMarks("main"); err == nil {
 		fmt.Printf("  marked   %d table(s) on main (`%s audit-log tables`)\n", len(marks), brand.CLI)
 	}
-	fmt.Printf("\nReading the log and forwarding it are not in this version yet.\n")
+	fmt.Printf("  records  kept %d days (%s); `%s audit-log show` reads them\n", branch.AuditRetentionDays(), brand.EnvName("AUDIT_RETENTION_DAYS"), brand.CLI)
+	fmt.Printf("\nForwarding to a SIEM is not in this version yet.\n")
 	return pendingNote()
 }
 
@@ -269,4 +288,149 @@ func recordMark(actor, b, detail string) {
 	s := openStore()
 	defer s.Close()
 	s.Audit(auth.EvAuditMarked, actor, b, "", detail)
+}
+
+// show reads the newest records, after collecting what is new.
+func auditLogShow(args []string) error {
+	if _, err := branch.CollectAudit(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: collecting what is new failed, so the newest lines may be missing: %v\n", err)
+	}
+	q := branch.AuditQuery{
+		Branch: optValue(args, "--branch"),
+		Table:  optValue(args, "--table"),
+		Login:  optValue(args, "--user"),
+		Limit:  50,
+	}
+	if v := optValue(args, "--limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return fmt.Errorf("--limit is a number of records, not %q", v)
+		}
+		q.Limit = n
+	}
+	if v := optValue(args, "--since"); v != "" {
+		t, err := parseSince(v, time.Now())
+		if err != nil {
+			return err
+		}
+		q.Since = t
+	}
+	if hasFlag(args, "--errors") {
+		q.Kinds = []string{"outcome"}
+	}
+	entries, err := branch.ReadAudit(q)
+	if err != nil {
+		return err
+	}
+	st := openStore()
+	st.Audit(auth.EvAuditLogRead, cliActor(), q.Branch, "", fmt.Sprintf("%d record(s) via %s audit-log show", len(entries), brand.CLI))
+	st.Close()
+	if hasFlag(args, "--json") {
+		enc := json.NewEncoder(os.Stdout)
+		for _, e := range entries {
+			if err := enc.Encode(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if len(entries) == 0 {
+		fmt.Println("No record matches.")
+		if !branch.AuditOn() {
+			fmt.Printf("The audit log is off (`%s audit-log setup`).\n", brand.CLI)
+		}
+		return nil
+	}
+	printAuditEntries(os.Stdout, entries)
+	return nil
+}
+
+// printAuditEntries is one line per statement: when, where, who, what, on
+// which object, how its transaction ended, and whom it was for.
+func printAuditEntries(out io.Writer, entries []branch.AuditEntry) {
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TIME\tBRANCH\tLOGIN\tWHAT\tOBJECT\tOUTCOME\tFOR")
+	for _, e := range entries {
+		t := e.Time
+		if p, err := time.Parse(time.RFC3339Nano, e.Time); err == nil {
+			t = p.Local().Format("2006-01-02 15:04:05")
+		}
+		what, outcome := e.Command, auditOutcome(e)
+		if e.Kind == "outcome" {
+			what = e.Outcome
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t, e.Branch, dash(e.Login), what, dash(e.Object), outcome, auditForText(e.TxnFor))
+	}
+	w.Flush()
+}
+
+func auditOutcome(e branch.AuditEntry) string {
+	switch {
+	case e.Kind == "outcome":
+		return e.SQLState
+	case e.Error != "" && e.TxnOutcome != "":
+		return strings.ToLower(e.TxnOutcome) + " (" + e.Error + ")"
+	case e.TxnOutcome != "":
+		return strings.ToLower(e.TxnOutcome)
+	case e.Error != "":
+		return "error " + e.Error
+	}
+	return "-"
+}
+
+func auditForText(f *branch.AuditFor) string {
+	if f == nil || f.State == "" || f.State == "none" {
+		return "-"
+	}
+	if f.State == "asserted" {
+		return f.Actor + ", asserted by " + f.Issuer
+	}
+	return f.Actor + " (" + f.State + ")"
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// parseSince reads --since: a duration back from now (90m, 2h, 7d), or a date
+// or time.
+func parseSince(v string, now time.Time) (time.Time, error) {
+	if strings.HasSuffix(v, "d") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(v, "d")); err == nil && n > 0 {
+			return now.AddDate(0, 0, -n), nil
+		}
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return now.Add(-d), nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, v, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("--since is a duration (90m, 2h, 7d) or a date (2026-11-04), not %q", v)
+}
+
+// verify checks the chain, after collecting what is new.
+func auditLogVerify() error {
+	if _, err := branch.CollectAudit(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: collecting what is new failed: %v\n", err)
+	}
+	rep, err := branch.VerifyAudit()
+	if err != nil {
+		return err
+	}
+	if rep.Intact {
+		fmt.Printf("audit log intact: %d record(s), from record %d, each naming the one before it.\n", rep.Records, rep.First)
+		return nil
+	}
+	fmt.Printf("audit log TAMPERED: %d record(s)\n", rep.Records)
+	for _, p := range rep.Problems {
+		fmt.Println("  problem:", p)
+	}
+	os.Exit(1)
+	return nil
 }
