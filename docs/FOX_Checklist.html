@@ -460,6 +460,15 @@
       <li class="ok">Rotation, revocation, and a key reported compromised from a moment</li>
       <li class="ok">The extension in every engine image (revision 2); a branch on an older image refuses with the way out</li>
       <li class="ok">CLI <code>fox app</code>, REST <code>/api/apps</code>, the console&rsquo;s Applications page; <code>for</code> in <code>fox blackbox</code>, <code>?with=for</code> and the Blackbox page</li></ul></td><td class="tb">Unit; f1 suite; §11u; UI</td></tr>
+    <tr data-id="H21" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">H21</td><td><b>The audit log: pgAudit, with no values kept</b> (F6)<ul class="subs">
+      <li class="ok">Turned on and off by an admin (<code>fox audit-log setup</code> / <code>off</code>), saying what it costs; main and the standby restarted, branches on wake</li>
+      <li class="ok">Default mode: schema and role changes by everyone, marked tables through <code>bb_audit</code>, no statement text, no parameters, errors as their code alone</li>
+      <li class="ok">The log outside every database, in a dataset of its own with a quota; <code>fox check</code> warns before it is full</li>
+      <li class="ok"><code>fox audit-log status</code>, <code>/api/audit-log</code>, the console&rsquo;s Audit log page</li>
+      <li class="next">Marking tables for writes and for reads (step 2)</li>
+      <li class="next">The collector: a hash-chained store, retention, <code>fox audit-log show</code> (step 3)</li>
+      <li class="next">Gaps and delivery: free space, statement numbers, a heartbeat (step 4)</li>
+      <li class="next">Forensic mode, retention settings, forwarding to a SIEM (step 5)</li></ul></td><td class="tb">Unit; f6 suite; §11y; UI</td></tr>
   </table>
 </section>
 

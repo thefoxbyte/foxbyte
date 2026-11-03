@@ -113,8 +113,8 @@ COPY --from=f1-build /out/ /
 # container (internal/branch/images.go, PGImageRevision). An install keeps the
 # image it first fetched, so a fox that needs something newer has to be able to
 # tell: 2 is the first with bb_identity. Raise it with anything a fox comes to
-# depend on, and raise PGImageRevision with it.
-LABEL dev.dbengine.image-revision="2"
+# depend on, and raise PGImageRevision with it. 3 is the first with pgAudit.
+LABEL dev.dbengine.image-revision="3"
 
 # Disposable point-in-time restore entrypoint (used by scripts/pitr_restore.sh).
 COPY restore-entrypoint.sh /usr/local/bin/restore-entrypoint.sh

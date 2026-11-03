@@ -2,8 +2,8 @@
 
 **Status:** agreed as recommended (2 November 2026, #193). The Gate 0
 prototype is built and its suite passes; what it found is in section 19, and
-it changes sections 6, 7, 12 and 13 where marked. Written against `main` at
-`d80f6e9`. It answers Gate 0's
+it changes sections 6, 7, 12 and 13 where marked. Gate 1's plan and its steps
+are in section 20 and after. Written against `main` at `d80f6e9`. It answers Gate 0's
 F6 item in the review plan (`docs/FOX_Expert_Review_Plan.md`, sections 4 and
 5): "the audit design, shown to keep no personal data it doesn't need". Gate 1
 then ships pgAudit in Standard, in the default mode this describes.
@@ -650,3 +650,64 @@ What it changed or added:
    bound card number logged the read and not the number.
 
 Everything else in sections 1 to 18 held as written.
+
+---
+
+## 20. Gate 1: the plan, and step 1
+
+Gate 1 puts pgAudit in the product (the review plan's Gate 1 item 2). Each
+step is its own branch from `main` and its own PR, with the full regression
+before it opens.
+
+| Step | Adds | CLI | Console |
+|---|---|---|---|
+| 1 | Turning it on and off: the image (revision 3), start-time settings and the policy on main, branches and the standby, the log in its own dataset with a quota | `fox audit-log status / setup / off`, a `fox check` line | the Audit log page (status) |
+| 2 | Marking tables, for writes and for reads (section 8) | `fox audit-log table <t> [--reads] [--off]` | a mark in the schema rail, the marked tables |
+| 3 | The collector: raw files into a hash-chained store, kept by retention, and read (sections 5 and 9) | `fox audit-log show`, `verify` | the records, filtered |
+| 4 | Gaps and delivery: free space, statement numbers, the heartbeat (section 13, required by section 19) | `fox check` lines | findings |
+| 5 | Forensic mode, retention settings, forwarding (sections 10, 11, 9) | `mode`, `retention`, `forward` | settings |
+| 6 | Enterprise: automatic marks from point 4, anchors for the chain, the evidence export; the `SECURITY DEFINER` decision (section 19) | | |
+
+### Step 1, as built
+
+- **The way in.** `fox audit-log setup` says what it will do and what it
+  costs. Run with `--yes`, it:
+  - makes sure the image is revision 3, fetching or building it;
+  - makes main's log directory;
+  - records the choice and restarts main;
+  - applies the policy and restarts the standby.
+
+  `off` undoes it the same way. Both are refused while the standby serves
+  main, as the change feed's are, and both go in the security log.
+- **The command line** gains the start-time settings: the two libraries, and
+  the logging process writing JSON to the log directory. They come after
+  everything else, so with audit off every database's command line is
+  unchanged to the byte, and a test holds it.
+- **The policy** is applied by `ALTER SYSTEM`, so step 5's mode change is a
+  reload. It is applied:
+  - to main after setup and on every `fox up`;
+  - to a branch when it is made, woken or recreated.
+
+  A database not started with pgAudit is skipped, because `ALTER SYSTEM`
+  would refuse settings that do not exist there. `off` resets exactly what
+  the policy set, and keeps the two roles, so a table's mark survives being
+  turned off and on.
+- **The log** is `/dbpool/audit/<branch>`, a ZFS dataset beside
+  `dbpool/branches`, never inside it.
+  - The quota is `FOX_AUDIT_QUOTA` (2G), set on each start.
+  - Each directory is owned by the container's postgres user, mode 0700.
+  - Until the collector exists, PostgreSQL keeps it to a week by itself: one
+    file per weekday and hour, each overwritten a week later.
+  - On btrfs it is a directory without a quota, and `fox check` watches it.
+- **Branches made before** keep their command line through a suspend, which
+  stops the container rather than removing it. `Resume` therefore makes the
+  container again, from the same data, when its setting does not match the
+  install's. A branch picks the change up the next time it wakes. Until
+  then `status` and the API name it.
+- **`fox check`** warns at 80% of the quota and fails at 95%. A full log loses
+  lines without a word (section 19), so this is the only warning there is
+  until step 4.
+- **The console's Audit log page** shows the state, where the log is, its
+  space and the branches waiting. Turning it on stays the CLI's, which says
+  what it will do first, as `fox realtime setup` does. The page names the
+  command.

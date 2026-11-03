@@ -2301,8 +2301,9 @@ SAK="$($S apikey create shop-svc@foxbyte.dev bot --agent 2>/dev/null | grep -o '
 "$F1D/mint" keygen "$F1D" k2 >"$F1D/k2.pub"
 $S app remove shop >/dev/null 2>&1
 for b in f1b f1s; do $S branch delete "$b" >/dev/null 2>&1; done
-assert_eq "the engine image is revision 2, the first with the extension" \
-  "$(sudo docker image inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' "$(sudo docker inspect -f '{{.Config.Image}}' pg-main)")" "2"
+# 2 is the first with the extension; later ones keep it (3 added pgAudit).
+assert_eq "the engine image is revision 2 or later, which has the extension" \
+  "$([ "$(sudo docker image inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' "$(sudo docker inspect -f '{{.Config.Image}}' pg-main)")" -ge 2 ] && echo yes)" "yes"
 appev() { $S audit --limit 5000 | grep -c "app\.$1"; }
 EV0="$(appev registered)|$(appev key_added)|$(appev key_revoked)|$(appev removed)"
 REG="$($S app register shop --account shop-svc@foxbyte.dev --key "$F1D/k1.pub" --kid k1 2>&1)"
@@ -2525,6 +2526,69 @@ wait
 assert_eq "…and ten Gateway logins at once" "$(cat "$RD"/g* | grep -c '^racer@foxbyte.dev$')" "10"
 rm -rf "$RD"
 for b in racebr racebr2; do $S branch delete "$b" >/dev/null 2>&1; done
+
+echo "### 11y. the audit log, on and off (F6 Gate 1, step 1)"
+# pgAudit in default mode, with bb_identity's hook keeping every value out of
+# the server log. Off unless an admin turns it on: it costs capacity, and
+# turning it on restarts main.
+args() { sudo docker inspect -f '{{json .Args}}' "pg-$1" 2>/dev/null | grep -c 'shared_preload_libraries=pgaudit,bb_identity'; }
+auditlog() { sudo sh -c "cat /dbpool/audit/$1/*.json 2>/dev/null"; }
+$S branch delete audbefore >/dev/null 2>&1; $S branch create audbefore >/dev/null 2>&1
+assert_eq "off by default: status says so, and main runs without pgAudit" \
+  "$($S audit-log status | grep -c 'The audit log is off')|$(args main)" "1|0"
+assert_eq "setup without --yes says what it will do, and what it costs, and changes nothing" \
+  "$($S audit-log setup | grep -c 'Run again with --yes\|What it costs')|$(args main)" "2|0"
+$S audit-log setup --yes >/tmp/audit-setup.log 2>&1; rc=$?
+main_up
+assert_eq "setup --yes: main restarts with pgAudit and bb_identity loaded" \
+  "$rc|$(args main)|$(pg pg-main 'SHOW shared_preload_libraries')" "0|1|pgaudit,bb_identity"
+assert_eq "…in default mode: no statement text, no parameters, marked tables through bb_audit" \
+  "$(pg pg-main 'SHOW pgaudit.log')|$(pg pg-main 'SHOW pgaudit.log_statement')|$(pg pg-main 'SHOW pgaudit.log_parameter')|$(pg pg-main 'SHOW pgaudit.role')|$(pg pg-main "SELECT count(*) FROM pg_roles WHERE rolname IN ('bb_audit','bb_audit_read')")" \
+  "ddl, role|off|off|bb_audit|2"
+assert_eq "…its log is outside every database, in a dataset of its own with a quota" \
+  "$(sudo test -d /dbpool/audit/main && echo dir)|$(sudo zfs get -H -o value quota dbpool/audit)|$(sudo stat -c %u /dbpool/audit/main)" "dir|2G|999"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS audit_probe; CREATE TABLE audit_probe (id int PRIMARY KEY, email text UNIQUE)" >/dev/null
+pg pg-main "INSERT INTO audit_probe VALUES (1, 'ravi.kumar.f6@example.in')" >/dev/null
+sudo docker exec pg-main psql -U dbadmin -d appdb -c "INSERT INTO audit_probe VALUES (2, 'ravi.kumar.f6@example.in')" >/dev/null 2>&1
+# Letters first: '739146258013x' overflows before the x is read, which is 22003.
+sudo docker exec pg-main psql -U dbadmin -d appdb -c "SELECT 'aadhaar 739146258013'::int" >/dev/null 2>&1
+sleep 1.5
+# At least one CREATE TABLE: the engine's own work on main (a restore check's
+# probe table) is audited too, as every login's schema changes are.
+assert_eq "a schema change is in main's log, and the errors are there as their codes" \
+  "$([ "$(auditlog main | grep -c 'AUDIT: SESSION,[0-9]*,[0-9]*,DDL,CREATE TABLE')" -ge 1 ] && echo yes)|$(auditlog main | grep -c 'OUTCOME,ERROR,23505')|$(auditlog main | grep -c 'OUTCOME,ERROR,22P02')" "yes|1|1"
+assert_eq "…and no value the statements held reaches the log, nor the container's output" \
+  "$(auditlog main | grep -c 'ravi.kumar.f6\|739146258013')|$(sudo docker logs pg-main 2>&1 | grep -c 'ravi.kumar.f6\|739146258013')" "0|0"
+assert_contains "fox check reports it, with its space" "$($S check 2>&1 | grep 'audit log')" "on, default mode"
+assert_eq "turning it on is in the security log" "$($S audit log --limit 20 | grep -c 'audit-log.on')" "1"
+AJ="$(curl -sk -H "$AUTH" https://localhost:8080/api/audit-log)"
+assert_eq "the console's API says it is on, in default mode, and names the branch still running without it" \
+  "$(echo "$AJ" | jget on)|$(echo "$AJ" | jget mode)|$(echo "$AJ" | python3 -c 'import sys,json; print("audbefore" in json.load(sys.stdin)["pending"])')" \
+  "True|default|True"
+assert_contains "…as does status" "$($S audit-log status)" "audbefore"
+$S branch create audafter >/dev/null 2>&1
+pg pg-audafter "CREATE TABLE after_probe (id int)" >/dev/null
+sleep 1.5
+# Its log has more than the probe's table: the engine installs the Blackbox on
+# a new branch, and those schema changes are audited too.
+assert_eq "a branch made after runs it too, with its own log" \
+  "$(args audafter)|$([ "$(auditlog audafter | grep -c 'CREATE TABLE')" -ge 1 ] && echo yes)|$(pg pg-audafter 'SHOW pgaudit.log_statement')" "1|yes|off"
+$S branch suspend audbefore >/dev/null 2>&1; $S branch resume audbefore >/dev/null 2>&1
+assert_eq "a branch made before picks it up when it is woken, and is no longer waiting" \
+  "$(args audbefore)|$(pg pg-audbefore 'SHOW pgaudit.role')|$($S audit-log status | grep -c audbefore)" "1|bb_audit|0"
+assert_eq "setup again is harmless" "$($S audit-log setup | grep -c 'Already on')" "1"
+
+$S audit-log off --yes >/tmp/audit-off.log 2>&1; rc=$?
+main_up
+assert_eq "off --yes: main restarts without pgAudit, and its policy is gone" \
+  "$rc|$(args main)|$(pg pg-main 'SHOW log_min_error_statement')" "0|0|error"
+assert_eq "…the log already kept stays, and the roles, so marks survive" \
+  "$(sudo test -d /dbpool/audit/main && echo kept)|$(pg pg-main "SELECT count(*) FROM pg_roles WHERE rolname = 'bb_audit'")" "kept|1"
+$S branch suspend audafter >/dev/null 2>&1; $S branch resume audafter >/dev/null 2>&1
+assert_eq "…a branch woken after runs without it" "$(args audafter)|$($S audit-log status | grep -c 'The audit log is off')" "0|1"
+assert_eq "turning it off is in the security log" "$($S audit log --limit 20 | grep -c 'audit-log.off')" "1"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS audit_probe" >/dev/null
+for b in audbefore audafter; do $S branch delete "$b" >/dev/null 2>&1; done
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

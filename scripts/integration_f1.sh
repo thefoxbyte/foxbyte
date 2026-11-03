@@ -67,8 +67,9 @@ for m in 18 16; do
   fi
 done
 assert_eq "the image builds with the extension for Postgres 18 and 16" "$build_ok" "1"
-assert_eq "…and it is labelled revision 2, the first the engine knows has it" \
-  "$(sudo docker image inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' "$IMG")" "2"
+# 2 is the first the engine knows has the extension; later ones keep it.
+assert_eq "…and it is labelled revision 2 or later, which the engine knows has it" \
+  "$([ "$(sudo docker image inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' "$IMG")" -ge 2 ] && echo yes)" "yes"
 
 echo "### a throwaway Postgres, with the Blackbox and application identity"
 sudo docker rm -fv "$C" >/dev/null 2>&1

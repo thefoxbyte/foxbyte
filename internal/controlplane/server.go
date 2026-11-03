@@ -97,6 +97,7 @@ func Serve(addr string) error {
 	registerAccounts(api, store)       // /api/account*, /api/users* (admins)
 	registerAccessReview(api, store)   // /api/access-review (admins; point 4.8)
 	registerApps(api, store)           // /api/apps* (admins; application identity, F1)
+	registerAuditLog(api)              // /api/audit-log (admins; the databases' audit log, F6)
 	registerRequests(api, store)       // /api/branches/{name}/request, /api/requests*
 	registerLicense(api)               // /api/license
 	registerHistory(api, store)        // /api/history* (the caller's own query history)

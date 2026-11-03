@@ -296,6 +296,14 @@ func standbyRunArgs(dataPath string) []string {
 	// this container — so the two have to agree, and they do by using one
 	// constant (nodejoin.go).
 	args = append(args, joinedMount()...)
+	// Its own audit log, like any database's (audit.go): a promoted standby
+	// is the primary, and its statements are audited from the first.
+	if AuditOn() {
+		if err := ensureAuditDir("standby"); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: the standby's audit log directory: %v\n", err)
+		}
+		args = append(args, auditMount("standby")...)
+	}
 	// The standby streams from the primary and archives WAL after a failover, so
 	// it is long-lived and must come back on its own like main (see restartPolicy).
 	args = append(args, restartPolicy...)

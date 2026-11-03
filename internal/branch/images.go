@@ -78,8 +78,10 @@ var SupportedPGMajors = []string{"16", PGMajor}
 // Dockerfile labels it with (dev.dbengine.image-revision). An install keeps the
 // image it first fetched, so an image older than this is fetched again, or
 // built, when the engine starts (ensureImageRef). 2 added bb_identity, which
-// application identity (F1) needs. An image without the label is revision 1.
-const PGImageRevision = 2
+// application identity (F1) needs; 3, pgAudit and bb_identity's audit hooks
+// (F6), which `fox audit-log setup` needs. An image without the label is
+// revision 1.
+const PGImageRevision = 3
 
 // imageRevisionLabel is the label that carries it.
 const imageRevisionLabel = "dev.dbengine.image-revision"

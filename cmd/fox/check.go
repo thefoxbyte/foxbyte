@@ -84,6 +84,7 @@ func checks() []check {
 		one("blackbox anchors", checkAnchors),
 		one("anchor target", checkAnchorTarget),
 		one("change feed", checkRealtime),
+		one("audit log", checkAuditLog),
 		one("durability", checkDurability),
 		one("replication", checkReplicationAccess),
 		one("backup target", checkBackupTarget),
@@ -607,6 +608,37 @@ func checkAnchors() checkLine {
 // The last is the one failure of this design that costs disk, so a slot is
 // named with its branch and what it holds: "a slot is idle" is not something
 // anybody can act on.
+// checkAuditLog says whether the databases are audited and how full the log
+// is. A full log drops audit lines without a word (design, section 19), so the
+// space is the line that matters: a warning at 80%, a failure at 95%.
+func checkAuditLog() checkLine {
+	if !branch.AuditOn() {
+		return ok("audit log", fmt.Sprintf("off — no database runs pgAudit (`%s audit-log setup` turns it on)", brand.CLI))
+	}
+	s, err := branch.AuditUsage()
+	if err != nil {
+		return warn("audit log", "on, but its space could not be read: "+err.Error(), fmt.Sprintf("%s audit-log status", brand.CLI))
+	}
+	return auditLogLine(s)
+}
+
+// auditLogLine is the judgement on the log's space, pure so it is tested.
+func auditLogLine(s branch.AuditSpace) checkLine {
+	if s.Quota <= 0 {
+		return ok("audit log", fmt.Sprintf("on, default mode — %s, no quota on this storage", humanBytes(s.Used)))
+	}
+	pct := s.Used * 100 / s.Quota
+	msg := fmt.Sprintf("on, default mode — %s of %s (%d%%)", humanBytes(s.Used), humanBytes(s.Quota), pct)
+	fix := fmt.Sprintf("raise %s, or turn audit off on tables that do not need it", brand.EnvName("AUDIT_QUOTA"))
+	switch {
+	case pct >= 95:
+		return fail("audit log", msg+": audit lines are about to be lost, and nothing else will say so", fix)
+	case pct >= 80:
+		return warn("audit log", msg+": a full log loses audit lines without a word", fix)
+	}
+	return ok("audit log", msg)
+}
+
 func checkRealtime() checkLine {
 	keep := branch.WALKeepSize()
 	if !branch.RealtimeOn() {

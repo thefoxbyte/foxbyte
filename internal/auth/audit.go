@@ -120,6 +120,10 @@ const (
 	// The access review report produced (point 4.8): who asked, and what it
 	// covered. A report of who can reach what is itself worth knowing about.
 	EvAccessReviewed = "access.reviewed"
+	// The databases' audit log (F6) turned on or off: who decided. Whoever
+	// can stop the record of who did what is someone an auditor asks about.
+	EvAuditLogOn  = "audit-log.on"
+	EvAuditLogOff = "audit-log.off"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence
