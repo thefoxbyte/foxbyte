@@ -4,7 +4,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
@@ -29,6 +31,10 @@ func auditLogCmd(args []string) error {
 		return auditLogSetup(args[1:])
 	case "off":
 		return auditLogOff(args[1:])
+	case "tables":
+		return auditLogTables(args[1:])
+	case "table":
+		return auditLogTable(args[1:])
 	default:
 		return fmt.Errorf("unknown: %s audit-log %s\n\n%s", brand.CLI, sub, auditLogUsage())
 	}
@@ -37,7 +43,10 @@ func auditLogCmd(args []string) error {
 func auditLogUsage() string {
 	return fmt.Sprintf(`%[1]s audit-log status        whether the databases are audited, where the log is, and its space
 %[1]s audit-log setup [--yes] turn it on (restarts main)
-%[1]s audit-log off [--yes]   turn it off (restarts main)`, brand.CLI)
+%[1]s audit-log off [--yes]   turn it off (restarts main)
+%[1]s audit-log tables [--branch b]                  the tables whose writes (and reads) are audited
+%[1]s audit-log table <table> [--reads] [--branch b]  audit a table's writes, and with --reads its reads
+%[1]s audit-log table <table> --off [--branch b]      stop auditing it`, brand.CLI)
 }
 
 func auditLogStatus() error {
@@ -59,7 +68,10 @@ func auditLogStatus() error {
 			fmt.Printf("  space    %s, no quota on this storage\n", humanBytes(s.Used))
 		}
 	}
-	fmt.Printf("\nMarking tables, reading the log and forwarding it are not in this version yet.\n")
+	if marks, err := branch.AuditMarks("main"); err == nil {
+		fmt.Printf("  marked   %d table(s) on main (`%s audit-log tables`)\n", len(marks), brand.CLI)
+	}
+	fmt.Printf("\nReading the log and forwarding it are not in this version yet.\n")
 	return pendingNote()
 }
 
@@ -183,4 +195,78 @@ func recordAuditChange(on bool) {
 		kind, detail = auth.EvAuditLogOn, "pgAudit on, default mode"
 	}
 	s.Audit(kind, cliActor(), "main", "", detail)
+}
+
+// tables lists a branch's marked tables.
+func auditLogTables(args []string) error {
+	b := optValue(args, "--branch")
+	if b == "" {
+		b = "main"
+	}
+	marks, err := branch.AuditMarks(b)
+	if err != nil {
+		return err
+	}
+	if len(marks) == 0 {
+		fmt.Printf("No table on %s is marked. Schema and role changes are audited all the same.\n"+
+			"Mark one with: %s audit-log table <table> [--reads] --branch %s\n", b, brand.CLI, b)
+		return offNote()
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TABLE\tAUDITED")
+	for _, m := range marks {
+		fmt.Fprintf(w, "%s.%s\t%s\n", m.Schema, m.Name, branch.MarkWhat(m))
+	}
+	w.Flush()
+	return offNote()
+}
+
+// offNote says that marks wait for audit to be on, which they do.
+func offNote() error {
+	if !branch.AuditOn() {
+		fmt.Printf("\nThe audit log is off: marks take effect when it is turned on (`%s audit-log setup`).\n", brand.CLI)
+	}
+	return nil
+}
+
+// table marks one table, changes its mark, or takes it off.
+func auditLogTable(args []string) error {
+	b := optValue(args, "--branch")
+	if b == "" {
+		b = "main"
+	}
+	ps := positionals(args, "--branch")
+	if len(ps) != 1 {
+		return fmt.Errorf("usage: %s audit-log table <table> [--reads] [--off] [--branch b]", brand.CLI)
+	}
+	schema, table := splitTableName(ps[0])
+	if schema == "" {
+		schema = "public"
+	}
+	me := cliActor()
+	if hasFlag(args, "--off") {
+		if err := branch.UnmarkAudited(b, schema, table, me, "fox audit-log"); err != nil {
+			return err
+		}
+		recordMark(me, b, fmt.Sprintf("stopped auditing %s.%s", schema, table))
+		fmt.Printf("%s.%s on %s is no longer audited.\n", schema, table, b)
+		return offNote()
+	}
+	reads := hasFlag(args, "--reads")
+	if err := branch.MarkAudited(b, schema, table, reads, me, "fox audit-log"); err != nil {
+		return err
+	}
+	what := branch.MarkWhat(branch.AuditMark{Writes: true, Reads: reads})
+	recordMark(me, b, fmt.Sprintf("auditing %s of %s.%s", what, schema, table))
+	fmt.Printf("%s.%s on %s: its %s are audited, by every login.\n", schema, table, b, what)
+	if reads {
+		fmt.Printf("Every read is a line in the log: on a busy table that costs more than writes do.\n")
+	}
+	return offNote()
+}
+
+func recordMark(actor, b, detail string) {
+	s := openStore()
+	defer s.Close()
+	s.Audit(auth.EvAuditMarked, actor, b, "", detail)
 }

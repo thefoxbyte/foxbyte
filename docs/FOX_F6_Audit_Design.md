@@ -711,3 +711,53 @@ before it opens.
   space and the branches waiting. Turning it on stays the CLI's, which says
   what it will do first, as `fox realtime setup` does. The page names the
   command.
+
+---
+
+## 21. Gate 1, step 2: marking tables, as built
+
+- **A mark is a grant.** pgAudit's object audit logs a statement when the
+  audit role holds the privilege it uses, so:
+  - `bb_audit` gets INSERT, UPDATE and DELETE on a marked table, and SELECT
+    too when its reads are marked;
+  - `bb_audit_read` gets all four, ready for the logins that will have their
+    reads audited once masking exists (section 8).
+
+  Marking a table again without reads takes SELECT back from `bb_audit`.
+- **Only a table can be marked** (`relkind` r or p). A view is refused,
+  naming the tables under it as what to mark: pgAudit logs a statement on a
+  view against those tables, as the coverage table in section 19 shows.
+- **The two roles are made if missing**, so a table can be marked before
+  audit was ever turned on. The mark waits for audit, and turning audit off
+  keeps it.
+- **Marks are in the catalog.** A branch made after a mark carries it, as
+  point 4's marks travel.
+- **Who:** reading the marks is Use, since the grants are in the catalog for
+  anyone to read. Changing them is Manage: the branch's owner, or an admin
+  on main.
+  - Each change is in the security log.
+  - It is also in the Blackbox, as the GRANT or REVOKE it is, under the
+    person who asked.
+- **The surfaces:**
+  - `fox audit-log table <t> [--reads] [--off] [--branch b]` and
+    `fox audit-log tables`;
+  - `/api/branches/{name}/audit/tables`;
+  - **Audit…** on a table's view in the console, beside **Track changes…**;
+  - the Audit log page's marked tables, for any branch.
+
+**Found: a table's owner can take its mark off.** A superuser's GRANT on a
+table is recorded as granted by the table's owner, so the owner can REVOKE
+it, as with any grant on what they own. This is not silent: pgAudit logs the
+REVOKE in the ROLE class, for every login, under the owner's name.
+Integration §11z shows it. A stronger guard would need marks that no table
+owner can touch, which pgAudit's grant-based design does not offer.
+
+**Found by the UI suite: marks and promotion.** A mark is a GRANT, recorded
+in the source branch's Blackbox like any schema change. Promoting that branch
+replays it on the target. A target that never had the audit roles refused
+it, and with it the whole request. Applying a request now makes the two roles
+on the target first. They carry no privileges, so this changes nothing else
+about the target.
+
+Step 4 will compare each branch's marks with the ones set through FoxByte,
+which the security log holds, and report a mark that has gone.

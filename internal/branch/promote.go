@@ -185,5 +185,10 @@ func ApplyRequest(requestID int64, target, approver string, entries []RequestEnt
 	if applyRequest == nil {
 		return 0, ErrPromotionNotLicensed
 	}
+	// A source branch's audit marks (F6) are GRANTs to the audit roles, in its
+	// Blackbox like any schema change, and the target may never have had
+	// those roles: a mark on the source must not make its changes
+	// unappliable. Made here, as marking makes them, before the replay.
+	ensureAuditRolesBestEffort(target)
 	return applyRequest(requestID, target, approver, entries)
 }
