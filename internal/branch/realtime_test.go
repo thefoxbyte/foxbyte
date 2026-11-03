@@ -24,6 +24,11 @@ func realtimeMarkerIn(t *testing.T) string {
 	old := realtimeMarker
 	realtimeMarker = func() string { return filepath.Join(dir, "realtime") }
 	t.Cleanup(func() { realtimeMarker = old })
+	// And audit's, which also changes the command line: off here, whatever the
+	// machine running the tests has.
+	oldAudit := auditMarker
+	auditMarker = func() string { return filepath.Join(dir, "audit") }
+	t.Cleanup(func() { auditMarker = oldAudit })
 	return dir
 }
 

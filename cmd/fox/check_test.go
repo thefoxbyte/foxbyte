@@ -628,3 +628,23 @@ func TestPoolAndDiskLines(t *testing.T) {
 		}
 	})
 }
+
+// The audit log's space: a full log drops lines without a word, so it is said
+// before it is full.
+func TestAuditLogLine(t *testing.T) {
+	for _, c := range []struct {
+		used, quota int64
+		state       int
+	}{
+		{0, 100, stateOK}, {79, 100, stateOK}, {80, 100, stateWarn}, {94, 100, stateWarn},
+		{95, 100, stateFail}, {100, 100, stateFail}, {5 << 30, 0, stateOK},
+	} {
+		got := auditLogLine(branch.AuditSpace{Used: c.used, Quota: c.quota})
+		if got.state != c.state {
+			t.Errorf("%d of %d: state %d, want %d (%s)", c.used, c.quota, got.state, c.state, got.detail)
+		}
+	}
+	if got := auditLogLine(branch.AuditSpace{Used: 90, Quota: 100}); !strings.Contains(got.detail, "without a word") {
+		t.Errorf("the warning should say what a full log does: %s", got.detail)
+	}
+}

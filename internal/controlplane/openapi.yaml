@@ -1984,6 +1984,33 @@ paths:
         "403": { description: Not an admin, or no licence covers the access review report. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/audit-log:
+    get:
+      tags: [audit-log]
+      summary: Whether the databases run pgAudit, where the log is, and its space (admins only).
+      description: >-
+        Turning it on or off restarts main, so it is the CLI's (`fox audit-log setup` and `off`), which says what
+        it will do first; setup and off name the commands. pending lists the databases still running as they
+        were before the last change: each picks it up when next started, a suspended branch when it wakes.
+      responses:
+        "200":
+          description: The audit log's state. used and quota are bytes; quota is 0 where the storage has none.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "on": { type: boolean }
+                  mode: { type: string, enum: [default], description: Present when on. }
+                  root: { type: string }
+                  used: { type: integer }
+                  quota: { type: integer }
+                  pending: { type: array, items: { type: string } }
+                  setup: { type: string }
+                  "off": { type: string }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/apps:
     get:
       tags: [apps]

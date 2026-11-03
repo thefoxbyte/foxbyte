@@ -314,6 +314,15 @@ func startContainer(name string, primary bool) error {
 		"-v", mountpoint(name) + ":/var/lib/postgresql/data",
 	}
 	args = append(args, restartPolicy...)
+	// The audit log's directory, outside the data directory, which a clone
+	// would copy. Made first: a logging process that cannot write its file
+	// stops the server starting.
+	if AuditOn() {
+		if err := ensureAuditDir(name); err != nil {
+			return err
+		}
+		args = append(args, auditMount(name)...)
+	}
 	// Branch Postgres is reached by the in-guest gateway over the docker network
 	// (BackendAddr -> containerIP), so no host port is published by default. That
 	// keeps branch databases unreachable from outside the VM, where a direct
@@ -368,6 +377,13 @@ func startContainer(name string, primary bool) error {
 // fatal. Passed in rather than read here so this stays a pure function of what
 // is being started, testable without a pool.
 func postgresArgs(primary bool, major string) []string {
+	// And, with audit on, pgAudit and the log's settings, added last, so with
+	// it off nothing above changes by a byte (audit.go).
+	return withAudit(realtimeArgs(primary, major))
+}
+
+// realtimeArgs is the command line as the change feed decides it.
+func realtimeArgs(primary bool, major string) []string {
 	if !RealtimeOn() {
 		if !primary {
 			return nil
@@ -831,6 +847,7 @@ func Create(name, parent string) error {
 	}
 	// Before anyone can reach it: until now it answers to its parent's name.
 	syncIdentityBestEffort(name, true)
+	applyAuditBestEffort(name)
 	return nil
 }
 
@@ -997,6 +1014,7 @@ func Up() error {
 	if err := Init(); err != nil {
 		return err
 	}
+	applyAuditBestEffort("main")
 	// Before the first backup, so the sample data is inside it and a restore to
 	// the install's first minutes still has something to show.
 	ensureDemoData()
@@ -1466,7 +1484,15 @@ func suspendRefusal(name, primary string, haEnabled bool) error {
 
 // Resume starts a suspended branch container and waits until it is ready.
 func Resume(name string) error {
-	if err := run("docker", "start", container(name)); err != nil {
+	// A container started before audit was turned on or off keeps its command
+	// line through a stop and a start, so it is made again instead, from the
+	// same data, with the install's setting. Waking is when a branch picks the
+	// change up.
+	if AuditMismatch(name) {
+		if err := startContainer(name, false); err != nil {
+			return err
+		}
+	} else if err := run("docker", "start", container(name)); err != nil {
 		return err
 	}
 	if err := waitReady(name); err != nil {
@@ -1475,6 +1501,7 @@ func Resume(name string) error {
 	// Registrations may have changed while it slept: a key revoked then is
 	// refused from its first transaction.
 	syncIdentityBestEffort(name, false)
+	applyAuditBestEffort(name)
 	return nil
 }
 
@@ -1519,6 +1546,7 @@ func EnsureRunning(name string) (string, error) {
 		}
 		// A new container, perhaps from a newer image: the SQL too.
 		syncIdentityBestEffort(name, true)
+		applyAuditBestEffort(name)
 		reconcileGuard(name)
 	default: // exited, created, paused, ...
 		if err := Resume(name); err != nil {

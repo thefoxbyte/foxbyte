@@ -866,6 +866,19 @@ export type AppsReply = {
 }
 export type AppChange = { app?: RegisteredApp; key?: AppKey; unsynced?: Record<string, string> | null }
 export const listApps = () => req('GET', `${API}/api/apps`) as Promise<AppsReply>
+
+// The databases' audit log (F6): GET /api/audit-log, admins only.
+export type AuditLogReply = {
+  on: boolean
+  mode?: 'default'
+  root: string
+  used: number
+  quota: number
+  pending: string[] | null
+  setup: string
+  off: string
+}
+export const getAuditLog = () => req('GET', `${API}/api/audit-log`) as Promise<AuditLogReply>
 export const registerApp = (a: { name: string; account: string; max_life_seconds?: number; on_invalid?: string; public_key?: string; kid?: string }) =>
   req('POST', `${API}/api/apps`, a) as Promise<AppChange>
 export const removeApp = (name: string) =>
