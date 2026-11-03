@@ -877,7 +877,9 @@ export type AuditLogReply = {
   pending: string[] | null
   setup: string
   off: string
+  findings?: AuditFinding[] | null
 }
+export type AuditFinding = { kind: 'space' | 'collector' | 'heartbeat' | 'gap' | 'mark'; branch?: string; detail: string; since?: string }
 export const getAuditLog = () => req('GET', `${API}/api/audit-log`) as Promise<AuditLogReply>
 
 // Tables marked for the audit log (F6 step 2): their writes, and reads if

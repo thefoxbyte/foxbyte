@@ -835,3 +835,47 @@ which the security log holds, and report a mark that has gone.
   - The API and the console's Records do the same, for admins only.
   - Every read is in the security log: the records name logins, and whom
     changes were for.
+
+---
+
+## 23. Gate 1, step 4: gaps and delivery, as built
+
+A full log drops lines without a word (section 19), so nothing PostgreSQL
+says can be waited for. Each finding below is checked from outside.
+
+- **Gaps.** Measured first: pgAudit numbers only the statements it logs, one
+  after another in a session. Two audited inserts with unaudited statements
+  between them were numbered 1 and 2.
+  - So a session whose numbers jump has lost lines, and the collector writes
+    a gap record into the chain, before the statement that showed it,
+    naming the session's login and the missing numbers.
+  - The last number of each session is kept between collections, and
+    forgotten two days after it was last seen.
+  - What it cannot see: lines lost at the end of a session, which nothing
+    after them numbers. The heartbeat covers that.
+- **The heartbeat.** Every five minutes the control plane has each running,
+  audited database run `SET pgaudit.log = 'misc_set'` as the engine's
+  superuser, in a session of its own. pgAudit logs that SET as MISC, which
+  was also measured first.
+  - It touches no table, so the Blackbox records nothing.
+  - No client logs in as that superuser, and the policy logs MISC for no one
+    else, so the collector knows the line as a heartbeat.
+  - A database started more than 15 minutes ago with no heartbeat in the
+    last 15 minutes is a finding. It goes through docker, never the Gateway,
+    so it keeps no branch awake. `fox audit-log heartbeat` sends one now.
+- **The collector** not having finished a run for five minutes is a finding:
+  the control plane is down, or the collector is failing every minute.
+- **Marks taken off** (step 2's finding). The marks set through FoxByte are
+  read back from the security log, the last word on each table.
+  - A table that should be marked and still exists, whose grant has gone, is
+    a finding naming who marked it. The same goes for reads that should be
+    audited and are not.
+  - A table dropped since is not a finding: the drop is its own change, in
+    the Blackbox.
+  - Only running branches are checked; none is woken to be.
+- **Space**, as step 1 had it.
+
+Each finding is a warning in `fox check` with what to do. Findings appear in
+`fox audit-log status`, in `GET /api/audit-log`'s `findings`, and on the
+console's Audit log page. `show` lists gap records with the statements, and
+leaves heartbeats out.

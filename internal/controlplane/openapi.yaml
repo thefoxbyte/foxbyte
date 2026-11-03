@@ -2008,6 +2008,19 @@ paths:
                   pending: { type: array, items: { type: string } }
                   setup: { type: string }
                   "off": { type: string }
+                  findings:
+                    type: array
+                    description: >-
+                      What is wrong with it: space (the log nearly full), collector (not collected for 5 minutes), heartbeat
+                      (a database's line not arriving), gap (a session's statement numbers skipped some: lines lost), mark (a
+                      mark set through FoxByte taken off outside it).
+                    items:
+                      type: object
+                      properties:
+                        kind: { type: string, enum: [space, collector, heartbeat, gap, mark] }
+                        branch: { type: string }
+                        detail: { type: string }
+                        since: { type: string, format: date-time }
         "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 

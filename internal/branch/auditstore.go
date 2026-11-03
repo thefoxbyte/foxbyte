@@ -73,7 +73,15 @@ type auditState struct {
 	} `json:"base"`
 	Raw  map[string]rawPos `json:"raw"`  // branch/file -> how far it was read
 	Days map[string]int64  `json:"days"` // day -> the size its file had when last written
+
+	// What step 4's findings read (design, section 13).
+	LastRun  string                 `json:"last_run,omitempty"` // the last collection that finished
+	Sessions map[string]sessionMark `json:"sessions,omitempty"` // branch/session -> its last statement number
+	Beats    map[string]string      `json:"beats,omitempty"`    // branch -> its last heartbeat's time
+	Gaps     []AuditRecord          `json:"gaps,omitempty"`     // the newest gap records, at most auditGapsKept
 }
+
+const auditGapsKept = 200
 
 type rawPos struct {
 	Off   int64  `json:"off"`
@@ -83,7 +91,7 @@ type rawPos struct {
 func statePath() string { return filepath.Join(AuditStoreDir(), "state.json") }
 
 func loadAuditState() (auditState, error) {
-	s := auditState{Raw: map[string]rawPos{}, Days: map[string]int64{}}
+	s := auditState{Raw: map[string]rawPos{}, Days: map[string]int64{}, Sessions: map[string]sessionMark{}, Beats: map[string]string{}}
 	b, err := os.ReadFile(statePath())
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -99,6 +107,12 @@ func loadAuditState() (auditState, error) {
 	}
 	if s.Days == nil {
 		s.Days = map[string]int64{}
+	}
+	if s.Sessions == nil {
+		s.Sessions = map[string]sessionMark{}
+	}
+	if s.Beats == nil {
+		s.Beats = map[string]string{}
 	}
 	return s, nil
 }
@@ -406,10 +420,24 @@ func CollectAudit() (CollectResult, error) {
 	// records it follows, and break the chain as verify reads it. Collected
 	// on or after the day it happened, it is still found by a read from that
 	// day on.
+	// A session whose statement numbers skip some lost lines: a record of the
+	// gap goes into the chain where it was found.
+	recs = withGaps(recs, s.Sessions)
 	for i := range recs {
 		sealRecord(&recs[i], s.Seq+1, s.Head)
 		s.Seq, s.Head = recs[i].Seq, recs[i].Hash
+		switch recs[i].Kind {
+		case "heartbeat":
+			s.Beats[recs[i].Branch] = recs[i].Time
+		case "gap":
+			s.Gaps = append(s.Gaps, recs[i])
+			if n := len(s.Gaps); n > auditGapsKept {
+				s.Gaps = s.Gaps[n-auditGapsKept:]
+			}
+		}
 	}
+	pruneSessions(s.Sessions, time.Now().Add(-auditRawKeep).UTC().Format(time.RFC3339Nano))
+	s.LastRun = time.Now().UTC().Format(time.RFC3339)
 	if len(recs) > 0 {
 		day := collectDay(time.Now())
 		size, err := appendDay(day, recs)
@@ -538,8 +566,8 @@ func joinAudit(recs []AuditRecord, q AuditQuery) []AuditEntry {
 		if len(want) > 0 && !want[r.Kind] {
 			continue
 		}
-		if len(want) == 0 && r.Kind == "transaction" {
-			continue // shown on the statements they close
+		if len(want) == 0 && (r.Kind == "transaction" || r.Kind == "heartbeat") {
+			continue // transactions are shown on the statements they close; heartbeats are the engine's
 		}
 		if q.Branch != "" && r.Branch != q.Branch {
 			continue

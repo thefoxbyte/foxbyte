@@ -9,19 +9,21 @@ import (
 	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/access"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
 func TestAuditLogRoute(t *testing.T) {
 	s, admin, alice, _ := withACL(t)
 	old := auditLogState
-	auditLogState = func() auditLogReply {
+	auditLogState = func(*auth.Store) auditLogReply {
 		return auditLogReply{On: true, Mode: "default", Root: "/dbpool/audit", Used: 10, Quota: 100,
-			Pending: []string{"old"}, Setup: "fox audit-log setup", Off: "fox audit-log off"}
+			Pending: []string{"old"}, Setup: "fox audit-log setup", Off: "fox audit-log off",
+			Findings: []branch.AuditFinding{{Kind: "heartbeat", Branch: "main", Detail: "no heartbeat"}}}
 	}
 	t.Cleanup(func() { auditLogState = old })
 	mux := http.NewServeMux()
-	registerAuditLog(mux)
+	registerAuditLog(mux, s)
 	h := s.Authn(mux)
 	ka, _, _ := s.CreateAPIKey(admin.ID, "t")
 	kb, _, _ := s.CreateAPIKey(alice.ID, "t")
@@ -31,7 +33,7 @@ func TestAuditLogRoute(t *testing.T) {
 	}
 	code, out := serve(t, h, ka, "GET", "/api/audit-log", "")
 	if code != 200 || out["on"] != true || out["mode"] != "default" || out["quota"] != float64(100) ||
-		out["setup"] != "fox audit-log setup" || len(out["pending"].([]any)) != 1 {
+		out["setup"] != "fox audit-log setup" || len(out["pending"].([]any)) != 1 || len(out["findings"].([]any)) != 1 {
 		t.Errorf("an admin: %d %v", code, out)
 	}
 }

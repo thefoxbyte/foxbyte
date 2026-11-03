@@ -333,6 +333,25 @@ func (s *Store) SecurityEvents(after int64, limit int) ([]SecurityEvent, error) 
 	return out, rows.Err()
 }
 
+// SecurityEventsOfKind returns one kind's events, oldest first: what the
+// audit log's marks were set to, for one, read back from who set them.
+func (s *Store) SecurityEventsOfKind(kind string) ([]SecurityEvent, error) {
+	rows, err := s.db.Query(`SELECT id,at,kind,actor,subject,ip,detail,prev_hash,row_hash FROM security_events WHERE kind = ? ORDER BY id`, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SecurityEvent{}
+	for rows.Next() {
+		var e SecurityEvent
+		if err := rows.Scan(&e.ID, &e.At, &e.Kind, &e.Actor, &e.Subject, &e.IP, &e.Detail, &e.PrevHash, &e.RowHash); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // RecentSecurityEvents returns the newest events, newest first.
 func (s *Store) RecentSecurityEvents(limit int) ([]SecurityEvent, error) {
 	var maxID int64

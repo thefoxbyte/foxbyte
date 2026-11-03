@@ -84,7 +84,7 @@ func checks() []check {
 		one("blackbox anchors", checkAnchors),
 		one("anchor target", checkAnchorTarget),
 		one("change feed", checkRealtime),
-		one("audit log", checkAuditLog),
+		group("audit log", checkAuditLogLines),
 		one("durability", checkDurability),
 		one("replication", checkReplicationAccess),
 		one("backup target", checkBackupTarget),
@@ -620,6 +620,40 @@ func checkAuditLog() checkLine {
 		return warn("audit log", "on, but its space could not be read: "+err.Error(), fmt.Sprintf("%s audit-log status", brand.CLI))
 	}
 	return auditLogLine(s)
+}
+
+// checkAuditLogLines is the space line, and one line for each thing found
+// wrong with the audit log (step 4): a log that stopped arriving, lines lost,
+// a mark taken off. All warnings: the database runs; its record has a hole.
+func checkAuditLogLines() []checkLine {
+	lines := []checkLine{checkAuditLog()}
+	if !branch.AuditOn() {
+		return lines
+	}
+	st := openStore()
+	defer st.Close()
+	for _, f := range branch.AuditFindings(branch.MarkEventsFrom(st)) {
+		if f.Kind == "space" {
+			continue // the line above says it
+		}
+		lines = append(lines, auditFindingLine(f))
+	}
+	return lines
+}
+
+// auditFindingLine is one finding as a check line, with what to do.
+func auditFindingLine(f branch.AuditFinding) checkLine {
+	where := ""
+	if f.Branch != "" {
+		where = f.Branch + ": "
+	}
+	fix := map[string]string{
+		"collector": brand.CLI + " status; " + brand.CLI + " audit-log collect",
+		"heartbeat": brand.CLI + " audit-log heartbeat; then " + brand.CLI + " audit-log status",
+		"gap":       "raise " + brand.EnvName("AUDIT_QUOTA") + "; " + brand.CLI + " audit-log show --branch " + f.Branch,
+		"mark":      brand.CLI + " audit-log tables --branch " + f.Branch + "; mark it again, and ask who took it off (" + brand.CLI + " blackbox " + f.Branch + ")",
+	}[f.Kind]
+	return warn("audit "+f.Kind, where+f.Detail, fix)
 }
 
 // auditLogLine is the judgement on the log's space, pure so it is tested.

@@ -46,6 +46,17 @@ func auditLogCmd(args []string) error {
 		}
 		fmt.Printf("%d record(s) collected; %d raw file(s) removed; %d day(s) past retention removed.\n", res.Records, res.Removed, res.Pruned)
 		return nil
+	case "heartbeat":
+		sent, err := branch.SendHeartbeats()
+		if err != nil {
+			return err
+		}
+		if len(sent) == 0 {
+			fmt.Println("No running database runs pgAudit: no heartbeat to send.")
+			return nil
+		}
+		fmt.Printf("A heartbeat from %s. `%s audit-log collect` takes it into the store.\n", strings.Join(sent, ", "), brand.CLI)
+		return nil
 	case "tables":
 		return auditLogTables(args[1:])
 	case "table":
@@ -62,6 +73,7 @@ func auditLogUsage() string {
 %[1]s audit-log show [--branch b] [--table t] [--user u] [--since 1h|2026-11-04] [--limit n] [--errors] [--json]
                                                   the newest records: who did what to which object, how it ended, whom for
 %[1]s audit-log verify                                check the records' hash chain
+%[1]s audit-log heartbeat                             make every audited database write its heartbeat line now
 %[1]s audit-log tables [--branch b]                  the tables whose writes (and reads) are audited
 %[1]s audit-log table <table> [--reads] [--branch b]  audit a table's writes, and with --reads its reads
 %[1]s audit-log table <table> --off [--branch b]      stop auditing it`, brand.CLI)
@@ -90,6 +102,21 @@ func auditLogStatus() error {
 		fmt.Printf("  marked   %d table(s) on main (`%s audit-log tables`)\n", len(marks), brand.CLI)
 	}
 	fmt.Printf("  records  kept %d days (%s); `%s audit-log show` reads them\n", branch.AuditRetentionDays(), brand.EnvName("AUDIT_RETENTION_DAYS"), brand.CLI)
+	st := openStore()
+	findings := branch.AuditFindings(branch.MarkEventsFrom(st))
+	st.Close()
+	if len(findings) == 0 {
+		fmt.Printf("\nNothing found wrong: lines are arriving, none are missing, every mark is in place.\n")
+	} else {
+		fmt.Printf("\nFound:\n")
+		for _, f := range findings {
+			where := ""
+			if f.Branch != "" {
+				where = f.Branch + ": "
+			}
+			fmt.Printf("  %-9s %s%s\n", f.Kind, where, f.Detail)
+		}
+	}
 	fmt.Printf("\nForwarding to a SIEM is not in this version yet.\n")
 	return pendingNote()
 }
@@ -356,8 +383,11 @@ func printAuditEntries(out io.Writer, entries []branch.AuditEntry) {
 			t = p.Local().Format("2006-01-02 15:04:05")
 		}
 		what, outcome := e.Command, auditOutcome(e)
-		if e.Kind == "outcome" {
+		switch e.Kind {
+		case "outcome":
 			what = e.Outcome
+		case "gap":
+			what, outcome = "GAP", fmt.Sprintf("%d line(s) missing", e.Missing)
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t, e.Branch, dash(e.Login), what, dash(e.Object), outcome, auditForText(e.TxnFor))
 	}

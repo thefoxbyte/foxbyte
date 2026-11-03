@@ -111,4 +111,19 @@ describe('Audit log page', () => {
     expect(await screen.findByTestId('no-records')).toBeTruthy()
     expect(getAuditRecords).toHaveBeenCalledWith(expect.objectContaining({ since: '' }))
   })
+
+  it('lists what is found wrong, or says nothing is', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default', findings: [
+      { kind: 'gap', branch: 'main', detail: '3 audit line(s) missing in a session of alice', since: '2026-11-04T10:00:00Z' },
+      { kind: 'mark', branch: 'main', detail: 'public.orders was marked by bob, and its mark has been taken off outside FoxByte' },
+    ] })
+    page()
+    const f = await screen.findByTestId('audit-findings')
+    expect(f.textContent).toMatch(/gap.*main: 3 audit line\(s\) missing/)
+    expect(f.textContent).toMatch(/mark.*taken off outside FoxByte/)
+    cleanup()
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default', findings: [] })
+    page()
+    expect((await screen.findByTestId('audit-findings')).textContent).toContain('Nothing found wrong')
+  })
 })
