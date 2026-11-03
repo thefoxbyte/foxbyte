@@ -57,3 +57,13 @@ test('a table is marked for the audit log from the console, listed on the Audit 
   await page.getByRole('dialog').getByRole('button', { name: 'Stop auditing' }).click()
   await expect(page.getByText(`public.${t}`)).toHaveCount(0, { timeout: 30_000 })
 })
+
+// Step 3: the records, read from the engine. Audit is off on this install, so
+// none match; integration §11aa reads real ones.
+test('the Audit log page reads the records from the engine', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Audit log' }).click()
+  await page.getByLabel('Records since').selectOption('all')
+  await page.getByRole('button', { name: 'Show' }).click()
+  await expect(page.getByTestId('no-records')).toHaveText('No record matches.', { timeout: 30_000 })
+})

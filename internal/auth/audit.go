@@ -128,6 +128,10 @@ const (
 	// on which branch. Unmarking is how a table's statements stop being
 	// recorded, so it is recorded here as well as by pgAudit.
 	EvAuditMarked = "audit-log.marked"
+	// The audit log read: who, and what they asked for. Its records name
+	// logins, and whom changes were for, so reading them is recorded as
+	// reading someone's query history is.
+	EvAuditLogRead = "audit-log.read"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

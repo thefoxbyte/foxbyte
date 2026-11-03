@@ -648,3 +648,47 @@ func TestAuditLogLine(t *testing.T) {
 		t.Errorf("the warning should say what a full log does: %s", got.detail)
 	}
 }
+
+func TestParseSince(t *testing.T) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.Local)
+	for in, want := range map[string]time.Time{
+		"90m":        now.Add(-90 * time.Minute),
+		"2h":         now.Add(-2 * time.Hour),
+		"7d":         now.AddDate(0, 0, -7),
+		"2026-11-01": time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local),
+	} {
+		if got, err := parseSince(in, now); err != nil || !got.Equal(want) {
+			t.Errorf("%s: %v %v, want %v", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "yesterday", "-2h", "0d"} {
+		if _, err := parseSince(bad, now); err == nil {
+			t.Errorf("%q should be refused", bad)
+		}
+	}
+}
+
+func TestAuditOutcomeAndFor(t *testing.T) {
+	st := func(e branch.AuditEntry) string { return auditOutcome(e) }
+	if got := st(branch.AuditEntry{TxnOutcome: "COMMIT"}); got != "commit" {
+		t.Errorf("%q", got)
+	}
+	if got := st(branch.AuditEntry{TxnOutcome: "ROLLBACK", Error: "23505"}); got != "rollback (23505)" {
+		t.Errorf("%q", got)
+	}
+	if got := st(branch.AuditEntry{AuditRecord: branch.AuditRecord{Kind: "outcome", SQLState: "28P01"}}); got != "28P01" {
+		t.Errorf("%q", got)
+	}
+	if got := st(branch.AuditEntry{}); got != "-" {
+		t.Errorf("%q", got)
+	}
+	if got := auditForText(&branch.AuditFor{State: "asserted", Issuer: "shop", Actor: "alice"}); got != "alice, asserted by shop" {
+		t.Errorf("%q", got)
+	}
+	if got := auditForText(&branch.AuditFor{State: "claimed", Actor: "bob"}); got != "bob (claimed)" {
+		t.Errorf("%q", got)
+	}
+	if auditForText(nil) != "-" || auditForText(&branch.AuditFor{State: "none"}) != "-" {
+		t.Error("nobody is a dash")
+	}
+}

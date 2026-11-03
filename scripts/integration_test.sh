@@ -2661,6 +2661,64 @@ $S branch delete audmarkbr >/dev/null 2>&1
 pg pg-main "SET bb.allow_destructive=on; DROP VIEW IF EXISTS aud_v; DROP TABLE IF EXISTS aud_orders, aud_notes, aud_cards, aud_own" >/dev/null
 $S user delete aud-other@foxbyte.dev >/dev/null 2>&1
 
+echo "### 11aa. the audit log's records (F6 Gate 1, step 3)"
+# The collector moves the raw lines into a hash-chained store, keeping only a
+# record's fields, and removes raw files once collected and two days old.
+STORE=/dbpool/audit/.store
+store_all() { sudo sh -c "zcat $STORE/*.jsonl.gz 2>/dev/null"; }
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud3_orders; CREATE TABLE aud3_orders (id int PRIMARY KEY, email text); GRANT ALL ON aud3_orders TO db_client" >/dev/null
+$S audit-log table aud3_orders >/dev/null 2>&1
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+gw "$KEY" "INSERT INTO aud3_orders VALUES (1, 'meera.f6@example.in')" >/dev/null
+gw "$KEY" "INSERT INTO aud3_orders VALUES (1, 'meera.f6@example.in')" >/dev/null
+sleep 1.5
+SHOW="$($S audit-log show --table aud3_orders 2>&1)"
+assert_eq "show: each write, by whom, and how its transaction ended, the failed one with its SQLSTATE" \
+  "$(echo "$SHOW" | grep 'test@foxbyte.dev' | grep 'INSERT' | grep -c 'public.aud3_orders  *commit')|$(echo "$SHOW" | grep 'INSERT' | grep -c 'rollback (23505)')" "1|1"
+assert_eq "the store is the install user's, beside the logs and readable by nobody else, one file a day" \
+  "$(sudo stat -c '%U %a' $STORE)|$(sudo sh -c "ls $STORE/*.jsonl.gz" | grep -c "$(date -u +%F).jsonl.gz")" "$(id -un) 700|1"
+assert_eq "…and it keeps no value, no client address and no application name" \
+  "$(store_all | grep -c 'meera')|$(store_all | grep -c 'remote_host\|application_name\|172\.')" "0|0"
+assert_eq "verify: the chain is intact" "$($S audit-log verify | grep -c '^audit log intact')" "1"
+
+RJ="$(curl -sk -H "$AUTH" 'https://localhost:8080/api/audit-log/records?table=aud3_orders')"
+assert_eq "the API gives the records, joined to their transactions" \
+  "$(echo "$RJ" | python3 -c 'import sys,json; r=json.load(sys.stdin)["records"]; print(sorted((e["command"], e.get("txn_outcome",""), e.get("error","")) for e in r if e["kind"]=="statement"))')" \
+  "[('INSERT', 'COMMIT', ''), ('INSERT', 'ROLLBACK', '23505')]"
+printf 'password123\n' | $S user create aud-reader@foxbyte.dev >/dev/null 2>&1
+ARK="$($S apikey create aud-reader@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+assert_eq "…to admins only, and each read is in the security log" \
+  "$(code "$ARK" https://localhost:8080/api/audit-log/records)|$([ "$($S audit log --limit 50 | grep -c 'audit-log.read')" -ge 2 ] && echo yes)" "403|yes"
+$S user delete aud-reader@foxbyte.dev >/dev/null 2>&1
+
+# A raw file read to its end and two days old is removed: one made here, as a
+# database that stopped writing leaves one, with a line of its own.
+OLD=/dbpool/audit/main/audit-Old-00.json
+echo '{"timestamp":"2026-11-01 09:00:00.000 UTC","user":"old@foxbyte.dev","session_id":"x.1","vxid":"9/9","error_severity":"LOG","message":"AUDIT: OBJECT,1,1,WRITE,INSERT,TABLE,public.aud3_old,<not logged>,<not logged>"}' | sudo tee "$OLD" >/dev/null
+sudo chown 999:999 "$OLD"; sudo touch -d '3 days ago' "$OLD"
+$S audit-log collect >/dev/null 2>&1
+assert_eq "a raw file collected and two days old is removed, after its lines are in the store" \
+  "$(sudo test -e "$OLD" && echo kept || echo removed)|$(store_all | grep -c 'public.aud3_old')" "removed|1"
+assert_eq "…and the current one stays" "$(sudo sh -c 'ls /dbpool/audit/main/audit-*.json' | wc -l | awk '{print ($1 >= 1)}')" "1"
+assert_eq "the collector runs in the control plane too: status reports the records it keeps" \
+  "$($S audit-log status | grep -c 'kept 365 days')" "1"
+
+$S audit-log off --yes >/dev/null 2>&1; main_up
+assert_eq "turning audit off keeps the records, and they still verify" \
+  "$($S audit-log show --table aud3_orders | grep -c INSERT)|$($S audit-log verify | grep -c '^audit log intact')" "2|1"
+# Edited once audit is off, so nothing is appended while the edit is there.
+DAY="$STORE/$(date -u +%F).jsonl.gz"
+cp "$DAY" /tmp/audit-day.bak
+zcat "$DAY" | sed '0,/test@foxbyte.dev/s//mallory@foxbyte.dev/' | gzip > /tmp/audit-day.edit && cp /tmp/audit-day.edit "$DAY"
+OUT="$($S audit-log verify 2>&1)"; rc=$?
+assert_eq "a record edited after it was written is found, and verify fails" \
+  "$rc|$(echo "$OUT" | grep -c 'TAMPERED')|$(echo "$OUT" | grep -c 'was changed after it was written')" "1|1|1"
+assert_eq "…and the edited file is left as it is, not cut to the size the collector wrote" \
+  "$(cmp -s /tmp/audit-day.edit "$DAY" && echo kept)" "kept"
+cp /tmp/audit-day.bak "$DAY"; rm -f /tmp/audit-day.bak /tmp/audit-day.edit
+assert_eq "…and put back, it verifies again" "$($S audit-log verify | grep -c '^audit log intact')" "1"
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud3_orders" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../api', async () => {
   const actual = await vi.importActual<typeof import('../api')>('../api')
-  return { ...actual, getAuditLog: vi.fn(), getAuditMarks: vi.fn(), getBranches: vi.fn(), unmarkAudited: vi.fn() }
+  return { ...actual, getAuditLog: vi.fn(), getAuditMarks: vi.fn(), getAuditRecords: vi.fn(), getBranches: vi.fn(), unmarkAudited: vi.fn() }
 })
 
-import { getAuditLog, getAuditMarks, getBranches, unmarkAudited, type AuditLogReply } from '../api'
+import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, unmarkAudited, type AuditLogReply } from '../api'
 import { ConfirmProvider } from '../confirm'
 import AuditLog from './AuditLog'
 
@@ -79,5 +79,36 @@ describe('Audit log page', () => {
     vi.mocked(getAuditLog).mockResolvedValue(off)
     page()
     expect((await screen.findByTestId('no-marks')).textContent).toContain('No table on main is marked')
+  })
+
+  it('reads the records with filters: how each statement ended, and whom it was for', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default' })
+    vi.mocked(getAuditRecords).mockResolvedValue({ records: [
+      { seq: 3, time: '2026-11-04T10:00:04Z', branch: 'main', login: 'alice@x.in', kind: 'statement', class: 'WRITE', command: 'INSERT',
+        object: 'public.orders', txn_outcome: 'COMMIT', txn_for: { state: 'asserted', issuer: 'shop', actor: 'priya' } },
+      { seq: 2, time: '2026-11-04T10:00:02Z', branch: 'main', login: 'bob', kind: 'statement', class: 'WRITE', command: 'UPDATE',
+        object: 'public.orders', txn_outcome: 'ROLLBACK', error: '23505' },
+      { seq: 1, time: '2026-11-04T10:00:01Z', branch: 'main', login: 'eve', kind: 'outcome', outcome: 'FATAL', sqlstate: '28P01' },
+    ] })
+    page()
+    fireEvent.change(await screen.findByLabelText('Records table'), { target: { value: 'orders' } })
+    fireEvent.click(screen.getByLabelText('Errors only'))
+    fireEvent.click(screen.getByRole('button', { name: 'Show' }))
+    await waitFor(() => expect(getAuditRecords).toHaveBeenCalledWith(expect.objectContaining({ table: 'orders', errors: true, since: '24h' })))
+    const t = await screen.findByRole('table', { name: 'Audit records' })
+    const rows = within(t).getAllByRole('row').map(r => r.textContent)
+    expect(rows[1]).toMatch(/alice@x\.in.*INSERT.*public\.orders.*commit.*priya, asserted by shop/)
+    expect(rows[2]).toMatch(/bob.*UPDATE.*rollback \(23505\)/)
+    expect(rows[3]).toMatch(/eve.*FATAL.*28P01/)
+  })
+
+  it('"ever" asks with no since', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default' })
+    vi.mocked(getAuditRecords).mockResolvedValue({ records: [] })
+    page()
+    fireEvent.change(await screen.findByLabelText('Records since'), { target: { value: 'all' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Show' }))
+    expect(await screen.findByTestId('no-records')).toBeTruthy()
+    expect(getAuditRecords).toHaveBeenCalledWith(expect.objectContaining({ since: '' }))
   })
 })

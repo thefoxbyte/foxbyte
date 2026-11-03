@@ -891,6 +891,25 @@ export const markAudited = (branch: string, schema: string, table: string, reads
   req('PUT', markPath(branch, schema, table), { reads }) as Promise<AuditMarks>
 export const unmarkAudited = (branch: string, schema: string, table: string) =>
   req('DELETE', markPath(branch, schema, table)) as Promise<AuditMarks>
+// The audit log's records (F6 step 3), newest first. Admins only.
+export type AuditFor = { state: string; issuer?: string; actor?: string }
+export type AuditEntry = {
+  seq: number; time: string; branch: string; login?: string; kind: 'statement' | 'outcome'
+  audit?: string; class?: string; command?: string; object_type?: string; object?: string
+  session?: string; vxid?: string; outcome?: string; sqlstate?: string; text?: string
+  txn_outcome?: string; txn_for?: AuditFor | null; error?: string
+}
+export type AuditQuery = { branch?: string; table?: string; user?: string; since?: string; limit?: number; errors?: boolean }
+export const getAuditRecords = (q: AuditQuery) => {
+  const p = new URLSearchParams()
+  if (q.branch) p.set('branch', q.branch)
+  if (q.table) p.set('table', q.table)
+  if (q.user) p.set('user', q.user)
+  if (q.since) p.set('since', q.since)
+  if (q.limit) p.set('limit', String(q.limit))
+  if (q.errors) p.set('errors', '1')
+  return req('GET', `${API}/api/audit-log/records?${p}`) as Promise<{ records: AuditEntry[] }>
+}
 /** markOf is one table's mark, if it has one. */
 export const markOf = (m: AuditMarks | null, schema: string, name: string) =>
   m?.tables.find(t => t.schema === schema && t.name === name) ?? null

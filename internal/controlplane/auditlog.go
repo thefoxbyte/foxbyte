@@ -5,7 +5,13 @@ package controlplane
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
@@ -40,6 +46,97 @@ func registerAuditLog(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, auditLogState())
 	})
+}
+
+// The records (F6 Gate 1, step 3):
+//
+//	GET /api/audit-log/records?branch=&table=&user=&since=&limit=&errors=1
+//
+// Admins only, and each read is in the security log: the records name logins
+// and whom changes were for. since is RFC 3339 or a duration back from now
+// (2h); limit is 1 to 1000, 100 by default. What is new in the raw files is
+// collected first.
+func registerAuditRecords(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/audit-log/records", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r) {
+			writeErr(w, 403, errors.New("only an admin may read the audit log"))
+			return
+		}
+		q, err := auditQueryFrom(r.URL.Query(), time.Now())
+		if err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		entries, err := auditRecords(q)
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		if secLog != nil {
+			u, _ := auth.UserFrom(r.Context())
+			secLog.Audit(auth.EvAuditLogRead, u.Email, q.Branch, remoteIP(r), auditReadDetail(q, len(entries)))
+		}
+		writeJSON(w, 200, map[string]any{"records": entries})
+	})
+}
+
+// auditRecords collects and reads; a variable so a test need not.
+var auditRecords = func(q branch.AuditQuery) ([]branch.AuditEntry, error) {
+	if _, err := branch.CollectAudit(); err != nil {
+		log.Printf("audit log: collecting before a read: %v", err)
+	}
+	entries, err := branch.ReadAudit(q)
+	if entries == nil {
+		entries = []branch.AuditEntry{}
+	}
+	return entries, err
+}
+
+// auditQueryFrom reads the query string.
+func auditQueryFrom(v url.Values, now time.Time) (branch.AuditQuery, error) {
+	q := branch.AuditQuery{Branch: v.Get("branch"), Table: v.Get("table"), Login: v.Get("user"), Limit: 100}
+	if s := v.Get("limit"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > 1000 {
+			return q, fmt.Errorf("limit is 1 to 1000, not %q", s)
+		}
+		q.Limit = n
+	}
+	if s := v.Get("since"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			q.Since = now.Add(-d)
+		} else if t, err := time.Parse(time.RFC3339, s); err == nil {
+			q.Since = t
+		} else {
+			return q, fmt.Errorf("since is a time (RFC 3339) or a duration back from now (2h), not %q", s)
+		}
+	}
+	if v.Get("errors") == "1" {
+		q.Kinds = []string{"outcome"}
+	}
+	return q, nil
+}
+
+// auditReadDetail is the security log's line for a read: what was asked, and
+// how much came back.
+func auditReadDetail(q branch.AuditQuery, n int) string {
+	var parts []string
+	for _, p := range [][2]string{{"table", q.Table}, {"user", q.Login}} {
+		if p[1] != "" {
+			parts = append(parts, p[0]+" "+p[1])
+		}
+	}
+	if !q.Since.IsZero() {
+		parts = append(parts, "since "+q.Since.UTC().Format(time.RFC3339))
+	}
+	if len(q.Kinds) > 0 {
+		parts = append(parts, "errors only")
+	}
+	asked := "everything"
+	if len(parts) > 0 {
+		asked = strings.Join(parts, ", ")
+	}
+	return fmt.Sprintf("%d record(s): %s", n, asked)
 }
 
 // auditLogState reads the engine; a variable so a test need not.

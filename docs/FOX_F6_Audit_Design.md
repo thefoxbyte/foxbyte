@@ -761,3 +761,77 @@ about the target.
 
 Step 4 will compare each branch's marks with the ones set through FoxByte,
 which the security log holds, and report a mark that has gone.
+
+---
+
+## 22. Gate 1, step 3: the collector and the store, as built
+
+- **Who reads the raw logs.** PostgreSQL writes them as the container's
+  postgres user, mode 0600, so the collector reads them through sudo, as the
+  engine reaches everything else it does not own. It lists the files and
+  reads only what is new past its offset, and only complete lines. The store
+  it writes belongs to the install's user, so the CLI and the console read
+  records without sudo.
+- **When.** The control plane collects every minute, and `show`, `verify` and
+  the console's Records collect first, so a read is never a minute stale. A
+  file lock lets one collector run at a time.
+- **What a record keeps** is section 5's list:
+  - when, branch and login;
+  - the kind (a statement; how a transaction ended, with whom it was for; or
+    an error, as its SQLSTATE);
+  - pgAudit's class, command and object;
+  - the statement numbers, session and virtual transaction;
+  - forensic mode's text, and nothing else.
+
+  The server's own lines are not records. They stay in the raw files for
+  two days, for an operator.
+- **The store** is `AuditRoot/.store`, mode 0700, never mistakable for a
+  branch, since a branch's name cannot start with a dot.
+  - It holds one gzip file per day, appended to as one more member per
+    batch.
+  - A state file records how far each raw file was read, how long each day's
+    file is, and the chain's head.
+  - The batch is written before the state. After a crash between the two,
+    the next run cuts the day file back to what the state says and reads the
+    batch again, so nothing is lost or written twice.
+  - **Only a crash's leftover is cut, found by integration §11aa.** A batch
+    is one gzip member, so a crash leaves bytes that begin, at exactly the
+    recorded size, with gzip's magic number. The first version cut any day
+    file longer than the state said. An edited and recompressed file is
+    usually longer, so the collector, running every minute, would have cut
+    it into a file that cannot be read. `verify` then failed with a read
+    error rather than reporting the edit. Now an edit is left as it is, and
+    `verify` reports it, carrying on through the other days.
+- **Records are filed by the day they are collected, found by §11aa.** The
+  first version filed each record by its own time. A raw file collected late
+  put records with the newest numbers into an older day's file, and `verify`,
+  reading the days in order, found the chain going backwards. Filed by
+  collection, the files in date order are the chain in order. A read from a
+  day on still finds every record of that day on, because a record is
+  collected on or after the day it happened.
+- **The chain.** Each record holds the previous one's hash and its own:
+  SHA-256 over the record as JSON, with its fields in their declared order.
+  `verify` checks every link, and that the store ends where the collector
+  wrote, so records cut from the end are found too.
+  - The store belongs to the install's user, so that user, or the host's
+    administrator, could rewrite the whole chain consistently.
+  - Anchoring its head outside the machine (step 6, Enterprise) is what
+    closes that, as for the Blackbox and the security log.
+- **Raw files** are removed once read to their end and two days old.
+  - A database's current file is never two days old: PostgreSQL starts a new
+    one every hour.
+  - A file PostgreSQL replaces under its name a week later is recognised by
+    its first line, which does not change as a file grows, and is read from
+    its start.
+- **Retention** removes whole days older than `FOX_AUDIT_RETENTION_DAYS`
+  (365). The state keeps the last record removed, and the chain verifies from
+  it. Step 5 makes retention a setting, and adds forensic mode's own.
+- **Reading.**
+  - `fox audit-log show` shows each statement with how its transaction ended,
+    the SQLSTATE that ended it, and whom it was for, joining the
+    transaction's record by session and virtual transaction (section 19,
+    item 2). Errors outside an audited statement are lines of their own,
+    with `--errors` for those alone.
+  - The API and the console's Records do the same, for admins only.
+  - Every read is in the security log: the records name logins, and whom
+    changes were for.

@@ -2011,6 +2011,34 @@ paths:
         "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/audit-log/records:
+    get:
+      tags: [audit-log]
+      summary: The newest audit records, newest first (admins only; each read is in the security log).
+      description: >-
+        Statements are shown with how their transaction ended and whom it was for, from the transaction's own record.
+        Errors outside an audited statement are records of their own (kind outcome). What is new in the raw logs is
+        collected first. A record holds no statement text and no values, except the statement's text in forensic mode.
+      parameters:
+        - { name: branch, in: query, schema: { type: string } }
+        - { name: table, in: query, schema: { type: string }, description: "A name or schema.name." }
+        - { name: user, in: query, schema: { type: string }, description: The login. }
+        - { name: since, in: query, schema: { type: string }, description: "RFC 3339, or a duration back from now (2h)." }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 100 } }
+        - { name: errors, in: query, schema: { type: string, enum: ["1"] }, description: Only errors. }
+      responses:
+        "200":
+          description: The records.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  records: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }
+        "400": { description: A limit or since that is not valid. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches/{name}/audit/tables:
     get:
       tags: [audit-log]
@@ -2396,6 +2424,33 @@ components:
     Unauthorized:
       description: Missing or invalid API key.
   schemas:
+    AuditEntry:
+      type: object
+      properties:
+        seq: { type: integer }
+        time: { type: string, format: date-time }
+        branch: { type: string }
+        login: { type: string }
+        kind: { type: string, enum: [statement, outcome] }
+        audit: { type: string, enum: [SESSION, OBJECT] }
+        class: { type: string }
+        command: { type: string }
+        object_type: { type: string }
+        object: { type: string }
+        statement: { type: integer }
+        substatement: { type: integer }
+        session: { type: string }
+        vxid: { type: string }
+        outcome: { type: string }
+        sqlstate: { type: string }
+        text: { type: string, description: Forensic mode only. }
+        prev: { type: string }
+        hash: { type: string }
+        txn_outcome: { type: string, description: "How the statement's transaction ended: COMMIT, ROLLBACK or PREPARE." }
+        txn_for:
+          type: object
+          properties: { state: { type: string }, issuer: { type: string }, actor: { type: string } }
+        error: { type: string, description: The SQLSTATE of the error its transaction met, if any. }
     AuditMarks:
       type: object
       properties:
