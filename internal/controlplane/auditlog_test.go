@@ -5,6 +5,8 @@ package controlplane
 import (
 	"net/http"
 	"testing"
+
+	"github.com/thefoxbyte/foxbyte/internal/access"
 )
 
 func TestAuditLogRoute(t *testing.T) {
@@ -28,5 +30,23 @@ func TestAuditLogRoute(t *testing.T) {
 	if code != 200 || out["on"] != true || out["mode"] != "default" || out["quota"] != float64(100) ||
 		out["setup"] != "fox audit-log setup" || len(out["pending"].([]any)) != 1 {
 		t.Errorf("an admin: %d %v", code, out)
+	}
+}
+
+// Changing a mark is the owner's (Manage); reading the marks is Use, as the
+// grants are in the catalog for anyone to read.
+func TestAuditMarkRoutesNeed(t *testing.T) {
+	for _, c := range []struct {
+		method, tail string
+		want         access.Level
+	}{
+		{"GET", "audit/tables", access.Use},
+		{"PUT", "audit/tables/public/orders", access.Manage},
+		{"DELETE", "audit/tables/public/orders", access.Manage},
+		{"POST", "audit/anything", access.Manage},
+	} {
+		if got := needFor(c.method, c.tail); got != c.want {
+			t.Errorf("%s %s: %v, want %v", c.method, c.tail, got, c.want)
+		}
 	}
 }

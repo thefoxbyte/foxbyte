@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useEffect, useState } from 'react'
-import { getAuditLog, type AuditLogReply } from '../api'
+import { useCallback, useEffect, useState } from 'react'
+import { getAuditLog, getAuditMarks, getBranches, unmarkAudited, type AuditLogReply, type AuditMarks, type Branch } from '../api'
+import { useConfirm } from '../confirm'
 
 // The databases' audit log (F6): pgAudit in default mode. It records who
 // changed the schema and roles, and who wrote to the tables an admin marks,
@@ -18,12 +19,33 @@ function bytes(n: number) {
 }
 
 export default function AuditLog() {
+  const confirm = useConfirm()
   const [data, setData] = useState<AuditLogReply | null>(null)
   const [err, setErr] = useState('')
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [branch, setBranch] = useState('main')
+  const [marks, setMarks] = useState<AuditMarks | null>(null)
+  const [markErr, setMarkErr] = useState('')
 
   useEffect(() => {
     getAuditLog().then(setData, e => setErr((e as Error).message))
+    getBranches().then(setBranches, () => setBranches([]))
   }, [])
+  const loadMarks = useCallback((b: string) => {
+    setMarks(null); setMarkErr('')
+    getAuditMarks(b).then(setMarks, e => setMarkErr((e as Error).message))
+  }, [])
+  useEffect(() => { loadMarks(branch) }, [branch, loadMarks])
+
+  const stop = async (schema: string, name: string) => {
+    const ok = await confirm({
+      title: 'Stop auditing',
+      message: <>Stop recording who writes to <b>{schema}.{name}</b> on {branch}? What the log already holds stays.</>,
+      confirmText: 'Stop auditing',
+    })
+    if (!ok) return
+    try { setMarks(await unmarkAudited(branch, schema, name)) } catch (e) { setMarkErr((e as Error).message) }
+  }
 
   const pending = data?.pending ?? []
   const pct = data && data.quota > 0 ? Math.floor(data.used * 100 / data.quota) : null
@@ -72,8 +94,38 @@ export default function AuditLog() {
             </table>
           </div>
           <p className="muted" style={{ fontSize: 13, marginBottom: 0 }}>
-            Marking tables, reading the log and forwarding it to your SIEM come next. To turn it off: <code>{data.off}</code>.
+            Reading the log and forwarding it to your SIEM come next. To turn it off: <code>{data.off}</code>.
           </p>
+        </div>
+      )}
+
+      <h2 style={{ marginTop: 22 }}>Marked tables</h2>
+      <p className="muted" style={{ fontSize: 13, marginTop: -4 }}>
+        Writes to these tables, and reads where marked, are lines in the log, by every login. Mark a table from its view in
+        the console (<b>Audit…</b>), or with <code>fox audit-log table &lt;table&gt; [--reads]</code>. A branch made from this
+        one has the same marks.
+      </p>
+      <label className="field" style={{ display: 'inline-block' }}>Branch{' '}
+        <select aria-label="Branch" value={branch} onChange={e => setBranch(e.target.value)}>
+          {(branches.length ? branches.map(b => b.name) : ['main']).map(n => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </label>
+      {markErr && <div className="err" style={{ marginTop: 8 }}>{markErr}</div>}
+      {marks && marks.tables.length === 0 && <p className="muted" data-testid="no-marks">No table on {branch} is marked.</p>}
+      {marks && marks.tables.length > 0 && (
+        <div className="table-wrap" style={{ marginTop: 8 }}>
+          <table aria-label={`Marked tables on ${branch}`}>
+            <thead><tr><th>Table</th><th>Audited</th><th></th></tr></thead>
+            <tbody>
+              {marks.tables.map(m => (
+                <tr key={`${m.schema}.${m.name}`}>
+                  <td><code>{m.schema}.{m.name}</code></td>
+                  <td>{m.writes && m.reads ? 'writes and reads' : m.reads ? 'reads' : 'writes'}</td>
+                  <td style={{ textAlign: 'right' }}><button className="ghost" onClick={() => stop(m.schema, m.name)}>Stop auditing</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 

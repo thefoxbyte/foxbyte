@@ -2590,6 +2590,77 @@ assert_eq "turning it off is in the security log" "$($S audit log --limit 20 | g
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS audit_probe" >/dev/null
 for b in audbefore audafter; do $S branch delete "$b" >/dev/null 2>&1; done
 
+echo "### 11z. marking tables for the audit log (F6 Gate 1, step 2)"
+# A mark is a grant to bb_audit: pgAudit logs a statement on a table the audit
+# role holds the privilege for. Writes by default, reads when asked, by every
+# login; a branch made after carries the marks.
+gw() { PGPASSWORD="$1" psql "$GATEWAY/main?sslmode=require" -X -q -tA -c "$2" 2>&1; }
+objlines() { auditlog main | grep -c "AUDIT: OBJECT,[0-9]*,[0-9]*,$1,TABLE,public.$2,"; }
+pg pg-main "SET bb.allow_destructive=on; DROP VIEW IF EXISTS aud_v; DROP TABLE IF EXISTS aud_orders, aud_notes, aud_cards;
+  CREATE TABLE aud_orders (id int PRIMARY KEY, email text); CREATE TABLE aud_notes (id int, body text);
+  CREATE TABLE aud_cards (id int, number text); CREATE VIEW aud_v AS SELECT * FROM aud_orders;
+  GRANT ALL ON aud_orders, aud_notes, aud_cards, aud_v TO db_client" >/dev/null
+OUT="$($S audit-log table aud_orders 2>&1)"; rc=$?
+assert_eq "a table can be marked with audit off, and the mark waits for it" \
+  "$rc|$(echo "$OUT" | grep -c 'take effect when it is turned on')|$($S audit-log tables | grep -c 'public.aud_orders  *writes$')" "0|1|1"
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+gw "$KEY" "INSERT INTO aud_orders VALUES (1, 'priya.f6@example.in')" >/dev/null
+gw "$KEY" "UPDATE aud_orders SET email = 'priya2.f6@example.in' WHERE id = 1" >/dev/null
+gw "$KEY" "INSERT INTO aud_notes VALUES (1, 'priya.f6@example.in')" >/dev/null
+gw "$KEY" "SELECT count(*) FROM aud_orders" >/dev/null
+sleep 1.5
+assert_eq "with audit on, a marked table's writes are logged; an unmarked table's, and its reads, are not" \
+  "$(objlines 'WRITE,INSERT' aud_orders)|$(objlines 'WRITE,UPDATE' aud_orders)|$(objlines 'WRITE,INSERT' aud_notes)|$(objlines 'READ,SELECT' aud_orders)" "1|1|0|0"
+assert_eq "…under the login that wrote, with nothing the statements held" \
+  "$(auditlog main | grep 'public.aud_orders' | grep -c '"user":"test@foxbyte.dev"')|$(auditlog main | grep -c 'priya')" "2|0"
+$S audit-log table aud_cards --reads >/dev/null 2>&1
+gw "$KEY" "SELECT count(*) FROM aud_cards" >/dev/null; sleep 1.5
+assert_eq "--reads: its reads are logged too" "$(objlines 'READ,SELECT' aud_cards)" "1"
+$S audit-log table aud_cards >/dev/null 2>&1
+gw "$KEY" "SELECT count(*) FROM aud_cards" >/dev/null; sleep 1.5
+assert_eq "…and marking again without it takes reads off" \
+  "$(objlines 'READ,SELECT' aud_cards)|$($S audit-log tables | grep -c 'public.aud_cards  *writes$')" "1|1"
+OUT="$($S audit-log table aud_v 2>&1)"; rc=$?
+assert_eq "a view is refused, with what to mark instead" "$([ $rc -ne 0 ] && echo refused)|$(echo "$OUT" | grep -c 'is not a table: mark the tables it reads and writes')" "refused|1"
+OUT="$($S audit-log table no_such_table 2>&1)"; rc=$?
+assert_eq "…and a table that does not exist" "$([ $rc -ne 0 ] && echo refused)|$(echo "$OUT" | grep -c 'does not exist')" "refused|1"
+$S audit-log table aud_orders --off >/dev/null 2>&1
+gw "$KEY" "INSERT INTO aud_orders VALUES (2, 'x@example.in')" >/dev/null; sleep 1.5
+assert_eq "--off: its writes are no longer logged" "$(objlines 'WRITE,INSERT' aud_orders)|$($S audit-log tables | grep -c aud_orders)" "1|0"
+
+MJ="$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/audit/tables)"
+assert_eq "the API lists the marks, and that audit is on" \
+  "$(echo "$MJ" | jget audit_on)|$(echo "$MJ" | python3 -c 'import sys,json; print(" ".join(t["name"]+":"+str(t["writes"])+":"+str(t["reads"]) for t in json.load(sys.stdin)["tables"]))')" \
+  "True|aud_cards:True:False"
+assert_eq "an admin marks a table through it, reads and all" \
+  "$(code "$KEY" -X PUT -H 'Content-Type: application/json' -d '{"reads":true}' https://localhost:8080/api/branches/main/audit/tables/public/aud_notes)|$($S audit-log tables | grep -c 'public.aud_notes  *writes and reads$')" "200|1"
+printf 'password123\n' | $S user create aud-other@foxbyte.dev >/dev/null 2>&1
+AOK="$($S apikey create aud-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+assert_eq "someone who does not manage the branch may not change its marks" \
+  "$(code "$AOK" -X DELETE https://localhost:8080/api/branches/main/audit/tables/public/aud_notes)|$($S audit-log tables | grep -c aud_notes)" "403|1"
+# Five so far: aud_orders marked and unmarked, aud_cards twice, aud_notes by
+# the API. The refusals (a view, a missing table, the 403) are not changes.
+assert_eq "each change is in the security log" "$($S audit log --limit 100 | grep -c 'audit-log.marked')" "5"
+
+$S branch create audmarkbr >/dev/null 2>&1
+assert_eq "a branch made after has the same marks" \
+  "$($S audit-log tables --branch audmarkbr | grep -c 'aud_cards\|aud_notes')" "2"
+# The owner of a table can take its mark off, as with any grant on what they
+# own. Not silently: pgAudit logs the REVOKE, under their login.
+# Made by the user, so theirs; no DROP first, which the guardrail refuses a
+# user without the override (the install is new each run).
+gw "$KEY" "CREATE TABLE aud_own (id int)" >/dev/null
+$S audit-log table aud_own >/dev/null 2>&1
+gw "$KEY" "REVOKE ALL ON aud_own FROM bb_audit" >/dev/null; sleep 1.5
+assert_eq "a table's owner can take its mark off, and the log shows who did" \
+  "$($S audit-log tables | grep -c aud_own)|$(auditlog main | grep '"user":"test@foxbyte.dev"' | grep -c 'AUDIT: SESSION,[0-9]*,[0-9]*,ROLE,REVOKE')" "0|1"
+
+$S audit-log off --yes >/dev/null 2>&1; main_up
+assert_eq "the marks stay when audit is turned off" "$($S audit-log tables | grep -c 'aud_cards\|aud_notes')" "2"
+$S branch delete audmarkbr >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive=on; DROP VIEW IF EXISTS aud_v; DROP TABLE IF EXISTS aud_orders, aud_notes, aud_cards, aud_own" >/dev/null
+$S user delete aud-other@foxbyte.dev >/dev/null 2>&1
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

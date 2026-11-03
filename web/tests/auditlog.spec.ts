@@ -26,3 +26,34 @@ test('the Audit log page says audit is off, what it costs, and the command that 
   await expect(page.getByTestId('audit-off')).toContainText('It costs capacity')
   await expect(page.getByTestId('audit-setup')).toHaveText(/audit-log setup$/)
 })
+
+// Step 2: a table marked from the console's view of it, seen on the Audit log
+// page, and taken off there. Audit is off on this install, so the mark waits
+// for it, and the console says so.
+test('a table is marked for the audit log from the console, listed on the Audit log page, and unmarked there', async ({ page }) => {
+  const branch = process.env.FOX_E2E_BRANCH ?? 'e2eui'
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const t = `e2e_aud_${Date.now().toString().slice(-6)}`
+  await page.locator('textarea.editor').fill(`CREATE TABLE ${t} (id int PRIMARY KEY, v text)`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await page.locator('.obj-filter').fill(t)
+  await page.locator('.obj-item', { hasText: t }).first().click()
+
+  await page.getByRole('button', { name: 'Audit…' }).click()
+  const dlg = page.getByRole('dialog', { name: `Audit ${t}` })
+  await dlg.getByLabel('Writes and reads').check()
+  await dlg.getByRole('button', { name: 'Audit', exact: true }).click()
+  await expect(page.getByTestId('audit-mark')).toContainText('Audited: writes and reads', { timeout: 30_000 })
+  await expect(page.getByTestId('audit-mark')).toContainText('the audit log is off')
+
+  await page.getByRole('link', { name: 'Audit log' }).click()
+  await page.getByLabel('Branch').selectOption(branch)
+  const marked = page.getByRole('table', { name: `Marked tables on ${branch}` })
+  const row = marked.locator('tr', { hasText: `public.${t}` })
+  await expect(row).toContainText('writes and reads', { timeout: 30_000 })
+  await row.getByRole('button', { name: 'Stop auditing' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Stop auditing' }).click()
+  await expect(page.getByText(`public.${t}`)).toHaveCount(0, { timeout: 30_000 })
+})

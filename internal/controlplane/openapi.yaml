@@ -2011,6 +2011,57 @@ paths:
         "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/audit/tables:
+    get:
+      tags: [audit-log]
+      summary: The branch's tables marked for the audit log, and what of each is audited.
+      description: >-
+        A mark is a grant to the audit role: writes (INSERT, UPDATE, DELETE) and, when marked so, reads (SELECT).
+        Marks are in the catalog, so a branch made from this one has them. They take effect while audit is on
+        (audit_on); one made with it off waits for it.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200":
+          description: The marks.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditMarks" }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/audit/tables/{schema}/{table}:
+    put:
+      tags: [audit-log]
+      summary: Audit a table's writes, and with reads its reads (Manage).
+      description: Marking a marked table again sets reads as asked. Only a table can be marked; a view's statements are logged on the tables under it.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: schema, in: path, required: true, schema: { type: string } }
+        - { name: table, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { reads: { type: boolean, default: false } } }
+      responses:
+        "200": { description: The branch's marks, as they now are., content: { application/json: { schema: { $ref: "#/components/schemas/AuditMarks" } } } }
+        "400": { description: Not a table, or no such table. }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [audit-log]
+      summary: Stop auditing a table (Manage).
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: schema, in: path, required: true, schema: { type: string } }
+        - { name: table, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: The branch's marks, as they now are., content: { application/json: { schema: { $ref: "#/components/schemas/AuditMarks" } } } }
+        "400": { description: No such table. }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/apps:
     get:
       tags: [apps]
@@ -2345,6 +2396,19 @@ components:
     Unauthorized:
       description: Missing or invalid API key.
   schemas:
+    AuditMarks:
+      type: object
+      properties:
+        audit_on: { type: boolean, description: Whether the databases run pgAudit; marks take effect while it is on. }
+        tables:
+          type: array
+          items:
+            type: object
+            properties:
+              schema: { type: string }
+              name: { type: string }
+              writes: { type: boolean }
+              reads: { type: boolean }
     ChangeRequest:
       type: object
       description: A branch's schema changes, offered for review. Schema only — no data is moved.

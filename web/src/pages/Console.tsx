@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getAdmins, getBranches, getCatalog, getObject, getTracking, runQuery, saveRows, API, type Branch, type BranchAdmins, type CatalogObject, type QueryResult, type Tracking, type StatementResult, type Suggestion } from '../api'
+import { getAdmins, getAuditMarks, getBranches, getCatalog, getObject, getTracking, runQuery, saveRows, API, type Branch, type BranchAdmins, type AuditMarks, type CatalogObject, type QueryResult, type Tracking, type StatementResult, type Suggestion } from '../api'
 import { BRAND } from '../brand'
 import { hintFor } from '../errhint'
 import CopyMenu, { cellText } from '../components/CopyMenu'
@@ -10,6 +10,7 @@ import { useCompletion } from '../components/Completion'
 import { CatalogGroups, ObjectView, TableParts } from '../components/ObjectBrowser'
 import { EditGrid, FilterBar, type ColInfo } from '../components/DataGrid'
 import { TrackingControl, trackedOf } from '../components/Tracking'
+import { AuditControl } from '../components/AuditMark'
 import { countQuery, nextSort, rowsQuery, summary, type Filter, type Sort } from '../gridquery'
 import { applySuggestion, schemaFrom, snippets, SCHEMA_SQL, type Rel } from '../sqlcomplete'
 
@@ -75,6 +76,7 @@ export default function Console() {
   const [objSel, setObjSel] = useState<CatalogObject | null>(null)
   // Which tables keep who changed each row and when (points 5.1, 6.1).
   const [tracking, setTracking] = useState<Tracking | null>(null)
+  const [marks, setMarks] = useState<AuditMarks | null>(null)
   const [sel, setSel] = useState<DbObject | null>(null)
   const [tab, setTab] = useState<Tab>('rows')
   const [page, setPage] = useState(0)
@@ -196,6 +198,7 @@ export default function Console() {
       // still lists tables and views, as it always has.
       getCatalog(b).then(c => setCatalog(c.objects ?? [])).catch(() => setCatalog([]))
       getTracking(b).then(setTracking).catch(() => setTracking(null))
+      getAuditMarks(b).then(setMarks).catch(() => setMarks(null))
     } catch (e) {
       setListErr((e as Error).message)
     } finally {
@@ -205,7 +208,7 @@ export default function Console() {
 
   // Reset when the branch changes.
   useEffect(() => {
-    setObjects([]); setRels([]); setCatalog([]); setObjSel(null); setTracking(null); loadObjects(branch); setSel(null); setMode('query'); setBrowseRes(null); setAllowDestructive(false)
+    setObjects([]); setRels([]); setCatalog([]); setObjSel(null); setTracking(null); setMarks(null); loadObjects(branch); setSel(null); setMode('query'); setBrowseRes(null); setAllowDestructive(false)
     setAdmins(null)
     getAdmins(branch).then(setAdmins).catch(() => setAdmins(null))
   }, [branch, loadObjects])
@@ -579,6 +582,9 @@ export default function Console() {
                 {sel.type === 'table' && (
                   <TrackingControl branch={branch} schema={sel.schema} table={sel.name} tracking={tracking}
                     onChange={t => { setTracking(t); loadObjects(branch); setReloadTick(n => n + 1) }} />
+                )}
+                {sel.type === 'table' && (
+                  <AuditControl branch={branch} schema={sel.schema} table={sel.name} marks={marks} onChange={setMarks} />
                 )}
                 <SnippetMenu rel={rels.find(r => r.schema === sel.schema && r.name === sel.name)
                   ?? { schema: sel.schema, name: sel.name, kind: sel.type === 'view' ? 'view' : 'table', cols: [] }}

@@ -113,6 +113,11 @@ func needFor(method, tail string) access.Level {
 	// keep them: the owner's decision. Reading what is tracked is Use.
 	case strings.HasPrefix(tail, "tracking/"):
 		return access.Manage
+	// Marking a table for the audit log (F6) decides whose statements are
+	// recorded: the owner's decision, as tracking is. Reading which tables are
+	// marked is Use: the grants are in the catalog for anyone to see.
+	case strings.HasPrefix(tail, "audit/") && method != http.MethodGet:
+		return access.Manage
 	// Personal-data discovery (point 4): where personal data sits is itself
 	// sensitive, so reading the findings is the owner's, as scanning is.
 	case tail == "personal-data", strings.HasPrefix(tail, "personal-data/"):

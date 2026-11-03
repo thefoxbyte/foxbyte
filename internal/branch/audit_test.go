@@ -135,3 +135,50 @@ func TestTheAuditLogIsNotABranch(t *testing.T) {
 		}
 	}
 }
+
+// A mark is a grant, on a table only: writes to bb_audit, all four to
+// bb_audit_read, and SELECT to bb_audit exactly when reads are marked, so
+// marking again without reads takes them off.
+func TestMarkSQL(t *testing.T) {
+	rel := tableRef("public", "orders")
+	with := markSQL(rel, true)
+	without := markSQL(rel, false)
+	for _, sql := range []string{with, without} {
+		for _, want := range []string{
+			"DECLARE rel regclass := " + rel + ";",
+			"NOT IN ('r', 'p')",
+			"GRANT INSERT, UPDATE, DELETE ON %s TO bb_audit'",
+			"GRANT SELECT, INSERT, UPDATE, DELETE ON %s TO bb_audit_read'",
+		} {
+			if !strings.Contains(sql, want) {
+				t.Errorf("missing %q in\n%s", want, sql)
+			}
+		}
+	}
+	if !strings.Contains(with, "'GRANT SELECT ON %s TO bb_audit'") || strings.Contains(with, "REVOKE") {
+		t.Errorf("reads should be granted:\n%s", with)
+	}
+	if !strings.Contains(without, "'REVOKE SELECT ON %s FROM bb_audit'") {
+		t.Errorf("without reads, SELECT should be taken off:\n%s", without)
+	}
+	if un := unmarkSQL(rel); !strings.Contains(un, "'REVOKE ALL ON %s FROM bb_audit, bb_audit_read'") {
+		t.Errorf("unmark:\n%s", un)
+	}
+	// The roles first, outside the change's transaction, idempotent.
+	if r := auditRolesSQL(); strings.Count(r, "WHEN duplicate_object THEN NULL") != 2 {
+		t.Errorf("roles:\n%s", r)
+	}
+}
+
+func TestParseAuditMarks(t *testing.T) {
+	m, err := parseAuditMarks(`[{"schema":"public","name":"orders","writes":true,"reads":false},{"schema":"s","name":"cards","writes":true,"reads":true}]`)
+	if err != nil || len(m) != 2 || MarkWhat(m[0]) != "writes" || MarkWhat(m[1]) != "writes and reads" {
+		t.Errorf("got %+v, %v", m, err)
+	}
+	if m, err := parseAuditMarks("[]\n"); err != nil || m == nil || len(m) != 0 {
+		t.Errorf("none: %+v, %v", m, err)
+	}
+	if MarkWhat(AuditMark{Reads: true}) != "reads" {
+		t.Error("a table with SELECT alone granted is audited for reads")
+	}
+}

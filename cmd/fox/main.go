@@ -165,6 +165,7 @@ Blackbox — the database's record of every schema change (RECORD layer; fox led
   blackbox upgrade [branch|--all] Apply the current Blackbox definition to existing branches
   realtime status | setup | teardown | slots   The row-level change feed
   audit-log status | setup | off              pgAudit: who changed the schema, roles and marked tables (no values kept)
+  audit-log tables | table <t> [--reads] [--off]  the tables whose writes (and reads) are audited
   blackbox checkpoint [branch]    Anchor new entries outside the database (Merkle checkpoint)
   blackbox anchor-key             Print the public key anchors are signed with (for fox-verify --pubkey)
   blackbox anchor-target [show | set s3://… | none]

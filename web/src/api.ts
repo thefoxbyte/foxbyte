@@ -879,6 +879,21 @@ export type AuditLogReply = {
   off: string
 }
 export const getAuditLog = () => req('GET', `${API}/api/audit-log`) as Promise<AuditLogReply>
+
+// Tables marked for the audit log (F6 step 2): their writes, and reads if
+// marked so, are logged by pgAudit.
+export type AuditMark = { schema: string; name: string; writes: boolean; reads: boolean }
+export type AuditMarks = { audit_on: boolean; tables: AuditMark[] }
+const markPath = (branch: string, schema: string, table: string) =>
+  `${API}/api/branches/${branch}/audit/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`
+export const getAuditMarks = (branch: string) => req('GET', `${API}/api/branches/${branch}/audit/tables`) as Promise<AuditMarks>
+export const markAudited = (branch: string, schema: string, table: string, reads: boolean) =>
+  req('PUT', markPath(branch, schema, table), { reads }) as Promise<AuditMarks>
+export const unmarkAudited = (branch: string, schema: string, table: string) =>
+  req('DELETE', markPath(branch, schema, table)) as Promise<AuditMarks>
+/** markOf is one table's mark, if it has one. */
+export const markOf = (m: AuditMarks | null, schema: string, name: string) =>
+  m?.tables.find(t => t.schema === schema && t.name === name) ?? null
 export const registerApp = (a: { name: string; account: string; max_life_seconds?: number; on_invalid?: string; public_key?: string; kid?: string }) =>
   req('POST', `${API}/api/apps`, a) as Promise<AppChange>
 export const removeApp = (name: string) =>

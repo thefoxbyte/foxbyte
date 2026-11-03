@@ -124,6 +124,10 @@ const (
 	// can stop the record of who did what is someone an auditor asks about.
 	EvAuditLogOn  = "audit-log.on"
 	EvAuditLogOff = "audit-log.off"
+	// A table marked for the audit log, its mark changed, or taken off: who,
+	// on which branch. Unmarking is how a table's statements stop being
+	// recorded, so it is recorded here as well as by pgAudit.
+	EvAuditMarked = "audit-log.marked"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence
