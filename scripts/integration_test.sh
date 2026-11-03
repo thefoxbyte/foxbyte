@@ -2719,6 +2719,50 @@ cp /tmp/audit-day.bak "$DAY"; rm -f /tmp/audit-day.bak /tmp/audit-day.edit
 assert_eq "…and put back, it verifies again" "$($S audit-log verify | grep -c '^audit log intact')" "1"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud3_orders" >/dev/null
 
+echo "### 11ab. gaps and delivery (F6 Gate 1, step 4)"
+# A full log drops lines without a word, so what goes wrong is found from the
+# outside: a heartbeat that does not arrive, statement numbers that skip, a
+# mark taken off outside FoxByte.
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+OUT="$($S audit-log heartbeat 2>&1)"
+$S audit-log collect >/dev/null 2>&1
+assert_eq "a heartbeat on demand reaches the store from main, and is not shown among the records" \
+  "$(echo "$OUT" | grep -c 'A heartbeat from main')|$([ "$(store_all | grep -c '"kind":"heartbeat"')" -ge 1 ] && echo yes)|$($S audit-log show --json --limit 1000 | grep -c '"kind":"heartbeat"')" "1|yes|0"
+assert_eq "…and with it arriving, status finds nothing wrong" "$($S audit-log status | grep -c 'Nothing found wrong')" "1"
+
+# Lines lost: a session whose statement numbers jump from 2 to 6, as a full log
+# leaves them.
+NOW="$(date -u '+%Y-%m-%d %H:%M:%S.000 UTC')"
+GAPF=/dbpool/audit/main/audit-Gap-00.json
+for n in 1 2 6; do
+  echo "{\"timestamp\":\"$NOW\",\"user\":\"test@foxbyte.dev\",\"session_id\":\"gapsess.1\",\"vxid\":\"8/$n\",\"error_severity\":\"LOG\",\"message\":\"AUDIT: OBJECT,$n,1,WRITE,INSERT,TABLE,public.gapt,<not logged>,<not logged>\"}"
+done | sudo tee "$GAPF" >/dev/null
+sudo chown 999:999 "$GAPF"
+$S audit-log collect >/dev/null 2>&1
+assert_eq "statement numbers that skip are a gap: a record in the chain, where it was found" \
+  "$($S audit-log show --branch main --limit 1000 | grep 'GAP' | grep -c '3 line(s) missing')|$(store_all | grep '"kind":"gap"' | grep '"statement":3,' | grep -c '"missing":3,')" "1|1"
+assert_eq "…a warning in fox check, naming the session's login and the statements" \
+  "$($S check 2>&1 | grep '^warn  audit gap' | grep -c 'main: 3 audit line(s) missing in a session of test@foxbyte.dev (statements 3 to 5)')" "1"
+assert_eq "…and the chain still verifies, the gap record in it" "$($S audit-log verify | grep -c '^audit log intact')" "1"
+sudo rm -f "$GAPF"
+
+# A mark taken off outside FoxByte: by the table's owner, with REVOKE.
+gw "$KEY" "CREATE TABLE aud4_t (id int)" >/dev/null
+$S audit-log table aud4_t >/dev/null 2>&1
+gw "$KEY" "REVOKE ALL ON aud4_t FROM bb_audit" >/dev/null
+assert_eq "a mark set through FoxByte and taken off outside it is found, saying who set it" \
+  "$($S check 2>&1 | grep '^warn  audit mark' | grep -c 'main: public.aud4_t was marked by .*taken off outside FoxByte')" "1"
+AJ="$(curl -sk -H "$AUTH" https://localhost:8080/api/audit-log)"
+assert_eq "…the API reports it" \
+  "$(echo "$AJ" | python3 -c 'import sys,json; print(sum(1 for f in json.load(sys.stdin)["findings"] if f["kind"]=="mark" and "aud4_t" in f["detail"]))')" "1"
+$S audit-log table aud4_t >/dev/null 2>&1
+assert_eq "…and marking it again puts it right" "$($S check 2>&1 | grep -c '^warn  audit mark')" "0"
+$S audit-log table aud4_t --off >/dev/null 2>&1
+assert_eq "taking a mark off through FoxByte is not a finding" "$($S check 2>&1 | grep -c '^warn  audit mark')" "0"
+
+$S audit-log off --yes >/dev/null 2>&1; main_up
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud4_t" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

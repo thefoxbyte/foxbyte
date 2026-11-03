@@ -35,8 +35,10 @@ type AuditRecord struct {
 	Branch string `json:"branch"`
 	Login  string `json:"login,omitempty"`
 	// Kind is statement (a line of pgAudit's), transaction (how a transaction
-	// with audited statements ended, and whom it was for), or outcome (an
-	// error, as its SQLSTATE).
+	// with audited statements ended, and whom it was for), outcome (an error,
+	// as its SQLSTATE), heartbeat (the engine's own line, every five minutes,
+	// that shows lines are arriving), or gap (lines found missing: a session's
+	// statement numbers skipped some).
 	Kind         string    `json:"kind"`
 	Audit        string    `json:"audit,omitempty"` // SESSION or OBJECT
 	Class        string    `json:"class,omitempty"` // READ, WRITE, DDL, ROLE, …
@@ -49,6 +51,7 @@ type AuditRecord struct {
 	VXID         string    `json:"vxid,omitempty"`
 	Outcome      string    `json:"outcome,omitempty"` // COMMIT, ROLLBACK, PREPARE, SUBROLLBACK; ERROR, FATAL, PANIC
 	Undone       int       `json:"undone,omitempty"`  // SUBROLLBACK: how many audit lines it undid
+	Missing      int64     `json:"missing,omitempty"` // gap: how many statements' lines are missing, from Statement on
 	SQLState     string    `json:"sqlstate,omitempty"`
 	For          *AuditFor `json:"for,omitempty"`
 	Text         string    `json:"text,omitempty"` // forensic mode only
@@ -108,6 +111,12 @@ func recordFromLine(branch string, line []byte) (AuditRecord, bool) {
 			return AuditRecord{}, false
 		}
 		r.Kind, r.Audit, r.Class, r.Command, r.ObjectType, r.Object = "statement", f[0], f[3], f[4], f[5], f[6]
+		// The heartbeat: the engine's own superuser setting pgaudit.log in a
+		// session of its own, which pgAudit logs as MISC SET. No client logs
+		// in as that superuser, and the policy logs no MISC otherwise.
+		if r.Login == pgUser && r.Class == "MISC" && r.Command == "SET" {
+			r.Kind = "heartbeat"
+		}
 		r.Statement, _ = strconv.ParseInt(f[1], 10, 64)
 		r.Substatement, _ = strconv.ParseInt(f[2], 10, 64)
 		if len(f) > 7 && f[7] != "<not logged>" {
@@ -192,4 +201,50 @@ func verifyChain(records []AuditRecord, baseSeq int64, baseHash string) ChainRep
 	}
 	rep.Intact = len(rep.Problems) == 0
 	return rep
+}
+
+// sessionMark is how far one session's statement numbers have got.
+type sessionMark struct {
+	Branch string `json:"branch"`
+	Last   int64  `json:"last"`
+	Seen   string `json:"seen"` // the last record's time, for pruning
+}
+
+// withGaps returns records with a gap record before each statement whose
+// number skips some: pgAudit numbers only the statements it logs, one after
+// another in a session, so a number that jumps is lines lost (a full log,
+// most often). sessions is updated: the last number seen in each.
+func withGaps(recs []AuditRecord, sessions map[string]sessionMark) []AuditRecord {
+	out := make([]AuditRecord, 0, len(recs))
+	for _, r := range recs {
+		if r.Kind == "statement" || r.Kind == "heartbeat" {
+			if r.Statement > 0 && r.Session != "" {
+				k := r.Branch + "/" + r.Session
+				m := sessions[k]
+				if m.Last > 0 && r.Statement > m.Last+1 {
+					out = append(out, AuditRecord{
+						Time: r.Time, Branch: r.Branch, Login: r.Login, Kind: "gap", Session: r.Session,
+						Statement: m.Last + 1, Missing: r.Statement - m.Last - 1,
+					})
+				}
+				if r.Statement > m.Last {
+					m.Last = r.Statement
+				}
+				m.Branch, m.Seen = r.Branch, r.Time
+				sessions[k] = m
+			}
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// pruneSessions forgets sessions not seen since cutoff: a gap is found only
+// within a session, and one silent for two days has ended.
+func pruneSessions(sessions map[string]sessionMark, cutoff string) {
+	for k, m := range sessions {
+		if m.Seen < cutoff {
+			delete(sessions, k)
+		}
+	}
 }

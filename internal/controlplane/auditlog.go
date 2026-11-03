@@ -36,15 +36,18 @@ type auditLogReply struct {
 	Pending []string `json:"pending"`
 	Setup   string   `json:"setup"`
 	Off     string   `json:"off"`
+	// What is wrong with it (step 4): lines not arriving, lines lost, a mark
+	// taken off outside FoxByte.
+	Findings []branch.AuditFinding `json:"findings"`
 }
 
-func registerAuditLog(mux *http.ServeMux) {
+func registerAuditLog(mux *http.ServeMux, store *auth.Store) {
 	mux.HandleFunc("GET /api/audit-log", func(w http.ResponseWriter, r *http.Request) {
 		if !isAdmin(r) {
 			writeErr(w, 403, errors.New("only an admin may see the audit log's settings"))
 			return
 		}
-		writeJSON(w, 200, auditLogState())
+		writeJSON(w, 200, auditLogState(store))
 	})
 }
 
@@ -140,7 +143,7 @@ func auditReadDetail(q branch.AuditQuery, n int) string {
 }
 
 // auditLogState reads the engine; a variable so a test need not.
-var auditLogState = func() auditLogReply {
+var auditLogState = func(store *auth.Store) auditLogReply {
 	rep := auditLogReply{
 		On:      branch.AuditOn(),
 		Root:    branch.AuditRoot(),
@@ -156,6 +159,12 @@ var auditLogState = func() auditLogReply {
 	}
 	if p, err := branch.AuditPending(); err == nil && p != nil {
 		rep.Pending = p
+	}
+	rep.Findings = []branch.AuditFinding{}
+	if rep.On {
+		if f := branch.AuditFindings(branch.MarkEventsFrom(store)); f != nil {
+			rep.Findings = f
+		}
 	}
 	return rep
 }

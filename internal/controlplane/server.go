@@ -97,7 +97,7 @@ func Serve(addr string) error {
 	registerAccounts(api, store)       // /api/account*, /api/users* (admins)
 	registerAccessReview(api, store)   // /api/access-review (admins; point 4.8)
 	registerApps(api, store)           // /api/apps* (admins; application identity, F1)
-	registerAuditLog(api)              // /api/audit-log (admins; the databases' audit log, F6)
+	registerAuditLog(api, store)       // /api/audit-log (admins; the databases' audit log, F6)
 	registerAuditMarks(api)            // /api/branches/{name}/audit/tables* (F6: marked tables)
 	registerAuditRecords(api)          // /api/audit-log/records (admins; F6: the records)
 	registerRequests(api, store)       // /api/branches/{name}/request, /api/requests*
@@ -126,6 +126,9 @@ func Serve(addr string) error {
 	// The audit log's raw lines into its hash-chained store (F6), every
 	// minute, and the raw files away once they are two days old.
 	branch.StartAuditCollector()
+	// And its heartbeat: every audited database writes a line of the engine's
+	// every five minutes, so a log that stops arriving is noticed (step 4).
+	branch.StartAuditHeartbeat()
 	// Base backups on a schedule, pruned to a retention (audit v2 G19).
 	branch.StartBackupScheduler()
 	// And proof that they restore: a backup nothing has ever restored is a hope,

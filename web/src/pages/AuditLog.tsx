@@ -210,6 +210,25 @@ export default function AuditLog() {
         </div>
       )}
 
+      {data?.on && (
+        <div className="panel" style={{ marginTop: 10 }} data-testid="audit-findings">
+          {(data.findings ?? []).length === 0
+            ? <p style={{ margin: 0 }} className="muted">Nothing found wrong: lines are arriving, none are missing, every mark is in place.</p>
+            : <>
+                <p style={{ marginTop: 0 }}><b>Found</b></p>
+                <ul style={{ margin: 0, paddingLeft: 20 }}>
+                  {(data.findings ?? []).map((f, i) => (
+                    <li key={i}>
+                      <span className="badge">{f.kind}</span>{' '}
+                      {f.branch && <b>{f.branch}: </b>}{f.detail}
+                      {f.since && <span className="muted"> (since {new Date(f.since).toLocaleString()})</span>}
+                    </li>
+                  ))}
+                </ul>
+              </>}
+        </div>
+      )}
+
       {pending.length > 0 && (
         <p className="muted" style={{ fontSize: 13 }} data-testid="audit-pending">
           Still running as before the last change, until each is next started: {pending.join(', ')}. A suspended branch

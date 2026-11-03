@@ -692,3 +692,16 @@ func TestAuditOutcomeAndFor(t *testing.T) {
 		t.Error("nobody is a dash")
 	}
 }
+
+// Each finding is a warning in fox check, with where and what to do.
+func TestAuditFindingLine(t *testing.T) {
+	for kind, fix := range map[string]string{
+		"collector": "audit-log collect", "heartbeat": "audit-log heartbeat",
+		"gap": "AUDIT_QUOTA", "mark": "audit-log tables --branch main",
+	} {
+		l := auditFindingLine(branch.AuditFinding{Kind: kind, Branch: "main", Detail: "x"})
+		if l.state != stateWarn || l.name != "audit "+kind || l.detail != "main: x" || !strings.Contains(l.fix, fix) {
+			t.Errorf("%s: %+v", kind, l)
+		}
+	}
+}
