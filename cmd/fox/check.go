@@ -632,6 +632,11 @@ func checkAuditLogLines() []checkLine {
 	}
 	st := openStore()
 	defer st.Close()
+	// Forensic mode is a choice, made with a reason, and not one to forget:
+	// it keeps what statements held.
+	for _, l := range forensicLines() {
+		lines = append(lines, warn("audit mode", "forensic "+l, brand.CLI+" audit-log mode default"))
+	}
 	for _, f := range branch.AuditFindings(branch.MarkEventsFrom(st)) {
 		if f.Kind == "space" {
 			continue // the line above says it

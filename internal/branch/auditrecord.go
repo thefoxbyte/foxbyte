@@ -54,9 +54,17 @@ type AuditRecord struct {
 	Missing      int64     `json:"missing,omitempty"` // gap: how many statements' lines are missing, from Statement on
 	SQLState     string    `json:"sqlstate,omitempty"`
 	For          *AuditFor `json:"for,omitempty"`
-	Text         string    `json:"text,omitempty"` // forensic mode only
-	Prev         string    `json:"prev"`
-	Hash         string    `json:"hash"`
+	// TextSHA is the SHA-256 of the statement's text, in forensic mode. The
+	// chain holds the hash, never the text: the text is kept beside the
+	// chain (auditforensic.go), so it can expire after 30 days and be purged
+	// for a person (F4) without breaking the chain. verify checks each text
+	// still kept against its hash.
+	TextSHA string `json:"text_sha,omitempty"`
+	// Text is the statement's text while it is being collected, and when a
+	// read finds it kept. Never written into a day file, never hashed.
+	Text string `json:"-"`
+	Prev string `json:"prev"`
+	Hash string `json:"hash"`
 }
 
 // AuditFor is whom a transaction was for (F1): asserted by an application,
@@ -121,6 +129,8 @@ func recordFromLine(branch string, line []byte) (AuditRecord, bool) {
 		r.Substatement, _ = strconv.ParseInt(f[2], 10, 64)
 		if len(f) > 7 && f[7] != "<not logged>" {
 			r.Text = f[7]
+			sum := sha256.Sum256([]byte(r.Text))
+			r.TextSHA = hex.EncodeToString(sum[:])
 		}
 	case "TXN":
 		// TXN,<vxid>,COMMIT|ROLLBACK|PREPARE,<state>,<issuer>,<actor>

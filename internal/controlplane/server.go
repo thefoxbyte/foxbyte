@@ -100,6 +100,7 @@ func Serve(addr string) error {
 	registerAuditLog(api, store)       // /api/audit-log (admins; the databases' audit log, F6)
 	registerAuditMarks(api)            // /api/branches/{name}/audit/tables* (F6: marked tables)
 	registerAuditRecords(api)          // /api/audit-log/records (admins; F6: the records)
+	registerAuditSettings(api)         // /api/audit-log/{mode,retention,purge} (admins; F6 step 5a)
 	registerRequests(api, store)       // /api/branches/{name}/request, /api/requests*
 	registerLicense(api)               // /api/license
 	registerHistory(api, store)        // /api/history* (the caller's own query history)

@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../api', async () => {
   const actual = await vi.importActual<typeof import('../api')>('../api')
-  return { ...actual, getAuditLog: vi.fn(), getAuditMarks: vi.fn(), getAuditRecords: vi.fn(), getBranches: vi.fn(), unmarkAudited: vi.fn() }
+  return { ...actual, getAuditLog: vi.fn(), getAuditMarks: vi.fn(), getAuditRecords: vi.fn(), getBranches: vi.fn(), unmarkAudited: vi.fn(), setAuditMode: vi.fn(), setAuditRetention: vi.fn(), purgeAuditText: vi.fn() }
 })
 
-import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, unmarkAudited, type AuditLogReply } from '../api'
+import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, purgeAuditText, setAuditMode, setAuditRetention, unmarkAudited, type AuditLogReply } from '../api'
 import { ConfirmProvider } from '../confirm'
 import AuditLog from './AuditLog'
 
@@ -125,5 +125,49 @@ describe('Audit log page', () => {
     vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default', findings: [] })
     page()
     expect((await screen.findByTestId('audit-findings')).textContent).toContain('Nothing found wrong')
+  })
+
+  it('forensic mode needs a reason and a confirmation, and shows where it is on and can be turned back', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default', forensic: { feature: { by: 'bob', reason: 'incident 42', since: '2026-11-04T10:00:00Z' } }, retention: { days: 365, forensic_days: 30 } })
+    vi.mocked(setAuditMode).mockResolvedValue({ forensic: {}, reached: ['main'] })
+    page()
+    const mode = await screen.findByTestId('audit-mode')
+    expect(mode.textContent).toMatch(/forensic.*on feature.*by bob.*incident 42/)
+    const on = screen.getByRole('button', { name: 'Turn on forensic mode' }) as HTMLButtonElement
+    expect(on.disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Forensic reason'), { target: { value: 'who changed the orders?' } })
+    fireEvent.click(on)
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Turn on' }))
+    await waitFor(() => expect(setAuditMode).toHaveBeenCalledWith(true, '', 'who changed the orders?'))
+    fireEvent.click(screen.getByRole('button', { name: 'Back to default' }))
+    await waitFor(() => expect(setAuditMode).toHaveBeenCalledWith(false, 'feature', ''))
+  })
+
+  it('sets retention, and purges a person\'s statement text after asking', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default', retention: { days: 365, forensic_days: 30 } })
+    vi.mocked(setAuditRetention).mockResolvedValue({ days: 180, forensic_days: 30 })
+    vi.mocked(purgeAuditText).mockResolvedValue({ purged: 4 })
+    page()
+    fireEvent.change(await screen.findByLabelText('Records kept days'), { target: { value: '180' } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Save' })[0])
+    await waitFor(() => expect(setAuditRetention).toHaveBeenCalledWith(180, false))
+    expect(await screen.findByText('Records are kept 180 days.')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Purge login'), { target: { value: 'alice@x.in' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Purge' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Purge' }))
+    await waitFor(() => expect(purgeAuditText).toHaveBeenCalledWith('alice@x.in'))
+    expect(await screen.findByText('Removed 4 statement text(s).')).toBeTruthy()
+  })
+
+  it('shows a forensic record\'s text, or that it was removed', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default' })
+    vi.mocked(getAuditRecords).mockResolvedValue({ records: [
+      { seq: 2, time: '2026-11-04T10:00:02Z', branch: 'main', login: 'bob', kind: 'statement', command: 'UPDATE', text: "UPDATE orders SET x = 'y'" },
+      { seq: 1, time: '2026-11-04T10:00:01Z', branch: 'main', login: 'eve', kind: 'statement', command: 'INSERT', text_gone: true },
+    ] })
+    page()
+    fireEvent.click(await screen.findByRole('button', { name: 'Show' }))
+    expect((await screen.findByTestId('text-2')).textContent).toBe("UPDATE orders SET x = 'y'")
+    expect(screen.getByTestId('text-1').textContent).toContain('removed')
   })
 })
