@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -186,7 +187,7 @@ func TestForwardHTTPS(t *testing.T) {
 	if _, has := l["text"]; has {
 		t.Fatal("statement text went without being asked for")
 	}
-	if st, _ := os.Stat(forwardTokenPath()); st == nil || st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(forwardTokenPath()); st == nil || runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("the token is not kept 0600: %v", st)
 	}
 	if b, _ := os.ReadFile(auditSettingsPath()); strings.Contains(string(b), "tok-123") {
