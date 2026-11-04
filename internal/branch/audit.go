@@ -168,7 +168,6 @@ func withAudit(args []string) []string {
 var auditPolicy = []string{
 	"ALTER SYSTEM SET pgaudit.log = 'ddl, role'",
 	"ALTER SYSTEM SET pgaudit.role = 'bb_audit'",
-	"ALTER SYSTEM SET pgaudit.log_statement = off",
 	"ALTER SYSTEM SET pgaudit.log_parameter = off",
 	"ALTER SYSTEM SET pgaudit.log_relation = on",
 	"ALTER SYSTEM SET pgaudit.log_catalog = off",
@@ -185,16 +184,23 @@ func auditSettings() []string {
 	for _, s := range auditPolicy {
 		names = append(names, strings.Fields(strings.TrimPrefix(s, "ALTER SYSTEM SET "))[0])
 	}
-	return names
+	return append(names, "pgaudit.log_statement")
 }
 
 // auditPolicySQL is the script that applies the policy: one statement at a
 // time (ALTER SYSTEM cannot run inside the transaction several statements in
 // one string would make), then the roles, then a reload.
-func auditPolicySQL() string {
+func auditPolicySQL(forensic bool) string {
 	var b strings.Builder
 	for _, s := range auditPolicy {
 		b.WriteString(s + ";\n")
+	}
+	// Forensic mode (step 5a) is the one difference: statement text, values
+	// and all. Parameters stay off in both.
+	if forensic {
+		b.WriteString("ALTER SYSTEM SET pgaudit.log_statement = on;\n")
+	} else {
+		b.WriteString("ALTER SYSTEM SET pgaudit.log_statement = off;\n")
 	}
 	for _, role := range []string{AuditRole, AuditReadRole} {
 		fmt.Fprintf(&b, "DO $$ BEGIN CREATE ROLE %s NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;\n", role)
@@ -235,7 +241,7 @@ func EnsureAuditPolicy(name string) error {
 	if !runsWithAudit(name) {
 		return nil
 	}
-	return psqlQuiet(name, auditPolicySQL())
+	return psqlQuiet(name, auditPolicySQL(ForensicFor(name)))
 }
 
 // applyAuditBestEffort is EnsureAuditPolicy where a failure must not stop a

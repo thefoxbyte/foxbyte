@@ -2763,6 +2763,62 @@ assert_eq "taking a mark off through FoxByte is not a finding" "$($S check 2>&1 
 $S audit-log off --yes >/dev/null 2>&1; main_up
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud4_t" >/dev/null
 
+echo "### 11ac. forensic mode, retention and purge (F6 Gate 1, step 5a)"
+# Forensic mode keeps statement text, values and all: beside the records, not
+# in their chain, so it expires and is purged for a person without breaking
+# it. A reload, never a restart.
+started() { sudo docker inspect -f '{{.State.StartedAt}}' "pg-$1"; }
+forensic_all() { sudo sh -c "zcat $STORE/forensic/*.jsonl.gz 2>/dev/null"; }
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud5_orders; CREATE TABLE aud5_orders (id int PRIMARY KEY, email text); GRANT ALL ON aud5_orders TO db_client" >/dev/null
+$S audit-log table aud5_orders >/dev/null 2>&1
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+OUT="$($S audit-log mode forensic 2>&1)"; rc=$?
+assert_eq "forensic mode is refused without a reason" "$([ $rc -ne 0 ] && echo refused)|$(echo "$OUT" | grep -c -- '--reason')" "refused|1"
+assert_eq "…and with one but no --yes, it says what it keeps and changes nothing" \
+  "$($S audit-log mode forensic --reason 'incident 5' | grep -c "each audited statement's text is kept")|$(pg pg-main 'SHOW pgaudit.log_statement')" "1|off"
+BEFORE="$(started main)"
+$S audit-log mode forensic --reason 'incident 5' --yes >/dev/null 2>&1
+assert_eq "with --yes it is on at once, by a reload: main was not restarted" \
+  "$(pg pg-main 'SHOW pgaudit.log_statement')|$(pg pg-main 'SHOW pgaudit.log_parameter')|$([ "$(started main)" = "$BEFORE" ] && echo same)" "on|off|same"
+gw "$KEY" "INSERT INTO aud5_orders VALUES (1, 'anjali.f6@example.in')" >/dev/null
+sleep 1.5
+SHOW="$($S audit-log show --table aud5_orders --text 2>&1)"
+assert_eq "show --text gives the statement, values and all" "$(echo "$SHOW" | grep -c "INSERT INTO aud5_orders VALUES (1, 'anjali.f6@example.in')")" "1"
+assert_eq "…kept beside the chain: the records hold its hash, the forensic file the text" \
+  "$(store_all | grep -c 'anjali')|$(store_all | grep 'public.aud5_orders' | grep -c '"text_sha":"')|$(forensic_all | grep -c 'anjali')" "0|1|1"
+assert_eq "…and the chain, with the text checked against it, verifies" "$($S audit-log verify | grep -c '^audit log intact')" "1"
+assert_eq "fox check says forensic mode is on, where, by whom and why" \
+  "$($S check 2>&1 | grep '^warn  audit mode' | grep -c 'every branch.*incident 5')" "1"
+assert_eq "the API gives admins the text" \
+  "$(curl -sk -H "$AUTH" 'https://localhost:8080/api/audit-log/records?table=aud5_orders' | grep -c 'anjali.f6@example.in')" "1"
+
+assert_eq "purge without --yes says what it removes, and removes nothing" \
+  "$($S audit-log purge --user test@foxbyte.dev | grep -c 'Their records stay')|$(forensic_all | grep -c 'anjali')" "1|1"
+assert_eq "purge --yes removes the person's text" "$($S audit-log purge --user test@foxbyte.dev --yes | grep -c 'Removed 1 statement text')" "1"
+assert_eq "…the record stays, saying its text was removed, and the chain still verifies" \
+  "$($S audit-log show --table aud5_orders --text | grep -c '(removed: past its retention, or purged)')|$(forensic_all | grep -c 'anjali')|$($S audit-log verify | grep -c '^audit log intact')" "1|0|1"
+
+$S audit-log mode default >/dev/null 2>&1
+gw "$KEY" "INSERT INTO aud5_orders VALUES (2, 'ravi2.f6@example.in')" >/dev/null; sleep 1.5
+assert_eq "back to default mode: no statement text from then on, and fox check no longer warns" \
+  "$(pg pg-main 'SHOW pgaudit.log_statement')|$($S audit-log show --table aud5_orders --text | grep -c 'ravi2')|$($S check 2>&1 | grep -c '^warn  audit mode')" "off|0|0"
+$S branch create aud5br >/dev/null 2>&1
+$S audit-log mode forensic --branch aud5br --reason 'one branch' --yes >/dev/null 2>&1
+assert_eq "forensic mode on one branch leaves the others in default mode" \
+  "$(pg pg-aud5br 'SHOW pgaudit.log_statement')|$(pg pg-main 'SHOW pgaudit.log_statement')" "on|off"
+$S audit-log mode default --branch aud5br >/dev/null 2>&1
+assert_eq "…and goes back" "$(pg pg-aud5br 'SHOW pgaudit.log_statement')" "off"
+$S branch delete aud5br >/dev/null 2>&1
+assert_eq "each change of mode, and the purge, is in the security log" \
+  "$($S audit log --limit 200 | grep -c 'audit-log.mode')|$($S audit log --limit 200 | grep -c 'audit-log.purged')" "4|1"
+
+assert_eq "retention: records 90 days, and text cannot outlive them" \
+  "$($S audit-log retention 90 | grep -c 'kept 90 days')|$($S audit-log retention 120 --forensic 2>&1 | grep -c 'cannot be kept longer')|$($S audit-log retention)" \
+  "1|1|Records are kept 90 days; forensic mode's statement text 30 days."
+$S audit-log retention 365 >/dev/null 2>&1
+$S audit-log off --yes >/dev/null 2>&1; main_up
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud5_orders" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

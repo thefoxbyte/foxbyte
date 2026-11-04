@@ -5,6 +5,7 @@ package controlplane
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,5 +100,37 @@ func TestAuditQueryFrom(t *testing.T) {
 	}
 	if d := auditReadDetail(branch.AuditQuery{Table: "orders", Kinds: []string{"outcome"}}, 3); d != "3 record(s): table orders, errors only" {
 		t.Errorf("%q", d)
+	}
+}
+
+// Forensic mode, retention and purge: admins only, and what is not valid is
+// refused before anything changes.
+func TestAuditSettingsRoutes(t *testing.T) {
+	s, admin, alice, _ := withACL(t)
+	mux := http.NewServeMux()
+	registerAuditSettings(mux)
+	h := s.Authn(mux)
+	ka, _, _ := s.CreateAPIKey(admin.ID, "t")
+	kb, _, _ := s.CreateAPIKey(alice.ID, "t")
+	for _, c := range []struct{ method, path, body string }{
+		{"PUT", "/api/audit-log/mode", `{"forensic":true,"reason":"x"}`},
+		{"PUT", "/api/audit-log/retention", `{"days":30}`},
+		{"POST", "/api/audit-log/purge", `{"user":"bob"}`},
+	} {
+		if code, _ := serve(t, h, kb, c.method, c.path, c.body); code != 403 {
+			t.Errorf("not an admin, %s %s: %d, want 403", c.method, c.path, code)
+		}
+	}
+	for _, c := range []struct{ method, path, body, want string }{
+		{"PUT", "/api/audit-log/mode", `{"forensic":true,"reason":"  "}`, "--reason"},
+		{"PUT", "/api/audit-log/mode", `{"forensic":true,"branch":"../x","reason":"why"}`, "name"},
+		{"PUT", "/api/audit-log/retention", `{"days":0}`, "1 to 3650"},
+		{"POST", "/api/audit-log/purge", `{"user":""}`, "login"},
+		{"PUT", "/api/audit-log/mode", `not json`, "JSON"},
+	} {
+		code, out := serve(t, h, ka, c.method, c.path, c.body)
+		if msg, _ := out["error"].(string); code != 400 || !strings.Contains(msg, c.want) {
+			t.Errorf("%s %s %s: %d %v", c.method, c.path, c.body, code, out)
+		}
 	}
 }

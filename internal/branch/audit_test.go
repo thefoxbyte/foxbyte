@@ -81,7 +81,13 @@ func TestAuditAndTheFeedTogether(t *testing.T) {
 // a transaction), the roles after, the reload last; and turning it off resets
 // exactly what it set, leaving the roles and so the tables' marks.
 func TestAuditPolicy(t *testing.T) {
-	sql := auditPolicySQL()
+	// Forensic mode is the one difference: statement text on; parameters
+	// stay off in both.
+	if f := auditPolicySQL(true); !strings.Contains(f, "ALTER SYSTEM SET pgaudit.log_statement = on;") ||
+		strings.Contains(f, "log_statement = off") || !strings.Contains(f, "pgaudit.log_parameter = off;") {
+		t.Errorf("forensic mode:\n%s", f)
+	}
+	sql := auditPolicySQL(false)
 	for _, want := range []string{
 		"ALTER SYSTEM SET pgaudit.log = 'ddl, role';", "ALTER SYSTEM SET pgaudit.role = 'bb_audit';",
 		"ALTER SYSTEM SET pgaudit.log_statement = off;", "ALTER SYSTEM SET pgaudit.log_parameter = off;",
@@ -106,7 +112,7 @@ func TestAuditPolicy(t *testing.T) {
 			t.Errorf("turning audit off does not reset %s", n)
 		}
 	}
-	if len(auditSettings()) != len(auditPolicy) || strings.Contains(reset, "DROP ROLE") {
+	if len(auditSettings()) != len(auditPolicy)+1 || strings.Contains(reset, "DROP ROLE") {
 		t.Error("the reset should undo every setting and no role")
 	}
 }

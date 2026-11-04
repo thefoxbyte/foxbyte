@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -57,6 +58,12 @@ func auditLogCmd(args []string) error {
 		}
 		fmt.Printf("A heartbeat from %s. `%s audit-log collect` takes it into the store.\n", strings.Join(sent, ", "), brand.CLI)
 		return nil
+	case "mode":
+		return auditLogMode(args[1:])
+	case "retention":
+		return auditLogRetention(args[1:])
+	case "purge":
+		return auditLogPurge(args[1:])
 	case "tables":
 		return auditLogTables(args[1:])
 	case "table":
@@ -70,10 +77,14 @@ func auditLogUsage() string {
 	return fmt.Sprintf(`%[1]s audit-log status        whether the databases are audited, where the log is, and its space
 %[1]s audit-log setup [--yes] turn it on (restarts main)
 %[1]s audit-log off [--yes]   turn it off (restarts main)
-%[1]s audit-log show [--branch b] [--table t] [--user u] [--since 1h|2026-11-04] [--limit n] [--errors] [--json]
+%[1]s audit-log show [--branch b] [--table t] [--user u] [--since 1h|2026-11-04] [--limit n] [--errors] [--text] [--json]
                                                   the newest records: who did what to which object, how it ended, whom for
 %[1]s audit-log verify                                check the records' hash chain
 %[1]s audit-log heartbeat                             make every audited database write its heartbeat line now
+%[1]s audit-log mode [default | forensic --reason "…"] [--branch b] [--yes]
+                                                  forensic: statement text, values and all, kept 30 days by default
+%[1]s audit-log retention [<days> [--forensic]]      how long records, or statement text, are kept
+%[1]s audit-log purge --user <login> [--yes]          remove a person's statement text; their records stay
 %[1]s audit-log tables [--branch b]                  the tables whose writes (and reads) are audited
 %[1]s audit-log table <table> [--reads] [--branch b]  audit a table's writes, and with --reads its reads
 %[1]s audit-log table <table> --off [--branch b]      stop auditing it`, brand.CLI)
@@ -101,7 +112,10 @@ func auditLogStatus() error {
 	if marks, err := branch.AuditMarks("main"); err == nil {
 		fmt.Printf("  marked   %d table(s) on main (`%s audit-log tables`)\n", len(marks), brand.CLI)
 	}
-	fmt.Printf("  records  kept %d days (%s); `%s audit-log show` reads them\n", branch.AuditRetentionDays(), brand.EnvName("AUDIT_RETENTION_DAYS"), brand.CLI)
+	fmt.Printf("  records  kept %d days; `%s audit-log show` reads them\n", branch.AuditRetentionDays(), brand.CLI)
+	for _, l := range forensicLines() {
+		fmt.Printf("  forensic %s\n", l)
+	}
 	st := openStore()
 	findings := branch.AuditFindings(branch.MarkEventsFrom(st))
 	st.Close()
@@ -369,7 +383,32 @@ func auditLogShow(args []string) error {
 		return nil
 	}
 	printAuditEntries(os.Stdout, entries)
+	if hasFlag(args, "--text") {
+		printAuditTexts(os.Stdout, entries)
+	}
 	return nil
+}
+
+// printAuditTexts is forensic mode's statement text, under the records it
+// belongs to, numbered as they are.
+func printAuditTexts(out io.Writer, entries []branch.AuditEntry) {
+	printed := false
+	for _, e := range entries {
+		switch {
+		case e.Text != "":
+			if !printed {
+				fmt.Fprintln(out, "\nStatement text (forensic mode):")
+				printed = true
+			}
+			fmt.Fprintf(out, "  #%d %s: %s\n", e.Seq, e.Login, e.Text)
+		case e.TextGone:
+			if !printed {
+				fmt.Fprintln(out, "\nStatement text (forensic mode):")
+				printed = true
+			}
+			fmt.Fprintf(out, "  #%d %s: (removed: past its retention, or purged)\n", e.Seq, e.Login)
+		}
+	}
 }
 
 // printAuditEntries is one line per statement: when, where, who, what, on
@@ -463,4 +502,142 @@ func auditLogVerify() error {
 	}
 	os.Exit(1)
 	return nil
+}
+
+// forensicLines says where forensic mode is on, by whom, why and since when.
+func forensicLines() []string {
+	s := branch.LoadAuditSettings()
+	var out []string
+	keys := make([]string, 0, len(s.Forensic))
+	for k := range s.Forensic {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		g := s.Forensic[k]
+		where := "every branch"
+		if k != "" {
+			where = k
+		}
+		out = append(out, fmt.Sprintf("ON for %s since %s, by %s: %q; statement text kept %d days",
+			where, g.Since, g.By, g.Reason, branch.ForensicRetentionDays()))
+	}
+	return out
+}
+
+// mode shows the mode, or switches it.
+func auditLogMode(args []string) error {
+	ps := positionals(args, "--branch", "--reason")
+	b := optValue(args, "--branch")
+	if len(ps) == 0 {
+		lines := forensicLines()
+		if len(lines) == 0 {
+			fmt.Println("Default mode everywhere: no statement text, no values.")
+		}
+		for _, l := range lines {
+			fmt.Println("Forensic mode", l)
+		}
+		return nil
+	}
+	me := cliActor()
+	where := "every branch"
+	if b != "" {
+		where = b
+	}
+	switch ps[0] {
+	case "forensic":
+		reason := optValue(args, "--reason")
+		if strings.TrimSpace(reason) == "" {
+			return fmt.Errorf("forensic mode records what statements held, values and all: say why (--reason \"…\")")
+		}
+		if !hasFlag(args, "--yes") {
+			fmt.Printf("Forensic mode on %s: each audited statement's text is kept, literals and\n"+
+				"all, which can include personal data. It is kept %d days beside the records (not\n"+
+				"in their chain, so it can expire and be purged for a person), read by admins only,\n"+
+				"every read recorded. Parameters stay out. The reason is recorded with your name.\n\n"+
+				"Run again with --yes to go ahead.\n", where, branch.ForensicRetentionDays())
+			return nil
+		}
+		reached, err := branch.SetForensic(b, true, me, reason)
+		if err != nil {
+			return err
+		}
+		recordAudit(auth.EvAuditLogMode, me, b, fmt.Sprintf("forensic on for %s: %s", where, reason))
+		fmt.Printf("Forensic mode is on for %s. Now in force on: %s.\n", where, dashList(reached))
+	case "default":
+		reached, err := branch.SetForensic(b, false, me, "")
+		if err != nil {
+			return err
+		}
+		recordAudit(auth.EvAuditLogMode, me, b, "forensic off for "+where)
+		fmt.Printf("Default mode for %s: no statement text from now on. Now in force on: %s.\n", where, dashList(reached))
+		if lines := forensicLines(); len(lines) > 0 {
+			fmt.Println("Forensic mode is still on elsewhere:")
+			for _, l := range lines {
+				fmt.Println(" ", l)
+			}
+		}
+	default:
+		return fmt.Errorf("the mode is default or forensic, not %q", ps[0])
+	}
+	return nil
+}
+
+func dashList(names []string) string {
+	if len(names) == 0 {
+		return "no running database yet (each takes it when it next starts)"
+	}
+	return strings.Join(names, ", ")
+}
+
+// retention shows or sets how long records, or statement text, are kept.
+func auditLogRetention(args []string) error {
+	ps := positionals(args)
+	if len(ps) == 0 {
+		fmt.Printf("Records are kept %d days; forensic mode's statement text %d days.\n",
+			branch.AuditRetentionDays(), branch.ForensicRetentionDays())
+		return nil
+	}
+	days, err := strconv.Atoi(strings.TrimSuffix(ps[0], "d"))
+	if err != nil {
+		return fmt.Errorf("retention is a number of days, not %q", ps[0])
+	}
+	forensic := hasFlag(args, "--forensic")
+	if err := branch.SetAuditRetention(days, forensic); err != nil {
+		return err
+	}
+	what := "records"
+	if forensic {
+		what = "statement text"
+	}
+	recordAudit(auth.EvAuditLogRetention, cliActor(), "", fmt.Sprintf("%s kept %d days", what, days))
+	fmt.Printf("Audit %s are kept %d days from now on: older ones go at the next collection.\n", what, days)
+	return nil
+}
+
+// purge removes a person's statement text.
+func auditLogPurge(args []string) error {
+	login := optValue(args, "--user")
+	if login == "" {
+		return fmt.Errorf("usage: %s audit-log purge --user <login> [--yes]", brand.CLI)
+	}
+	if !hasFlag(args, "--yes") {
+		fmt.Printf("This removes every statement text forensic mode kept from %s's statements.\n"+
+			"Their records stay: what was done stays, what it held goes. The chain still verifies.\n\n"+
+			"Run again with --yes to go ahead.\n", login)
+		return nil
+	}
+	n, err := branch.PurgeForensic(login)
+	if err != nil {
+		return err
+	}
+	recordAudit(auth.EvAuditLogPurged, cliActor(), login, fmt.Sprintf("%d statement text(s) purged", n))
+	fmt.Printf("Removed %d statement text(s) of %s.\n", n, login)
+	return nil
+}
+
+func recordAudit(kind, actor, subject, detail string) {
+	s := openStore()
+	defer s.Close()
+	s.Audit(kind, actor, subject, "", detail)
 }

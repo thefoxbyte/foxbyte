@@ -2008,6 +2008,11 @@ paths:
                   pending: { type: array, items: { type: string } }
                   setup: { type: string }
                   "off": { type: string }
+                  forensic:
+                    type: object
+                    description: 'Where forensic mode is on: "" for every branch, or a branch, with by, reason and since.'
+                    additionalProperties: { type: object, properties: { by: { type: string }, reason: { type: string }, since: { type: string } } }
+                  retention: { type: object, properties: { days: { type: integer }, forensic_days: { type: integer } } }
                   findings:
                     type: array
                     description: >-
@@ -2021,6 +2026,65 @@ paths:
                         branch: { type: string }
                         detail: { type: string }
                         since: { type: string, format: date-time }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/audit-log/mode:
+    put:
+      tags: [audit-log]
+      summary: Turn forensic mode on or off, for every branch ("") or one (admins only; in the security log).
+      description: >-
+        Forensic mode keeps each audited statement's text, values and all, beside the records (never in their chain),
+        for the forensic retention; parameters stay out. A reason is required to turn it on. It is a reload, not a
+        restart, and reaches every running database it covers at once.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                forensic: { type: boolean }
+                branch: { type: string, description: "A branch, or empty for every branch." }
+                reason: { type: string }
+      responses:
+        "200": { description: Where forensic mode is now on, and the running databases it reached. }
+        "400": { description: No reason, or a branch name that is not valid. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/audit-log/retention:
+    put:
+      tags: [audit-log]
+      summary: How long records, or forensic statement text, are kept (admins only; in the security log).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days: { type: integer, minimum: 1, maximum: 3650 }
+                forensic: { type: boolean, description: The statement text's, never longer than the records'. }
+      responses:
+        "200": { description: The retention now. }
+        "400": { description: Days out of range, or text kept longer than its records. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/audit-log/purge:
+    post:
+      tags: [audit-log]
+      summary: Remove every forensic statement text a login's statements left (admins only; in the security log).
+      description: The records stay, with the hash of a text no longer kept, so the chain still verifies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { user: { type: string } } }
+      responses:
+        "200": { description: How many texts went. }
+        "400": { description: No login. }
         "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
@@ -2456,7 +2520,9 @@ components:
         vxid: { type: string }
         outcome: { type: string }
         sqlstate: { type: string }
-        text: { type: string, description: Forensic mode only. }
+        text_sha: { type: string, description: "Forensic mode: the SHA-256 of the statement's text, which the chain holds." }
+        text: { type: string, description: "Forensic mode: the statement's text, while it is kept." }
+        text_gone: { type: boolean, description: "The record had statement text, now past its retention or purged." }
         prev: { type: string }
         hash: { type: string }
         txn_outcome: { type: string, description: "How the statement's transaction ended: COMMIT, ROLLBACK or PREPARE." }

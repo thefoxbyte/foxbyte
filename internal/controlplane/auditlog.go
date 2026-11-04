@@ -39,6 +39,15 @@ type auditLogReply struct {
 	// What is wrong with it (step 4): lines not arriving, lines lost, a mark
 	// taken off outside FoxByte.
 	Findings []branch.AuditFinding `json:"findings"`
+	// Where forensic mode is on ("" for every branch), and how long records
+	// and statement text are kept (step 5a).
+	Forensic  map[string]branch.ForensicGrant `json:"forensic"`
+	Retention auditRetention                  `json:"retention"`
+}
+
+type auditRetention struct {
+	Days         int `json:"days"`
+	ForensicDays int `json:"forensic_days"`
 }
 
 func registerAuditLog(mux *http.ServeMux, store *auth.Store) {
@@ -160,6 +169,8 @@ var auditLogState = func(store *auth.Store) auditLogReply {
 	if p, err := branch.AuditPending(); err == nil && p != nil {
 		rep.Pending = p
 	}
+	rep.Forensic = branch.LoadAuditSettings().Forensic
+	rep.Retention = auditRetention{Days: branch.AuditRetentionDays(), ForensicDays: branch.ForensicRetentionDays()}
 	rep.Findings = []branch.AuditFinding{}
 	if rep.On {
 		if f := branch.AuditFindings(branch.MarkEventsFrom(store)); f != nil {
@@ -244,4 +255,103 @@ func markChange(w http.ResponseWriter, r *http.Request, what string, change func
 		return
 	}
 	writeJSON(w, 200, auditMarksReply{AuditOn: branch.AuditOn(), Tables: marks})
+}
+
+// Forensic mode, retention and purge (F6 Gate 1, step 5a), admins only, each
+// in the security log:
+//
+//	PUT  /api/audit-log/mode       {"forensic": bool, "branch": "", "reason": "…"}
+//	PUT  /api/audit-log/retention  {"days": n, "forensic": bool}
+//	POST /api/audit-log/purge      {"user": "<login>"}
+func registerAuditSettings(mux *http.ServeMux) {
+	admin := func(w http.ResponseWriter, r *http.Request) (auth.User, bool) {
+		u, _ := auth.UserFrom(r.Context())
+		if !isAdmin(r) {
+			writeErr(w, 403, errors.New("only an admin may change what the audit log keeps"))
+			return u, false
+		}
+		return u, true
+	}
+	record := func(r *http.Request, kind, actor, subject, detail string) {
+		if secLog != nil {
+			secLog.Audit(kind, actor, subject, remoteIP(r), detail)
+		}
+	}
+	mux.HandleFunc("PUT /api/audit-log/mode", func(w http.ResponseWriter, r *http.Request) {
+		u, ok := admin(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Forensic bool   `json:"forensic"`
+			Branch   string `json:"branch"`
+			Reason   string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, 400, errors.New(`the body must be JSON: {"forensic": bool, "branch": "", "reason": "…"}`))
+			return
+		}
+		reached, err := branch.SetForensic(body.Branch, body.Forensic, u.Email, body.Reason)
+		if err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		where := "every branch"
+		if body.Branch != "" {
+			where = body.Branch
+		}
+		detail := "forensic off for " + where
+		if body.Forensic {
+			detail = "forensic on for " + where + ": " + strings.TrimSpace(body.Reason)
+		}
+		record(r, auth.EvAuditLogMode, u.Email, body.Branch, detail)
+		if reached == nil {
+			reached = []string{}
+		}
+		writeJSON(w, 200, map[string]any{"forensic": branch.LoadAuditSettings().Forensic, "reached": reached})
+	})
+	mux.HandleFunc("PUT /api/audit-log/retention", func(w http.ResponseWriter, r *http.Request) {
+		u, ok := admin(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Days     int  `json:"days"`
+			Forensic bool `json:"forensic"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, 400, errors.New(`the body must be JSON: {"days": n, "forensic": bool}`))
+			return
+		}
+		if err := branch.SetAuditRetention(body.Days, body.Forensic); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		what := "records"
+		if body.Forensic {
+			what = "statement text"
+		}
+		record(r, auth.EvAuditLogRetention, u.Email, "", fmt.Sprintf("%s kept %d days", what, body.Days))
+		writeJSON(w, 200, auditRetention{Days: branch.AuditRetentionDays(), ForensicDays: branch.ForensicRetentionDays()})
+	})
+	mux.HandleFunc("POST /api/audit-log/purge", func(w http.ResponseWriter, r *http.Request) {
+		u, ok := admin(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			User string `json:"user"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, 400, errors.New(`the body must be JSON: {"user": "<login>"}`))
+			return
+		}
+		n, err := branch.PurgeForensic(body.User)
+		if err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		record(r, auth.EvAuditLogPurged, u.Email, body.User, fmt.Sprintf("%d statement text(s) purged", n))
+		writeJSON(w, 200, map[string]int{"purged": n})
+	})
 }
