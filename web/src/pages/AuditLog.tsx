@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from 'react'
-import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, purgeAuditText, sendAuditForward, setAuditForward, setAuditMode, setAuditRetention, stopAuditForward, unmarkAudited, type AuditEntry, type AuditFor, type AuditLogReply, type AuditMarks, type Branch } from '../api'
+import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, getUnauditedPersonal, markPersonalTables, purgeAuditText, sendAuditForward, setAuditForward, setAuditMode, setAuditRetention, stopAuditForward, unmarkAudited, type AuditAnchors, type AuditEntry, type AuditFor, type AuditLogReply, type AuditMarks, type Branch } from '../api'
 import { useConfirm } from '../confirm'
+import { useFeatures } from '../features'
 
 // The databases' audit log (F6): pgAudit in default mode. It records who
 // changed the schema and roles, and who wrote to the tables an admin marks,
@@ -291,6 +292,56 @@ function Forwarding({ data, onChange }: { data: AuditLogReply; onChange: () => v
   )
 }
 
+// anchorText is where anchoring the chain has got (step 6).
+function anchorText(a?: AuditAnchors) {
+  if (!a) return '–'
+  if (a.anchors === 0) {
+    return a.writes
+      ? 'none yet: the first comes within 10 minutes of the first record'
+      : 'none: anchoring the chain outside the store is part of Enterprise'
+  }
+  let s = `${a.anchors}, up to record ${a.anchored} (${a.unanchored} since)`
+  if (a.locked > 0) s += `; ${a.locked} locked in the anchor target`
+  if (!a.writes) s += '; no more are written in this edition'
+  return s
+}
+
+// PersonalTables names the tables holding confirmed personal data whose writes
+// are not audited, and marks them all where the licence covers it (step 6).
+function PersonalTables({ branch, onMarked }: { branch: string; onMarked: (m: AuditMarks) => void }) {
+  const { can } = useFeatures()
+  const [tables, setTables] = useState<string[] | null>(null)
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    setTables(null); setMsg('')
+    getUnauditedPersonal(branch).then(r => setTables(r.tables), () => setTables(null))
+  }, [branch])
+  if (!tables || (tables.length === 0 && !msg)) return null
+  const mark = async () => {
+    setBusy(true); setMsg('')
+    try {
+      const m = await markPersonalTables(branch)
+      onMarked(m)
+      setTables(m.personal_unmarked ?? [])
+      setMsg(`Marked: ${(m.marked ?? []).join(', ') || 'nothing new'}.`)
+    } catch (e) { setMsg((e as Error).message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 10 }} data-testid="personal-unmarked">
+      {tables.length > 0 && <>
+        <p style={{ marginTop: 0 }}>
+          <b>Confirmed personal data, writes not audited:</b> {tables.map(t => <code key={t} style={{ marginRight: 6 }}>{t}</code>)}
+        </p>
+        {can('personal-data')
+          ? <button className="primary" onClick={mark} disabled={busy}>{busy ? 'Marking…' : 'Audit tables with personal data'}</button>
+          : <p className="muted" style={{ margin: 0, fontSize: 13 }}>Marking them on their own is part of Enterprise; mark each with <b>Audit…</b>.</p>}
+      </>}
+      {msg && <p className="muted" style={{ marginBottom: 0, fontSize: 13 }}>{msg}</p>}
+    </div>
+  )
+}
+
 export default function AuditLog() {
   const confirm = useConfirm()
   const [data, setData] = useState<AuditLogReply | null>(null)
@@ -363,6 +414,7 @@ export default function AuditLog() {
                     {pct !== null && pct >= 80 && <span className="badge" style={{ marginLeft: 8 }}>a full log loses audit lines without a word</span>}
                   </td>
                 </tr>
+                <tr><th>Anchors</th><td data-testid="audit-anchors">{anchorText(data.anchors)}</td></tr>
               </tbody>
             </table>
           </div>
@@ -405,6 +457,18 @@ export default function AuditLog() {
           </table>
         </div>
       )}
+      {(marks?.definers ?? []).length > 0 && (
+        <div className="panel" style={{ marginTop: 10 }} data-testid="audit-definers">
+          <p style={{ marginTop: 0 }}>
+            <b>Not audited:</b> these SECURITY DEFINER functions name marked tables, and pgAudit does not see the statements
+            inside a definer function. Made SECURITY INVOKER, they are audited.
+          </p>
+          <ul style={{ margin: 0, paddingLeft: 20 }}>
+            {marks!.definers!.map(f => <li key={f.function}><code>{f.function}</code>, as {f.owner}: {f.tables.join(', ')}</li>)}
+          </ul>
+        </div>
+      )}
+      <PersonalTables branch={branch} onMarked={setMarks} />
 
       {data?.on && (
         <div className="panel" style={{ marginTop: 10 }} data-testid="audit-findings">

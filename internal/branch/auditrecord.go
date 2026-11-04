@@ -190,6 +190,13 @@ type ChainReport struct {
 	First    int64    `json:"first"` // the first record's number (later than 1 once retention removed the oldest)
 	Intact   bool     `json:"intact"`
 	Problems []string `json:"problems,omitempty"`
+	// The last record, which an anchor would anchor (step 6).
+	Last     int64  `json:"last"`
+	LastHash string `json:"last_hash,omitempty"`
+	// The anchors checked, and the last record they cover.
+	Anchors  int      `json:"anchors,omitempty"`
+	Anchored int64    `json:"anchored,omitempty"`
+	Notes    []string `json:"notes,omitempty"`
 }
 
 // verifyChain checks records in order: each numbered one after the last,

@@ -77,6 +77,9 @@ rm -f "$HOME/$BRAND_STATE_DIR"/auth.db "$HOME/$BRAND_STATE_DIR"/auth.db-wal "$HO
 # they would anchor events this fresh store does not have — which `fox audit
 # verify` rightly calls tampering.
 rm -rf "$HOME/$BRAND_STATE_DIR/anchors/_security-log"
+# The audit log's anchors (F6 step 6) likewise: they hold the store a run cut
+# short left, which the next run's store will not match.
+rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/anchors/_audit-log"
 # Zero-data-loss mode is an intent that outlives the containers, so a run cut
 # short after `ha sync on` leaves it behind -- and then `ha enable` in section 6
 # dutifully puts the mode back, and the first assertion there ("commits do not
@@ -2596,6 +2599,8 @@ echo "### 11z. marking tables for the audit log (F6 Gate 1, step 2)"
 # login; a branch made after carries the marks.
 gw() { PGPASSWORD="$1" psql "$GATEWAY/main?sslmode=require" -X -q -tA -c "$2" 2>&1; }
 objlines() { auditlog main | grep -c "AUDIT: OBJECT,[0-9]*,[0-9]*,$1,TABLE,public.$2,"; }
+# Counted from here: confirming personal data in 11r marked a table too (step 6).
+MARKS0="$($S audit log --limit 100000 | grep -c 'audit-log.marked')"
 pg pg-main "SET bb.allow_destructive=on; DROP VIEW IF EXISTS aud_v; DROP TABLE IF EXISTS aud_orders, aud_notes, aud_cards;
   CREATE TABLE aud_orders (id int PRIMARY KEY, email text); CREATE TABLE aud_notes (id int, body text);
   CREATE TABLE aud_cards (id int, number text); CREATE VIEW aud_v AS SELECT * FROM aud_orders;
@@ -2640,7 +2645,7 @@ assert_eq "someone who does not manage the branch may not change its marks" \
   "$(code "$AOK" -X DELETE https://localhost:8080/api/branches/main/audit/tables/public/aud_notes)|$($S audit-log tables | grep -c aud_notes)" "403|1"
 # Five so far: aud_orders marked and unmarked, aud_cards twice, aud_notes by
 # the API. The refusals (a view, a missing table, the 403) are not changes.
-assert_eq "each change is in the security log" "$($S audit log --limit 100 | grep -c 'audit-log.marked')" "5"
+assert_eq "each change is in the security log" "$(( $($S audit log --limit 100000 | grep -c 'audit-log.marked') - MARKS0 ))" "5"
 
 $S branch create audmarkbr >/dev/null 2>&1
 assert_eq "a branch made after has the same marks" \
@@ -2995,6 +3000,114 @@ pkill -f "$FWD/(https|syslog)_recv.py" 2>/dev/null
 $S audit-log off --yes >/dev/null 2>&1; main_up
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud6_orders" >/dev/null
 rm -rf "$FWD"
+
+echo "### 11ae. anchors, automatic marks and SECURITY DEFINER functions (F6 Gate 1, step 6)"
+# Enterprise anchors the records' chain outside the store, as it does the
+# Blackbox's; a table holding confirmed personal data has its writes audited
+# without anyone marking it; and a definer function naming a marked table is
+# said, because pgAudit does not see the statements inside it.
+AANCH="$HOME/$BRAND_STATE_DIR/anchors/_audit-log"
+pg pg-main "SET bb.allow_destructive=on; DROP FUNCTION IF EXISTS aud7_pay(int); DROP TABLE IF EXISTS aud7_orders;
+  CREATE TABLE aud7_orders (id int PRIMARY KEY, email text); GRANT ALL ON aud7_orders TO db_client;
+  CREATE FUNCTION aud7_pay(i int) RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS \$f\$ BEGIN INSERT INTO aud7_orders VALUES (i, 'paid'); END \$f\$;
+  GRANT EXECUTE ON FUNCTION aud7_pay(int) TO db_client" >/dev/null
+$S audit-log table aud7_orders >/dev/null 2>&1
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+gw "$KEY" "INSERT INTO aud7_orders VALUES (1, 'x@example.in')" >/dev/null; sleep 1.5
+ANC="$($S audit-log anchor 2>&1)"
+assert_eq "anchor: the chain's head, signed with the install's anchor key, written read-only outside the store" \
+  "$(grep -c '^audit log anchored: records [0-9]*–[0-9]*, signed by key ' <<<"$ANC")|$(ls "$AANCH" 2>/dev/null | grep -c '\.json$' | awk '{print ($1>=1)}')|$(stat -c %a "$AANCH/$(ls "$AANCH" | grep '\.json$' | tail -1)")" "1|1|444"
+VER="$($S audit-log verify 2>&1)"
+assert_eq "verify checks the store against every anchor, and their signatures" \
+  "$(grep -c '^audit log intact' <<<"$VER")|$(grep -c '^anchored: [0-9]* anchor(s), up to record [0-9]*, each matching the store' <<<"$VER")|$(grep -c 'every anchor is signed by key' <<<"$VER")" "1|1|1"
+assert_eq "status and the console say how far anchoring has got" \
+  "$($S audit-log status | grep -c '^  anchors  [0-9]*, up to record')|$(curl -sk -H "$AUTH" https://localhost:8080/api/audit-log | python3 -c 'import sys,json; a=json.load(sys.stdin)["anchors"]; print(a["anchors"] >= 1, a["writes"])')" "1|True True"
+# What the chain alone cannot see: the records an anchor holds taken away,
+# with state.json put back to match. Done holding the collector's lock, and
+# put back the same way.
+cat > /tmp/aud7_cut.py <<'EOF'
+import gzip, json, os, sys
+store, anchors = sys.argv[1], sys.argv[2]
+to = max(json.load(open(os.path.join(anchors, a)))["to_id"] for a in os.listdir(anchors) if a.endswith(".json"))
+st = json.load(open(os.path.join(store, "state.json")))
+head = None
+for name in sorted(d for d in os.listdir(store) if d.endswith(".jsonl.gz")):
+    path = os.path.join(store, name)
+    recs = [json.loads(l) for l in gzip.open(path).read().decode().splitlines() if l]
+    keep = [r for r in recs if r["seq"] < to]
+    if keep:
+        head = keep[-1]
+    if len(keep) != len(recs):
+        with gzip.open(path, "wb") as f:
+            f.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in keep).encode())
+        st["days"][name[:-len(".jsonl.gz")]] = os.path.getsize(path)
+st["seq"], st["head"] = head["seq"], head["hash"]
+json.dump(st, open(os.path.join(store, "state.json"), "w"))
+EOF
+rm -rf /tmp/aud7_store.bak; mkdir -p /tmp/aud7_store.bak
+flock "$STORE/lock" sh -c 'cp -p "$1"/*.jsonl.gz "$1"/state.json /tmp/aud7_store.bak/ && python3 /tmp/aud7_cut.py "$1" "$2"' _ "$STORE" "$AANCH"
+OUT="$($S audit-log verify 2>&1)"; rc=$?
+assert_eq "records an anchor holds, taken away with the state edited to match: verify fails, where the chain alone would pass" \
+  "$rc|$(grep -c 'TAMPERED' <<<"$OUT")|$(grep -c 'anchored records were removed\|no longer matches it' <<<"$OUT" | awk '{print ($1>=1)}')" "1|1|1"
+flock "$STORE/lock" sh -c 'cp -p /tmp/aud7_store.bak/* "$1"/' _ "$STORE"
+assert_eq "…and put back, it verifies again" "$($S audit-log verify | grep -c '^audit log intact')" "1"
+
+# Automatic marks, on a branch of their own. Every identifier is synthetic:
+# 234567890124 and 456789012341 pass Verhoeff.
+gw7() { PGPASSWORD="$1" psql "${GATEWAY}/aud7pii?sslmode=require" -X -q -tA -c "$2" 2>&1; }
+$S branch delete aud7pii >/dev/null 2>&1; $S branch create aud7pii >/dev/null 2>&1
+pg pg-aud7pii "CREATE TABLE aud7_people (id int PRIMARY KEY, aadhaar_no text, email text); GRANT ALL ON aud7_people TO db_client;
+  INSERT INTO aud7_people VALUES (1, '2345 6789 0124', 'a@example.com'), (2, '456789012341', 'b@example.org')" >/dev/null
+$S pii scan --branch aud7pii >/dev/null 2>&1
+AID7="$($S pii --branch aud7pii --json 2>/dev/null | hjson "print([f['id'] for f in d['findings'] if f['table']=='aud7_people' and f['column']=='aadhaar_no'][0])")"
+amarks() { $S audit log --limit 100000 | grep 'audit-log.marked' | grep -c "$1"; }
+MARKED0="$(amarks aud7_people)"
+M7="$($S pii mark "$AID7" confirm --branch aud7pii 2>&1)"
+assert_eq "confirming personal data marks its table: its writes are audited, and the security log says so" \
+  "$(grep -c 'public.aud7_people now has its writes audited' <<<"$M7")|$($S audit-log tables --branch aud7pii | grep -c 'public.aud7_people  *writes$')|$(( $(amarks aud7_people) - MARKED0 ))" "1|1|1"
+gw7 "$KEY" "INSERT INTO aud7_people VALUES (3, NULL, NULL)" >/dev/null; sleep 1.5
+assert_eq "…so a write to it is in the audit log" "$($S audit-log show --branch aud7pii --table aud7_people | grep -c INSERT)" "1"
+$S audit-log table aud7_people --reads --branch aud7pii >/dev/null 2>&1
+$S pii mark "$AID7" reopen --branch aud7pii >/dev/null 2>&1
+M7B="$($S pii mark "$AID7" confirm --branch aud7pii 2>&1)"
+assert_eq "confirming again marks nothing more, and leaves the reads someone marked" \
+  "$(grep -c 'now has its writes audited' <<<"$M7B")|$($S audit-log tables --branch aud7pii | grep -c 'public.aud7_people  *writes and reads$')" "0|1"
+$S audit-log table aud7_people --off --branch aud7pii >/dev/null 2>&1
+assert_eq "taken off, the tables say it holds confirmed personal data and is not audited" \
+  "$($S audit-log tables --branch aud7pii | grep -c 'Confirmed personal data, writes not audited: public.aud7_people')" "1"
+printf 'password123\n' | $S user create aud7-other@foxbyte.dev >/dev/null 2>&1
+A7K="$($S apikey create aud7-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+# Someone else cannot reach this branch at all, so it is not found; on main,
+# which every account may use, they are refused, as where personal data sits
+# is the owner's.
+assert_eq "the API lists it for the branch's owner or an admin, and to no one else, as where personal data sits" \
+  "$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/aud7pii/personal-data/unaudited | python3 -c 'import sys,json; print(json.load(sys.stdin)["tables"])')|$(code "$A7K" https://localhost:8080/api/branches/aud7pii/personal-data/unaudited)|$(code "$A7K" https://localhost:8080/api/branches/main/personal-data/unaudited)|$(code "$A7K" -X POST https://localhost:8080/api/branches/main/audit/tables/personal-data)" \
+  "['public.aud7_people']|404|403|403"
+CU="$($S audit-log table --personal-data --branch aud7pii 2>&1)"
+assert_eq "table --personal-data marks it again, its writes, and says so" \
+  "$(grep -c '^public.aud7_people on aud7pii: its writes are audited' <<<"$CU")|$($S audit-log tables --branch aud7pii | grep -c 'public.aud7_people  *writes$')|$(( $(amarks aud7_people) - MARKED0 ))" "1|1|4"
+assert_eq "…and a second time finds nothing to do, nor does the console's" \
+  "$($S audit-log table --personal-data --branch aud7pii | grep -c 'already has its writes audited')|$(curl -sk -H "$AUTH" -X POST https://localhost:8080/api/branches/aud7pii/audit/tables/personal-data | python3 -c 'import sys,json; r=json.load(sys.stdin); print(r.get("marked"), r.get("personal_unmarked"))')" \
+  "1|None None"
+
+# SECURITY DEFINER: said, and true.
+DEF="$($S audit-log tables 2>&1)"
+assert_eq "a SECURITY DEFINER function naming a marked table is listed: pgAudit does not see inside it" \
+  "$(grep -c 'Not audited: these SECURITY DEFINER functions' <<<"$DEF")|$(grep -c 'aud7_pay(integer), as .*: public.aud7_orders' <<<"$DEF")" "1|1"
+assert_eq "…a warning in fox check, a finding in the console, and beside the marks in the API" \
+  "$($S check 2>&1 | grep 'audit definer' | grep -c 'main: aud7_pay')|$(curl -sk -H "$AUTH" https://localhost:8080/api/audit-log | python3 -c 'import sys,json; print(sum(1 for f in json.load(sys.stdin)["findings"] if f["kind"]=="definer" and f.get("branch")=="main" and "aud7_pay" in f["detail"]))')|$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/audit/tables | python3 -c 'import sys,json; print("aud7_pay(integer)" in [d["function"] for d in json.load(sys.stdin)["definers"]])')" \
+  "1|1|True"
+gw "$KEY" "SELECT aud7_pay(2)" >/dev/null; sleep 1.5
+assert_eq "…which is so: a write through it is not in the audit log" "$($S audit-log show --table aud7_orders | grep -c INSERT)" "1"
+pg pg-main "ALTER FUNCTION aud7_pay(int) SECURITY INVOKER" >/dev/null
+gw "$KEY" "SELECT aud7_pay(3)" >/dev/null; sleep 1.5
+assert_eq "made SECURITY INVOKER, it is no longer listed, and what it writes is audited" \
+  "$($S audit-log tables | grep -c 'aud7_pay')|$($S audit-log show --table aud7_orders | grep -c INSERT)" "0|2"
+$S user delete aud7-other@foxbyte.dev >/dev/null 2>&1
+$S branch delete aud7pii >/dev/null 2>&1
+$S audit-log off --yes >/dev/null 2>&1; main_up
+pg pg-main "SET bb.allow_destructive=on; DROP FUNCTION IF EXISTS aud7_pay(int); DROP TABLE IF EXISTS aud7_orders" >/dev/null
+rm -rf /tmp/aud7_cut.py /tmp/aud7_store.bak
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

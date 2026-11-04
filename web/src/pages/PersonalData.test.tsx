@@ -165,6 +165,23 @@ describe('Personal data page', () => {
     expect(screen.getByRole('button', { name: 'Confirmed (1)' })).toBeTruthy()
   })
 
+  it('says when confirming marked the finding’s table for the audit log, or why it could not', async () => {
+    vi.mocked(getPersonalData).mockResolvedValue(scanned)
+    vi.mocked(getSamples).mockResolvedValue({ finding: scanned.findings![0], read: 0, as: 'owner@example.com', samples: [] })
+    const confirmed = { ...scanned.findings![0], state: 'confirmed' as const }
+    vi.mocked(markFinding).mockResolvedValue({ finding: confirmed, decisions: [], auditMarked: 'public.customers' })
+    page()
+    fireEvent.click(await screen.findByRole('button', { name: 'Review public.customers.aadhaar_no (Aadhaar)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    expect((await screen.findByTestId('pii-audit-mark')).textContent).toContain('public.customers now has its writes audited')
+    cleanup()
+    vi.mocked(markFinding).mockResolvedValue({ finding: confirmed, decisions: [], auditMarkError: 'permission denied' })
+    page()
+    fireEvent.click(await screen.findByRole('button', { name: 'Review public.customers.aadhaar_no (Aadhaar)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(screen.getByTestId('pii-audit-mark').textContent).toContain('could not be marked for the audit log (permission denied)'))
+  })
+
   it('says when the reviewer’s own role may not read the samples', async () => {
     vi.mocked(getPersonalData).mockResolvedValue(scanned)
     vi.mocked(getSamples).mockRejectedValue(new Error('your role cannot read this location: public.customers.aadhaar_no (permission denied)'))

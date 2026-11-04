@@ -5,6 +5,7 @@ package branch
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/thefoxbyte/foxbyte/internal/ledger"
 )
 
 // The audit log's store and the collector that fills it (F6 Gate 1, step 3;
@@ -675,6 +678,21 @@ func VerifyAudit() (ChainReport, error) {
 		rep.Problems = append(rep.Problems, fmt.Sprintf("the store ends at record %d, and the collector wrote up to %d: records at the end were removed", last, s.Seq))
 		rep.Intact = false
 	}
+	rep.Last, rep.LastHash = last, lastHash
+	// The anchors (step 6), which state.json cannot be edited to match.
+	anchors, err := ledger.LoadAnchors(AuditAnchorDir())
+	if err != nil {
+		rep.Problems = append(rep.Problems, fmt.Sprintf("the anchors cannot be read: %v", err))
+		rep.Intact = false
+		return rep, nil
+	}
+	var pub ed25519.PublicKey
+	if len(anchors) > 0 {
+		if pub, _, err = AnchorPublicKey(); err != nil {
+			rep.Notes = append(rep.Notes, fmt.Sprintf("the anchors' signatures were not checked: %v", err))
+		}
+	}
+	checkAuditAnchors(&rep, all, s.Base.Seq, s.Base.Hash, anchors, copiedAuditAnchors(), pub)
 	return rep, nil
 }
 
