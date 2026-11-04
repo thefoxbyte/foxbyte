@@ -940,6 +940,27 @@ paths:
         "404": { description: No such finding, or its column has gone since the scan. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/personal-data/unaudited:
+    get:
+      tags: [branches]
+      summary: Tables holding confirmed personal data whose writes the audit log does not record (the branch's owner or an admin).
+      description: >-
+        In Enterprise, confirming a finding marks its table; this lists those still not marked, as schema.table:
+        confirmed before that existed, or taken off since.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200":
+          description: The tables.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tables: { type: array, items: { type: string } }
+                  audit_on: { type: boolean }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/branches/{name}/personal-data/unclassified:
     get:
       tags: [branches]
@@ -2013,16 +2034,28 @@ paths:
                     description: 'Where forensic mode is on: "" for every branch, or a branch, with by, reason and since.'
                     additionalProperties: { type: object, properties: { by: { type: string }, reason: { type: string }, since: { type: string } } }
                   retention: { type: object, properties: { days: { type: integer }, forensic_days: { type: integer } } }
+                  anchors:
+                    type: object
+                    description: >-
+                      How far the records' chain is anchored outside the store: signed, beside the Blackbox's anchors, and
+                      copied off the machine. writes is whether this install writes them (Enterprise); checking them is free.
+                    properties:
+                      anchors: { type: integer }
+                      anchored: { type: integer, description: The last record an anchor covers. }
+                      unanchored: { type: integer, description: Records collected since. }
+                      writes: { type: boolean }
+                      locked: { type: integer, description: Anchors copied to the anchor target, under Object Lock. }
                   findings:
                     type: array
                     description: >-
                       What is wrong with it: space (the log nearly full), collector (not collected for 5 minutes), heartbeat
                       (a database's line not arriving), gap (a session's statement numbers skipped some: lines lost), mark (a
-                      mark set through FoxByte taken off outside it).
+                      mark set through FoxByte taken off outside it), forward (records not reaching the SIEM), definer (a
+                      SECURITY DEFINER function naming a marked table, whose statements pgAudit does not see).
                     items:
                       type: object
                       properties:
-                        kind: { type: string, enum: [space, collector, heartbeat, gap, mark] }
+                        kind: { type: string, enum: [space, collector, heartbeat, gap, mark, forward, definer] }
                         branch: { type: string }
                         detail: { type: string }
                         since: { type: string, format: date-time }
@@ -2177,6 +2210,25 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AuditMarks" }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/audit/tables/personal-data:
+    post:
+      tags: [audit-log]
+      summary: Audit the writes of every table holding confirmed personal data (Manage; Enterprise).
+      description: >-
+        Confirming a finding marks its table already; this marks the tables confirmed before that existed. It only
+        adds: writes are audited and reads left as they were. Each table marked is in the security log.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200":
+          description: >-
+            The branch's marks, as they now are, with marked (what this marked) and personal_unmarked (what is
+            still not audited, if a table could not be marked).
+          content: { application/json: { schema: { $ref: "#/components/schemas/AuditMarks" } } }
+        "400": { description: A table could not be marked; the others were. }
+        "403": { description: Not the branch's owner or an admin, or not licensed for personal-data discovery. }
         "404": { description: No such branch. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
@@ -2589,6 +2641,19 @@ components:
               name: { type: string }
               writes: { type: boolean }
               reads: { type: boolean }
+        definers:
+          type: array
+          description: >-
+            SECURITY DEFINER functions whose body names a marked table: pgAudit does not see the statements inside
+            them, so what they do to those tables is not in the audit log. A word match on the source.
+          items:
+            type: object
+            properties:
+              function: { type: string }
+              owner: { type: string, description: Whom it runs as. }
+              tables: { type: array, items: { type: string } }
+        marked: { type: array, items: { type: string }, description: What POST …/personal-data marked. }
+        personal_unmarked: { type: array, items: { type: string }, description: For POST …/personal-data only. }
     ChangeRequest:
       type: object
       description: A branch's schema changes, offered for review. Schema only — no data is moved.

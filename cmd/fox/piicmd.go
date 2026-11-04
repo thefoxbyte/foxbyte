@@ -162,9 +162,19 @@ func piiCmd(args []string) {
 		must(err)
 		if s := historyStore(); s != nil {
 			s.Audit(auth.EvPersonalDataMarked, me, b, "", d.Finding.MarkSummary())
+			if d.AuditMarked != "" {
+				s.Audit(auth.EvAuditMarked, me, b, "", "auditing writes of "+d.AuditMarked)
+			}
 			s.Close()
 		}
 		fmt.Printf("Finding %d, %s (%s): %s.\n", d.Finding.ID, d.Finding.Where(), d.Finding.Category, d.Finding.State)
+		if d.AuditMarked != "" {
+			fmt.Printf("%s now has its writes audited, by every login: it holds confirmed personal data.\n", d.AuditMarked)
+		}
+		if d.AuditMarkError != "" {
+			fmt.Fprintf(os.Stderr, "note: its table could not be marked for the audit log (%s); `%s audit-log table --personal-data --branch %s` marks it later.\n",
+				d.AuditMarkError, brand.CLI, b)
+		}
 	default:
 		usagePII()
 	}

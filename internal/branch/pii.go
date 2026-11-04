@@ -282,6 +282,11 @@ type PIIDecision struct {
 type PIIFindingDetail struct {
 	Finding   PIIFinding    `json:"finding"`
 	Decisions []PIIDecision `json:"decisions"`
+	// Confirming a finding marks its table for the audit log (F6 step 6,
+	// Enterprise): the table it marked, as schema.table, or why it could not.
+	// Empty when the table was audited already, or nothing was confirmed.
+	AuditMarked    string `json:"auditMarked,omitempty"`
+	AuditMarkError string `json:"auditMarkError,omitempty"`
 }
 
 // PIISample is one value from a finding's location, masked before it left
@@ -342,7 +347,18 @@ func MarkPersonalData(name string, id int64, state, note, actor string) (PIIFind
 	if err := markPII(name, id, state, note, actor); err != nil {
 		return PIIFindingDetail{}, err
 	}
-	return PersonalDataFinding(name, id)
+	d, err := PersonalDataFinding(name, id)
+	if err == nil && state == PIIConfirmed && autoMarkPII != nil {
+		// The decision stands either way: a mark that failed is said, and
+		// `fox audit-log table --personal-data` makes it later.
+		f := d.Finding
+		if marked, merr := autoMarkPII(name, f.Schema, f.Table, actor); merr != nil {
+			d.AuditMarkError = merr.Error()
+		} else if marked {
+			d.AuditMarked = f.Schema + "." + f.Table
+		}
+	}
+	return d, err
 }
 
 // PersonalDataSamples reads up to n masked values from a finding's location,

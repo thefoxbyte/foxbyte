@@ -503,7 +503,9 @@ export const scanPersonalData = (branch: string, sample?: number, newOnly?: bool
 // Review (point 4.6): a reviewer decides what each finding is, from masked
 // samples read as their own role.
 export type PIIDecision = { id: number; state: PIIFinding['state']; actor: string; note: string; at: string }
-export type PIIFindingDetail = { finding: PIIFinding; decisions: PIIDecision[] | null }
+// auditMarked: confirming the finding marked its table for the audit log (F6
+// step 6, Enterprise); auditMarkError: why it could not.
+export type PIIFindingDetail = { finding: PIIFinding; decisions: PIIDecision[] | null; auditMarked?: string; auditMarkError?: string }
 export type PIISamples = { finding: PIIFinding; samples: { masked: string; matches: boolean }[] | null; read: number; as: string }
 const findingURL = (branch: string, id: number) => `${API}/api/branches/${branch}/personal-data/findings/${id}`
 export const getFinding = (branch: string, id: number) => req('GET', findingURL(branch, id)) as Promise<PIIFindingDetail>
@@ -884,7 +886,11 @@ export type AuditLogReply = {
   forensic?: Record<string, ForensicGrant> | null
   retention?: { days: number; forensic_days: number }
   forward?: AuditForward | null
+  anchors?: AuditAnchors
 }
+// The chain's anchors outside the store (F6 step 6): writes is whether this
+// install writes them (Enterprise); checking them is free.
+export type AuditAnchors = { anchors: number; anchored: number; unanchored: number; writes: boolean; locked: number }
 // Forwarding to a SIEM (F6 step 5b). The token and CA bundle are never sent back.
 export type AuditForward = {
   url: string; text?: boolean; ca?: boolean; token?: boolean; by: string; since: string
@@ -903,13 +909,16 @@ export const setAuditMode = (forensic: boolean, branch: string, reason: string) 
 export const setAuditRetention = (days: number, forensic: boolean) =>
   req('PUT', `${API}/api/audit-log/retention`, { days, forensic }) as Promise<{ days: number; forensic_days: number }>
 export const purgeAuditText = (user: string) => req('POST', `${API}/api/audit-log/purge`, { user }) as Promise<{ purged: number }>
-export type AuditFinding = { kind: 'space' | 'collector' | 'heartbeat' | 'gap' | 'mark' | 'forward'; branch?: string; detail: string; since?: string }
+export type AuditFinding = { kind: 'space' | 'collector' | 'heartbeat' | 'gap' | 'mark' | 'forward' | 'definer'; branch?: string; detail: string; since?: string }
 export const getAuditLog = () => req('GET', `${API}/api/audit-log`) as Promise<AuditLogReply>
 
 // Tables marked for the audit log (F6 step 2): their writes, and reads if
 // marked so, are logged by pgAudit.
 export type AuditMark = { schema: string; name: string; writes: boolean; reads: boolean }
-export type AuditMarks = { audit_on: boolean; tables: AuditMark[] }
+// definers: SECURITY DEFINER functions naming marked tables, whose statements
+// pgAudit does not see (step 6).
+export type DefinerFunc = { function: string; owner: string; tables: string[] }
+export type AuditMarks = { audit_on: boolean; tables: AuditMark[]; definers?: DefinerFunc[] | null; marked?: string[] | null; personal_unmarked?: string[] | null }
 const markPath = (branch: string, schema: string, table: string) =>
   `${API}/api/branches/${branch}/audit/tables/${encodeURIComponent(schema)}/${encodeURIComponent(table)}`
 export const getAuditMarks = (branch: string) => req('GET', `${API}/api/branches/${branch}/audit/tables`) as Promise<AuditMarks>
@@ -917,6 +926,12 @@ export const markAudited = (branch: string, schema: string, table: string, reads
   req('PUT', markPath(branch, schema, table), { reads }) as Promise<AuditMarks>
 export const unmarkAudited = (branch: string, schema: string, table: string) =>
   req('DELETE', markPath(branch, schema, table)) as Promise<AuditMarks>
+// Tables with confirmed personal data whose writes are not audited (the
+// branch's owner or an admin), and marking them all (Enterprise).
+export const getUnauditedPersonal = (branch: string) =>
+  req('GET', `${API}/api/branches/${branch}/personal-data/unaudited`) as Promise<{ tables: string[]; audit_on: boolean }>
+export const markPersonalTables = (branch: string) =>
+  req('POST', `${API}/api/branches/${branch}/audit/tables/personal-data`) as Promise<AuditMarks>
 // The audit log's records (F6 step 3), newest first. Admins only.
 export type AuditFor = { state: string; issuer?: string; actor?: string }
 export type AuditEntry = {

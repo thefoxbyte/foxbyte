@@ -99,3 +99,39 @@ test('forwarding to a SIEM is refused over plain http, set after saying what goe
   await page.getByRole('dialog').getByRole('button', { name: 'Stop forwarding' }).click()
   await expect(fwd).toContainText('Not forwarded.', { timeout: 30_000 })
 })
+
+// Step 6: a SECURITY DEFINER function naming a marked table is named on the
+// Audit log page, because pgAudit does not see the statements inside it.
+// Integration §11ae shows a write through one missing from the log.
+test('a SECURITY DEFINER function naming a marked table is named as not audited', async ({ page }) => {
+  const branch = process.env.FOX_E2E_BRANCH ?? 'e2eui'
+  await signIn(page)
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption(branch)
+  const t = `e2e_def_${Date.now().toString().slice(-6)}`
+  // One statement a run: the Blackbox keeps a run's whole text with each of
+  // its changes, and the change-request test replays this branch's entries.
+  await page.locator('textarea.editor').fill(`CREATE TABLE ${t} (id int PRIMARY KEY)`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await page.locator('.obj-filter').fill(t)
+  await expect(page.locator('.obj-item', { hasText: t }).first()).toBeVisible({ timeout: 30_000 })
+  await page.locator('textarea.editor').fill(`CREATE FUNCTION ${t}_add(i int) RETURNS void LANGUAGE sql SECURITY DEFINER AS $$ INSERT INTO ${t} VALUES (i) $$`)
+  await page.getByRole('button', { name: /^run/i }).click()
+  await page.locator('.obj-filter').fill(t)
+  // The table, not its function, whose name starts the same.
+  await page.locator('.obj-item').filter({ hasText: new RegExp(`${t}(\\s|$)`) }).first().click()
+  await page.getByRole('button', { name: 'Audit…' }).click()
+  await page.getByRole('dialog', { name: `Audit ${t}` }).getByRole('button', { name: 'Audit', exact: true }).click()
+  await expect(page.getByTestId('audit-mark')).toContainText('Audited: writes', { timeout: 30_000 })
+
+  await page.getByRole('link', { name: 'Audit log' }).click()
+  await page.getByLabel('Branch').selectOption(branch)
+  const definers = page.getByTestId('audit-definers')
+  await expect(definers).toContainText(`${t}_add(integer)`, { timeout: 30_000 })
+  await expect(definers).toContainText(`public.${t}`)
+  await expect(definers).toContainText('SECURITY INVOKER')
+  const row = page.getByRole('table', { name: `Marked tables on ${branch}` }).locator('tr', { hasText: `public.${t}` })
+  await row.getByRole('button', { name: 'Stop auditing' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Stop auditing' }).click()
+  await expect(page.getByTestId('audit-definers')).toHaveCount(0, { timeout: 30_000 })
+})

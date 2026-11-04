@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../api', async () => {
   const actual = await vi.importActual<typeof import('../api')>('../api')
-  return { ...actual, getAuditLog: vi.fn(), getAuditMarks: vi.fn(), getAuditRecords: vi.fn(), getBranches: vi.fn(), unmarkAudited: vi.fn(), setAuditMode: vi.fn(), setAuditRetention: vi.fn(), purgeAuditText: vi.fn(), setAuditForward: vi.fn(), stopAuditForward: vi.fn(), sendAuditForward: vi.fn() }
+  return { ...actual, getAuditLog: vi.fn(), getAuditMarks: vi.fn(), getAuditRecords: vi.fn(), getBranches: vi.fn(), unmarkAudited: vi.fn(), setAuditMode: vi.fn(), setAuditRetention: vi.fn(), purgeAuditText: vi.fn(), setAuditForward: vi.fn(), stopAuditForward: vi.fn(), sendAuditForward: vi.fn(), getUnauditedPersonal: vi.fn(), markPersonalTables: vi.fn(), getStatus: vi.fn() }
 })
 
-import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, purgeAuditText, sendAuditForward, setAuditForward, setAuditMode, setAuditRetention, stopAuditForward, unmarkAudited, type AuditForward, type AuditLogReply } from '../api'
+import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, getStatus, getUnauditedPersonal, markPersonalTables, purgeAuditText, sendAuditForward, setAuditForward, setAuditMode, setAuditRetention, stopAuditForward, unmarkAudited, type AuditForward, type AuditLogReply, type Status } from '../api'
 import { ConfirmProvider } from '../confirm'
 import AuditLog from './AuditLog'
 
@@ -21,6 +21,8 @@ describe('Audit log page', () => {
     vi.mocked(getAuditLog).mockReset()
     vi.mocked(getBranches).mockReset().mockResolvedValue([])
     vi.mocked(getAuditMarks).mockReset().mockResolvedValue({ audit_on: false, tables: [] })
+    vi.mocked(getUnauditedPersonal).mockReset().mockResolvedValue({ tables: [], audit_on: false })
+    vi.mocked(getStatus).mockReset().mockResolvedValue({ edition: 'enterprise', features: ['personal-data', 'anchors'] } as unknown as Status)
   })
   afterEach(cleanup)
 
@@ -221,5 +223,50 @@ describe('Audit log page', () => {
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop forwarding' }))
     await waitFor(() => expect(stopAuditForward).toHaveBeenCalled())
     expect(await screen.findByText('Forwarding stopped.')).toBeTruthy()
+  })
+
+  it('says how far the chain is anchored, or that anchoring is Enterprise', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default',
+      anchors: { anchors: 3, anchored: 120, unanchored: 4, writes: true, locked: 3 } })
+    page()
+    expect((await screen.findByTestId('audit-anchors')).textContent).toBe('3, up to record 120 (4 since); 3 locked in the anchor target')
+    cleanup()
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default',
+      anchors: { anchors: 0, anchored: 0, unanchored: 9, writes: false, locked: 0 } })
+    page()
+    expect((await screen.findByTestId('audit-anchors')).textContent).toContain('part of Enterprise')
+  })
+
+  it('names the definer functions whose statements are not audited', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default' })
+    vi.mocked(getAuditMarks).mockResolvedValue({ audit_on: true, tables: [{ schema: 'public', name: 'orders', writes: true, reads: false }],
+      definers: [{ function: 'public.pay(integer)', owner: 'app_owner', tables: ['public.orders'] }] })
+    page()
+    const d = await screen.findByTestId('audit-definers')
+    expect(d.textContent).toContain('public.pay(integer), as app_owner: public.orders')
+    expect(d.textContent).toContain('SECURITY INVOKER')
+  })
+
+  it('names the tables with confirmed personal data whose writes are not audited, and marks them', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default' })
+    vi.mocked(getUnauditedPersonal).mockResolvedValue({ tables: ['public.customers', 'crm.leads'], audit_on: true })
+    vi.mocked(markPersonalTables).mockResolvedValue({ audit_on: true, marked: ['crm.leads', 'public.customers'], personal_unmarked: [],
+      tables: [{ schema: 'crm', name: 'leads', writes: true, reads: false }, { schema: 'public', name: 'customers', writes: true, reads: false }] })
+    page()
+    const p = await screen.findByTestId('personal-unmarked')
+    expect(p.textContent).toContain('public.customers')
+    fireEvent.click(within(p).getByRole('button', { name: 'Audit tables with personal data' }))
+    await waitFor(() => expect(screen.getByTestId('personal-unmarked').textContent).toContain('Marked: crm.leads, public.customers.'))
+    expect(markPersonalTables).toHaveBeenCalledWith('main')
+    expect(screen.getByRole('table', { name: 'Marked tables on main' }).textContent).toContain('crm.leads')
+  })
+
+  it('without the licence, names them and says marking them together is Enterprise', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default' })
+    vi.mocked(getStatus).mockResolvedValue({ edition: 'standard', features: [] } as unknown as Status)
+    vi.mocked(getUnauditedPersonal).mockResolvedValue({ tables: ['public.customers'], audit_on: true })
+    page()
+    await waitFor(() => expect(screen.getByTestId('personal-unmarked').textContent).toContain('part of Enterprise'))
+    expect(screen.queryByRole('button', { name: 'Audit tables with personal data' })).toBeNull()
   })
 })

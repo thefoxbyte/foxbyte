@@ -663,6 +663,7 @@ func auditFindingLine(f branch.AuditFinding) checkLine {
 		"gap":       "raise " + brand.EnvName("AUDIT_QUOTA") + "; " + brand.CLI + " audit-log show --branch " + f.Branch,
 		"mark":      brand.CLI + " audit-log tables --branch " + f.Branch + "; mark it again, and ask who took it off (" + brand.CLI + " blackbox " + f.Branch + ")",
 		"forward":   brand.CLI + " audit-log forward; then " + brand.CLI + " audit-log forward --now",
+		"definer":   "if it need not run as its owner: ALTER FUNCTION … SECURITY INVOKER (its statements are then audited); " + brand.CLI + " audit-log status lists them",
 	}[f.Kind]
 	return warn("audit "+f.Kind, where+f.Detail, fix)
 }

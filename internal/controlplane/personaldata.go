@@ -23,6 +23,8 @@ import (
 //	GET  /api/branches/{name}/personal-data/findings/{id}/samples   masked samples, ?n=5, read as the caller's own role (Enterprise)
 //	GET  /api/branches/{name}/personal-data/unclassified            what appeared since the first scan, not yet reviewed
 //	POST /api/branches/{name}/personal-data/columns/{id}/accept     a new column or path holds nothing to classify, {"note"} (Enterprise)
+//	GET  /api/branches/{name}/personal-data/unaudited               tables with confirmed personal data whose writes the
+//	                                                                audit log does not record (F6 step 6)
 //
 // All need Manage (needFor): a list of where personal data sits is itself
 // sensitive. Reading is free in every edition; scanning, deciding and reading
@@ -148,6 +150,9 @@ func registerPersonalDataReview(mux *http.ServeMux) {
 		}
 		if secLog != nil {
 			secLog.Audit(auth.EvPersonalDataMarked, u.Email, name, remoteIP(r), d.Finding.MarkSummary())
+			if d.AuditMarked != "" {
+				secLog.Audit(auth.EvAuditMarked, u.Email, name, remoteIP(r), "auditing writes of "+d.AuditMarked)
+			}
 		}
 		writeJSON(w, 200, d)
 	})
@@ -182,6 +187,22 @@ func registerPersonalDataReview(mux *http.ServeMux) {
 
 // registerPersonalDataInventory mounts keeping it current (point 4.7).
 func registerPersonalDataInventory(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/branches/{name}/personal-data/unaudited", func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if _, err := branch.EnsureRunning(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		tables, err := branch.PersonalTablesUnmarked(name)
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		if tables == nil {
+			tables = []string{}
+		}
+		writeJSON(w, 200, map[string]any{"tables": tables, "audit_on": branch.AuditOn()})
+	})
 	mux.HandleFunc("GET /api/branches/{name}/personal-data/unclassified", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
 		if _, err := branch.EnsureRunning(name); err != nil {

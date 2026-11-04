@@ -23,6 +23,7 @@ export function PIIReview({ branch, finding, label, canDecide, onDecided, onClos
   const [samplesErr, setSamplesErr] = useState('')
   const [history, setHistory] = useState<PIIDecision[]>([])
   const [note, setNote] = useState(finding.note ?? '')
+  const [auditNote, setAuditNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
 
@@ -43,6 +44,11 @@ export function PIIReview({ branch, finding, label, canDecide, onDecided, onClos
     try {
       const d = await markFinding(branch, finding.id, state, note.trim())
       setHistory(d.decisions ?? [])
+      setAuditNote(d.auditMarked
+        ? `${d.auditMarked} now has its writes audited, by every login: it holds confirmed personal data.`
+        : d.auditMarkError
+          ? `Its table could not be marked for the audit log (${d.auditMarkError}). The Audit log page can mark it later.`
+          : '')
       onDecided(d.finding)
     } catch (e) {
       setErr((e as Error).message)
@@ -93,6 +99,7 @@ export function PIIReview({ branch, finding, label, canDecide, onDecided, onClos
           </>
         )}
         {err && <div className="err" style={{ marginTop: 10 }}>{err}</div>}
+        {auditNote && <p className="muted" style={{ marginTop: 10, fontSize: 13 }} data-testid="pii-audit-mark">{auditNote}</p>}
 
         {history.length > 0 && (
           <>
