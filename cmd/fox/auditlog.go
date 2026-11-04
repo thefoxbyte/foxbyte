@@ -16,6 +16,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 // `fox audit-log …` — pgAudit's log of who did what to the data (F6,
@@ -40,6 +41,8 @@ func auditLogCmd(args []string) error {
 		return auditLogShow(args[1:])
 	case "verify":
 		return auditLogVerify()
+	case "anchor":
+		return auditLogAnchor()
 	case "collect":
 		res, err := branch.CollectAudit()
 		if err != nil {
@@ -81,7 +84,8 @@ func auditLogUsage() string {
 %[1]s audit-log off [--yes]   turn it off (restarts main)
 %[1]s audit-log show [--branch b] [--table t] [--user u] [--since 1h|2026-11-04] [--limit n] [--errors] [--text] [--json]
                                                   the newest records: who did what to which object, how it ended, whom for
-%[1]s audit-log verify                                check the records' hash chain
+%[1]s audit-log verify                                check the records' hash chain, and its anchors
+%[1]s audit-log anchor                                anchor the chain's head now (Enterprise; the engine does every 10 minutes)
 %[1]s audit-log heartbeat                             make every audited database write its heartbeat line now
 %[1]s audit-log mode [default | forensic --reason "…"] [--branch b] [--yes]
                                                   forensic: statement text, values and all, kept 30 days by default
@@ -92,7 +96,8 @@ func auditLogUsage() string {
 %[1]s audit-log forward --now | --off [--yes]        send what is waiting now; stop forwarding
 %[1]s audit-log tables [--branch b]                  the tables whose writes (and reads) are audited
 %[1]s audit-log table <table> [--reads] [--branch b]  audit a table's writes, and with --reads its reads
-%[1]s audit-log table <table> --off [--branch b]      stop auditing it`, brand.CLI)
+%[1]s audit-log table <table> --off [--branch b]      stop auditing it
+%[1]s audit-log table --personal-data [--branch b]   audit the writes of every table with confirmed personal data (Enterprise)`, brand.CLI)
 }
 
 func auditLogStatus() error {
@@ -117,7 +122,11 @@ func auditLogStatus() error {
 	if marks, err := branch.AuditMarks("main"); err == nil {
 		fmt.Printf("  marked   %d table(s) on main (`%s audit-log tables`)\n", len(marks), brand.CLI)
 	}
+	if tables, err := branch.PersonalTablesUnmarked("main"); err == nil && len(tables) > 0 {
+		fmt.Printf("  personal %d table(s) on main hold confirmed personal data and are not marked: %s\n", len(tables), strings.Join(tables, ", "))
+	}
 	fmt.Printf("  records  kept %d days; `%s audit-log show` reads them\n", branch.AuditRetentionDays(), brand.CLI)
+	fmt.Printf("  anchors  %s\n", anchorLine())
 	for _, l := range forensicLines() {
 		fmt.Printf("  forensic %s\n", l)
 	}
@@ -286,6 +295,7 @@ func auditLogTables(args []string) error {
 	if len(marks) == 0 {
 		fmt.Printf("No table on %s is marked. Schema and role changes are audited all the same.\n"+
 			"Mark one with: %s audit-log table <table> [--reads] --branch %s\n", b, brand.CLI, b)
+		personalNote(b)
 		return offNote()
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -294,7 +304,28 @@ func auditLogTables(args []string) error {
 		fmt.Fprintf(w, "%s.%s\t%s\n", m.Schema, m.Name, branch.MarkWhat(m))
 	}
 	w.Flush()
+	personalNote(b)
+	if fs, err := branch.DefinerFunctions(b); err == nil && len(fs) > 0 {
+		fmt.Printf("\nNot audited: these SECURITY DEFINER functions name marked tables, and pgAudit does not\n" +
+			"see the statements inside a definer function. Made SECURITY INVOKER, they are audited.\n")
+		for _, f := range fs {
+			fmt.Printf("  %s, as %s: %s\n", f.Function, f.Owner, strings.Join(f.Tables, ", "))
+		}
+	}
 	return offNote()
+}
+
+// personalNote names the tables holding confirmed personal data whose writes
+// are not audited (step 6).
+func personalNote(b string) {
+	tables, err := branch.PersonalTablesUnmarked(b)
+	if err != nil || len(tables) == 0 {
+		return
+	}
+	fmt.Printf("\nConfirmed personal data, writes not audited: %s\n", strings.Join(tables, ", "))
+	if edition.Has(edition.PersonalData) {
+		fmt.Printf("Mark them all with: %s audit-log table --personal-data --branch %s\n", brand.CLI, b)
+	}
 }
 
 // offNote says that marks wait for audit to be on, which they do.
@@ -310,6 +341,9 @@ func auditLogTable(args []string) error {
 	b := optValue(args, "--branch")
 	if b == "" {
 		b = "main"
+	}
+	if hasFlag(args, "--personal-data") {
+		return auditLogPersonalTables(b)
 	}
 	ps := positionals(args, "--branch")
 	if len(ps) != 1 {
@@ -337,6 +371,26 @@ func auditLogTable(args []string) error {
 	fmt.Printf("%s.%s on %s: its %s are audited, by every login.\n", schema, table, b, what)
 	if reads {
 		fmt.Printf("Every read is a line in the log: on a busy table that costs more than writes do.\n")
+	}
+	return offNote()
+}
+
+// personalTables marks every table holding confirmed personal data whose
+// writes are not audited (Enterprise): confirming a finding marks its table,
+// and this marks those confirmed before that existed.
+func auditLogPersonalTables(b string) error {
+	requireFeature(edition.PersonalData)
+	me := cliActor()
+	marked, err := branch.MarkPersonalDataTables(b, me)
+	for _, t := range marked {
+		recordMark(me, b, "auditing writes of "+t)
+		fmt.Printf("%s on %s: its writes are audited, by every login.\n", t, b)
+	}
+	if err != nil {
+		return err
+	}
+	if len(marked) == 0 {
+		fmt.Printf("Every table on %s with confirmed personal data already has its writes audited.\n", b)
 	}
 	return offNote()
 }
@@ -510,14 +564,61 @@ func auditLogVerify() error {
 	}
 	if rep.Intact {
 		fmt.Printf("audit log intact: %d record(s), from record %d, each naming the one before it.\n", rep.Records, rep.First)
+		if rep.Anchors > 0 {
+			fmt.Printf("anchored: %d anchor(s), up to record %d, each matching the store.\n", rep.Anchors, rep.Anchored)
+		}
+		for _, n := range rep.Notes {
+			fmt.Println("  note:", n)
+		}
 		return nil
 	}
 	fmt.Printf("audit log TAMPERED: %d record(s)\n", rep.Records)
 	for _, p := range rep.Problems {
 		fmt.Println("  problem:", p)
 	}
+	for _, n := range rep.Notes {
+		fmt.Println("  note:", n)
+	}
 	os.Exit(1)
 	return nil
+}
+
+// anchor writes an anchor for the records collected since the last, after
+// collecting what is new.
+func auditLogAnchor() error {
+	requireFeature(edition.Anchors)
+	if _, err := branch.CollectAudit(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: collecting what is new failed: %v\n", err)
+	}
+	a, err := branch.CheckpointAuditLog()
+	if err != nil {
+		return err
+	}
+	if a == nil {
+		fmt.Println("audit log: nothing new to anchor")
+		return nil
+	}
+	fmt.Printf("audit log anchored: records %d–%d, signed by key %s\n", a.FromID, a.ToID, a.KeyID)
+	return nil
+}
+
+// anchorLine is where anchoring has got, for the status.
+func anchorLine() string {
+	a := branch.AuditAnchors()
+	switch {
+	case a.Anchors == 0 && !a.Writes:
+		return fmt.Sprintf("none: anchoring the chain outside the store is %s Enterprise", brand.Product)
+	case a.Anchors == 0:
+		return "none yet: the first comes within 10 minutes of the first record"
+	}
+	s := fmt.Sprintf("%d, up to record %d (%d since)", a.Anchors, a.Anchored, a.Unanchored)
+	if a.Locked > 0 {
+		s += fmt.Sprintf("; %d locked in the anchor target", a.Locked)
+	}
+	if !a.Writes {
+		s += "; no more are written in this edition"
+	}
+	return s
 }
 
 // forensicLines says where forensic mode is on, by whom, why and since when.

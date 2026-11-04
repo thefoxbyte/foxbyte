@@ -321,6 +321,15 @@ func StartCheckpointer() {
 				})
 				continue
 			}
+			// The audit log's chain (F6 step 6), on the same schedule.
+			if time.Since(last[auditAnchorDirName]) >= interval {
+				last[auditAnchorDirName] = time.Now()
+				if a, err := CheckpointAuditLog(); err != nil {
+					log.Printf("audit log checkpoint: %v", err)
+				} else if a != nil {
+					log.Printf("audit log checkpoint: records %d–%d", a.FromID, a.ToID)
+				}
+			}
 			names, err := RunningBranches()
 			if err != nil {
 				continue

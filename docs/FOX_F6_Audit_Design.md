@@ -984,3 +984,88 @@ receives no more than the store holds.
   directory where the dataset would be mounted.
 - **Not in this step:** client certificates for syslog (mutual TLS), and
   several destinations at once.
+
+---
+
+## 26. Gate 1, step 6a: anchors, automatic marks and SECURITY DEFINER, as built
+
+Step 6 is two PRs, as step 5 was. This one is anchors, automatic marks and
+the SECURITY DEFINER decision. The evidence export (6b) reports all three, so
+it comes after.
+
+### Anchors (Enterprise)
+
+The chain shows a record changed, or one taken from the middle. It cannot
+show the newest records taken away with `state.json` edited to match, or the
+whole store rewritten with every hash recomputed. Whoever can write the store
+can do both.
+
+- **An anchor is the chain's head at one moment.** It holds the last record's
+  number and hash, and follows the anchor before it.
+  - It is signed with the install's anchor key, as the Blackbox's and the
+    security log's anchors are.
+  - It is written read-only to `anchors/_audit-log/`, beside theirs.
+  - It is copied with them to the backup bucket, and to the anchor target
+    under Object Lock when one is set.
+- **The engine anchors every 10 minutes** (`FOX_CHECKPOINT_INTERVAL`), on the
+  checkpointer that anchors the branches. `fox audit-log anchor` anchors now.
+- **It refuses to anchor what does not verify:** an anchor over a broken
+  chain would bless it.
+  - The first anchor checks the whole store.
+  - Later ones check the record the last anchor holds is unchanged, and the
+    records since chain from it. A year of records is not read every ten
+    minutes.
+- **`verify` checks the store against every anchor:**
+  - each follows the one before;
+  - the record each holds is there and unchanged;
+  - none holds a record past the store's end;
+  - an anchor copied off the machine is still here;
+  - the signatures hold.
+  An anchor whose record retention removed is noted, not failed.
+- **Writing anchors is Enterprise; checking them is free,** as for the
+  Blackbox. An install that anchored before changing edition still verifies.
+  `status` and the console say how far anchoring has got.
+
+### Automatic marks (Enterprise)
+
+Section 8 said a confirmed personal-data mark (point 4.6) grants the audit
+role automatically. Now it does.
+
+- **Confirming a finding marks its table's writes,** if they are not audited
+  already. This holds in the CLI and the console, and the decision says so.
+  The mark is recorded in the security log like any other, so taking it off
+  outside FoxByte is a finding (step 4).
+- **It only adds.** Reads are left as they were. Rejecting or reopening a
+  finding takes nothing off, because a mark that disappears on its own is a
+  gap nobody chose. `fox audit-log table <t> --off` takes it off, on the
+  record.
+- **Tables confirmed before this, or unmarked since,** are named:
+  - by `fox audit-log tables` and `status` (main), in every edition;
+  - by `GET …/personal-data/unaudited`, for the branch's owner or an admin,
+    as where personal data sits is.
+  `fox audit-log table --personal-data` (Enterprise), or the console's
+  button, marks them all.
+- **The licence:** this uses the personal-data feature, and anchors the
+  anchors feature. No licence gains a new name.
+
+### SECURITY DEFINER: said, not refused
+
+Section 19 found that pgAudit does not see the statements inside a SECURITY
+DEFINER function. It gave three options: log such functions' calls, refuse
+to mark tables they write, or state it. This is the third, which costs
+nothing and is honest either way. The other two can still come.
+
+- **Each definer function whose body names a marked table** is a finding
+  (`definer`):
+  - in `fox check`, as a warning with the fix;
+  - in `status` and the console, beside the marked tables;
+  - with whom it runs as, and which tables.
+- **Function sources are matched by word**, so the check can say too much (a
+  comment, a column of the same name) or too little (a name built for
+  EXECUTE). It says which function, so a person can look.
+- **Left out:** functions in the Blackbox's own schemas (`bb`, and F1's
+  `bb_f1`), and functions an extension installed.
+- **The fix it names:** if the function need not run as its owner, make it
+  `SECURITY INVOKER`, whose statements are audited. The suite shows both
+  cases: a write through the definer function is not in the log, and once
+  the function is made invoker, the same write is.

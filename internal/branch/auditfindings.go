@@ -26,10 +26,12 @@ import (
 //     outside it (a table's owner can; step 2)
 //   - forward: records not reaching the SIEM for five minutes, or removed by
 //     retention before they reached it (step 5b)
+//   - definer: a SECURITY DEFINER function naming a marked table, whose
+//     statements pgAudit does not see (step 6; auditdefiner.go)
 
 // AuditFinding is one thing wrong.
 type AuditFinding struct {
-	Kind   string `json:"kind"` // space, collector, heartbeat, gap, mark, forward
+	Kind   string `json:"kind"` // space, collector, heartbeat, gap, mark, forward, definer
 	Branch string `json:"branch,omitempty"`
 	Detail string `json:"detail"`
 	Since  string `json:"since,omitempty"` // RFC 3339
@@ -158,6 +160,7 @@ type findingsInput struct {
 	Exists   map[string]map[string]bool // running branches' expected tables that still exist
 	Forward  *AuditForward              // nil when not forwarding
 	FState   forwardState
+	Definers map[string][]DefinerFunc // running branches' definer functions that name marked tables
 }
 
 func findingsFrom(in findingsInput) []AuditFinding {
@@ -209,6 +212,18 @@ func findingsFrom(in findingsInput) []AuditFinding {
 			g.Missing, who, g.Statement, g.Statement+g.Missing-1)})
 	}
 	out = append(out, forwardFindings(in)...)
+	if in.AuditOn {
+		names := make([]string, 0, len(in.Definers))
+		for b := range in.Definers {
+			names = append(names, b)
+		}
+		sort.Strings(names)
+		for _, b := range names {
+			for _, f := range in.Definers[b] {
+				out = append(out, definerFinding(b, f))
+			}
+		}
+	}
 	branches := make([]string, 0, len(in.Expected))
 	for b := range in.Expected {
 		branches = append(branches, b)
@@ -284,7 +299,7 @@ func forwardFindings(in findingsInput) []AuditFinding {
 // this package's).
 func AuditFindings(events []MarkEvent) []AuditFinding {
 	in := findingsInput{Now: time.Now(), AuditOn: AuditOn(), Expected: expectedMarks(events),
-		Marks: map[string][]AuditMark{}, Exists: map[string]map[string]bool{}}
+		Marks: map[string][]AuditMark{}, Exists: map[string]map[string]bool{}, Definers: map[string][]DefinerFunc{}}
 	in.State, _ = loadAuditState()
 	in.Space, in.SpaceErr = AuditUsage()
 	if in.Forward = LoadAuditSettings().Forward; in.Forward != nil {
@@ -297,6 +312,11 @@ func AuditFindings(events []MarkEvent) []AuditFinding {
 				r.Started, _ = time.Parse(time.RFC3339Nano, strings.TrimSpace(out))
 			}
 			in.Running = append(in.Running, r)
+			if in.AuditOn {
+				if fs, err := DefinerFunctions(n); err == nil && len(fs) > 0 {
+					in.Definers[n] = fs
+				}
+			}
 			if want, wanted := in.Expected[n]; wanted && len(want) > 0 {
 				m, err1 := AuditMarks(n)
 				ex, err2 := existingTables(n, want)

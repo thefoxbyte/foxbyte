@@ -16,6 +16,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 // The databases' audit log (F6) over HTTP: the console's Audit log page.
@@ -46,6 +47,8 @@ type auditLogReply struct {
 	// Where records are forwarded and how far delivery has got (step 5b);
 	// null when they are not. Never the token.
 	Forward *branch.ForwardStatus `json:"forward"`
+	// How far the chain is anchored outside the store (step 6).
+	Anchors branch.AuditAnchorStatus `json:"anchors"`
 }
 
 type auditRetention struct {
@@ -175,6 +178,7 @@ var auditLogState = func(store *auth.Store) auditLogReply {
 	rep.Forensic = branch.LoadAuditSettings().Forensic
 	rep.Retention = auditRetention{Days: branch.AuditRetentionDays(), ForensicDays: branch.ForensicRetentionDays()}
 	rep.Forward = branch.AuditForwardStatus()
+	rep.Anchors = branch.AuditAnchors()
 	rep.Findings = []branch.AuditFinding{}
 	if rep.On {
 		if f := branch.AuditFindings(branch.MarkEventsFrom(store)); f != nil {
@@ -190,6 +194,8 @@ var auditLogState = func(store *auth.Store) auditLogReply {
 //	GET    /api/branches/{name}/audit/tables                   the marked tables (Use)
 //	PUT    /api/branches/{name}/audit/tables/{schema}/{table}  mark one: {"reads": bool} (Manage)
 //	DELETE /api/branches/{name}/audit/tables/{schema}/{table}  stop auditing it (Manage)
+//	POST   /api/branches/{name}/audit/tables/personal-data     mark every table with confirmed
+//	                                                          personal data (Manage; Enterprise, step 6)
 //
 // Each change is in the security log, and in the Blackbox under the person who
 // asked, as the grant it is.
@@ -197,6 +203,27 @@ var auditLogState = func(store *auth.Store) auditLogReply {
 type auditMarksReply struct {
 	AuditOn bool               `json:"audit_on"`
 	Tables  []branch.AuditMark `json:"tables"`
+	// Step 6: the SECURITY DEFINER functions naming marked tables, whose
+	// statements pgAudit does not see; and, for POST …/personal-data only
+	// (Manage, as where personal data sits is), the tables holding confirmed
+	// personal data whose writes are still not audited.
+	Definers         []branch.DefinerFunc `json:"definers"`
+	PersonalUnmarked []string             `json:"personal_unmarked,omitempty"`
+	// What the last request marked, for POST …/personal-data.
+	Marked []string `json:"marked,omitempty"`
+}
+
+// marksReply reads a branch's marks, and what step 6 says beside them.
+func marksReply(name string) (auditMarksReply, error) {
+	marks, err := branch.AuditMarks(name)
+	if err != nil {
+		return auditMarksReply{}, err
+	}
+	rep := auditMarksReply{AuditOn: branch.AuditOn(), Tables: marks, Definers: []branch.DefinerFunc{}}
+	if d, err := branch.DefinerFunctions(name); err == nil && d != nil {
+		rep.Definers = d
+	}
+	return rep, nil
 }
 
 func registerAuditMarks(mux *http.ServeMux) {
@@ -206,12 +233,41 @@ func registerAuditMarks(mux *http.ServeMux) {
 			writeErr(w, 404, err)
 			return
 		}
-		marks, err := branch.AuditMarks(name)
+		rep, err := marksReply(name)
 		if err != nil {
 			writeErr(w, 500, err)
 			return
 		}
-		writeJSON(w, 200, auditMarksReply{AuditOn: branch.AuditOn(), Tables: marks})
+		writeJSON(w, 200, rep)
+	})
+	mux.HandleFunc("POST /api/branches/{name}/audit/tables/personal-data", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.PersonalData) {
+			return
+		}
+		u, _ := auth.UserFrom(r.Context())
+		name := r.PathValue("name")
+		if _, err := branch.EnsureRunning(name); err != nil {
+			writeErr(w, 404, err)
+			return
+		}
+		marked, err := branch.MarkPersonalDataTables(name, u.Email)
+		for _, t := range marked {
+			if secLog != nil {
+				secLog.Audit(auth.EvAuditMarked, u.Email, name, remoteIP(r), "auditing writes of "+t)
+			}
+		}
+		if err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		rep, err := marksReply(name)
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		rep.Marked = marked
+		rep.PersonalUnmarked, _ = branch.PersonalTablesUnmarked(name)
+		writeJSON(w, 200, rep)
 	})
 	mux.HandleFunc("PUT /api/branches/{name}/audit/tables/{schema}/{table}", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -253,12 +309,12 @@ func markChange(w http.ResponseWriter, r *http.Request, what string, change func
 	if secLog != nil {
 		secLog.Audit(auth.EvAuditMarked, u.Email, name, remoteIP(r), what)
 	}
-	marks, err := branch.AuditMarks(name)
+	rep, err := marksReply(name)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, auditMarksReply{AuditOn: branch.AuditOn(), Tables: marks})
+	writeJSON(w, 200, rep)
 }
 
 // Forensic mode, retention and purge (F6 Gate 1, step 5a), admins only, each

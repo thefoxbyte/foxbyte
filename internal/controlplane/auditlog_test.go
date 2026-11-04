@@ -12,6 +12,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
+	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
 func TestAuditLogRoute(t *testing.T) {
@@ -50,6 +51,10 @@ func TestAuditMarkRoutesNeed(t *testing.T) {
 		{"PUT", "audit/tables/public/orders", access.Manage},
 		{"DELETE", "audit/tables/public/orders", access.Manage},
 		{"POST", "audit/anything", access.Manage},
+		// Step 6: marking every table with confirmed personal data changes
+		// marks, and which tables hold it is the owner's to read.
+		{"POST", "audit/tables/personal-data", access.Manage},
+		{"GET", "personal-data/unaudited", access.Manage},
 	} {
 		if got := needFor(c.method, c.tail); got != c.want {
 			t.Errorf("%s %s: %v, want %v", c.method, c.tail, got, c.want)
@@ -140,5 +145,22 @@ func TestAuditSettingsRoutes(t *testing.T) {
 		if msg, _ := out["error"].(string); code != 400 || !strings.Contains(msg, c.want) {
 			t.Errorf("%s %s %s: %d %v", c.method, c.path, c.body, code, out)
 		}
+	}
+}
+
+// Marking every table with confirmed personal data is Enterprise, and says
+// so before it touches the branch.
+func TestAuditPersonalTablesRouteIsEnterprise(t *testing.T) {
+	if edition.Enterprise {
+		t.Skip("the Standard edition's refusal")
+	}
+	s, admin, _, _ := withACL(t)
+	mux := http.NewServeMux()
+	registerAuditMarks(mux)
+	h := s.Authn(mux)
+	ka, _, _ := s.CreateAPIKey(admin.ID, "t")
+	code, out := serve(t, h, ka, "POST", "/api/branches/main/audit/tables/personal-data", "")
+	if msg, _ := out["error"].(string); code != 403 || !strings.Contains(msg, "Enterprise") {
+		t.Fatalf("%d %v", code, out)
 	}
 }
