@@ -185,7 +185,9 @@ export default function Requests() {
                           <span className="muted">{e.object}</span>
                           {e.risk && <span className="lg-risk"> · {e.risk}</span>}
                         </td>
-                        <td><pre className="lg-statement" style={{ maxHeight: 140 }}>{e.sql}</pre></td>
+                        <td>{e.same_run
+                          ? <span className="muted" data-testid={`same-run-${e.id}`}>Made by the same run as #{e.same_run}, above: it runs once, there.</span>
+                          : <pre className="lg-statement" style={{ maxHeight: 140 }}>{e.sql}</pre>}</td>
                       </tr>
                     ))}
                   </tbody>

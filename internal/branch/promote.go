@@ -42,6 +42,33 @@ type RequestEntry struct {
 	Object     string `json:"object"`  //
 	Statement  string `json:"sql"`     //
 	Risk       string `json:"risk,omitempty"`
+	// SameRun is the entry, earlier in the request, whose statement this one
+	// shares: one run of several statements (`CREATE TABLE …; CREATE
+	// FUNCTION …`) is one Blackbox entry per change, each holding the whole
+	// run's text, and the text runs once, at the first. 0 for an entry whose
+	// statement runs on its own.
+	SameRun int64 `json:"same_run,omitempty"`
+}
+
+// ReplayOnce marks each entry whose statement already runs with an earlier
+// one: the same text, recorded in the same transaction on the source (xids,
+// by entry id, from bb.ledger_ext). An entry without a recorded transaction is
+// never merged, so a branch without the capture table replays as before.
+func ReplayOnce(entries []RequestEntry, xids map[int64]int64) {
+	first := map[string]int64{}
+	for i := range entries {
+		e := &entries[i]
+		x, ok := xids[e.ID]
+		if !ok || x == 0 {
+			continue
+		}
+		k := fmt.Sprintf("%d|%s", x, strings.TrimSpace(e.Statement))
+		if f, ok := first[k]; ok {
+			e.SameRun = f
+		} else {
+			first[k] = e.ID
+		}
+	}
 }
 
 // ErrNothingToPromote is returned when the source holds no applicable change.
@@ -104,6 +131,10 @@ func FormatRequest(c auth.ChangeRequest, entries []RequestEntry) string {
 	_ = w.Flush()
 	b.WriteString("\n")
 	for _, e := range entries {
+		if e.SameRun != 0 {
+			fmt.Fprintf(&b, "-- entry %d, by %s: made by the same run as entry %d, above\n\n", e.ID, e.Actor, e.SameRun)
+			continue
+		}
 		fmt.Fprintf(&b, "-- entry %d, by %s\n%s\n\n", e.ID, e.Actor, strings.TrimSpace(e.Statement))
 	}
 	return b.String()

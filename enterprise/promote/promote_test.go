@@ -5,6 +5,7 @@
 package promote
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
@@ -66,5 +67,27 @@ func TestBuildRequestChecksNames(t *testing.T) {
 	}
 	if _, _, err := build("dev", "../etc", nil); err == nil {
 		t.Error("a target that is not a branch name was accepted")
+	}
+}
+
+// One run of two statements is two entries, each holding the run's whole
+// text: the script runs it once, at the first, under its author.
+func TestApplyScriptRunsASharedStatementOnce(t *testing.T) {
+	run := "CREATE TABLE t (id int); CREATE FUNCTION t_add(i int) RETURNS void LANGUAGE sql AS $$ INSERT INTO t VALUES (i) $$"
+	entries := []branch.RequestEntry{
+		{ID: 171, Actor: "ada@example.com", CommandTag: "CREATE TABLE", Statement: run},
+		{ID: 172, Actor: "ada@example.com", CommandTag: "CREATE FUNCTION", Statement: run},
+		{ID: 173, Actor: "bob@example.com", CommandTag: "CREATE INDEX", Statement: "CREATE INDEX ON t (id)"},
+	}
+	branch.ReplayOnce(entries, map[int64]int64{171: 900, 172: 900, 173: 901})
+	s := applyScript(5, "carol@example.com", entries)
+	if n := strings.Count(s, "CREATE TABLE t (id int)"); n != 1 {
+		t.Fatalf("the shared run is in the script %d times:\n%s", n, s)
+	}
+	if !strings.Contains(s, "CREATE INDEX ON t (id);") || !strings.Contains(s, "SET LOCAL bb.actor = 'bob@example.com'") {
+		t.Fatalf("the entry of its own is missing:\n%s", s)
+	}
+	if strings.Index(s, "CREATE TABLE t") > strings.Index(s, "CREATE INDEX") {
+		t.Fatalf("out of order:\n%s", s)
 	}
 }

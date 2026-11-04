@@ -633,6 +633,9 @@ export const branchBeforeEntry = (source: string, entryId: number, name?: string
 export type RequestEntry = {
   id: number; at: string; actor: string; kind: string
   command: string; object: string; sql: string; risk?: string
+  // same_run: the earlier entry whose statement this one shares (one run of
+  // several statements); its text runs once, there.
+  same_run?: number
 }
 export type ChangeRequest = {
   id: number; source: string; target: string; created_by: string; created: string
