@@ -135,3 +135,23 @@ test('a SECURITY DEFINER function naming a marked table is named as not audited'
   await page.getByRole('dialog').getByRole('button', { name: 'Stop auditing' }).click()
   await expect(page.getByTestId('audit-definers')).toHaveCount(0, { timeout: 30_000 })
 })
+
+// Step 6b: the evidence export, downloaded from the page. Audit is off on this
+// install, so it says so; integration §11af reads a full one.
+test('the evidence export downloads from the Audit log page, and says what the log covers', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Audit log' }).click()
+  const ev = page.getByTestId('audit-evidence')
+  await ev.getByLabel('Evidence period').selectOption('30d')
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    ev.getByRole('link', { name: 'Download evidence' }).click(),
+  ])
+  expect(download.suggestedFilename()).toMatch(/^audit-evidence-\d{4}-\d{2}-\d{2}\.json$/)
+  const path = await download.path()
+  const doc = JSON.parse((await import('node:fs')).readFileSync(path!, 'utf8'))
+  expect(doc.format).toBe('audit-evidence/1')
+  expect(doc.coverage.on).toBe(false)
+  expect(doc.coverage.not_logged.join(' ')).toContain('SECURITY DEFINER')
+  expect(doc.records).toBeUndefined()
+})

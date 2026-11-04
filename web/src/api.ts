@@ -911,6 +911,14 @@ export const setAuditRetention = (days: number, forensic: boolean) =>
 export const purgeAuditText = (user: string) => req('POST', `${API}/api/audit-log/purge`, { user }) as Promise<{ purged: number }>
 export type AuditFinding = { kind: 'space' | 'collector' | 'heartbeat' | 'gap' | 'mark' | 'forward' | 'definer'; branch?: string; detail: string; since?: string }
 export const getAuditLog = () => req('GET', `${API}/api/audit-log`) as Promise<AuditLogReply>
+// The evidence export (F6 step 6b): a file to save, admins only, Enterprise.
+// since and until are days back (90d), a date, or RFC 3339.
+export const auditEvidenceUrl = (since: string, until: string, records: boolean) => {
+  const p = new URLSearchParams({ since })
+  if (until) p.set('until', until)
+  if (records) p.set('records', '1')
+  return `${API}/api/audit-log/evidence?${p}`
+}
 
 // Tables marked for the audit log (F6 step 2): their writes, and reads if
 // marked so, are logged by pgAudit.

@@ -585,8 +585,11 @@ func joinAudit(recs []AuditRecord, q AuditQuery) []AuditEntry {
 		if q.Table != "" && !tableMatches(r.Object, q.Table) {
 			continue
 		}
-		if !q.Since.IsZero() && r.Time < q.Since.UTC().Format(time.RFC3339Nano) {
-			continue
+		if !q.Since.IsZero() {
+			// Parsed: as text, "…01.5Z" sorts after "…01.55Z".
+			if at, err := time.Parse(time.RFC3339Nano, r.Time); err == nil && at.Before(q.Since) {
+				continue
+			}
 		}
 		e := AuditEntry{AuditRecord: r}
 		if t, ok := txn[key{r.Session, r.VXID}]; ok && r.Kind == "statement" {

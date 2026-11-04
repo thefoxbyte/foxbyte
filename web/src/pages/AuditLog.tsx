@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from 'react'
-import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, getUnauditedPersonal, markPersonalTables, purgeAuditText, sendAuditForward, setAuditForward, setAuditMode, setAuditRetention, stopAuditForward, unmarkAudited, type AuditAnchors, type AuditEntry, type AuditFor, type AuditLogReply, type AuditMarks, type Branch } from '../api'
+import { auditEvidenceUrl, getAuditLog, getAuditMarks, getAuditRecords, getBranches, getUnauditedPersonal, markPersonalTables, purgeAuditText, sendAuditForward, setAuditForward, setAuditMode, setAuditRetention, stopAuditForward, unmarkAudited, type AuditAnchors, type AuditEntry, type AuditFor, type AuditLogReply, type AuditMarks, type Branch } from '../api'
 import { useConfirm } from '../confirm'
-import { useFeatures } from '../features'
+import { BRAND } from '../brand'
+import { useFeatures, why } from '../features'
 
 // The databases' audit log (F6): pgAudit in default mode. It records who
 // changed the schema and roles, and who wrote to the tables an admin marks,
@@ -342,6 +343,39 @@ function PersonalTables({ branch, onMarked }: { branch: string; onMarked: (m: Au
   )
 }
 
+// Evidence: the document an auditor is handed for a period (step 6b): what was
+// audited and what was not, integrity and anchors, delivery, and who changed
+// any of it. A file to save; the engine records each one produced.
+function Evidence() {
+  const { can, edition } = useFeatures()
+  const [since, setSince] = useState('90d')
+  const [records, setRecords] = useState(false)
+  const licensed = can('export')
+  return (
+    <>
+      <h2 style={{ marginTop: 22 }}>Evidence</h2>
+      <p className="muted" style={{ fontSize: 13, marginTop: -4 }}>
+        One document for an auditor: what the log covered and what it did not, the chain and its anchors checked, delivery
+        to the SIEM, what was found wrong, and every change to the audit log in the period. With the records, the chain can
+        be checked without {BRAND.product}. Never a statement&rsquo;s text.
+      </p>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }} data-testid="audit-evidence">
+        <label className="field">Period
+          <select aria-label="Evidence period" value={since} onChange={e => setSince(e.target.value)}>
+            <option value="30d">the last 30 days</option>
+            <option value="90d">the last 90 days</option>
+            <option value="365d">the last year</option>
+          </select>
+        </label>
+        <label className="check-row"><input type="checkbox" checked={records} onChange={e => setRecords(e.target.checked)} /> With the records</label>
+        {licensed
+          ? <a className="btn primary" href={auditEvidenceUrl(since, '', records)} download>Download evidence</a>
+          : <span className="muted" style={{ fontSize: 13 }}>{why(edition, 'The evidence export')}</span>}
+      </div>
+    </>
+  )
+}
+
 export default function AuditLog() {
   const confirm = useConfirm()
   const [data, setData] = useState<AuditLogReply | null>(null)
@@ -427,6 +461,7 @@ export default function AuditLog() {
       {data && <Records branches={branches} />}
       {data && <Settings data={data} branches={branches} onChange={() => getAuditLog().then(setData, () => {})} />}
       {data && <Forwarding data={data} onChange={() => getAuditLog().then(setData, () => {})} />}
+      {data && <Evidence />}
 
       <h2 style={{ marginTop: 22 }}>Marked tables</h2>
       <p className="muted" style={{ fontSize: 13, marginTop: -4 }}>

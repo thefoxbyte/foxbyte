@@ -2121,6 +2121,28 @@ paths:
         "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/audit-log/evidence:
+    get:
+      tags: [audit-log]
+      summary: The audit log's evidence for a period, as a file to save (admins only; Enterprise).
+      description: >-
+        What the audit log covered and what it did not (section 12 of the F6 design, stated, never more), each
+        running branch's marks, the SECURITY DEFINER functions that escape them and the tables with confirmed
+        personal data not marked; the chain and its anchors, verified when produced; forwarding and what is found
+        wrong; the period's activity; and the security log's changes to the audit log in the period. With
+        records=1, the period's records too, with seq, prev and hash and never statement text, and the anchors
+        and their public key, so the chain can be checked without FoxByte. Each export is in the security log.
+      parameters:
+        - { name: since, in: query, schema: { type: string }, description: 'Days back (90d), a date (2026-08-01) or RFC 3339. Default 90 days back.' }
+        - { name: until, in: query, schema: { type: string }, description: 'The same forms. Default now.' }
+        - { name: records, in: query, schema: { type: string, enum: ["1", "true"] } }
+      responses:
+        "200":
+          description: The document (format audit-evidence/1), with Content-Disposition attachment.
+          content: { application/json: { schema: { type: object } } }
+        "400": { description: A since or until that does not parse, or a period that ends before it starts. }
+        "403": { description: Not an admin, or not licensed for Blackbox export and compliance bundles. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/audit-log/forward:
     put:
       tags: [audit-log]

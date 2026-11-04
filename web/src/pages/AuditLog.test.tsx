@@ -22,7 +22,7 @@ describe('Audit log page', () => {
     vi.mocked(getBranches).mockReset().mockResolvedValue([])
     vi.mocked(getAuditMarks).mockReset().mockResolvedValue({ audit_on: false, tables: [] })
     vi.mocked(getUnauditedPersonal).mockReset().mockResolvedValue({ tables: [], audit_on: false })
-    vi.mocked(getStatus).mockReset().mockResolvedValue({ edition: 'enterprise', features: ['personal-data', 'anchors'] } as unknown as Status)
+    vi.mocked(getStatus).mockReset().mockResolvedValue({ edition: 'enterprise', features: ['personal-data', 'anchors', 'export'] } as unknown as Status)
   })
   afterEach(cleanup)
 
@@ -268,5 +268,25 @@ describe('Audit log page', () => {
     page()
     await waitFor(() => expect(screen.getByTestId('personal-unmarked').textContent).toContain('part of Enterprise'))
     expect(screen.queryByRole('button', { name: 'Audit tables with personal data' })).toBeNull()
+  })
+
+  it('downloads the evidence for the chosen period, with the records when asked', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default' })
+    page()
+    const ev = await screen.findByTestId('audit-evidence')
+    const link = () => within(ev).getByRole('link', { name: 'Download evidence' }).getAttribute('href') ?? ''
+    expect(link()).toContain('/api/audit-log/evidence?since=90d')
+    expect(link()).not.toContain('records')
+    fireEvent.change(within(ev).getByLabelText('Evidence period'), { target: { value: '365d' } })
+    fireEvent.click(within(ev).getByLabelText('With the records'))
+    expect(link()).toContain('since=365d&records=1')
+  })
+
+  it('without the licence, says the evidence export is Enterprise', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default' })
+    vi.mocked(getStatus).mockResolvedValue({ edition: 'standard', features: [] } as unknown as Status)
+    page()
+    await waitFor(() => expect(screen.getByTestId('audit-evidence').textContent).toContain('The evidence export is part of Enterprise'))
+    expect(screen.queryByRole('link', { name: 'Download evidence' })).toBeNull()
   })
 })

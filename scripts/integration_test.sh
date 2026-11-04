@@ -3109,6 +3109,57 @@ $S audit-log off --yes >/dev/null 2>&1; main_up
 pg pg-main "SET bb.allow_destructive=on; DROP FUNCTION IF EXISTS aud7_pay(int); DROP TABLE IF EXISTS aud7_orders" >/dev/null
 rm -rf /tmp/aud7_cut.py /tmp/aud7_store.bak
 
+echo "### 11af. the evidence export (F6 Gate 1, step 6b)"
+# One document for an auditor: what the audit log covered and what it did
+# not, the chain and its anchors, delivery, activity and every change to it.
+# Never a statement's text or a value.
+pg pg-main "SET bb.allow_destructive=on; DROP FUNCTION IF EXISTS aud8_pay(int); DROP TABLE IF EXISTS aud8_orders;
+  CREATE TABLE aud8_orders (id int PRIMARY KEY, email text); GRANT ALL ON aud8_orders TO db_client;
+  CREATE FUNCTION aud8_pay(i int) RETURNS void LANGUAGE sql SECURITY DEFINER AS \$f\$ INSERT INTO aud8_orders VALUES (i, 'paid') \$f\$" >/dev/null
+$S audit-log table aud8_orders >/dev/null 2>&1
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+gw "$KEY" "INSERT INTO aud8_orders VALUES (1, 'kavya.f6@example.in')" >/dev/null; sleep 1.5
+$S audit-log anchor >/dev/null 2>&1
+EVID="$($S audit-log evidence --since 1d 2>/dev/null)"
+ej() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)" <<<"$EVID"; }
+assert_eq "evidence: its format and period, and coverage as the design states it, never more" \
+  "$(ej 'd["format"]')|$(ej 'd["coverage"]["on"]')|$(ej 'any("SECURITY DEFINER" in s for s in d["coverage"]["not_logged"]) and any("superuser" in s for s in d["coverage"]["not_logged"])')|$(ej 'len(d["limits"]) >= 3')" \
+  "audit-evidence/1|True|True|True"
+assert_eq "…each running branch: its marks, and the definer functions that escape them" \
+  "$(ej '[b for b in d["coverage"]["branches"] if b["name"]=="main"][0]["read"]')|$(ej 'any(m["name"]=="aud8_orders" and m["writes"] for m in [b for b in d["coverage"]["branches"] if b["name"]=="main"][0]["marks"])')|$(ej '"aud8_pay(integer)" in [f["function"] for f in [b for b in d["coverage"]["branches"] if b["name"]=="main"][0]["definers"]]')" \
+  "True|True|True"
+assert_eq "…the chain intact and anchored, with the anchors' key" \
+  "$(ej 'd["integrity"]["intact"]')|$(ej 'd["integrity"]["anchors"] >= 1')|$(ej 'len(d["integrity"]["key_id"]) > 0')" "True|True|True"
+assert_eq "…the period's activity, and the changes to the audit log, by whom" \
+  "$(ej 'd["activity"]["records"] >= 1')|$(ej 'any(c["kind"]=="audit-log.on" for c in d["changes"])')|$(ej 'any(c["kind"]=="audit-log.marked" and "aud8_orders" in c["detail"] for c in d["changes"])')|$(ej 'all("ip" not in c for c in d["changes"])')" \
+  "True|True|True|True"
+assert_eq "…no records unless asked for, and no value the statements held" \
+  "$(ej '"records" in d')|$(grep -c 'kavya' <<<"$EVID")" "False|0"
+EVR="$($S audit-log evidence --since 1d --records 2>/dev/null)"
+assert_eq "--records: the period's records with their place in the chain, and the anchors with their key" \
+  "$(python3 -c 'import sys,json; d=json.load(sys.stdin); r=d["records"]; print(len(r) >= 1, all("hash" in x and "prev" in x for x in r), len(d["anchors"]) >= 1, len(d["public_key"]))' <<<"$EVR")" \
+  "True True True 64"
+# What a reviewer can check with the file alone: each record names the one
+# before it, and each anchor's record in the period is the one it holds.
+assert_eq "…which checks without FoxByte: record links record, and the anchors match" \
+  "$(python3 -c '
+import sys,json
+d=json.load(sys.stdin); r=d["records"]; by={x["seq"]:x for x in r}
+links=all(b["prev"]==a["hash"] for a,b in zip(r,r[1:]) if b["seq"]==a["seq"]+1)
+held=[a for a in d["anchors"] if a["to_id"] in by]
+print(links, len(held) >= 1 and all(by[a["to_id"]]["hash"]==a["last_row_hash"] for a in held))' <<<"$EVR")" "True True"
+assert_eq "…and still no statement text or value" "$(grep -c 'kavya\|INSERT INTO aud8' <<<"$EVR")" "0"
+assert_eq "a period that ends before it starts is refused" \
+  "$($S audit-log evidence --since 2026-11-02 --until 2026-11-01 2>&1 >/dev/null | grep -c 'ends before it starts')" "1"
+printf 'password123\n' | $S user create aud8-other@foxbyte.dev >/dev/null 2>&1
+A8K="$($S apikey create aud8-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+assert_eq "the API: someone who is not an admin may not export it; an admin gets it as a file" \
+  "$(code "$A8K" https://localhost:8080/api/audit-log/evidence)|$(curl -sk -D - -o /dev/null -H "$AUTH" 'https://localhost:8080/api/audit-log/evidence?since=7d' | grep -ci 'content-disposition: attachment; filename="audit-evidence-')" "403|1"
+assert_eq "every export is in the security log" "$($S audit log --limit 100 | grep -c 'audit-log.evidence')" "3"
+$S user delete aud8-other@foxbyte.dev >/dev/null 2>&1
+$S audit-log off --yes >/dev/null 2>&1; main_up
+pg pg-main "SET bb.allow_destructive=on; DROP FUNCTION IF EXISTS aud8_pay(int); DROP TABLE IF EXISTS aud8_orders" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

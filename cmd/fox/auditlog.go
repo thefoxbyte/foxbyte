@@ -43,6 +43,8 @@ func auditLogCmd(args []string) error {
 		return auditLogVerify()
 	case "anchor":
 		return auditLogAnchor()
+	case "evidence":
+		return auditLogEvidence(args[1:])
 	case "collect":
 		res, err := branch.CollectAudit()
 		if err != nil {
@@ -86,6 +88,8 @@ func auditLogUsage() string {
                                                   the newest records: who did what to which object, how it ended, whom for
 %[1]s audit-log verify                                check the records' hash chain, and its anchors
 %[1]s audit-log anchor                                anchor the chain's head now (Enterprise; the engine does every 10 minutes)
+%[1]s audit-log evidence [--since 90d|2026-08-01] [--until 2026-11-01] [--records] > evidence.json
+                                                  what was audited and what was not, integrity, delivery and changes (Enterprise)
 %[1]s audit-log heartbeat                             make every audited database write its heartbeat line now
 %[1]s audit-log mode [default | forensic --reason "…"] [--branch b] [--yes]
                                                   forensic: statement text, values and all, kept 30 days by default
@@ -599,6 +603,51 @@ func auditLogAnchor() error {
 		return nil
 	}
 	fmt.Printf("audit log anchored: records %d–%d, signed by key %s\n", a.FromID, a.ToID, a.KeyID)
+	return nil
+}
+
+// evidence writes the evidence export for a period to stdout, after
+// collecting what is new: on macOS and Windows this runs in the VM, and
+// stdout is what reaches this computer unchanged.
+func auditLogEvidence(args []string) error {
+	requireFeature(edition.Export)
+	now := time.Now()
+	since, until := now.AddDate(0, 0, -90), now
+	var err error
+	if v := optValue(args, "--since"); v != "" {
+		if since, err = parseSince(v, now); err != nil {
+			return err
+		}
+	}
+	if v := optValue(args, "--until"); v != "" {
+		if until, err = parseSince(v, now); err != nil {
+			return fmt.Errorf("--until: %w", err)
+		}
+	}
+	if _, err := branch.CollectAudit(); err != nil {
+		fmt.Fprintf(os.Stderr, "note: collecting what is new failed, so the newest records may be missing: %v\n", err)
+	}
+	st := openStore()
+	defer st.Close()
+	evs, err := st.SecurityEvents(0, 0)
+	if err != nil {
+		return err
+	}
+	me := cliActor()
+	ev, err := branch.ProduceAuditEvidence(branch.EvidenceOptions{Since: since, Until: until,
+		Records: hasFlag(args, "--records"), By: me, Events: evs})
+	if err != nil {
+		return err
+	}
+	st.Audit(auth.EvAuditLogEvidence, me, "", "", branch.EvidenceSummary(ev))
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(ev); err != nil {
+		return err
+	}
+	if isTerminal(os.Stdout) {
+		fmt.Fprintf(os.Stderr, "\n(send it to a file: %s audit-log evidence … > evidence.json)\n", brand.CLI)
+	}
 	return nil
 }
 
