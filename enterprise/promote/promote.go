@@ -112,10 +112,38 @@ func build(source, target string, history []auth.ChangeRequest) (entries []branc
 		return nil, 0, fmt.Errorf("%w: %q has no schema change that %q does not already have",
 			branch.ErrNothingToPromote, source, target)
 	}
+	xids, err := runXids(source, forkAfterID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reading %q's Blackbox: %w", source, err)
+	}
+	branch.ReplayOnce(entries, xids)
 	if err := checkPolicyFor(target, entries); err != nil {
 		return nil, 0, err
 	}
 	return entries, forkAfterID, nil
+}
+
+// runXids reads the transaction each Blackbox entry after the fork was recorded
+// in (bb.ledger_ext), so that the entries one run made share its statement
+// once. A branch without the capture table has none, and replays as before.
+func runXids(source string, after int64) (map[int64]int64, error) {
+	ext, _, err := branch.LedgerV2Tables(source)
+	if err != nil || !ext {
+		return nil, err
+	}
+	lines, err := branch.LedgerQuery(source, fmt.Sprintf(
+		"SELECT ledger_id || ' ' || xid FROM bb.ledger_ext WHERE ledger_id > %d AND xid IS NOT NULL", after))
+	if err != nil {
+		return nil, err
+	}
+	xids := make(map[int64]int64, len(lines))
+	for _, l := range lines {
+		var id, x int64
+		if _, err := fmt.Sscan(l, &id, &x); err == nil {
+			xids[id] = x
+		}
+	}
+	return xids, nil
 }
 
 // alreadyPromoted reads the approved requests from this source to this target: the
@@ -184,6 +212,14 @@ func apply(requestID int64, target, approver string, entries []branch.RequestEnt
 	if _, err := branch.EnsureRunning(target); err != nil {
 		return 0, err
 	}
+	if err := branch.ExecScript(target, applyScript(requestID, approver, entries)); err != nil {
+		return 0, fmt.Errorf("applying the request to %q (nothing was committed): %w", target, err)
+	}
+	return len(entries), nil
+}
+
+// applyScript is the one transaction a request is applied in.
+func applyScript(requestID int64, approver string, entries []branch.RequestEntry) string {
 	var b strings.Builder
 	b.WriteString("BEGIN;\n")
 	// Set once for the whole transaction: which request this was, and that the
@@ -201,6 +237,9 @@ func apply(requestID int64, target, approver string, entries []branch.RequestEnt
 	// session_user and falls back to bb.actor — is unaffected.
 	fmt.Fprintf(&b, "SET LOCAL ROLE %s;\n", branch.QuoteIdent(branch.ClientRole))
 	for _, e := range entries {
+		if e.SameRun != 0 {
+			continue // its statement ran with the entry it shares it with
+		}
 		// Per statement: the actor is whoever ran it on the source, so the target's
 		// record names them and not the approver.
 		fmt.Fprintf(&b, "SET LOCAL bb.actor = %s;\n", branch.QuoteLiteral(e.Actor))
@@ -210,8 +249,5 @@ func apply(requestID int64, target, approver string, entries []branch.RequestEnt
 		b.WriteString(strings.TrimRight(strings.TrimSpace(e.Statement), ";") + ";\n")
 	}
 	b.WriteString("RESET ROLE;\nCOMMIT;\n")
-	if err := branch.ExecScript(target, b.String()); err != nil {
-		return 0, fmt.Errorf("applying the request to %q (nothing was committed): %w", target, err)
-	}
-	return len(entries), nil
+	return b.String()
 }

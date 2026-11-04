@@ -1205,6 +1205,22 @@ assert_eq "fox request approve applies it" \
 assert_eq "…and a decided request cannot be decided again" \
   "$($S request reject "$CLIID" 2>&1 | grep -c 'already')" "1"
 
+# One run of two statements: the Blackbox records an entry per change, each
+# holding the whole run's text. The request shows both and runs the text once;
+# replayed twice, the second CREATE TABLE failed and nothing was applied.
+$S branch delete v2promo2 >/dev/null 2>&1
+$S branch create v2promo2 >/dev/null 2>&1
+$S branch owner v2promo2 "$USER_EMAIL" >/dev/null 2>&1
+gw "$KEY" v2promo2 "CREATE TABLE ${PT}_run(id int PRIMARY KEY); CREATE VIEW ${PT}_runv AS SELECT id FROM ${PT}_run" >/dev/null
+RUNREQ="$($S branch request v2promo2 --to main 2>&1)"
+RUNID="$(grep -o 'request approve [0-9]*' <<<"$RUNREQ" | grep -o '[0-9]*')"
+assert_eq "a run of two statements is two entries, the second made by the same run as the first" \
+  "$(grep -c "CREATE TABLE ${PT}_run(id int PRIMARY KEY); CREATE VIEW" <<<"$RUNREQ")|$(grep -c 'made by the same run as entry' <<<"$RUNREQ")" "1|1"
+APPROVED="$($S request approve "$RUNID" 2>&1)"
+assert_eq "…and approved, the run is applied once: both are on the target" \
+  "$(pg pg-main "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('${PT}_run', '${PT}_runv')")|$($S request list | grep "#$RUNID " | grep -c approved)" "2|1"
+[ "$(pg pg-main "SELECT count(*) FROM information_schema.tables WHERE table_name = '${PT}_run'")" = 1 ] || { echo "--- approve said ---"; echo "$APPROVED" | tail -5; }
+
 # A deleted branch leaves no open request pointing at nothing.
 gw "$KEY" v2promo2 "CREATE TABLE ${PT}_gone(id int)" >/dev/null
 $S branch request v2promo2 --to main >/dev/null 2>&1
@@ -1213,7 +1229,7 @@ assert_eq "deleting a branch forgets its open requests" \
   "$($S request list --open | grep -c 'v2promo2')" "0"
 
 $S branch delete v2promo >/dev/null 2>&1
-pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS $PT, ${PT}_cli, $PB" >/dev/null
+pg pg-main "SET bb.allow_destructive=on; DROP VIEW IF EXISTS ${PT}_runv; DROP TABLE IF EXISTS $PT, ${PT}_cli, ${PT}_run, $PB" >/dev/null
 $S admin revoke "$USER_EMAIL" --branch main >/dev/null 2>&1   # back to the non-admin user this suite assumes
 $S user delete "$BOB" >/dev/null 2>&1
 
