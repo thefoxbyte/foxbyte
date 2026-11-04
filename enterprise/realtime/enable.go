@@ -65,8 +65,8 @@ func Enable(branchName string, req Request) error {
 		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = %s) THEN
 		   EXECUTE format('CREATE PUBLICATION %%I WITH (publish = %%L)', %s, %s);
 		 END IF; END $$`,
-		branch.QuoteLiteral(pub), branch.QuoteLiteral(pub),
-		branch.QuoteLiteral(strings.Join(req.EventList(), ",")))); err != nil {
+		branch.BodyLiteral(pub), branch.BodyLiteral(pub),
+		branch.BodyLiteral(strings.Join(req.EventList(), ",")))); err != nil {
 		return fmt.Errorf("creating the publication: %w", err)
 	}
 	return branch.ExecSQL(branchName, fmt.Sprintf("ALTER PUBLICATION %s ADD TABLE %s.%s",

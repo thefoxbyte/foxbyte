@@ -63,8 +63,8 @@ func EnsureReplicationRole(server string) error {
     EXECUTE format('CREATE ROLE %%I LOGIN REPLICATION NOSUPERUSER NOBYPASSRLS NOINHERIT', %s);
   END IF;
   EXECUTE format('ALTER ROLE %%I PASSWORD %%L', %s, %s);
-END $$`, QuoteLiteral(ReplicationRole), QuoteLiteral(ReplicationRole),
-		QuoteLiteral(ReplicationRole), QuoteLiteral(ReplicationRolePassword()))
+END $$`, bodyLiteral(ReplicationRole), bodyLiteral(ReplicationRole),
+		bodyLiteral(ReplicationRole), bodyLiteral(ReplicationRolePassword()))
 	out, err := captureCombined("docker", "exec", "--env-file", pgEnvFile(), server,
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAq", "-v", "ON_ERROR_STOP=1", "-c", sql)
 	if err != nil {

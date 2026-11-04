@@ -203,6 +203,9 @@ func ImportContinuousToAs(p *Progress, source, target string, a As) (string, err
 	if target == "" {
 		target = defaultTargetName(source)
 	}
+	// Every client below, and the subscription's walreceiver, is given the
+	// source's own password or an empty one, never the container's (GW-1).
+	source = noAmbientPassword(source)
 	p.Logf("Creating instance %q…\n", target)
 	if err := Create(target, "main"); err != nil {
 		return "", fmt.Errorf("create target instance %q: %w", target, err)
@@ -225,7 +228,9 @@ func ImportContinuousToAs(p *Progress, source, target string, a As) (string, err
 	schemaScript := fmt.Sprintf("set -euo pipefail; pg_dump %s --schema-only --no-owner --no-acl --no-comments "+
 		"--no-publications --no-subscriptions%s | psql -q -U %s -d %s",
 		shellQuote(source), dumpRestrictFlag(a), shellQuote(a.psqlRole()), pgDatabase)
-	if err := run("docker", "exec", "-e", pgImportOptions, container(target), "bash", "-c", schemaScript); err != nil {
+	schemaArgs := append([]string{"exec", "-e", pgImportOptions}, noAmbientPasswordEnv...)
+	schemaArgs = append(schemaArgs, container(target), "bash", "-c", schemaScript)
+	if err := run("docker", schemaArgs...); err != nil {
 		return target, fmt.Errorf("copy schema from source: %w", explainAs(a, err))
 	}
 	// If the schema copy produced no tables, the source is empty or the wrong
@@ -237,8 +242,10 @@ func ImportContinuousToAs(p *Progress, source, target string, a As) (string, err
 	// role lacks privilege or a publication named bb_pub already exists, continue —
 	// the subscription below surfaces any real problem.
 	p.Logf("Ensuring a publication on the source…\n")
-	_ = run("docker", "exec", container(target), "psql", source, "-v", "ON_ERROR_STOP=0",
+	pubArgs := append([]string{"exec"}, noAmbientPasswordEnv...)
+	pubArgs = append(pubArgs, container(target), "psql", source, "-v", "ON_ERROR_STOP=0",
 		"-c", "CREATE PUBLICATION bb_pub FOR ALL TABLES;")
+	_ = run("docker", pubArgs...)
 	// Subscribe on the target: initial copy + streaming changes.
 	p.Logf("Creating subscription (initial copy, then streaming)…\n")
 	sub := fmt.Sprintf("CREATE SUBSCRIPTION bb_sub CONNECTION %s PUBLICATION bb_pub;", sqlQuote(source))
@@ -381,10 +388,13 @@ func prepareTarget(target string) error {
 
 func loadPostgres(p *Progress, target, dsn string, a As) error {
 	p.Logf("  running pg_dump | psql (schema + data)…\n")
+	dsn = noAmbientPassword(dsn) // never the container's password: importsecret.go
 	script := fmt.Sprintf("set -euo pipefail; pg_dump %s --no-owner --no-acl --no-comments%s | psql -q -U %s -d %s",
 		shellQuote(dsn), dumpRestrictFlag(a), shellQuote(a.psqlRole()), pgDatabase)
 	// psql exits 0 even when statements fail, so its errors are counted instead.
-	c, err := runCollectingErrors(nil, "docker", "exec", "-e", pgImportOptions, container(target), "bash", "-c", script)
+	args := append([]string{"exec", "-e", pgImportOptions}, noAmbientPasswordEnv...)
+	args = append(args, container(target), "bash", "-c", script)
+	c, err := runCollectingErrors(nil, "docker", args...)
 	return c.failure(target, err)
 }
 
@@ -1132,7 +1142,7 @@ func peekNonSpace(br *bufio.Reader) (byte, error) {
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // sqlQuote renders s as a single-quoted SQL string literal.
-func sqlQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+func sqlQuote(s string) string { return quoteLiteral(s) }
 
 // pgIdent renders s as a double-quoted SQL identifier (matching mysqldump's ANSI
 // quoting so the generated schema and the dumped INSERTs agree on names).

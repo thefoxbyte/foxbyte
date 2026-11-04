@@ -132,6 +132,9 @@ func MarkAuditedWrites(target, schema, table, actor, tool string) error {
 	if err := checkName(target); err != nil {
 		return err
 	}
+	if err := checkTableName(schema, table); err != nil {
+		return err
+	}
 	return trackExec(target, auditRolesSQL()+trackSQL(actor, tool, markWritesSQL(tableRef(schema, table)), false))
 }
 

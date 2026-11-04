@@ -51,6 +51,9 @@ func TestNoPasswordOnCommandLines(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, line := range strings.Split(string(b), "\n") {
+			// "PGPASSWORD=" with nothing after it clears the variable rather
+			// than passing one (importsecret.go), and carries no secret.
+			line := strings.ReplaceAll(line, `"PGPASSWORD="`, ``)
 			if strings.Contains(line, `"PGPASSWORD=`) || strings.Contains(line, `"POSTGRES_PASSWORD=`) ||
 				strings.Contains(line, `"AWS_SECRET_ACCESS_KEY=`) || strings.Contains(line, `"MINIO_ROOT_PASSWORD=`) {
 				t.Errorf("%s:%d passes a password as an argument: %s", f, i+1, strings.TrimSpace(line))

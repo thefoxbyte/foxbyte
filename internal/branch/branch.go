@@ -635,11 +635,11 @@ func EnsureUserRole(branchName, email string) error {
 // userRoleSQL makes a person's login role if it is missing and sets its
 // password, tolerating another session doing the same at that moment.
 func userRoleSQL(email, password string) string {
-	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(email)), fmt.Sprintf(`      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+	return retryingRoleDO(fmt.Sprintf("r text := %s;", bodyLiteral(email)), fmt.Sprintf(`      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
         EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB INHERIT IN ROLE db_client', r);
       END IF;
       EXECUTE format('ALTER ROLE %%I WITH LOGIN PASSWORD %%L', r, %s);
-      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, quoteLiteral(password)))
+      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, bodyLiteral(password)))
 }
 
 // syncRolePassword sets the Postgres role password to the per-install secret.
@@ -651,9 +651,39 @@ func syncRolePassword(name string) error {
 
 // quoteLiteral renders s as a single-quoted SQL string literal (doubling any
 // embedded quotes). The generated password is hex, but quote defensively.
+//
+// A NUL byte is dropped: Postgres text cannot hold one, so a value with one
+// could never match anything, and psql reads its input as C strings, so a NUL
+// would cut the line short and leave the quote it is in unterminated.
 func quoteLiteral(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	return "'" + strings.ReplaceAll(strings.ReplaceAll(s, "\x00", ""), "'", "''") + "'"
 }
+
+// bodyLiteral renders s as a SQL expression whose value is s and whose text
+// holds no '$'. Every value placed inside a dollar-quoted body (DO $$ … $$,
+// $do$ … $do$) must go through it, never through quoteLiteral alone.
+//
+// A single-quoted literal is only safe inside a dollar-quoted body as long as
+// it cannot contain the body's closing tag. A value holding "$$" (or "$do$")
+// would end the body early, and everything after it would be read as SQL, or
+// as psql meta-commands, by a session that is the superuser. Writing each '$'
+// as chr(36) means no tag can ever appear, whatever tag the body uses. The
+// result is an expression, so it fits anywhere a DO body takes a value
+// (DECLARE … :=, format() arguments, VALUES, comparisons), not where only a
+// bare literal is allowed.
+func bodyLiteral(s string) string {
+	if !strings.Contains(s, "$") {
+		return quoteLiteral(s)
+	}
+	parts := strings.Split(s, "$")
+	for i, p := range parts {
+		parts[i] = quoteLiteral(p)
+	}
+	return "(" + strings.Join(parts, " || chr(36) || ") + ")"
+}
+
+// BodyLiteral is bodyLiteral for packages that build DO blocks of their own.
+func BodyLiteral(s string) string { return bodyLiteral(s) }
 
 // removeContainer removes a container and the anonymous volumes Docker made
 // for it (docker rm -f -v), whether it is running or not.

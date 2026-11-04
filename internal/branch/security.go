@@ -54,7 +54,7 @@ BEGIN
   END IF;
   EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', r, %s);
   EXECUTE format('ALTER ROLE %%I SET role = db_client', r);
-END $do$;`, quoteLiteral(role), quoteLiteral(password))
+END $do$;`, bodyLiteral(role), bodyLiteral(password))
 	return psqlStdin(branchName, sql)
 }
 
@@ -122,7 +122,7 @@ BEGIN
     CREATE ROLE db_admin NOLOGIN;
   END IF;
   EXECUTE format('GRANT db_admin TO %%I', %s);
-END $do$;`, quoteLiteral(email)))
+END $do$;`, bodyLiteral(email)))
 }
 
 // RevokeAdmin removes email's per-user role from db_admin on a branch.
@@ -133,7 +133,7 @@ BEGIN
      AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %[1]s) THEN
     EXECUTE format('REVOKE db_admin FROM %%I', %[1]s);
   END IF;
-END $do$;`, quoteLiteral(email)))
+END $do$;`, bodyLiteral(email)))
 }
 
 // ListAdmins returns the roles that are members of db_admin on a branch.

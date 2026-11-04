@@ -124,7 +124,7 @@ func rolePasswordSQL(roles []string, isBranch func(string) bool) (sql string, to
 		// format %I/%L through a DO block, so a role name is an identifier and
 		// a password is a literal whatever either of them contains.
 		fmt.Fprintf(&b, "DO $do$ BEGIN EXECUTE format('ALTER ROLE %%I WITH PASSWORD %%L', %s, %s); END $do$;\n",
-			quoteLiteral(r), quoteLiteral(pw))
+			bodyLiteral(r), bodyLiteral(pw))
 		touched = append(touched, r)
 	}
 	return b.String(), touched

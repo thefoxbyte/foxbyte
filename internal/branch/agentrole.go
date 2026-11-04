@@ -130,7 +130,7 @@ func agentClientRoleSQL(password string) string {
         EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client', %[1]s);
       END IF;
       EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', %[1]s, %[2]s);
-      EXECUTE format('ALTER ROLE %%I SET role = db_client', %[1]s);`, quoteLiteral(AgentClientRole), quoteLiteral(password)))
+      EXECUTE format('ALTER ROLE %%I SET role = db_client', %[1]s);`, bodyLiteral(AgentClientRole), bodyLiteral(password)))
 }
 
 // agentKeyRoleSQL creates an agent key's role if it is missing and sets its
@@ -138,11 +138,11 @@ func agentClientRoleSQL(password string) string {
 // db_agent so the Blackbox records it as an agent. Never of db_admin: an agent
 // holding an admin's key still cannot override a guardrail.
 func agentKeyRoleSQL(role, password string) string {
-	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(role)), fmt.Sprintf(`      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+	return retryingRoleDO(fmt.Sprintf("r text := %s;", bodyLiteral(role)), fmt.Sprintf(`      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
         EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client, %s', r);
       END IF;
       EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', r, %s);
-      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, AgentClientRole, quoteLiteral(password)))
+      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, AgentClientRole, bodyLiteral(password)))
 }
 
 // EnsureAgentKeyRole makes sure the role an agent key belonging to email logs
