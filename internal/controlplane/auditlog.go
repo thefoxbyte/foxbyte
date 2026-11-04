@@ -66,6 +66,82 @@ func registerAuditLog(mux *http.ServeMux, store *auth.Store) {
 	})
 }
 
+// The evidence export (F6 Gate 1, step 6b):
+//
+//	GET /api/audit-log/evidence?since=90d|2026-08-01&until=2026-11-01&records=1
+//
+// Admins only, and Enterprise (Blackbox export and compliance bundles). The
+// document comes as a file to save, and each one produced is in the security
+// log. What is new in the raw files is collected first.
+func registerAuditEvidence(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/audit-log/evidence", func(w http.ResponseWriter, r *http.Request) {
+		if !requireFeature(w, edition.Export) {
+			return
+		}
+		if !isAdmin(r) {
+			writeErr(w, 403, errors.New("only an admin may export the audit log's evidence"))
+			return
+		}
+		q := r.URL.Query()
+		now := time.Now()
+		since, err := evidenceTime(q.Get("since"), now.AddDate(0, 0, -90), now)
+		if err != nil {
+			writeErr(w, 400, fmt.Errorf("since: %w", err))
+			return
+		}
+		until, err := evidenceTime(q.Get("until"), now, now)
+		if err != nil {
+			writeErr(w, 400, fmt.Errorf("until: %w", err))
+			return
+		}
+		if _, err := branch.CollectAudit(); err != nil {
+			log.Printf("audit log evidence: collecting first: %v", err)
+		}
+		var evs []auth.SecurityEvent
+		if secLog != nil {
+			if evs, err = secLog.SecurityEvents(0, 0); err != nil {
+				writeErr(w, 500, err)
+				return
+			}
+		}
+		u, _ := auth.UserFrom(r.Context())
+		ev, err := branch.ProduceAuditEvidence(branch.EvidenceOptions{Since: since, Until: until,
+			Records: q.Get("records") == "1" || q.Get("records") == "true", By: u.Email, Events: evs})
+		switch {
+		case err == nil:
+		case errors.Is(err, branch.ErrInvalidRequest):
+			writeErr(w, 400, err)
+			return
+		default:
+			writeErr(w, 500, err)
+			return
+		}
+		if secLog != nil {
+			secLog.Audit(auth.EvAuditLogEvidence, u.Email, "", remoteIP(r), branch.EvidenceSummary(ev))
+		}
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="audit-evidence-%s.json"`, now.UTC().Format("2006-01-02")))
+		writeJSON(w, 200, ev)
+	})
+}
+
+// evidenceTime reads a period's end: a number of days back (90d), a date, or
+// RFC 3339; empty is def.
+func evidenceTime(v string, def, now time.Time) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return def, nil
+	}
+	if n, err := strconv.Atoi(strings.TrimSuffix(v, "d")); err == nil && strings.HasSuffix(v, "d") && n > 0 && n <= 3650 {
+		return now.AddDate(0, 0, -n), nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("a number of days back (90d), a date (2026-08-01) or RFC 3339, not %q", v)
+}
+
 // The records (F6 Gate 1, step 3):
 //
 //	GET /api/audit-log/records?branch=&table=&user=&since=&limit=&errors=1

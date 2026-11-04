@@ -1069,3 +1069,58 @@ nothing and is honest either way. The other two can still come.
   `SECURITY INVOKER`, whose statements are audited. The suite shows both
   cases: a write through the definer function is not in the log, and once
   the function is made invoker, the same write is.
+
+---
+
+## 27. Gate 1, step 6b: the evidence export, as built
+
+The evidence export is the last of step 6, and of Gate 1's F6 work. It is the
+document an auditor is handed for a period. Section 16 said it states coverage
+and limits as section 12 does; it does, and never more.
+
+`fox audit-log evidence [--since 90d|<date>] [--until <date>] [--records] > evidence.json`,
+`GET /api/audit-log/evidence`, and the console's **Download evidence** produce
+it. It is Enterprise (Blackbox export and compliance bundles), for admins. Each
+export is recorded in the security log (`audit-log.evidence`), with its period
+and whether the records went with it.
+
+**What it holds** (format `audit-evidence/1`):
+
+- **Coverage.**
+  - Whether audit was on, where forensic mode is on, and both retentions.
+  - What is logged, what is not, and what is checked, word for word as
+    section 12.
+  - **Each running branch:**
+    - its marks;
+    - the SECURITY DEFINER functions that name marked tables (step 6a);
+    - the tables with confirmed personal data not marked.
+
+    A branch not running is listed as not read: it is not woken.
+- **Integrity.** The chain verified over every record kept, every anchor
+  checked against it, how far anchoring has got, and the anchors' key id.
+- **Delivery.** Forwarding to the SIEM and how far it has got, and everything
+  found wrong now.
+- **Activity in the period.** Records by kind and branch, errors, heartbeats,
+  and every gap record.
+- **Changes.** The security log's events about the audit log in the period:
+  - turned on or off, marks, modes, retention and purges;
+  - forwarding, and reads of the records;
+  - earlier exports.
+
+  Each says who made it and when. The client address is left out: the audit
+  log keeps none.
+- **Limits.** What the document cannot show:
+  - branches not read;
+  - records retention removed;
+  - the definer check being a word match;
+  - no statement text;
+  - records after the last anchor resting on the chain alone.
+- **With `--records`:** the period's records, with `seq`, `prev` and `hash` and
+  never statement text, plus the anchors and their public key. A reviewer can
+  check that each record names the one before it, and that each anchor's
+  record is the one it holds, with the file alone.
+
+**Not in this step:** a signature over the document itself (its anchors are
+signed), and `fox-verify` reading it. Recomputing a record's hash outside
+FoxByte needs the record's exact JSON field order, which a later step can
+document.

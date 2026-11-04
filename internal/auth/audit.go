@@ -141,6 +141,9 @@ const (
 	// Forwarding to a SIEM set, changed or stopped: where a copy of every
 	// record goes, and whether statement text goes with it.
 	EvAuditLogForward = "audit-log.forward"
+	// The evidence export produced (F6 step 6b): for which period, and
+	// whether the records went with it.
+	EvAuditLogEvidence = "audit-log.evidence"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

@@ -164,3 +164,36 @@ func TestAuditPersonalTablesRouteIsEnterprise(t *testing.T) {
 		t.Fatalf("%d %v", code, out)
 	}
 }
+
+// The evidence route: Enterprise, admins, and a period that parses.
+func TestAuditEvidenceRoute(t *testing.T) {
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct{ in, want string }{
+		{"", "2026-08-07T12:00:00Z"}, {"30d", "2026-10-06T12:00:00Z"}, {"2026-10-01", "2026-10-01T00:00:00Z"},
+		{"2026-10-01T08:00:00Z", "2026-10-01T08:00:00Z"},
+	} {
+		got, err := evidenceTime(c.in, now.AddDate(0, 0, -90), now)
+		if err != nil || got.UTC().Format(time.RFC3339) != c.want {
+			t.Errorf("%q: %v %v, want %s", c.in, got, err, c.want)
+		}
+	}
+	for _, bad := range []string{"0d", "yesterday", "-5d"} {
+		if _, err := evidenceTime(bad, now, now); err == nil {
+			t.Errorf("%q was taken", bad)
+		}
+	}
+	s, admin, alice, _ := withACL(t)
+	mux := http.NewServeMux()
+	registerAuditEvidence(mux)
+	h := s.Authn(mux)
+	ka, _, _ := s.CreateAPIKey(admin.ID, "t")
+	kb, _, _ := s.CreateAPIKey(alice.ID, "t")
+	if edition.Enterprise {
+		return // the licence decides there; the integration suite runs it
+	}
+	for _, k := range []string{ka, kb} {
+		if code, out := serve(t, h, k, "GET", "/api/audit-log/evidence", ""); code != 403 || !strings.Contains(out["error"].(string), "Enterprise") {
+			t.Errorf("Standard: %d %v", code, out)
+		}
+	}
+}
