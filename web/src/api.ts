@@ -911,6 +911,21 @@ export const setAuditRetention = (days: number, forensic: boolean) =>
 export const purgeAuditText = (user: string) => req('POST', `${API}/api/audit-log/purge`, { user }) as Promise<{ purged: number }>
 export type AuditFinding = { kind: 'space' | 'collector' | 'heartbeat' | 'gap' | 'mark' | 'forward' | 'definer'; branch?: string; detail: string; since?: string }
 export const getAuditLog = () => req('GET', `${API}/api/audit-log`) as Promise<AuditLogReply>
+
+// The hardening report (point 3.2): admins only, every edition. FoxByte's own
+// checks, not the CIS Benchmark.
+export type HardeningStatus = 'pass' | 'fail' | 'manual' | 'n/a'
+export type HardeningCheck = {
+  id: string; section: string; level: 'basic' | 'strict'; title: string
+  status: HardeningStatus; evidence: string; why: string; fix?: string
+}
+export type HardeningReport = {
+  branch: string; generated: string; postgres: string; basis: string
+  summary: Record<HardeningStatus, number>; checks: HardeningCheck[]; limits: string[]
+}
+const hardeningURL = (branch: string) => `${API}/api/hardening?branch=${encodeURIComponent(branch)}`
+export const getHardening = (branch: string) => req('GET', hardeningURL(branch)) as Promise<HardeningReport>
+export const hardeningJsonUrl = hardeningURL
 // The evidence export (F6 step 6b): a file to save, admins only, Enterprise.
 // since and until are days back (90d), a date, or RFC 3339.
 export const auditEvidenceUrl = (since: string, until: string, records: boolean) => {

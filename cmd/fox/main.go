@@ -101,6 +101,9 @@ Stack:
                        What scans have found on a branch; --state suggested is the review queue
   pii show <id> | samples <id> [--n 5] | mark <id> confirm|reject|reopen [--note "…"]
                        One finding and its decisions; masked samples to decide by; decide (Enterprise)
+  hardening [--branch b] [--level basic|strict] [--failed] [--json]
+                       How a branch's PostgreSQL and this install stand against hardening
+                       checks: pass, fail, manual or n/a, with the evidence and the fix
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)
@@ -399,6 +402,8 @@ func main() {
 		piiCmd(os.Args[2:])
 	case "access":
 		accessCmd(os.Args[2:])
+	case "hardening":
+		hardeningCmd(os.Args[2:])
 	case "app":
 		appCmd(os.Args[2:])
 	case "check":
