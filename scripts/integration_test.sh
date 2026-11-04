@@ -3160,6 +3160,41 @@ $S user delete aud8-other@foxbyte.dev >/dev/null 2>&1
 $S audit-log off --yes >/dev/null 2>&1; main_up
 pg pg-main "SET bb.allow_destructive=on; DROP FUNCTION IF EXISTS aud8_pay(int); DROP TABLE IF EXISTS aud8_orders" >/dev/null
 
+echo "### 11ag. the hardening report (point 3.2)"
+# FoxByte's own checks, not the CIS Benchmark: each pass, fail, manual or n/a,
+# with the evidence and the fix. A weakness made on purpose is found.
+HJ="$($S hardening --json 2>/dev/null)"
+hj() { python3 -c "import sys,json; d=json.load(sys.stdin); c={x['id']:x for x in d['checks']}; print($1)" <<<"$HJ"; }
+assert_eq "fox hardening --json: every check, each with a known status and level, and the basis it stands on" \
+  "$(hj 'len(d["checks"]) >= 35 and all(x["status"] in ("pass","fail","manual","n/a") and x["level"] in ("basic","strict") for x in d["checks"])')|$(hj '"Not the CIS Benchmark" in d["basis"]')|$(hj 'sum(d["summary"].values()) == len(d["checks"])')" \
+  "True|True|True"
+assert_eq "…main as FoxByte sets it up: a supported version, SCRAM, durable writes, no network exposure, TLS at the Gateway" \
+  "$(hj 'c["install.supported"]["status"]')|$(hj 'c["roles.scram"]["status"]')|$(hj 'c["set.durability"]["status"]')|$(hj 'c["conn.exposure"]["status"]')|$(hj 'c["conn.tls"]["status"]')|$(hj 'c["roles.bypassrls"]["status"]')|$(hj 'c["files.datadir"]["status"]')" \
+  "pass|pass|pass|pass|pass|pass|pass"
+assert_eq "…with the audit log off, says so and how to turn it on" \
+  "$(hj 'c["audit.on"]["status"]')|$(hj '"audit-log setup" in c["audit.on"]["fix"]')" "fail|True"
+pg pg-main "DROP ROLE IF EXISTS hard_weak; CREATE ROLE hard_weak LOGIN SUPERUSER PASSWORD 'x'; DROP ROLE IF EXISTS hard_rls; CREATE ROLE hard_rls BYPASSRLS" >/dev/null
+OUT="$($S hardening --failed 2>&1)"
+assert_eq "a superuser that can log in, and a role that ignores row-level security, are found and named" \
+  "$(grep -A1 'roles.superusers' <<<"$OUT" | grep -c 'hard_weak')|$(grep -A1 'roles.bypassrls' <<<"$OUT" | grep -c 'hard_rls')|$(grep -c '^  pass ' <<<"$OUT")" "1|1|0"
+pg pg-main "DROP ROLE IF EXISTS hard_weak; DROP ROLE IF EXISTS hard_rls" >/dev/null
+assert_eq "--level strict lists strict checks only" \
+  "$($S hardening --level strict --json | python3 -c 'import sys,json; print({x["level"] for x in json.load(sys.stdin)["checks"]})')" "{'strict'}"
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+assert_eq "with the audit log on, pgAudit and its classes pass" \
+  "$($S hardening --json | python3 -c 'import sys,json; c={x["id"]:x for x in json.load(sys.stdin)["checks"]}; print(c["audit.on"]["status"], c["audit.classes"]["status"])')" "pass pass"
+$S audit-log off --yes >/dev/null 2>&1; main_up
+assert_eq "a branch not running is not woken: it says to start it" \
+  "$($S branch create hardsleep >/dev/null 2>&1; $S branch suspend hardsleep >/dev/null 2>&1; $S hardening --branch hardsleep 2>&1 | grep -c 'is not running')" "1"
+$S branch delete hardsleep >/dev/null 2>&1
+printf 'password123\n' | $S user create hard-other@foxbyte.dev >/dev/null 2>&1
+HK="$($S apikey create hard-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+assert_eq "the API: an admin gets the report; someone who is not an admin does not" \
+  "$(curl -sk -H "$AUTH" 'https://localhost:8080/api/hardening?branch=main' | python3 -c 'import sys,json; print(json.load(sys.stdin)["branch"])')|$(code "$HK" https://localhost:8080/api/hardening)" "main|403"
+$S user delete hard-other@foxbyte.dev >/dev/null 2>&1
+# Five: the four from the command line that produced one, and the API's.
+assert_eq "every report is in the security log" "$($S audit log --limit 100 | grep -c 'hardening.reported')" "5"
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

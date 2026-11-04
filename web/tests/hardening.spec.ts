@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// The hardening report (point 3.2) in a browser, against a real engine: the
+// page is reachable from the menu, reads the engine's own checks, and filters.
+// integration §11ag checks what the checks find.
+import { test, expect, type Page } from '@playwright/test'
+
+const email = process.env.FOX_E2E_EMAIL ?? 'e2e@foxbyte.dev'
+const password = process.env.FOX_E2E_PASSWORD ?? 'password123'
+
+async function signIn(page: Page) {
+  await page.goto('/login', { waitUntil: 'domcontentloaded' })
+  await page.getByPlaceholder('you@example.com').fill(email)
+  await page.getByPlaceholder('password').fill(password)
+  await page.getByRole('button', { name: /log in/i }).click()
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+}
+
+test('the Hardening page checks main, by section, and shows only what did not pass when asked', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Hardening' }).click()
+  await expect(page.getByRole('heading', { name: 'Hardening', exact: true })).toBeVisible()
+  await expect(page.getByTestId('hardening-summary')).toContainText('main, PostgreSQL', { timeout: 30_000 })
+  await expect(page.getByTestId('check-roles.scram')).toContainText('pass')
+  await expect(page.getByTestId('check-set.durability')).toContainText('pass')
+  await expect(page.getByRole('table', { name: 'Hardening: connections' })).toBeVisible()
+  await expect(page.getByText('Not the CIS Benchmark')).toBeVisible()
+  await page.getByLabel('Only what did not pass').check()
+  await expect(page.getByTestId('check-roles.scram')).toHaveCount(0)
+  await expect(page.getByTestId('check-set.fips')).toContainText('manual')
+})

@@ -2121,6 +2121,46 @@ paths:
         "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/hardening:
+    get:
+      tags: [audit-log]
+      summary: How a branch's PostgreSQL, and the install, stand against FoxByte's hardening checks (admins only).
+      description: >-
+        FoxByte's own checks, written from PostgreSQL's documentation; not the CIS Benchmark. Each check is basic or
+        strict, and ends pass, fail, manual (a person judges, from the evidence) or n/a, with why it matters and, when it
+        does not pass, the fix. The branch must be running: it is not woken. Each report is in the security log.
+      parameters:
+        - { name: branch, in: query, schema: { type: string, default: main } }
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branch: { type: string }
+                  generated: { type: string, format: date-time }
+                  postgres: { type: string }
+                  basis: { type: string }
+                  summary: { type: object, additionalProperties: { type: integer } }
+                  checks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        section: { type: string }
+                        level: { type: string, enum: [basic, strict] }
+                        title: { type: string }
+                        status: { type: string, enum: [pass, fail, manual, n/a] }
+                        evidence: { type: string }
+                        why: { type: string }
+                        fix: { type: string }
+                  limits: { type: array, items: { type: string } }
+        "400": { description: Not a branch name, or the branch is not running. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/audit-log/evidence:
     get:
       tags: [audit-log]

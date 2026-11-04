@@ -120,6 +120,9 @@ const (
 	// The access review report produced (point 4.8): who asked, and what it
 	// covered. A report of who can reach what is itself worth knowing about.
 	EvAccessReviewed = "access.reviewed"
+	// The hardening report produced (point 3.2): which branch, and how it
+	// stood. A list of a database's weak points is itself worth knowing about.
+	EvHardeningReported = "hardening.reported"
 	// The databases' audit log (F6) turned on or off: who decided. Whoever
 	// can stop the record of who did what is someone an auditor asks about.
 	EvAuditLogOn  = "audit-log.on"

@@ -475,6 +475,12 @@
       <li class="ok">SECURITY DEFINER functions naming marked tables named as not audited, in <code>fox check</code>, <code>status</code> and the console</li>
       <li class="ok">Enterprise: the evidence export for a period: coverage and limits as stated, each branch&rsquo;s marks and gaps, integrity and anchors, delivery, activity and every change; with the records and anchors to check it offline (step 6b)</li>
       <li class="next">Reads audited for the logins that may unmask, once masking exists (point 7)</li></ul></td><td class="tb">Unit; f6 suite; §11y–§11af; UI</td></tr>
+    <tr data-id="H22" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">H22</td><td><b>The hardening report</b> (point 3.2; FoxByte&rsquo;s own checks, not the CIS Benchmark)<ul class="subs">
+      <li class="ok">About 40 checks, basic and strict, across installation, files, logging, auditing, roles, connections, settings and backups: pass, fail, manual or n/a, each with what was found, why it matters and the fix</li>
+      <li class="ok">Where FoxByte differs on purpose (TLS at the Gateway, statement text kept out of the log, local trust inside the container), the check says so rather than failing</li>
+      <li class="ok"><code>fox hardening [--branch] [--level] [--failed] [--json]</code>, <code>GET /api/hardening</code> (admins), the console&rsquo;s Hardening page (filters, JSON, print to PDF); each report in the security log</li>
+      <li class="next">Enterprise: fixes for failing checks (3.3) and hardening profiles with a preview (3.4)</li>
+      <li class="todo">A mapping to the CIS Benchmark, once licensed</li></ul></td><td class="tb">Unit; §11ag; UI</td></tr>
   </table>
 </section>
 
