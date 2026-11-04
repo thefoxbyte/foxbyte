@@ -48,7 +48,49 @@ Running) ;;
 	;;
 esac
 
+# Every suite rebuilds an engine image: the engine's own build during the run,
+# and the F1 and F6 prototypes' under their own tags. Each rebuild leaves the
+# image it replaced behind, untagged, and they add up -- 26 of them (4.7 GB) on
+# 5 Nov 2026 took the disk to 86%, which put `fox check`'s disk lines at warn
+# and failed three checks that had nothing to do with the change under test.
+# On 26 Oct the same growth filled the disk and suspended the ZFS pool, whose
+# file lives on it.
+#
+# So before each suite, the leftovers go. `docker image prune` removes untagged
+# images only, never a tagged one or one a container uses. It takes those more
+# than a day old: Docker here has only the legacy builder, which leaves a
+# multi-stage build's first stage untagged and builds from it next time, and
+# without it the engine image takes 96s per major to build instead of 1s, so
+# the cache goes cold at most once a day. Past 80% full the newer ones go too,
+# since a slow build beats a run failed by the disk. A build in progress
+# has untagged layers of its own, so none of this happens while another suite
+# runs (other sessions share this VM). If the disk is still above 80% it says
+# so, and what fills it, before a suite fails on it.
+tidy() {
+	limactl shell "$NAME" bash -s <<'GUEST' || true
+used() { df --output=pcent / | tail -1 | tr -dc 0-9; }
+prune() {
+	n="$(sudo docker images -f dangling=true -q "$@" | wc -l)"
+	[ "$n" -gt 0 ] || return 0
+	freed="$(sudo docker image prune -f "$@" | sed -n 's/^Total reclaimed space: //p')"
+	echo "Removed $n superseded image(s), ${freed:-0B}."
+}
+if [ "$(ps -eo args | grep -cE '[i]ntegration_|[p]laywright test|[b]uild_test_fox')" -eq 0 ]; then
+	prune --filter until=24h
+	[ "$(used)" -le 80 ] || prune
+else
+	echo "Another suite is running in this VM; leaving its images alone."
+fi
+if [ "$(used)" -gt 80 ]; then
+	echo "warning: the test VM's disk is $(used)% full. What fills it:" >&2
+	sudo docker system df >&2 || true
+	echo "  Untagged images: sudo docker image prune -f. Unused volumes: sudo docker volume prune -f." >&2
+fi
+GUEST
+}
+
 if limactl shell "$NAME" test -f "$MARKER"; then
+	tidy
 	echo "Test VM '$NAME' is ready."
 	exit 0
 fi
