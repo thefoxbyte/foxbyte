@@ -31,6 +31,10 @@ type hint struct {
 
 // hints are tried in order, so put the specific before the general.
 var hints = []hint{
+	// Before the TLS and connection hints below, which are about the engine:
+	// a forwarding failure is the SIEM's certificate or address.
+	{regexp.MustCompile(`(?i)^forwarding failed after`),
+		"The SIEM did not take the records. They wait in the store, and go when it does.\nCheck the URL, and for a certificate from a private CA give it: %s audit-log forward <url> --ca ca.pem   (where it stands: %s audit-log forward)"},
 	{regexp.MustCompile(`(?i)cannot connect to the docker daemon|docker daemon is not running|is the docker daemon running`),
 		"Docker isn't running inside the engine VM.\nBring the stack back with: %s start   (or `%s setup` if this machine is new)"},
 	{regexp.MustCompile(`(?i)no (foxbyte )?vm yet|no (foxbyte )?wsl distro yet|instance .* does not exist`),

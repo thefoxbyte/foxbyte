@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from 'react'
-import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, purgeAuditText, setAuditMode, setAuditRetention, unmarkAudited, type AuditEntry, type AuditFor, type AuditLogReply, type AuditMarks, type Branch } from '../api'
+import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, purgeAuditText, sendAuditForward, setAuditForward, setAuditMode, setAuditRetention, stopAuditForward, unmarkAudited, type AuditEntry, type AuditFor, type AuditLogReply, type AuditMarks, type Branch } from '../api'
 import { useConfirm } from '../confirm'
 
 // The databases' audit log (F6): pgAudit in default mode. It records who
@@ -195,6 +195,102 @@ function Settings({ data, branches, onChange }: { data: AuditLogReply; branches:
   )
 }
 
+// Forwarding to a SIEM: a copy of every record, over TLS, as it is collected.
+// The token and CA bundle are sent once and never shown again. Admins only;
+// each change is in the security log.
+function Forwarding({ data, onChange }: { data: AuditLogReply; onChange: () => void }) {
+  const confirm = useConfirm()
+  const f = data.forward ?? null
+  const [url, setUrl] = useState('')
+  const [token, setToken] = useState('')
+  const [ca, setCa] = useState('')
+  const [text, setText] = useState(false)
+  const [fromStart, setFromStart] = useState(false)
+  const [note, setNote] = useState('')
+  const [err, setErr] = useState('')
+  const act = async (fn: () => Promise<string>) => {
+    setErr(''); setNote('')
+    try { setNote(await fn()); onChange() } catch (e) { setErr((e as Error).message) }
+  }
+  const save = async () => {
+    const ok = await confirm({
+      title: 'Forward the audit log',
+      message: <>Send a copy of every audit record to <b>{url}</b>, {fromStart ? 'starting with every record the store still holds' : 'from the next record collected'}?
+        Each says who did what to which object, how it ended and whom for, with its place in the chain. No values.{' '}
+        {text
+          ? <b>Statement text is sent too, values and all: once there, retention and purge here no longer reach it.</b>
+          : 'Statement text is not sent.'}</>,
+      confirmText: 'Forward',
+      danger: text,
+    })
+    if (ok) act(async () => {
+      await setAuditForward({ url, token: token || undefined, ca_pem: ca || undefined, text, from_start: fromStart })
+      setToken(''); setCa('')
+      return `Forwarding to ${url}.`
+    })
+  }
+  const stop = async () => {
+    const ok = await confirm({
+      title: 'Stop forwarding',
+      message: <>Stop sending records to <b>{f?.host}</b>, and remove the token and CA bundle kept for it? The records stay in the store.</>,
+      confirmText: 'Stop forwarding',
+    })
+    if (ok) act(async () => { await stopAuditForward(); return 'Forwarding stopped.' })
+  }
+  const send = () => act(async () => {
+    const r = await sendAuditForward()
+    if (r.error) throw new Error(`Forwarding failed after ${r.sent} record(s): ${r.error}. The rest wait in the store.`)
+    return `${r.sent} record(s) sent; ${r.waiting} waiting.`
+  })
+  return (
+    <>
+      <h2 style={{ marginTop: 22 }}>Forwarding to a SIEM</h2>
+      <p className="muted" style={{ fontSize: 13, marginTop: -4 }}>
+        A copy of every record, over TLS: <code>https://…</code> as JSON lines, or <code>syslog://host:6514</code> as RFC 5424.
+        Each record carries its place in the chain, so the copy there shows a record changed or removed here later.
+      </p>
+      {err && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
+      {note && <div className="ok" role="status" style={{ marginTop: 8 }}>{note}</div>}
+      <div className="panel" data-testid="audit-forward">
+        {f
+          ? <>
+              <p style={{ marginTop: 0 }}>
+                <span className="badge primary">forwarding</span> to <code>{f.url}</code>, since {new Date(f.since).toLocaleString()}, by {f.by}.{' '}
+                {f.text ? <b>Statement text included.</b> : 'No statement text.'} TLS checked against {f.ca ? 'its own CA bundle' : "the system's CAs"}.
+              </p>
+              <p data-testid="forward-position">
+                Delivered up to record {f.position} of {f.head} ({f.waiting} waiting), {f.sent} sent in all
+                {f.last_ok && <span className="muted">; last delivered {new Date(f.last_ok).toLocaleString()}</span>}.
+              </p>
+              {f.last_err && <div className="err" data-testid="forward-error">Failing since {f.err_since ? new Date(f.err_since).toLocaleString() : 'now'}: {f.last_err}. The records wait in the store.</div>}
+              {(f.skipped ?? 0) > 0 && <p className="muted">{f.skipped} record(s) were removed by retention before they could be sent.</p>}
+              <div className="row" style={{ gap: 10 }}>
+                <button className="ghost" onClick={send}>Send now</button>
+                <button className="ghost danger" onClick={stop}>Stop forwarding</button>
+              </div>
+            </>
+          : <p style={{ marginTop: 0 }} className="muted">Not forwarded.</p>}
+        <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginTop: 10 }}>
+          <label className="field" style={{ flex: 1, minWidth: 260 }}>{f ? 'Forward somewhere else' : 'Forward to'}
+            <input aria-label="Forward URL" value={url} onChange={e => setUrl(e.target.value)} placeholder="https://siem.example.com/ingest" />
+          </label>
+          <label className="field">Token (https only)
+            <input aria-label="Forward token" type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} />
+          </label>
+        </div>
+        <label className="field" style={{ marginTop: 10 }}>CA bundle (PEM), if the server's certificate is not one the system trusts
+          <textarea aria-label="Forward CA" rows={3} value={ca} onChange={e => setCa(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----" />
+        </label>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 14, alignItems: 'center', marginTop: 10 }}>
+          <label className="check-row"><input type="checkbox" checked={fromStart} onChange={e => setFromStart(e.target.checked)} /> Every record still kept, not just new ones</label>
+          <label className="check-row"><input type="checkbox" checked={text} onChange={e => setText(e.target.checked)} /> Statement text too (forensic mode)</label>
+          <button className="primary" disabled={!url.trim()} onClick={save}>Forward</button>
+        </div>
+      </div>
+    </>
+  )
+}
+
 export default function AuditLog() {
   const confirm = useConfirm()
   const [data, setData] = useState<AuditLogReply | null>(null)
@@ -271,13 +367,14 @@ export default function AuditLog() {
             </table>
           </div>
           <p className="muted" style={{ fontSize: 13, marginBottom: 0 }}>
-            Forwarding it to your SIEM comes next. To turn it off: <code>{data.off}</code>.
+            To turn it off: <code>{data.off}</code>.
           </p>
         </div>
       )}
 
       {data && <Records branches={branches} />}
       {data && <Settings data={data} branches={branches} onChange={() => getAuditLog().then(setData, () => {})} />}
+      {data && <Forwarding data={data} onChange={() => getAuditLog().then(setData, () => {})} />}
 
       <h2 style={{ marginTop: 22 }}>Marked tables</h2>
       <p className="muted" style={{ fontSize: 13, marginTop: -4 }}>

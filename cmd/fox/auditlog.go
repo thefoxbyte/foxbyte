@@ -64,6 +64,8 @@ func auditLogCmd(args []string) error {
 		return auditLogRetention(args[1:])
 	case "purge":
 		return auditLogPurge(args[1:])
+	case "forward":
+		return auditLogForward(args[1:])
 	case "tables":
 		return auditLogTables(args[1:])
 	case "table":
@@ -85,6 +87,9 @@ func auditLogUsage() string {
                                                   forensic: statement text, values and all, kept 30 days by default
 %[1]s audit-log retention [<days> [--forensic]]      how long records, or statement text, are kept
 %[1]s audit-log purge --user <login> [--yes]          remove a person's statement text; their records stay
+%[1]s audit-log forward [https://… | syslog://host[:port]] [--ca file] [--token-file file|-] [--text] [--from-start] [--yes]
+                                                  send a copy of every record to a SIEM, over TLS
+%[1]s audit-log forward --now | --off [--yes]        send what is waiting now; stop forwarding
 %[1]s audit-log tables [--branch b]                  the tables whose writes (and reads) are audited
 %[1]s audit-log table <table> [--reads] [--branch b]  audit a table's writes, and with --reads its reads
 %[1]s audit-log table <table> --off [--branch b]      stop auditing it`, brand.CLI)
@@ -131,7 +136,18 @@ func auditLogStatus() error {
 			fmt.Printf("  %-9s %s%s\n", f.Kind, where, f.Detail)
 		}
 	}
-	fmt.Printf("\nForwarding to a SIEM is not in this version yet.\n")
+	if lines := forwardLines(); len(lines) > 0 {
+		fmt.Println()
+		for i, l := range lines {
+			label := ""
+			if i == 0 {
+				label = "forward"
+			}
+			fmt.Printf("  %-8s %s\n", label, l)
+		}
+	} else {
+		fmt.Printf("\nNot forwarded to a SIEM (`%s audit-log forward`).\n", brand.CLI)
+	}
 	return pendingNote()
 }
 
@@ -640,4 +656,152 @@ func recordAudit(kind, actor, subject, detail string) {
 	s := openStore()
 	defer s.Close()
 	s.Audit(kind, actor, subject, "", detail)
+}
+
+// forwardLines is forwarding as status and `forward` show it; none when it is
+// not set.
+func forwardLines() []string {
+	f := branch.AuditForwardStatus()
+	if f == nil {
+		return nil
+	}
+	text := "no statement text"
+	if f.Text {
+		text = "statement text INCLUDED"
+	}
+	trust := "the system's CAs"
+	if f.CA {
+		trust = "its own CA bundle"
+	}
+	out := []string{
+		fmt.Sprintf("to %s, since %s, by %s", f.URL, f.Since, f.By),
+		fmt.Sprintf("%s; TLS checked against %s", text, trust),
+		fmt.Sprintf("delivered up to record %d of %d (%d waiting), %d sent in all", f.Position, f.Head, f.Waiting, f.Sent),
+	}
+	if f.LastOK != "" {
+		out = append(out, "last delivered "+f.LastOK)
+	}
+	if f.LastErr != "" {
+		out = append(out, fmt.Sprintf("FAILING since %s: %s", f.ErrSince, f.LastErr))
+	}
+	if f.Skipped > 0 {
+		out = append(out, fmt.Sprintf("%d record(s) were removed by retention before they could be sent", f.Skipped))
+	}
+	return out
+}
+
+// auditLogForward sets, shows, runs or stops forwarding to a SIEM.
+func auditLogForward(args []string) error {
+	ps := positionals(args, "--ca", "--token-file")
+	switch {
+	case hasFlag(args, "--off"):
+		if branch.LoadAuditSettings().Forward == nil {
+			fmt.Println("Not forwarding: nothing to stop.")
+			return nil
+		}
+		if !hasFlag(args, "--yes") {
+			fmt.Printf("This stops sending records to the SIEM, and removes the token and CA bundle\n" +
+				"kept for it. The records stay in the store.\n\nRun again with --yes to go ahead.\n")
+			return nil
+		}
+		if err := branch.StopAuditForward(); err != nil {
+			return err
+		}
+		recordAudit(auth.EvAuditLogForward, cliActor(), "", "forwarding stopped")
+		fmt.Println("Forwarding stopped.")
+		return nil
+	case hasFlag(args, "--now"):
+		if branch.LoadAuditSettings().Forward == nil {
+			return fmt.Errorf("not forwarding: set it with %s audit-log forward https://… or syslog://…", brand.CLI)
+		}
+		if _, err := branch.CollectAudit(); err != nil {
+			return err
+		}
+		res, err := branch.ForwardAudit()
+		if err != nil {
+			return fmt.Errorf("forwarding failed after %d record(s): %w (the rest wait in the store)", res.Sent, err)
+		}
+		fmt.Printf("%d record(s) sent; %d waiting.\n", res.Sent, res.Waiting)
+		if res.Skipped > 0 {
+			fmt.Printf("%d record(s) were removed by retention before they could be sent.\n", res.Skipped)
+		}
+		return nil
+	case len(ps) == 0:
+		lines := forwardLines()
+		if len(lines) == 0 {
+			fmt.Printf("Not forwarding. Send a copy of every record to a SIEM with:\n"+
+				"  %[1]s audit-log forward https://siem.example.com/ingest --token-file token.txt\n"+
+				"  %[1]s audit-log forward syslog://logs.example.com:6514 --ca ca.pem\n", brand.CLI)
+		}
+		for _, l := range lines {
+			fmt.Println(l)
+		}
+		return nil
+	}
+
+	u, err := branch.ParseForwardURL(ps[0])
+	if err != nil {
+		return err
+	}
+	o := branch.ForwardOptions{Text: hasFlag(args, "--text"), FromStart: hasFlag(args, "--from-start"), By: cliActor()}
+	if p := optValue(args, "--ca"); p != "" {
+		if o.CAPEM, err = os.ReadFile(p); err != nil {
+			return fmt.Errorf("reading the CA bundle: %w", err)
+		}
+	}
+	if p := optValue(args, "--token-file"); p != "" {
+		var b []byte
+		if p == "-" {
+			b, err = io.ReadAll(io.LimitReader(os.Stdin, 64<<10))
+		} else {
+			b, err = os.ReadFile(p)
+		}
+		if err != nil {
+			return fmt.Errorf("reading the token: %w", err)
+		}
+		o.Token = strings.TrimSpace(string(b))
+	}
+	if !hasFlag(args, "--yes") {
+		from := "from the next record collected"
+		if o.FromStart {
+			from = "starting with every record the store still holds"
+		}
+		text := "Statement text is not sent, even in forensic mode."
+		if o.Text {
+			text = "Statement text IS sent, in forensic mode, values and all: once it is there,\n" +
+				"FoxByte's retention and purge no longer reach it."
+		}
+		trust := "the system's CAs"
+		if len(o.CAPEM) > 0 {
+			trust = "the CA bundle given"
+		}
+		tok := ""
+		if o.Token != "" {
+			tok = "The token goes in the Authorization header, never the URL, and is kept\n" +
+				"in the state directory, readable by this user only.\n"
+		}
+		fmt.Printf("Forwarding sends a copy of every audit record to %s, %s:\n"+
+			"who did what to which object, how it ended and whom for, each with its place\n"+
+			"in the chain, so the copy there shows a record changed or removed here later.\n"+
+			"No values. %s\n\n"+
+			"Over TLS, checked against %s. %s"+
+			"A failure is retried every minute, the records waiting in the store meanwhile;\n"+
+			"`%s check` reports it after five minutes.\n\nRun again with --yes to go ahead.\n",
+			u.Redacted(), from, text, trust, tok, brand.CLI)
+		return nil
+	}
+	if err := branch.SetAuditForward(u.String(), o); err != nil {
+		return err
+	}
+	detail := "forwarding to " + u.String()
+	if o.Text {
+		detail += ", statement text included"
+	}
+	if o.FromStart {
+		detail += ", from the start"
+	}
+	recordAudit(auth.EvAuditLogForward, cliActor(), "", detail)
+	fmt.Printf("Forwarding to %s. The control plane sends what is new every minute;\n"+
+		"`%s audit-log forward --now` sends it now.\n", u.String(), brand.CLI)
+	return nil
 }

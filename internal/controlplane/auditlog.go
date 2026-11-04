@@ -43,6 +43,9 @@ type auditLogReply struct {
 	// and statement text are kept (step 5a).
 	Forensic  map[string]branch.ForensicGrant `json:"forensic"`
 	Retention auditRetention                  `json:"retention"`
+	// Where records are forwarded and how far delivery has got (step 5b);
+	// null when they are not. Never the token.
+	Forward *branch.ForwardStatus `json:"forward"`
 }
 
 type auditRetention struct {
@@ -171,6 +174,7 @@ var auditLogState = func(store *auth.Store) auditLogReply {
 	}
 	rep.Forensic = branch.LoadAuditSettings().Forensic
 	rep.Retention = auditRetention{Days: branch.AuditRetentionDays(), ForensicDays: branch.ForensicRetentionDays()}
+	rep.Forward = branch.AuditForwardStatus()
 	rep.Findings = []branch.AuditFinding{}
 	if rep.On {
 		if f := branch.AuditFindings(branch.MarkEventsFrom(store)); f != nil {
@@ -263,6 +267,17 @@ func markChange(w http.ResponseWriter, r *http.Request, what string, change func
 //	PUT  /api/audit-log/mode       {"forensic": bool, "branch": "", "reason": "…"}
 //	PUT  /api/audit-log/retention  {"days": n, "forensic": bool}
 //	POST /api/audit-log/purge      {"user": "<login>"}
+//
+// and forwarding to a SIEM (step 5b):
+//
+//	PUT    /api/audit-log/forward       {"url": "https://…|syslog://…", "token": "", "ca_pem": "",
+//	                                     "text": bool, "from_start": bool}
+//	DELETE /api/audit-log/forward       stop forwarding
+//	POST   /api/audit-log/forward/send  collect and send what is waiting now
+//
+// The token and CA bundle come in the body, never as a path: the engine reads
+// no file an admin names, so the console cannot send a host file anywhere.
+// Neither is ever sent back.
 func registerAuditSettings(mux *http.ServeMux) {
 	admin := func(w http.ResponseWriter, r *http.Request) (auth.User, bool) {
 		u, _ := auth.UserFrom(r.Context())
@@ -353,5 +368,75 @@ func registerAuditSettings(mux *http.ServeMux) {
 		}
 		record(r, auth.EvAuditLogPurged, u.Email, body.User, fmt.Sprintf("%d statement text(s) purged", n))
 		writeJSON(w, 200, map[string]int{"purged": n})
+	})
+	mux.HandleFunc("PUT /api/audit-log/forward", func(w http.ResponseWriter, r *http.Request) {
+		u, ok := admin(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			URL       string `json:"url"`
+			Token     string `json:"token"`
+			CAPEM     string `json:"ca_pem"`
+			Text      bool   `json:"text"`
+			FromStart bool   `json:"from_start"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+			writeErr(w, 400, errors.New(`the body must be JSON: {"url": "https://…", "token": "", "ca_pem": "", "text": bool, "from_start": bool}`))
+			return
+		}
+		pu, err := branch.ParseForwardURL(body.URL)
+		if err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		if err := branch.SetAuditForward(pu.String(), branch.ForwardOptions{Text: body.Text, CAPEM: []byte(body.CAPEM),
+			Token: body.Token, FromStart: body.FromStart, By: u.Email}); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		detail := "forwarding to " + pu.String()
+		if body.Text {
+			detail += ", statement text included"
+		}
+		if body.FromStart {
+			detail += ", from the start"
+		}
+		record(r, auth.EvAuditLogForward, u.Email, "", detail)
+		writeJSON(w, 200, map[string]any{"forward": branch.AuditForwardStatus()})
+	})
+	mux.HandleFunc("DELETE /api/audit-log/forward", func(w http.ResponseWriter, r *http.Request) {
+		u, ok := admin(w, r)
+		if !ok {
+			return
+		}
+		if branch.LoadAuditSettings().Forward == nil {
+			writeJSON(w, 200, map[string]any{"forward": nil})
+			return
+		}
+		if err := branch.StopAuditForward(); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		record(r, auth.EvAuditLogForward, u.Email, "", "forwarding stopped")
+		writeJSON(w, 200, map[string]any{"forward": nil})
+	})
+	mux.HandleFunc("POST /api/audit-log/forward/send", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := admin(w, r); !ok {
+			return
+		}
+		if branch.LoadAuditSettings().Forward == nil {
+			writeErr(w, 400, errors.New("not forwarding: set where to first"))
+			return
+		}
+		if _, err := branch.CollectAudit(); err != nil {
+			log.Printf("audit log: collecting before forwarding: %v", err)
+		}
+		res, err := branch.ForwardAudit()
+		reply := map[string]any{"sent": res.Sent, "waiting": res.Waiting, "skipped": res.Skipped, "forward": branch.AuditForwardStatus()}
+		if err != nil {
+			reply["error"] = err.Error()
+		}
+		writeJSON(w, 200, reply)
 	})
 }

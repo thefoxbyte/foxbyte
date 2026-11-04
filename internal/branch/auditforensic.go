@@ -42,6 +42,8 @@ type AuditSettings struct {
 	// Forensic is where forensic mode is on: "" for the whole install, or a
 	// branch's name, with who turned it on, why and when.
 	Forensic map[string]ForensicGrant `json:"forensic,omitempty"`
+	// Forward is where records are forwarded (step 5b), nil when nowhere.
+	Forward *AuditForward `json:"forward,omitempty"`
 }
 
 // ForensicGrant is forensic mode turned on somewhere.

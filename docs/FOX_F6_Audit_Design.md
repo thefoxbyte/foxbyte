@@ -919,3 +919,68 @@ Step 5 became two PRs: this one, and forwarding (5b).
   - `status` says it.
   - The console's Audit log page has the mode, retention and a purge, each
     behind a confirmation, and shows the text under its record.
+
+## 25. Gate 1, step 5b: forwarding to a SIEM, as built
+
+`fox audit-log forward <url>` sends a copy of every record to a SIEM, as
+section 9 says: from the collected records, never the raw files, so the SIEM
+receives no more than the store holds.
+
+- **Two ways, both over TLS.** Every record names a login, so plain `http://`
+  and unencrypted syslog are refused.
+  - `https://…`: records as JSON lines (`application/x-ndjson`), one POST per
+    batch of up to 500. A 2xx answer means delivered. A redirect is a
+    failure, not followed, since it would take the records and the token
+    somewhere nobody set.
+  - `syslog://host[:6514]`: RFC 5424 messages over TLS, framed with octet
+    counting as RFC 5425 says. Facility 13 (log audit). Severity is
+    informational, a notice for an error's outcome, and a warning for a
+    gap. The APP-NAME is `bb-audit`, not the product's name, so a rename does
+    not break the SIEM's rules. The record's JSON is the message.
+- **Each record goes with its place in the chain** (`seq`, `prev`, `hash`).
+  The SIEM's copy links record to record, so a record changed or removed here
+  afterwards shows against it. For Standard this is the anchor section 14
+  names for the host administrator.
+- **Statement text goes only with `--text`.** By default a forensic record
+  goes with its `text_sha` and not the text. Once the text is in the SIEM,
+  FoxByte's retention and purge (section 24) no longer reach it, and the
+  CLI and the console say so before it is set.
+- **Secrets.**
+  - A token is for HTTPS only, and is sent as `Authorization: Bearer`.
+  - A URL holding a user or password is refused, with where a token goes
+    instead.
+  - The token and a CA bundle are copied, when forwarding is set, into files
+    of the engine's own in the state directory (0600). They come from the
+    CLI's `--token-file` (or `-` for stdin) and `--ca`, or from the console's
+    form.
+  - Nothing later makes the engine read a path someone named. A console
+    admin, who need not be the host's administrator, therefore cannot send
+    a host file somewhere as a "token". Neither is ever sent back.
+  - With `--ca`, only that bundle is trusted; otherwise the system's CAs.
+- **Delivery is at least once.**
+  - A position beside the store (`.store/forward.json`) says how far the SIEM
+    has got. It moves only once a batch is delivered, so a failed batch is
+    sent again.
+  - The control plane collects and then forwards every minute, up to 10,000
+    records a run. `forward --now` (or the console's Send now) runs it at
+    once.
+  - Forwarding has a lock of its own, so a slow SIEM never holds up
+    collection.
+  - Forwarding starts from the next record, or with `--from-start` from every
+    record the store still holds.
+  - Syslog has no acknowledgement: a batch the TLS connection took counts as
+    delivered, and the session ends with close_notify.
+- **Found when it goes wrong** (section 13).
+  - Forwarding that fails for more than five minutes is a finding: in
+    `fox check`, `status`, the API and the console, with the error and how
+    many records wait. The records wait in the store until their retention.
+  - Records retention removes before they are sent are counted, and are a
+    finding for a week.
+  - The control plane's log says a failure once, and again when it works.
+- **Changes are in the security log** (`audit-log.forward`): where to,
+  whether text goes, from where. Never the token.
+- **Setting forwarding before the audit log was ever on** makes the log's
+  dataset first, with its quota, as setup does. It never leaves a plain
+  directory where the dataset would be mounted.
+- **Not in this step:** client certificates for syslog (mutual TLS), and
+  several destinations at once.

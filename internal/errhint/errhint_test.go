@@ -27,6 +27,10 @@ func TestForKnownFailures(t *testing.T) {
 		{"write /var/lib/postgresql/data: no space left on device", "backup prune"},
 		{"guardrail: TRUNCATE is blocked by policy", "fox policy list"},
 		{`docker: Error response from daemon: unknown: failed to resolve reference "quay.io/minio/minio@sha256:14cea": unexpected status from HEAD request: 401 Unauthorized`, "FOX_MINIO_IMAGE"},
+		// The SIEM's certificate or address, not the engine's: the hint is not
+		// the engine's self-signed certificate, or a stack that is down.
+		{"forwarding failed after 0 record(s): connecting to 10.0.0.5:6514: tls: failed to verify certificate: x509: certificate signed by unknown authority (the rest wait in the store)", "--ca ca.pem"},
+		{"forwarding failed after 0 record(s): sending to siem.example.com: dial tcp 10.0.0.5:443: connect: connection refused (the rest wait in the store)", "They wait in the store"},
 	}
 	for _, c := range cases {
 		got := ForText(c.msg)

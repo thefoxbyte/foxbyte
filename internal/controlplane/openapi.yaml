@@ -2088,6 +2088,52 @@ paths:
         "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/audit-log/forward:
+    put:
+      tags: [audit-log]
+      summary: Forward a copy of every audit record to a SIEM, over TLS (admins only; in the security log).
+      description: >-
+        https:// sends records as JSON lines, one POST per batch, with the token, if any, as a bearer header.
+        syslog://host[:6514] sends RFC 5424 messages over TLS, framed as RFC 5425 says. Plain http://, unencrypted
+        syslog and a URL holding a user or password are refused. The token and CA bundle come in the body, never as a
+        path, and are never sent back. Records go from the next one collected, or with from_start every one the store
+        still holds; statement text only with text. Replaces what was set.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url: { type: string }
+                token: { type: string }
+                ca_pem: { type: string, description: PEM certificates to trust instead of the system's. }
+                text: { type: boolean }
+                from_start: { type: boolean }
+      responses:
+        "200": { description: Where forwarding stands. }
+        "400": { description: A URL, token or CA bundle that is refused. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [audit-log]
+      summary: Stop forwarding, and remove the token and CA bundle kept for it (admins only; in the security log).
+      responses:
+        "200": { description: Forwarding is off. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/audit-log/forward/send:
+    post:
+      tags: [audit-log]
+      summary: Collect, and send what is waiting now (admins only).
+      description: A failure is in the reply's error, and kept for the findings; the records wait in the store.
+      responses:
+        "200": { description: "How many went, how many wait, and where forwarding stands." }
+        "400": { description: Not forwarding. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/audit-log/records:
     get:
       tags: [audit-log]

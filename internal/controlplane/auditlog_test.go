@@ -116,6 +116,9 @@ func TestAuditSettingsRoutes(t *testing.T) {
 		{"PUT", "/api/audit-log/mode", `{"forensic":true,"reason":"x"}`},
 		{"PUT", "/api/audit-log/retention", `{"days":30}`},
 		{"POST", "/api/audit-log/purge", `{"user":"bob"}`},
+		{"PUT", "/api/audit-log/forward", `{"url":"https://siem.example.com"}`},
+		{"DELETE", "/api/audit-log/forward", ``},
+		{"POST", "/api/audit-log/forward/send", ``},
 	} {
 		if code, _ := serve(t, h, kb, c.method, c.path, c.body); code != 403 {
 			t.Errorf("not an admin, %s %s: %d, want 403", c.method, c.path, code)
@@ -127,6 +130,11 @@ func TestAuditSettingsRoutes(t *testing.T) {
 		{"PUT", "/api/audit-log/retention", `{"days":0}`, "1 to 3650"},
 		{"POST", "/api/audit-log/purge", `{"user":""}`, "login"},
 		{"PUT", "/api/audit-log/mode", `not json`, "JSON"},
+		{"PUT", "/api/audit-log/forward", `{"url":"http://siem.example.com"}`, "unencrypted"},
+		{"PUT", "/api/audit-log/forward", `{"url":"https://u:p@siem.example.com"}`, "password"},
+		{"PUT", "/api/audit-log/forward", `{"url":"syslog://logs.example.com","token":"t"}`, "https:// only"},
+		{"PUT", "/api/audit-log/forward", `{"url":"https://siem.example.com","ca_pem":"x"}`, "no PEM"},
+		{"PUT", "/api/audit-log/forward", `[]`, "JSON"},
 	} {
 		code, out := serve(t, h, ka, c.method, c.path, c.body)
 		if msg, _ := out["error"].(string); code != 400 || !strings.Contains(msg, c.want) {

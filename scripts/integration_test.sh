@@ -2819,6 +2819,183 @@ $S audit-log retention 365 >/dev/null 2>&1
 $S audit-log off --yes >/dev/null 2>&1; main_up
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud5_orders" >/dev/null
 
+echo "### 11ad. forwarding to a SIEM (F6 Gate 1, step 5b)"
+# A copy of every record, from the store, over TLS: to an HTTPS collector as
+# JSON lines, or to syslog as RFC 5424. Two receivers stand in for a SIEM,
+# each with a certificate of its own that only the CA given is trusted for.
+FWD=/tmp/fwd; rm -rf "$FWD"; mkdir -p "$FWD"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=siem \
+  -addext subjectAltName=IP:127.0.0.1 -keyout "$FWD/key.pem" -out "$FWD/ca.pem" >/dev/null 2>&1
+echo 200 > "$FWD/status"
+cat > "$FWD/https_recv.py" <<'EOF'
+import http.server, json, ssl, sys
+d = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        code = int(open(d + "/status").read())
+        if code == 200:
+            with open(d + "/https.log", "a") as f:
+                f.write(json.dumps({"path": self.path, "auth": self.headers.get("Authorization", ""),
+                                    "type": self.headers.get("Content-Type", "")}) + "\n")
+            with open(d + "/https.jsonl", "ab") as f:
+                f.write(body)
+        self.send_response(code); self.end_headers()
+    def log_message(self, *a): pass
+s = http.server.HTTPServer(("127.0.0.1", 18443), H)
+c = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); c.load_cert_chain(d + "/ca.pem", d + "/key.pem")
+s.socket = c.wrap_socket(s.socket, server_side=True)
+s.serve_forever()
+EOF
+cat > "$FWD/syslog_recv.py" <<'EOF'
+import socket, ssl, sys, threading
+d = sys.argv[1]
+c = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); c.load_cert_chain(d + "/ca.pem", d + "/key.pem")
+ls = socket.socket(); ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+ls.bind(("127.0.0.1", 16514)); ls.listen()
+def serve(conn):
+    f = conn.makefile("rb")
+    while True:
+        n = b""
+        while not n.endswith(b" "):
+            ch = f.read(1)
+            if not ch:
+                return
+            n += ch
+        msg = f.read(int(n))
+        with open(d + "/syslog.log", "ab") as out:
+            out.write(msg + b"\n")
+while True:
+    conn, _ = ls.accept()
+    try:
+        threading.Thread(target=serve, args=(c.wrap_socket(conn, server_side=True),), daemon=True).start()
+    except ssl.SSLError:
+        conn.close()
+EOF
+setsid python3 "$FWD/https_recv.py" "$FWD" >"$FWD/https.err" 2>&1 < /dev/null & echo $! > "$FWD/https.pid"
+setsid python3 "$FWD/syslog_recv.py" "$FWD" >"$FWD/syslog.err" 2>&1 < /dev/null & echo $! > "$FWD/syslog.pid"
+sleep 1
+received() { cat "$FWD/https.jsonl" 2>/dev/null; }
+seqs() { received | python3 -c 'import sys,json; print(" ".join(str(json.loads(l)["seq"]) for l in sys.stdin if l.strip()))'; }
+printf 'fwd-tok-%s\n' "$RANDOM$RANDOM" > "$FWD/token"; TOK="$(cat "$FWD/token")"
+URL=https://127.0.0.1:18443/ingest
+
+OUT="$($S audit-log forward http://127.0.0.1:18443/ingest 2>&1)"; rc=$?
+assert_eq "plain http:// is refused: every record names a login" "$([ $rc -ne 0 ] && echo refused)|$(echo "$OUT" | grep -c 'unencrypted')" "refused|1"
+OUT="$($S audit-log forward https://siem:secret@127.0.0.1:18443/ 2>&1)"; rc=$?
+assert_eq "…and so is a URL holding a password, with where a token goes instead" "$([ $rc -ne 0 ] && echo refused)|$(echo "$OUT" | grep -c 'token-file')" "refused|1"
+OUT="$($S audit-log forward syslog://127.0.0.1:16514 --token-file "$FWD/token" --yes 2>&1)"; rc=$?
+assert_eq "…and a token for syslog, which knows its clients by TLS" "$([ $rc -ne 0 ] && echo refused)|$(echo "$OUT" | grep -c 'https:// only')" "refused|1"
+OUT="$($S audit-log forward "$URL" --ca "$FWD/ca.pem" --token-file "$FWD/token" 2>&1)"
+assert_eq "without --yes it says what goes, and that no values do, and sets nothing" \
+  "$(echo "$OUT" | grep -c 'who did what to which object')|$(echo "$OUT" | grep -c 'No values')|$($S audit-log forward | grep -c 'Not forwarding')" "1|1|1"
+
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud6_orders; CREATE TABLE aud6_orders (id int PRIMARY KEY, email text); GRANT ALL ON aud6_orders TO db_client" >/dev/null
+$S audit-log table aud6_orders >/dev/null 2>&1
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+$S audit-log collect >/dev/null 2>&1
+assert_eq "with --yes, forwarding is set" \
+  "$($S audit-log forward "$URL" --ca "$FWD/ca.pem" --token-file "$FWD/token" --yes | grep -c "Forwarding to $URL")" "1"
+assert_eq "…the token kept for it readable by this user only, and in neither the settings nor the security log" \
+  "$(stat -c %a "$HOME/$BRAND_STATE_DIR/audit-forward-token")|$(grep -c "$TOK" "$HOME/$BRAND_STATE_DIR/audit-settings.json")|$($S audit log --limit 50 | grep -c "$TOK")|$($S audit log --limit 50 | grep -c 'audit-log.forward')" "600|0|0|1"
+START="$($S audit-log forward | sed -n 's/^delivered up to record \([0-9]*\) .*/\1/p')"
+gw "$KEY" "INSERT INTO aud6_orders VALUES (1, 'kiran.f6@example.in')" >/dev/null
+gw "$KEY" "INSERT INTO aud6_orders VALUES (1, 'kiran.f6@example.in')" >/dev/null
+sleep 1.5
+$S audit-log forward --now >/dev/null 2>&1
+assert_eq "forward --now: the collector receives the writes, from the next record on, nothing earlier" \
+  "$(received | grep 'public.aud6_orders' | grep -c '"command":"INSERT"')|$(seqs | tr ' ' '\n' | awk -v s="$START" '$1 <= s' | wc -l | tr -d ' ')" "2|0"
+assert_eq "…as JSON lines, with the token in the Authorization header and not the URL" \
+  "$(grep -c "\"auth\": \"Bearer $TOK\"" "$FWD/https.log")|$(grep -c '"path": "/ingest"' "$FWD/https.log")|$(grep -c 'application/x-ndjson' "$FWD/https.log")" \
+  "$(wc -l < "$FWD/https.log" | tr -d ' ')|$(wc -l < "$FWD/https.log" | tr -d ' ')|$(wc -l < "$FWD/https.log" | tr -d ' ')"
+assert_eq "…with no value a statement held, and the failed write's outcome" \
+  "$(received | grep -c 'kiran')|$(received | grep -c '"sqlstate":"23505"')" "0|1"
+CHAIN="$(received | python3 -c '
+import sys, json
+r = [json.loads(l) for l in sys.stdin if l.strip()]
+print("linked" if all(b["prev"] == a["hash"] and b["seq"] == a["seq"] + 1 for a, b in zip(r, r[1:])) and all(x["source"] == "bb-audit" for x in r) else "broken")')"
+assert_eq "…each with its place in the chain: the copy there links record to record" "$CHAIN" "linked"
+assert_eq "status and fox check say how far delivery has got" \
+  "$($S audit-log status | grep -c 'delivered up to record .* (0 waiting)')|$($S check 2>&1 | grep '^ok    audit forward' | grep -c '127.0.0.1:18443: delivered up to record')" "1|1"
+
+# The collector fails: the records wait, and go once it works again.
+echo 503 > "$FWD/status"
+gw "$KEY" "INSERT INTO aud6_orders VALUES (2, 'x@example.in')" >/dev/null; sleep 1.5
+OUT="$($S audit-log forward --now 2>&1)"; rc=$?
+assert_eq "a collector that fails: forward --now says so, and the records wait in the store" \
+  "$rc|$(echo "$OUT" | grep -c '503')|$($S audit-log forward | grep -c 'FAILING since')|$($S audit-log forward | grep -c '([1-9][0-9]* waiting)')" "1|1|1|1"
+python3 - "$STORE/forward.json" <<'EOF'
+import json, sys, datetime
+p = sys.argv[1]; s = json.load(open(p))
+s["err_since"] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump(s, open(p, "w"))
+EOF
+assert_eq "…failing for more than five minutes, it is a warning in fox check" \
+  "$($S check 2>&1 | grep '^warn  audit forward' | grep -c 'records have not reached 127.0.0.1:18443 since .*503')" "1"
+echo 200 > "$FWD/status"
+$S audit-log forward --now >/dev/null 2>&1
+# Against the position delivered, not the store's head: a heartbeat collected
+# a moment later has not been sent yet, and is not missing.
+POS="$($S audit-log forward | sed -n 's/^delivered up to record \([0-9]*\) .*/\1/p')"
+assert_eq "…and once it works, what waited goes: every record since forwarding was set, none twice" \
+  "$(seqs | tr ' ' '\n' | sort -n | uniq | awk -v s="$START" -v h="$POS" '$1 > s && $1 <= h' | wc -l | tr -d ' ')|$(seqs | tr ' ' '\n' | sort | uniq -d | wc -l | tr -d ' ')|$($S check 2>&1 | grep -c '^warn  audit forward')" \
+  "$((POS - START))|0|0"
+
+# Statement text goes only when asked for.
+$S audit-log mode forensic --reason 'forwarding test' --yes >/dev/null 2>&1
+gw "$KEY" "INSERT INTO aud6_orders VALUES (3, 'leela.f6@example.in')" >/dev/null; sleep 1.5
+$S audit-log forward --now >/dev/null 2>&1
+assert_eq "in forensic mode the record goes with its text's hash, and not the text" \
+  "$(received | grep 'public.aud6_orders' | grep -c '"text_sha":"')|$(received | grep -c 'leela')" "1|0"
+$S audit-log forward "$URL" --ca "$FWD/ca.pem" --text --from-start --yes >/dev/null 2>&1
+$S audit-log forward --now >/dev/null 2>&1
+assert_eq "with --text (and --from-start, every record still kept) the text goes too" \
+  "$(received | grep -c "INSERT INTO aud6_orders VALUES (3, 'leela.f6@example.in')")|$(received | python3 -c 'import sys,json; print(min(json.loads(l)["seq"] for l in sys.stdin if l.strip()) <= 2)')" "1|True"
+assert_eq "…set again without a token, none is sent" "$(tail -1 "$FWD/https.log" | grep -c '"auth": ""')" "1"
+$S audit-log mode default >/dev/null 2>&1
+
+# Syslog over TLS, RFC 5424 framed as RFC 5425 says.
+$S audit-log forward syslog://127.0.0.1:16514 --ca "$FWD/ca.pem" --yes >/dev/null 2>&1
+gw "$KEY" "INSERT INTO aud6_orders VALUES (4, 'y@example.in')" >/dev/null; sleep 1.5
+$S audit-log forward --now >/dev/null 2>&1; sleep 1
+assert_eq "syslog://: RFC 5424 messages over TLS, facility log audit, the record's JSON as the message" \
+  "$(grep 'public.aud6_orders' "$FWD/syslog.log" | grep -c '^<110>1 [0-9T:.-]*Z [^ ]* bb-audit - statement - {')" "1"
+# Set again without its CA: the system's CAs do not vouch for the receiver's
+# certificate, so the connection fails before a record is sent.
+$S audit-log forward syslog://127.0.0.1:16514 --yes >/dev/null 2>&1
+SYSN="$(wc -l < "$FWD/syslog.log")"
+gw "$KEY" "INSERT INTO aud6_orders VALUES (6, 'w@example.in')" >/dev/null; sleep 1.5
+assert_eq "…without the CA that vouches for the server's certificate, it refuses to send, and the server gets nothing" \
+  "$($S audit-log forward --now 2>&1 | grep -c 'x509\|SIEM did not take the records')|$(( $(wc -l < "$FWD/syslog.log") - SYSN ))" "2|0"
+
+# The console's route: the token and CA in the body, never a path; never sent back.
+printf 'password123\n' | $S user create aud-fwd@foxbyte.dev >/dev/null 2>&1
+AFK="$($S apikey create aud-fwd@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+BODY="$(python3 -c 'import json,sys; print(json.dumps({"url": sys.argv[1], "token": sys.argv[2], "ca_pem": open(sys.argv[3]).read()}))' "$URL" "$TOK" "$FWD/ca.pem")"
+assert_eq "the API: someone who is not an admin may not set it" \
+  "$(code "$AFK" -X PUT -H 'Content-Type: application/json' -d "$BODY" https://localhost:8080/api/audit-log/forward)" "403"
+assert_eq "…an admin may, and the reply holds where, never the token" \
+  "$(code "$KEY" -X PUT -H 'Content-Type: application/json' -d "$BODY" https://localhost:8080/api/audit-log/forward)|$(curl -sk -H "$AUTH" https://localhost:8080/api/audit-log | python3 -c 'import sys,json; f=json.load(sys.stdin)["forward"]; print(f["host"], f["token"], f["ca"])')|$(curl -sk -H "$AUTH" https://localhost:8080/api/audit-log | grep -c "$TOK")" \
+  "200|127.0.0.1:18443 True True|0"
+# The control plane forwards on its own, every minute: no --now.
+BEFORE="$(received | wc -l)"
+gw "$KEY" "INSERT INTO aud6_orders VALUES (5, 'z@example.in')" >/dev/null
+for _ in $(seq 1 50); do [ "$(received | wc -l)" -gt "$BEFORE" ] && break; sleep 3; done
+assert_eq "the control plane collects and forwards on its own, every minute" "$([ "$(received | wc -l)" -gt "$BEFORE" ] && echo sent)" "sent"
+SJ="$(curl -sk -H "$AUTH" -X POST https://localhost:8080/api/audit-log/forward/send)"
+assert_eq "…and the console can send now" "$(echo "$SJ" | python3 -c 'import sys,json; r=json.load(sys.stdin); print("error" in r, r["waiting"])')" "False 0"
+assert_eq "stopping it through the API removes the token kept for it" \
+  "$(code "$KEY" -X DELETE https://localhost:8080/api/audit-log/forward)|$([ -e "$HOME/$BRAND_STATE_DIR/audit-forward-token" ] && echo kept || echo gone)|$($S audit-log forward | grep -c 'Not forwarding')" "200|gone|1"
+# Six: four set at the command line (https, again with --text, syslog, syslog
+# without its CA), and the API's set and stop. The refusals are not changes.
+assert_eq "every change to forwarding is in the security log" "$($S audit log --limit 200 | grep -c 'audit-log.forward')" "6"
+$S user delete aud-fwd@foxbyte.dev >/dev/null 2>&1
+kill "$(cat "$FWD/https.pid")" "$(cat "$FWD/syslog.pid")" 2>/dev/null
+pkill -f "$FWD/(https|syslog)_recv.py" 2>/dev/null
+$S audit-log off --yes >/dev/null 2>&1; main_up
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS aud6_orders" >/dev/null
+rm -rf "$FWD"
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

@@ -14,8 +14,13 @@ import (
 // lockAuditStore holds the store for one collector at a time: the control
 // plane's, every minute, and `fox audit-log show`'s, which collects first.
 // The lock goes with the process, so one that dies holding it frees it.
-func lockAuditStore() (func(), error) {
-	f, err := os.OpenFile(filepath.Join(AuditStoreDir(), "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+func lockAuditStore() (func(), error) { return lockAuditFile("lock") }
+
+// lockAuditFile holds one of the store's lock files: "lock" for collecting,
+// "forward.lock" for forwarding, which waits on the network and so must not
+// hold up a collection.
+func lockAuditFile(name string) (func(), error) {
+	f, err := os.OpenFile(filepath.Join(AuditStoreDir(), name), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
