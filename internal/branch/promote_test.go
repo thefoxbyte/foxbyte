@@ -101,3 +101,26 @@ func TestQuoteIdent(t *testing.T) {
 		t.Errorf("quoteIdent did not double the quote: %s", got)
 	}
 }
+
+// Entries share a statement only when they hold the same text and were
+// recorded in the same transaction; without a transaction nothing is merged.
+func TestReplayOnce(t *testing.T) {
+	run := "CREATE TABLE t (id int); CREATE VIEW v AS SELECT * FROM t"
+	grant := "GRANT SELECT ON t TO r"
+	es := []RequestEntry{
+		entry(1, "ada", "human", "CREATE TABLE", "public.t", run),
+		entry(2, "ada", "human", "CREATE VIEW", "public.v", run),
+		entry(3, "ada", "human", "GRANT", "", grant),
+		entry(4, "ada", "human", "GRANT", "", grant),              // the same text again, in another transaction
+		entry(5, "ada", "human", "CREATE TABLE", "public.u", run), // no transaction recorded
+	}
+	ReplayOnce(es, map[int64]int64{1: 77, 2: 77, 3: 78, 4: 79})
+	got := []int64{es[0].SameRun, es[1].SameRun, es[2].SameRun, es[3].SameRun, es[4].SameRun}
+	if got[0] != 0 || got[1] != 1 || got[2] != 0 || got[3] != 0 || got[4] != 0 {
+		t.Fatalf("same_run: %v, want [0 1 0 0 0]", got)
+	}
+	out := FormatRequest(auth.ChangeRequest{ID: 1, Source: "a", Target: "main"}, es)
+	if strings.Count(out, "CREATE VIEW v AS") != 2 || !strings.Contains(out, "entry 2, by ada: made by the same run as entry 1, above") {
+		t.Fatalf("the request does not say entry 2 runs with entry 1:\n%s", out)
+	}
+}
