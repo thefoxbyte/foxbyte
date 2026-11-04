@@ -18,8 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/thefoxbyte/foxbyte/internal/brand"
 )
 
 // The audit log's store and the collector that fills it (F6 Gate 1, step 3;
@@ -53,15 +51,6 @@ const (
 // AuditStoreDir is where the records are kept. A variable so a test can keep
 // them somewhere harmless.
 var AuditStoreDir = func() string { return AuditRoot() + "/" + auditStoreName }
-
-// AuditRetentionDays is how long records are kept: FOX_AUDIT_RETENTION_DAYS,
-// or a year (design, section 11).
-func AuditRetentionDays() int {
-	if n, err := strconv.Atoi(strings.TrimSpace(brand.Getenv(envAuditRetention))); err == nil && n > 0 {
-		return n
-	}
-	return 365
-}
 
 // auditState is how far the collector has got.
 type auditState struct {
@@ -440,6 +429,13 @@ func CollectAudit() (CollectResult, error) {
 	s.LastRun = time.Now().UTC().Format(time.RFC3339)
 	if len(recs) > 0 {
 		day := collectDay(time.Now())
+		// The text first: a crash after it and before the records leaves
+		// text for records not yet written, which the read again replaces
+		// (it is keyed by record number); the other way, records whose text
+		// was never kept.
+		if err := appendForensic(day, recs); err != nil {
+			return res, err
+		}
 		size, err := appendDay(day, recs)
 		if err != nil {
 			return res, err
@@ -466,6 +462,9 @@ func CollectAudit() (CollectResult, error) {
 		return res, err
 	}
 	res.Pruned = pruned
+	if _, err := pruneForensic(now.UTC().AddDate(0, 0, -ForensicRetentionDays()).Format("2006-01-02")); err != nil {
+		return res, err
+	}
 	if res.Removed > 0 || res.Pruned > 0 {
 		if err := saveAuditState(s); err != nil {
 			return res, err
@@ -510,9 +509,13 @@ type AuditQuery struct {
 // transaction ended and whom it was for, from the transaction's own records.
 type AuditEntry struct {
 	AuditRecord
-	TxnOutcome string    `json:"txn_outcome,omitempty"`
-	TxnFor     *AuditFor `json:"txn_for,omitempty"`
-	Error      string    `json:"error,omitempty"` // its transaction's error, as a SQLSTATE
+	TxnOutcome string `json:"txn_outcome,omitempty"`
+	// Text is forensic mode's statement text, while it is kept; TextGone says
+	// a record had text that has expired or been purged.
+	Text     string    `json:"text,omitempty"`
+	TextGone bool      `json:"text_gone,omitempty"`
+	TxnFor   *AuditFor `json:"txn_for,omitempty"`
+	Error    string    `json:"error,omitempty"` // its transaction's error, as a SQLSTATE
 }
 
 // ReadAudit reads the newest records that match, newest first: statements
@@ -539,6 +542,7 @@ func ReadAudit(q AuditQuery) ([]AuditEntry, error) {
 	if len(out) > q.Limit {
 		out = out[:q.Limit]
 	}
+	attachTexts(out)
 	return out, nil
 }
 
@@ -593,6 +597,34 @@ func joinAudit(recs []AuditRecord, q AuditQuery) []AuditEntry {
 	return out
 }
 
+// attachTexts gives each forensic record its statement text, while it is
+// kept and still matches the hash its record holds.
+func attachTexts(entries []AuditEntry) {
+	need := false
+	for _, e := range entries {
+		if e.TextSHA != "" {
+			need = true
+			break
+		}
+	}
+	if !need {
+		return
+	}
+	texts, _ := forensicTexts()
+	for i := range entries {
+		if entries[i].TextSHA == "" {
+			continue
+		}
+		t, ok := texts[entries[i].Seq]
+		sum := sha256.Sum256([]byte(t.Text))
+		if ok && hex.EncodeToString(sum[:]) == entries[i].TextSHA {
+			entries[i].Text = t.Text
+		} else {
+			entries[i].TextGone = true
+		}
+	}
+}
+
 // tableMatches compares a record's object with a table asked for by name or
 // schema.name.
 func tableMatches(object, table string) bool {
@@ -622,6 +654,14 @@ func VerifyAudit() (ChainReport, error) {
 		all = append(all, recs...)
 	}
 	rep := verifyChain(all, s.Base.Seq, s.Base.Hash)
+	texts, err := forensicTexts()
+	if err != nil {
+		unreadable = append(unreadable, fmt.Sprintf("the statement text cannot all be read (%v): a file was changed", err))
+	}
+	if p := verifyForensic(all, texts); len(p) > 0 {
+		rep.Problems = append(rep.Problems, p...)
+		rep.Intact = false
+	}
 	if len(unreadable) > 0 {
 		rep.Problems = append(unreadable, rep.Problems...)
 		rep.Intact = false

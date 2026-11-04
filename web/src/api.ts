@@ -878,7 +878,15 @@ export type AuditLogReply = {
   setup: string
   off: string
   findings?: AuditFinding[] | null
+  forensic?: Record<string, ForensicGrant> | null
+  retention?: { days: number; forensic_days: number }
 }
+export type ForensicGrant = { by: string; reason: string; since: string }
+export const setAuditMode = (forensic: boolean, branch: string, reason: string) =>
+  req('PUT', `${API}/api/audit-log/mode`, { forensic, branch, reason }) as Promise<{ forensic: Record<string, ForensicGrant> | null; reached: string[] }>
+export const setAuditRetention = (days: number, forensic: boolean) =>
+  req('PUT', `${API}/api/audit-log/retention`, { days, forensic }) as Promise<{ days: number; forensic_days: number }>
+export const purgeAuditText = (user: string) => req('POST', `${API}/api/audit-log/purge`, { user }) as Promise<{ purged: number }>
 export type AuditFinding = { kind: 'space' | 'collector' | 'heartbeat' | 'gap' | 'mark'; branch?: string; detail: string; since?: string }
 export const getAuditLog = () => req('GET', `${API}/api/audit-log`) as Promise<AuditLogReply>
 
@@ -900,6 +908,7 @@ export type AuditEntry = {
   audit?: string; class?: string; command?: string; object_type?: string; object?: string
   session?: string; vxid?: string; outcome?: string; sqlstate?: string; text?: string
   txn_outcome?: string; txn_for?: AuditFor | null; error?: string
+  text_sha?: string; text_gone?: boolean
 }
 export type AuditQuery = { branch?: string; table?: string; user?: string; since?: string; limit?: number; errors?: boolean }
 export const getAuditRecords = (q: AuditQuery) => {

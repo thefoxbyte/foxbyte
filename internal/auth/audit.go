@@ -132,6 +132,12 @@ const (
 	// logins, and whom changes were for, so reading them is recorded as
 	// reading someone's query history is.
 	EvAuditLogRead = "audit-log.read"
+	// Forensic mode on or off (with the reason given), retention changed, and
+	// a person's statement text purged: each changes what the audit log keeps
+	// about people.
+	EvAuditLogMode      = "audit-log.mode"
+	EvAuditLogRetention = "audit-log.retention"
+	EvAuditLogPurged    = "audit-log.purged"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

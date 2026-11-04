@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from 'react'
-import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, unmarkAudited, type AuditEntry, type AuditFor, type AuditLogReply, type AuditMarks, type Branch } from '../api'
+import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, purgeAuditText, setAuditMode, setAuditRetention, unmarkAudited, type AuditEntry, type AuditFor, type AuditLogReply, type AuditMarks, type Branch } from '../api'
 import { useConfirm } from '../confirm'
 
 // The databases' audit log (F6): pgAudit in default mode. It records who
@@ -88,11 +88,109 @@ function Records({ branches }: { branches: Branch[] }) {
                   <td>{outcomeOf(e)}</td>
                   <td>{forOf(e.txn_for)}</td>
                 </tr>
-              ))}
+              )).flatMap((row, i) => {
+                const e = rows[i]
+                if (!e.text && !e.text_gone) return [row]
+                return [row, (
+                  <tr key={`${e.seq}-text`} className="audit-text">
+                    <td colSpan={7}>
+                      {e.text
+                        ? <><span className="muted">Statement (forensic mode): </span><code data-testid={`text-${e.seq}`}>{e.text}</code></>
+                        : <span className="muted" data-testid={`text-${e.seq}`}>Statement text removed: past its retention, or purged.</span>}
+                    </td>
+                  </tr>
+                )]
+              })}
             </tbody>
           </table>
         </div>
       )}
+    </>
+  )
+}
+
+// What the audit log keeps: forensic mode (statement text, values and all,
+// with a reason), how long records and text are kept, and a person's text
+// purged. Admins only; each change is in the security log.
+function Settings({ data, branches, onChange }: { data: AuditLogReply; branches: Branch[]; onChange: () => void }) {
+  const confirm = useConfirm()
+  const [where, setWhere] = useState('')
+  const [reason, setReason] = useState('')
+  const [days, setDays] = useState(String(data.retention?.days ?? 365))
+  const [textDays, setTextDays] = useState(String(data.retention?.forensic_days ?? 30))
+  const [purgeUser, setPurgeUser] = useState('')
+  const [note, setNote] = useState('')
+  const [err, setErr] = useState('')
+  const grants = Object.entries(data.forensic ?? {})
+  const act = async (f: () => Promise<string>) => {
+    setErr(''); setNote('')
+    try { setNote(await f()); onChange() } catch (e) { setErr((e as Error).message) }
+  }
+  const forensicOn = async () => {
+    const ok = await confirm({
+      title: 'Turn on forensic mode',
+      message: <>Keep each audited statement's text on <b>{where || 'every branch'}</b>, literals and all, which can include personal
+        data, for {data.retention?.forensic_days ?? 30} days? It is kept beside the records, read by admins only, and every read is
+        recorded. Your reason is recorded with your name.</>,
+      confirmText: 'Turn on',
+      danger: true,
+    })
+    if (ok) act(async () => { await setAuditMode(true, where, reason); setReason(''); return `Forensic mode is on for ${where || 'every branch'}.` })
+  }
+  const purge = async () => {
+    const ok = await confirm({
+      title: 'Purge statement text',
+      message: <>Remove every statement text forensic mode kept from <b>{purgeUser}</b>'s statements? Their records stay.</>,
+      confirmText: 'Purge',
+      danger: true,
+    })
+    if (ok) act(async () => { const r = await purgeAuditText(purgeUser); setPurgeUser(''); return `Removed ${r.purged} statement text(s).` })
+  }
+  return (
+    <>
+      <h2 style={{ marginTop: 22 }}>What it keeps</h2>
+      {err && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
+      {note && <div className="ok" role="status" style={{ marginTop: 8 }}>{note}</div>}
+      <div className="panel" data-testid="audit-mode">
+        {grants.length === 0
+          ? <p style={{ marginTop: 0 }}><span className="badge">default mode</span> No statement text, no values, on every branch.</p>
+          : grants.map(([b, g]) => (
+              <p key={b} style={{ marginTop: 0 }}>
+                <span className="badge primary">forensic</span> on <b>{b || 'every branch'}</b> since {new Date(g.since).toLocaleString()}, by {g.by}: &ldquo;{g.reason}&rdquo;{' '}
+                <button className="ghost sm" onClick={() => act(async () => { await setAuditMode(false, b, ''); return `Default mode for ${b || 'every branch'}.` })}>Back to default</button>
+              </p>
+            ))}
+        <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+          <label className="field">Forensic mode on
+            <select aria-label="Forensic branch" value={where} onChange={e => setWhere(e.target.value)}>
+              <option value="">every branch</option>
+              {branches.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+            </select>
+          </label>
+          <label className="field" style={{ flex: 1, minWidth: 220 }}>Why
+            <input aria-label="Forensic reason" value={reason} onChange={e => setReason(e.target.value)} placeholder="Incident 2026-11-04: who changed the orders?" />
+          </label>
+          <button className="ghost danger" disabled={!reason.trim()} onClick={forensicOn}>Turn on forensic mode</button>
+        </div>
+      </div>
+      <div className="panel" style={{ marginTop: 10 }}>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+          <label className="field">Records kept (days)
+            <input aria-label="Records kept days" type="number" min={1} max={3650} value={days} onChange={e => setDays(e.target.value)} style={{ width: 110 }} />
+          </label>
+          <button className="ghost" onClick={() => act(async () => { const r = await setAuditRetention(Number(days), false); return `Records are kept ${r.days} days.` })}>Save</button>
+          <label className="field">Statement text kept (days)
+            <input aria-label="Text kept days" type="number" min={1} max={3650} value={textDays} onChange={e => setTextDays(e.target.value)} style={{ width: 110 }} />
+          </label>
+          <button className="ghost" onClick={() => act(async () => { const r = await setAuditRetention(Number(textDays), true); return `Statement text is kept ${r.forensic_days} days.` })}>Save</button>
+        </div>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginTop: 10 }}>
+          <label className="field">Purge a person's statement text
+            <input aria-label="Purge login" value={purgeUser} onChange={e => setPurgeUser(e.target.value)} placeholder="alice@example.com" />
+          </label>
+          <button className="ghost danger" disabled={!purgeUser.trim()} onClick={purge}>Purge</button>
+        </div>
+      </div>
     </>
   )
 }
@@ -179,6 +277,7 @@ export default function AuditLog() {
       )}
 
       {data && <Records branches={branches} />}
+      {data && <Settings data={data} branches={branches} onChange={() => getAuditLog().then(setData, () => {})} />}
 
       <h2 style={{ marginTop: 22 }}>Marked tables</h2>
       <p className="muted" style={{ fontSize: 13, marginTop: -4 }}>

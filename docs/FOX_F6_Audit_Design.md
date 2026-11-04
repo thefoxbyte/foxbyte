@@ -879,3 +879,43 @@ Each finding is a warning in `fox check` with what to do. Findings appear in
 `fox audit-log status`, in `GET /api/audit-log`'s `findings`, and on the
 console's Audit log page. `show` lists gap records with the statements, and
 leaves heartbeats out.
+
+---
+
+## 24. Gate 1, step 5a: forensic mode and retention, as built
+
+Step 5 became two PRs: this one, and forwarding (5b).
+
+- **Forensic mode** turns on `pgaudit.log_statement` for every branch or one
+  branch, by `ALTER SYSTEM` and a reload.
+  - It needs an admin, a reason, and `--yes` after it says what it keeps.
+  - Every running database it covers takes it at once. A branch started
+    later takes it from the policy, which now sets the mode per database.
+  - `pgaudit.log_parameter` stays off in both modes, because F1's tokens are
+    parameters.
+  - The settings live in the state directory (`audit-settings.json`), beside
+    the audit marker.
+- **The text is not in the chain.** This is a change from sections 9 and 10,
+  which put forensic records in the store like any other.
+  - A record holds `text_sha`, the SHA-256 of its statement's text.
+  - The text goes to `.store/forensic/<day>.jsonl.gz`, written just before
+    its records.
+  - Removing the text, at its retention or for a person, therefore breaks
+    nothing, because the chain never held it.
+  - `verify` checks every text still kept against the hash its record
+    holds. A text changed after it was kept is reported.
+  - A read shows the text while it is kept and matches. Otherwise it says
+    the text was removed.
+- **Purge** (`fox audit-log purge --user <login>`, F4) removes every text that
+  login's statements left. The records stay: what was done stays, and what it
+  held goes. It is in the security log, with how many texts went.
+- **Retention** is a setting (`fox audit-log retention`): records 365 days and
+  text 30 by default. Text is never kept longer than its records: shortening
+  the records' retention shortens the text's with it. The setting comes
+  before `FOX_AUDIT_RETENTION_DAYS`, which comes before the default.
+- **Seen everywhere.**
+  - `fox check` warns while forensic mode is on: where, by whom, why, since
+    when.
+  - `status` says it.
+  - The console's Audit log page has the mode, retention and a purge, each
+    behind a confirmation, and shows the text under its record.
