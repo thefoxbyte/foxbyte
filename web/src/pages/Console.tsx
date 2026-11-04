@@ -345,6 +345,25 @@ export default function Console() {
     requestAnimationFrame(() => editorRef.current?.focus())
   }
 
+  // The line Postgres objected to, if it said. For a script the position is an
+  // offset into the whole script, which is what was sent, so it lands on the
+  // right line even in a long migration.
+  const errPos = queryRes?.results?.find(r => r.position)?.position ?? queryRes?.position
+  const errLine = errPos ? lineColOf(ranSql || sql, errPos).line : 0
+  // Put the caret where it is, once, when a new failure arrives. Jumping on
+  // every render would fight whoever is already typing somewhere else.
+  // Before the offline return below: a hook after it is skipped while the API
+  // cannot be reached, and React then fails the whole page (error #300).
+  useEffect(() => {
+    if (!errPos || !editorRef.current || busy) return
+    const el = editorRef.current
+    el.focus()
+    el.setSelectionRange(errPos - 1, errPos - 1)
+    const { line } = lineColOf(ranSql || sql, errPos)
+    el.scrollTop = Math.max(0, (line - 4) * 21)
+    if (gutterRef.current) gutterRef.current.scrollTop = el.scrollTop
+  }, [errPos])
+
   if (offline) {
     return (
       <>
@@ -363,22 +382,6 @@ export default function Console() {
   const label = (o: DbObject) => (o.schema === 'public' ? o.name : o.schema + '.' + o.name)
   const canOverride = admins?.you_are_admin === true
   const err = queryRes?.error || ''
-  // The line Postgres objected to, if it said. For a script the position is an
-  // offset into the whole script, which is what was sent, so it lands on the
-  // right line even in a long migration.
-  const errPos = queryRes?.results?.find(r => r.position)?.position ?? queryRes?.position
-  const errLine = errPos ? lineColOf(ranSql || sql, errPos).line : 0
-  // Put the caret where it is, once, when a new failure arrives. Jumping on
-  // every render would fight whoever is already typing somewhere else.
-  useEffect(() => {
-    if (!errPos || !editorRef.current || busy) return
-    const el = editorRef.current
-    el.focus()
-    el.setSelectionRange(errPos - 1, errPos - 1)
-    const { line } = lineColOf(ranSql || sql, errPos)
-    el.scrollTop = Math.max(0, (line - 4) * 21)
-    if (gutterRef.current) gutterRef.current.scrollTop = el.scrollTop
-  }, [errPos])
   // The row count the status bar shows: the visible result's, which for a script
   // is the statement whose tab is open rather than a total nobody asked for.
   const rowCount = mode === 'browse'

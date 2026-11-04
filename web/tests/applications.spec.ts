@@ -43,7 +43,10 @@ test('an application is registered, rotates its key, is reported compromised and
   const card = page.getByTestId(`app-${name}`)
   await expect(card).toContainText(email)
   const keys = card.getByRole('table', { name: `Keys of ${name}` })
-  await expect(keys.locator('tr', { hasText: 'k1' })).toContainText('active')
+  // The row whose id is k1. Not the row containing "k1": the second key's id is
+  // its thumbprint, base64, which holds "k1" about one time in a hundred.
+  const k1 = keys.locator('tbody tr').filter({ has: page.getByRole('cell', { name: 'k1', exact: true }) })
+  await expect(k1).toContainText('active')
 
   // A second key, for a rotation: both are active until one is revoked.
   await card.getByRole('button', { name: 'Add key' }).click()
@@ -52,9 +55,9 @@ test('an application is registered, rotates its key, is reported compromised and
   await expect(keys.locator('tbody tr')).toHaveCount(2)
   await expect(keys.getByText('active')).toHaveCount(2)
 
-  await keys.locator('tr', { hasText: 'k1' }).getByRole('button', { name: 'Report compromised' }).click()
+  await k1.getByRole('button', { name: 'Report compromised' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Revoke and report' }).click()
-  await expect(keys.locator('tr', { hasText: 'k1' })).toContainText('reported compromised')
+  await expect(k1).toContainText('reported compromised')
   await expect(keys.getByText('active')).toHaveCount(1)
 
   await card.getByRole('button', { name: 'Remove' }).click()

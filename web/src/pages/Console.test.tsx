@@ -35,7 +35,7 @@ vi.mock('../api', async () => {
 })
 
 import Console from './Console'
-import { getCatalog, getObject, runQuery, saveRows } from '../api'
+import { getBranches, getCatalog, getObject, runQuery, saveRows } from '../api'
 
 const mockQuery = vi.mocked(runQuery)
 
@@ -69,6 +69,23 @@ beforeEach(() => { COLUMNS = { columns: [], rows: [], command: 'SELECT 0' }; ans
 afterEach(cleanup)
 
 describe('what the end-to-end suite reaches for', () => {
+  // The branch list failing after the first render used to crash the page
+  // (React error #300): the offline message returned before one of the hooks,
+  // so that render called one hook fewer than the one before it.
+  it('says the API cannot be reached when the branch list fails, and recovers when it answers', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      vi.mocked(getBranches).mockRejectedValueOnce(new Error('Failed to fetch'))
+      render(<MemoryRouter><Console /></MemoryRouter>)
+      expect(await screen.findByText(/Can.t reach the API/)).toBeTruthy()
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(await screen.findByRole('button', { name: /^run/i })).toBeTruthy()
+      expect(screen.queryByText(/Can.t reach the API/)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('finds the editor, the Run button and a gutter line per line', async () => {
     await open()
     expect(editor()).toBeTruthy()
