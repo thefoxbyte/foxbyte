@@ -5,6 +5,7 @@ package branch
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -23,10 +24,12 @@ import (
 //   - gap: a session's statement numbers skipping some, recorded in the chain
 //   - mark: a table marked through FoxByte, its mark since taken off
 //     outside it (a table's owner can; step 2)
+//   - forward: records not reaching the SIEM for five minutes, or removed by
+//     retention before they reached it (step 5b)
 
 // AuditFinding is one thing wrong.
 type AuditFinding struct {
-	Kind   string `json:"kind"` // space, collector, heartbeat, gap, mark
+	Kind   string `json:"kind"` // space, collector, heartbeat, gap, mark, forward
 	Branch string `json:"branch,omitempty"`
 	Detail string `json:"detail"`
 	Since  string `json:"since,omitempty"` // RFC 3339
@@ -153,6 +156,8 @@ type findingsInput struct {
 	Expected map[string]map[string]MarkEvent
 	Marks    map[string][]AuditMark     // running branches' marks as they are
 	Exists   map[string]map[string]bool // running branches' expected tables that still exist
+	Forward  *AuditForward              // nil when not forwarding
+	FState   forwardState
 }
 
 func findingsFrom(in findingsInput) []AuditFinding {
@@ -203,6 +208,7 @@ func findingsFrom(in findingsInput) []AuditFinding {
 			"%d audit line(s) missing in a session of %s (statements %d to %d): lost before they reached the log, most often to a full log",
 			g.Missing, who, g.Statement, g.Statement+g.Missing-1)})
 	}
+	out = append(out, forwardFindings(in)...)
 	branches := make([]string, 0, len(in.Expected))
 	for b := range in.Expected {
 		branches = append(branches, b)
@@ -241,6 +247,38 @@ func findingsFrom(in findingsInput) []AuditFinding {
 	return out
 }
 
+// forwardFindings: forwarding that keeps failing, and records that never
+// reached the SIEM.
+func forwardFindings(in findingsInput) []AuditFinding {
+	if in.Forward == nil {
+		return nil
+	}
+	var out []AuditFinding
+	host := in.Forward.URL
+	if u, err := url.Parse(host); err == nil {
+		host = u.Host
+	}
+	if fs := in.FState; fs.LastErr != "" {
+		since, err := time.Parse(time.RFC3339, fs.ErrSince)
+		if err != nil || in.Now.Sub(since) > forwardLate {
+			last := "forwarding was set"
+			if fs.LastOK != "" {
+				last = fs.LastOK
+			}
+			out = append(out, AuditFinding{Kind: "forward", Since: fs.ErrSince, Detail: fmt.Sprintf(
+				"records have not reached %s since %s (%s): %d wait in the store, kept until their retention",
+				host, last, fs.LastErr, max(0, in.State.Seq-fs.Seq))})
+		}
+	}
+	if fs := in.FState; fs.Skipped > 0 {
+		if t, err := time.Parse(time.RFC3339, fs.SkipAt); err == nil && in.Now.Sub(t) <= gapsShown {
+			out = append(out, AuditFinding{Kind: "forward", Since: fs.SkipAt, Detail: fmt.Sprintf(
+				"%d record(s) were removed by retention before they reached %s: the copy there lacks them", fs.Skipped, host)})
+		}
+	}
+	return out
+}
+
 // AuditFindings checks everything now. events are the security log's mark
 // events, oldest first, which the caller holds (the account store is not
 // this package's).
@@ -249,6 +287,9 @@ func AuditFindings(events []MarkEvent) []AuditFinding {
 		Marks: map[string][]AuditMark{}, Exists: map[string]map[string]bool{}}
 	in.State, _ = loadAuditState()
 	in.Space, in.SpaceErr = AuditUsage()
+	if in.Forward = LoadAuditSettings().Forward; in.Forward != nil {
+		in.FState = loadForwardState()
+	}
 	if names, err := RunningBranches(); err == nil {
 		for _, n := range names {
 			r := runningAudit{Name: n, Audited: runsWithAudit(n)}

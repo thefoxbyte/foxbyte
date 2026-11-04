@@ -67,3 +67,35 @@ test('the Audit log page reads the records from the engine', async ({ page }) =>
   await page.getByRole('button', { name: 'Show' }).click()
   await expect(page.getByTestId('no-records')).toHaveText('No record matches.', { timeout: 30_000 })
 })
+
+// Step 5b: forwarding to a SIEM, set and stopped from the console. Nothing is
+// collected on this install, so nothing goes; integration §11ad forwards real
+// records to real receivers.
+test('forwarding to a SIEM is refused over plain http, set after saying what goes, and stopped', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Audit log' }).click()
+  const fwd = page.getByTestId('audit-forward')
+  await expect(fwd).toContainText('Not forwarded.')
+
+  await page.getByLabel('Forward URL').fill('http://127.0.0.1:9/ingest')
+  await page.getByRole('button', { name: 'Forward', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Forward', exact: true }).click()
+  await expect(page.getByText(/unencrypted/)).toBeVisible({ timeout: 30_000 })
+
+  await page.getByLabel('Forward URL').fill('https://127.0.0.1:9/ingest')
+  await page.getByLabel('Forward token').fill('e2e-token')
+  await page.getByRole('button', { name: 'Forward', exact: true }).click()
+  const dlg = page.getByRole('dialog')
+  await expect(dlg).toContainText('Statement text is not sent.')
+  await dlg.getByRole('button', { name: 'Forward', exact: true }).click()
+  await expect(fwd).toContainText('forwarding to https://127.0.0.1:9/ingest', { timeout: 30_000 })
+  await expect(page.getByTestId('forward-position')).toContainText('Delivered up to record')
+  await expect(fwd).not.toContainText('e2e-token')
+
+  await page.getByRole('button', { name: 'Send now' }).click()
+  await expect(page.getByText(/0 record\(s\) sent; 0 waiting\./)).toBeVisible({ timeout: 30_000 })
+
+  await page.getByRole('button', { name: 'Stop forwarding' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Stop forwarding' }).click()
+  await expect(fwd).toContainText('Not forwarded.', { timeout: 30_000 })
+})

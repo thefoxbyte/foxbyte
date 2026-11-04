@@ -880,14 +880,27 @@ export type AuditLogReply = {
   findings?: AuditFinding[] | null
   forensic?: Record<string, ForensicGrant> | null
   retention?: { days: number; forensic_days: number }
+  forward?: AuditForward | null
 }
+// Forwarding to a SIEM (F6 step 5b). The token and CA bundle are never sent back.
+export type AuditForward = {
+  url: string; text?: boolean; ca?: boolean; token?: boolean; by: string; since: string
+  host?: string; position: number; head: number; waiting: number; sent: number; skipped?: number
+  last_ok?: string; last_err?: string; err_since?: string
+}
+export type ForwardSettings = { url: string; token?: string; ca_pem?: string; text?: boolean; from_start?: boolean }
+export const setAuditForward = (s: ForwardSettings) =>
+  req('PUT', `${API}/api/audit-log/forward`, s) as Promise<{ forward: AuditForward | null }>
+export const stopAuditForward = () => req('DELETE', `${API}/api/audit-log/forward`) as Promise<{ forward: null }>
+export const sendAuditForward = () =>
+  req('POST', `${API}/api/audit-log/forward/send`) as Promise<{ sent: number; waiting: number; skipped: number; error?: string; forward: AuditForward | null }>
 export type ForensicGrant = { by: string; reason: string; since: string }
 export const setAuditMode = (forensic: boolean, branch: string, reason: string) =>
   req('PUT', `${API}/api/audit-log/mode`, { forensic, branch, reason }) as Promise<{ forensic: Record<string, ForensicGrant> | null; reached: string[] }>
 export const setAuditRetention = (days: number, forensic: boolean) =>
   req('PUT', `${API}/api/audit-log/retention`, { days, forensic }) as Promise<{ days: number; forensic_days: number }>
 export const purgeAuditText = (user: string) => req('POST', `${API}/api/audit-log/purge`, { user }) as Promise<{ purged: number }>
-export type AuditFinding = { kind: 'space' | 'collector' | 'heartbeat' | 'gap' | 'mark'; branch?: string; detail: string; since?: string }
+export type AuditFinding = { kind: 'space' | 'collector' | 'heartbeat' | 'gap' | 'mark' | 'forward'; branch?: string; detail: string; since?: string }
 export const getAuditLog = () => req('GET', `${API}/api/audit-log`) as Promise<AuditLogReply>
 
 // Tables marked for the audit log (F6 step 2): their writes, and reads if

@@ -637,11 +637,16 @@ func checkAuditLogLines() []checkLine {
 	for _, l := range forensicLines() {
 		lines = append(lines, warn("audit mode", "forensic "+l, brand.CLI+" audit-log mode default"))
 	}
+	forwardOK := true
 	for _, f := range branch.AuditFindings(branch.MarkEventsFrom(st)) {
 		if f.Kind == "space" {
 			continue // the line above says it
 		}
+		forwardOK = forwardOK && f.Kind != "forward"
 		lines = append(lines, auditFindingLine(f))
+	}
+	if f := branch.AuditForwardStatus(); f != nil && forwardOK {
+		lines = append(lines, ok("audit forward", fmt.Sprintf("to %s: delivered up to record %d (%d waiting)", f.Host, f.Position, f.Waiting)))
 	}
 	return lines
 }
@@ -657,6 +662,7 @@ func auditFindingLine(f branch.AuditFinding) checkLine {
 		"heartbeat": brand.CLI + " audit-log heartbeat; then " + brand.CLI + " audit-log status",
 		"gap":       "raise " + brand.EnvName("AUDIT_QUOTA") + "; " + brand.CLI + " audit-log show --branch " + f.Branch,
 		"mark":      brand.CLI + " audit-log tables --branch " + f.Branch + "; mark it again, and ask who took it off (" + brand.CLI + " blackbox " + f.Branch + ")",
+		"forward":   brand.CLI + " audit-log forward; then " + brand.CLI + " audit-log forward --now",
 	}[f.Kind]
 	return warn("audit "+f.Kind, where+f.Detail, fix)
 }

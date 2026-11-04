@@ -138,6 +138,9 @@ const (
 	EvAuditLogMode      = "audit-log.mode"
 	EvAuditLogRetention = "audit-log.retention"
 	EvAuditLogPurged    = "audit-log.purged"
+	// Forwarding to a SIEM set, changed or stopped: where a copy of every
+	// record goes, and whether statement text goes with it.
+	EvAuditLogForward = "audit-log.forward"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

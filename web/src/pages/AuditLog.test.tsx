@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../api', async () => {
   const actual = await vi.importActual<typeof import('../api')>('../api')
-  return { ...actual, getAuditLog: vi.fn(), getAuditMarks: vi.fn(), getAuditRecords: vi.fn(), getBranches: vi.fn(), unmarkAudited: vi.fn(), setAuditMode: vi.fn(), setAuditRetention: vi.fn(), purgeAuditText: vi.fn() }
+  return { ...actual, getAuditLog: vi.fn(), getAuditMarks: vi.fn(), getAuditRecords: vi.fn(), getBranches: vi.fn(), unmarkAudited: vi.fn(), setAuditMode: vi.fn(), setAuditRetention: vi.fn(), purgeAuditText: vi.fn(), setAuditForward: vi.fn(), stopAuditForward: vi.fn(), sendAuditForward: vi.fn() }
 })
 
-import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, purgeAuditText, setAuditMode, setAuditRetention, unmarkAudited, type AuditLogReply } from '../api'
+import { getAuditLog, getAuditMarks, getAuditRecords, getBranches, purgeAuditText, sendAuditForward, setAuditForward, setAuditMode, setAuditRetention, stopAuditForward, unmarkAudited, type AuditForward, type AuditLogReply } from '../api'
 import { ConfirmProvider } from '../confirm'
 import AuditLog from './AuditLog'
 
@@ -169,5 +169,57 @@ describe('Audit log page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Show' }))
     expect((await screen.findByTestId('text-2')).textContent).toBe("UPDATE orders SET x = 'y'")
     expect(screen.getByTestId('text-1').textContent).toContain('removed')
+  })
+
+  const fwd: AuditForward = { url: 'https://siem.example.com/ingest', ca: true, token: true, by: 'admin@x.in', since: '2026-11-04T10:00:00Z',
+    host: 'siem.example.com', position: 40, head: 42, waiting: 2, sent: 40, last_ok: '2026-11-04T10:05:00Z' }
+
+  it('says when records are not forwarded, and forwards them after saying what goes', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default', forward: null })
+    vi.mocked(setAuditForward).mockResolvedValue({ forward: fwd })
+    page()
+    expect((await screen.findByTestId('audit-forward')).textContent).toContain('Not forwarded.')
+    const go = screen.getByRole('button', { name: 'Forward' })
+    expect((go as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Forward URL'), { target: { value: 'https://siem.example.com/ingest' } })
+    fireEvent.change(screen.getByLabelText('Forward token'), { target: { value: 'tok-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Forward' }))
+    const d = await screen.findByRole('dialog')
+    expect(d.textContent).toContain('from the next record collected')
+    expect(d.textContent).toContain('Statement text is not sent.')
+    fireEvent.click(within(d).getByRole('button', { name: 'Forward' }))
+    await waitFor(() => expect(setAuditForward).toHaveBeenCalledWith({ url: 'https://siem.example.com/ingest', token: 'tok-1', ca_pem: undefined, text: false, from_start: false }))
+    expect(await screen.findByText('Forwarding to https://siem.example.com/ingest.')).toBeTruthy()
+    expect((screen.getByLabelText('Forward token') as HTMLInputElement).value).toBe('')
+  })
+
+  it('warns, before sending statement text, that retention and purge no longer reach it there', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default', forward: null })
+    page()
+    fireEvent.change(await screen.findByLabelText('Forward URL'), { target: { value: 'syslog://logs.example.com' } })
+    fireEvent.click(screen.getByLabelText(/Statement text too/))
+    fireEvent.click(screen.getByLabelText(/Every record still kept/))
+    fireEvent.click(screen.getByRole('button', { name: 'Forward' }))
+    const d = await screen.findByRole('dialog')
+    expect(d.textContent).toContain('retention and purge here no longer reach it')
+    expect(d.textContent).toContain('every record the store still holds')
+  })
+
+  it('shows how far delivery has got and why it fails, sends now, and stops', async () => {
+    vi.mocked(getAuditLog).mockResolvedValue({ ...off, on: true, mode: 'default',
+      forward: { ...fwd, last_err: 'siem.example.com answered 503 Service Unavailable', err_since: '2026-11-04T10:06:00Z' } })
+    vi.mocked(sendAuditForward).mockResolvedValue({ sent: 0, waiting: 2, skipped: 0, error: 'siem.example.com answered 503 Service Unavailable', forward: fwd })
+    vi.mocked(stopAuditForward).mockResolvedValue({ forward: null })
+    page()
+    expect((await screen.findByTestId('forward-position')).textContent).toContain('Delivered up to record 40 of 42 (2 waiting)')
+    expect(screen.getByTestId('audit-forward').textContent).toContain('TLS checked against its own CA bundle')
+    expect(screen.getByTestId('forward-error').textContent).toContain('503')
+    expect(screen.getByTestId('audit-forward').textContent).not.toContain('tok')
+    fireEvent.click(screen.getByRole('button', { name: 'Send now' }))
+    expect(await screen.findByText(/Forwarding failed after 0 record\(s\)/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop forwarding' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop forwarding' }))
+    await waitFor(() => expect(stopAuditForward).toHaveBeenCalled())
+    expect(await screen.findByText('Forwarding stopped.')).toBeTruthy()
   })
 })
