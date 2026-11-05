@@ -123,6 +123,10 @@ const (
 	// The hardening report produced (point 3.2): which branch, and how it
 	// stood. A list of a database's weak points is itself worth knowing about.
 	EvHardeningReported = "hardening.reported"
+	// A hardening fix made, or a profile applied (points 3.3, 3.4): which
+	// check or profile, on which branch, what changed, and whether it held.
+	EvHardeningFixed   = "hardening.fixed"
+	EvHardeningProfile = "hardening.profile"
 	// The databases' audit log (F6) turned on or off: who decided. Whoever
 	// can stop the record of who did what is someone an auditor asks about.
 	EvAuditLogOn  = "audit-log.on"

@@ -3195,6 +3195,60 @@ $S user delete hard-other@foxbyte.dev >/dev/null 2>&1
 # Five: the four from the command line that produced one, and the API's.
 assert_eq "every report is in the security log" "$($S audit log --limit 100 | grep -c 'hardening.reported')" "5"
 
+echo "### 11ah. hardening fixes and profiles (points 3.3, 3.4)"
+# Enterprise: the safe fixes, after a preview, one check at a time or by
+# profile, each checked again; what is a person's to fix stays theirs. On a
+# branch of its own, so main keeps its settings.
+$S branch delete hardfix2 >/dev/null 2>&1; $S branch delete hardfix >/dev/null 2>&1; $S branch create hardfix >/dev/null 2>&1
+gwh() { PGPASSWORD="$1" psql "${GATEWAY}/hardfix?sslmode=require" -X -q -tA -c "$2" 2>&1; }
+showh() { pg pg-hardfix "SHOW $1"; }
+sudo docker exec -i pg-hardfix psql -U dbadmin -d appdb -q >/dev/null 2>&1 <<'EOF'
+ALTER SYSTEM SET log_connections = off;
+ALTER SYSTEM SET log_disconnections = off;
+ALTER SYSTEM SET idle_in_transaction_session_timeout = 0;
+SELECT pg_reload_conf();
+EOF
+pg pg-hardfix "GRANT CREATE ON SCHEMA public TO PUBLIC" >/dev/null
+PRE="$($S hardening fix log.connections --branch hardfix 2>&1)"
+assert_eq "fix without --yes says what it changes and runs, and changes nothing" \
+  "$(grep -c 'change: log_connections: off → on' <<<"$PRE")|$(grep -c "runs:   ALTER SYSTEM SET log_connections = 'on'" <<<"$PRE")|$(grep -c 'Run again with --yes' <<<"$PRE")|$(showh log_connections)" "1|1|1|off"
+FIX="$($S hardening fix log.connections --branch hardfix --yes 2>&1)"; rc=$?
+assert_eq "with --yes it is made with a reload, and checked again: it now passes" \
+  "$rc|$(grep -c 'log.connections: fail → pass' <<<"$FIX")|$(showh log_connections)" "0|1|on"
+assert_eq "a check that passes has nothing to fix; one that is a person's says so, and how" \
+  "$($S hardening fix log.connections --branch hardfix 2>&1 | grep -c 'is pass')|$(pg pg-hardfix "DROP ROLE IF EXISTS hard_su; CREATE ROLE hard_su LOGIN SUPERUSER" >/dev/null; $S hardening fix roles.superusers --branch hardfix 2>&1 | grep -c 'is for a person to fix: ALTER ROLE')" "1|1"
+pg pg-hardfix "DROP ROLE IF EXISTS hard_su" >/dev/null
+assert_eq "CREATE on the public schema taken from PUBLIC: it passes, and clients still create tables through the Gateway" \
+  "$($S hardening fix roles.public_schema --branch hardfix --yes 2>&1 | grep -c 'roles.public_schema: fail → pass')|$(gwh "$KEY" "CREATE TABLE hard_after (id int); SELECT 'made'")" "1|made"
+BASE="$($S hardening profile baseline --branch hardfix 2>&1)"
+assert_eq "profile baseline without --yes: each fix it makes, what it leaves to a person, and nothing changed" \
+  "$(grep -c '^log.disconnections on hardfix' <<<"$BASE")|$(grep -c 'conn.idle' <<<"$BASE")|$(grep -c 'Run again with --yes' <<<"$BASE")|$(showh log_disconnections)" "1|0|1|off"
+STRICT="$($S hardening profile strict --branch hardfix --yes 2>&1)"; rc=$?
+assert_eq "profile strict with --yes: basic and strict fixes made and checked, and the profile recorded" \
+  "$rc|$(showh log_disconnections)|$(showh idle_in_transaction_session_timeout)|$(grep -c 'The strict profile: .* made on hardfix, 0 did not hold' <<<"$STRICT")|$($S hardening --branch hardfix | grep -c 'Profile strict applied by')" \
+  "0|on|10min|1|1"
+assert_eq "…after which nothing failing is left that a fix could make" \
+  "$($S hardening --branch hardfix --json | python3 -c 'import sys,json; print([c["id"] for c in json.load(sys.stdin)["checks"] if c.get("fixable")])')" "[]"
+$S branch create hardfix2 --from hardfix >/dev/null 2>&1
+assert_eq "a branch made afterwards has the fixes: they live in the branch's own data directory" \
+  "$(pg pg-hardfix2 'SHOW log_connections')|$(pg pg-hardfix2 'SHOW idle_in_transaction_session_timeout')" "on|10min"
+printf 'password123\n' | $S user create hardfix-other@foxbyte.dev >/dev/null 2>&1
+HFK="$($S apikey create hardfix-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+sudo docker exec -i pg-hardfix psql -U dbadmin -d appdb -q >/dev/null 2>&1 <<'EOF'
+ALTER SYSTEM SET log_hostname = on;
+SELECT pg_reload_conf();
+EOF
+assert_eq "the API: an admin gets the preview; someone who is not an admin does not; a profile that is not one is refused" \
+  "$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"branch":"hardfix","check":"log.hostname"}' https://localhost:8080/api/hardening/fix | python3 -c 'import sys,json; print(json.load(sys.stdin)["fix"]["changes"])')|$(code "$HFK" -X POST -H 'Content-Type: application/json' -d '{"branch":"hardfix","check":"log.hostname"}' https://localhost:8080/api/hardening/fix)|$(code "$KEY" -X POST -H 'Content-Type: application/json' -d '{"branch":"hardfix","profile":"lax"}' https://localhost:8080/api/hardening/profile)" \
+  "['log_hostname: on → off']|403|400"
+assert_eq "…and an admin's fix through it is made and checked" \
+  "$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"branch":"hardfix","check":"log.hostname","apply":true}' https://localhost:8080/api/hardening/fix | python3 -c 'import sys,json; r=json.load(sys.stdin)["result"]; print(r["before"]["status"], r["after"]["status"], "error" in r)')|$(showh log_hostname)" \
+  "fail pass False|off"
+$S user delete hardfix-other@foxbyte.dev >/dev/null 2>&1
+assert_eq "every fix and every profile is in the security log" \
+  "$([ "$($S audit log --limit 200 | grep -c 'hardening.fixed')" -ge 5 ] && echo yes)|$($S audit log --limit 200 | grep -c 'hardening.profile')" "yes|1"
+$S branch delete hardfix2 >/dev/null 2>&1; $S branch delete hardfix >/dev/null 2>&1
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

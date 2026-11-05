@@ -2161,6 +2161,41 @@ paths:
         "400": { description: Not a branch name, or the branch is not running. }
         "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/hardening/fix:
+    post:
+      tags: [audit-log]
+      summary: Fix one failing hardening check, after a preview (admins only; Enterprise).
+      description: >-
+        Without apply, what the fix will change and run. With apply, it is made from a plan made again now, the check
+        is run again, and the result says if something still overrides it. Only fixes safe to make without more than a
+        yes are offered (settings with ALTER SYSTEM and a reload, a grant, a role attribute, the data directory's
+        mode); the rest are for a person, and say how. Each fix is in the security log.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { branch: { type: string, default: main }, check: { type: string }, apply: { type: boolean } } }
+      responses:
+        "200": { description: '{"fix": …} for a preview, {"result": {fix, before, after, error}} for a fix.', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No such check or branch, or nothing to fix (it passes, or its fix is a person's). }
+        "403": { description: Not an admin, or not licensed for hardening fixes and profiles. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/hardening/profile:
+    post:
+      tags: [audit-log]
+      summary: Apply a hardening profile, baseline or strict, after a preview (admins only; Enterprise).
+      description: >-
+        baseline fixes the basic checks that fail and have a safe fix; strict the strict ones too. The preview lists
+        each fix and the failing checks left to a person. Applied, each fix is made and checked again, one failing
+        does not stop the others, and the profile is recorded against the branch, which the report then shows.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { branch: { type: string, default: main }, profile: { type: string, enum: [baseline, strict] }, apply: { type: boolean } } }
+      responses:
+        "200": { description: '{"fixes", "manual"} for a preview, {"results"} once applied.', content: { application/json: { schema: { type: object } } } }
+        "400": { description: Not a profile, or not a branch. }
+        "403": { description: Not an admin, or not licensed for hardening fixes and profiles. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/audit-log/evidence:
     get:
       tags: [audit-log]

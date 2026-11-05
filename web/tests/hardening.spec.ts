@@ -29,3 +29,27 @@ test('the Hardening page checks main, by section, and shows only what did not pa
   await expect(page.getByTestId('check-roles.scram')).toHaveCount(0)
   await expect(page.getByTestId('check-set.fips')).toContainText('manual')
 })
+
+// Points 3.3 and 3.4: a fix made from the page after its confirmation, and a
+// profile's preview. On the suite's own branch, so main keeps its settings.
+test('a failing check is fixed from the page after showing what changes, and a profile previews its fixes', async ({ page }) => {
+  const branch = process.env.FOX_E2E_BRANCH ?? 'e2eui'
+  await signIn(page)
+  await page.getByRole('link', { name: 'Hardening' }).click()
+  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByRole('button', { name: 'Check' }).click()
+  await expect(page.getByTestId('hardening-summary')).toContainText(`${branch}, PostgreSQL`, { timeout: 30_000 })
+  const row = page.getByTestId('check-log.disconnections')
+  await expect(row).toContainText('fail')
+  await row.getByRole('button', { name: 'Fix…' }).click()
+  const dlg = page.getByRole('dialog')
+  await expect(dlg.getByTestId('plan-log.disconnections')).toContainText('log_disconnections: off → on')
+  await dlg.getByRole('button', { name: 'Make this change' }).click()
+  await expect(page.getByTestId('hardening-msg')).toHaveText('log.disconnections: fail → pass.', { timeout: 30_000 })
+  await expect(page.getByTestId('check-log.disconnections')).toContainText('pass')
+
+  const profiles = page.getByTestId('hardening-profiles')
+  await profiles.getByLabel('Profile').selectOption('strict')
+  await profiles.getByRole('button', { name: 'Preview' }).click()
+  await expect(page.getByTestId('profile-preview')).toContainText('idle_in_transaction_session_timeout')
+})
