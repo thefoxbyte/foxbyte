@@ -2196,6 +2196,107 @@ paths:
         "400": { description: Not a profile, or not a branch. }
         "403": { description: Not an admin, or not licensed for hardening fixes and profiles. }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking:
+    get:
+      tags: [audit-log]
+      summary: Where masking stands on the install and a branch (admins only; in every edition).
+      description: >-
+        Whether masking is set up, the databases started before it was (which mask nothing until they start
+        again), a branch's rules and the tables whose masks are made, and the accounts masked. A masked account
+        reads the masks of marked tables, ordinary tables as they are, and cannot write to marked tables, on
+        every branch it does not own. Admins are never masked.
+      parameters:
+        - { name: branch, in: query, schema: { type: string, default: main } }
+      responses:
+        "200":
+          description: The status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  on: { type: boolean }
+                  pending: { type: array, items: { type: string } }
+                  branch: { type: string }
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        schema: { type: string }
+                        table: { type: string }
+                        column: { type: string }
+                        path: { type: string }
+                        rule: { type: string, enum: [partial, hash, fake, empty] }
+                        category: { type: string }
+                        by: { type: string }
+                        at: { type: string }
+                  ready: { type: array, items: { type: string } }
+                  accounts: { type: array, items: { type: object, properties: { email: { type: string }, by: { type: string }, at: { type: string } } } }
+                  writes: { type: boolean, description: Whether this install may set masking (Enterprise). }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/setup:
+    post:
+      tags: [audit-log]
+      summary: Set masking up on a branch, after a preview (admins only; Enterprise).
+      description: >-
+        Without apply, whether the branch restarts to mount the key. With apply, the install's key is made if it
+        has none (32 random bytes, readable only by the database server, never read back), the branch restarts if
+        it must, and the masked readers' role, schema and rights are made. In the security log.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { branch: { type: string, default: main }, apply: { type: boolean } } }
+      responses:
+        "200": { description: '{"branch", "restart", "keyDir"} for a preview, {"branch", "restarted"} once done.', content: { application/json: { schema: { type: object } } } }
+        "403": { description: Not an admin, or not licensed for masking. }
+        "409": { description: Main is served by the promoted HA standby. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/rule:
+    post:
+      tags: [audit-log]
+      summary: Mask a confirmed finding, after saying what it costs, or take a rule off (admins only; Enterprise).
+      description: >-
+        A rule is set only where a reviewer confirmed personal data. Without a rule, the category's default
+        (partial for Aadhaar, PAN, cards and mobiles; hash for email; fake for names; else empty). Aadhaar is never
+        hashed or faked. Without apply, the cost; with apply, the rule is set and the table's masks made. off takes
+        it off. In the security log.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                branch: { type: string, default: main }
+                schema: { type: string, default: public }
+                table: { type: string }
+                column: { type: string }
+                path: { type: string, description: 'A JSON path in a jsonb column, as $.a.b.' }
+                rule: { type: string, enum: [partial, hash, fake, empty] }
+                off: { type: boolean }
+                apply: { type: boolean }
+      responses:
+        "200": { description: '{"where", "cost"} for a preview, {"set"} or {"off"} once done.', content: { application/json: { schema: { type: object } } } }
+        "400": { description: Not a confirmed finding, a rule the category may not have, or a table that cannot be masked (no one-column primary key, the key itself, an array path). }
+        "403": { description: Not an admin, or not licensed for masking. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/account:
+    post:
+      tags: [audit-log]
+      summary: Mask an account on every branch it does not own, or unmask it (admins only; Enterprise).
+      description: >-
+        Admins are refused: they can change the masks. The account's open sessions on running branches end, so its
+        next one sees the change. In the security log.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string }, off: { type: boolean } } }
+      responses:
+        "200": { description: '{"email", "masked"}', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No email, or an admin. }
+        "403": { description: Not an admin, or not licensed for masking. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/audit-log/evidence:
     get:
       tags: [audit-log]

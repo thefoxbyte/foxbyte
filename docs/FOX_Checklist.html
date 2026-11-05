@@ -768,6 +768,14 @@
       <li class="ok">Each report in the security log; what it cannot claim stated in it</li>
       <li class="ok">Applications: each registration, its account, its keys with age, state and what each asserted by branch, and findings to question; <code>--csv applications</code> (F1)</li>
       <li class="lim">No unmask rights to review until masking (point 7); campaigns are 4.9 (Gate 2)</li></ul></td><td class="tb">enterprise/accessreview unit; VM &sect;11s; accessreview.spec.ts</td></tr>
+    <tr data-id="O3" data-st="part"><td class="c"><i class="ck part"></i></td><td class="id">O3</td><td><b>Masking personal data</b> (point 4.6 and F5, Enterprise; <code>docs/FOX_F5_Masking_Design.md</code>)<ul class="subs">
+      <li class="ok">Gate 0 prototype (<code>make integration-f5</code>, 57/57 on PostgreSQL 18 and 16): the keyed hash in <code>bb_identity</code> 0.2, its key a file the server reads; a masked branch on a ZFS clone left with no real value in its files; the costs measured</li>
+      <li class="ok">Step 1: <code>fox mask setup|rule|account</code>, four API routes and the console&rsquo;s Masking page; rules (partial, keyed hash, fake, empty) only on confirmed findings, Aadhaar never hashed or faked; masks kept in shadow tables by statement triggers; masked accounts read masks and ordinary tables, never the real marked table, the hash or the key, and cannot write to marked tables; admins and a branch&rsquo;s owner see real values; the cost said before a rule is set</li>
+      <li class="todo">Step 2: key domains and rotation</li>
+      <li class="todo">Step 3: unmask, the audited lookup, unmask rights in the access review, reads audited</li>
+      <li class="todo">Step 4: every access path tested (COPY, functions, EXPLAIN, statistics, logs)</li>
+      <li class="todo">Step 5: masked branches, closed until masked and verified</li>
+      <li class="lim">One-column primary keys only; a JSON path into an array, or a quoted key, is refused for now; masking stays on once set up; a masked account has no DDL rights</li></ul></td><td class="tb">enterprise/masking unit; internal/branch mask_test.go; VM &sect;11ai; masking.spec.ts</td></tr>
   </table>
   <div class="foot">FOX_Checklist &middot; area O</div>
 </section>
@@ -784,7 +792,6 @@
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>More import sources: Cassandra, DynamoDB</b></td><td class="tb">I1–I8</td></tr>
         
     <tr data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">—</td><td><b>Release signatures</b> — done 22 Sep 2026</td><td class="tb">A9, M4</td></tr>
-    <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Masking</b> (point 7, Enterprise; design proposed in <code>docs/FOX_F5_Masking_Design.md</code>)<ul class="subs"><li class="ok">Gate 0 prototype (<code>make integration-f5</code>, 57/57 on PostgreSQL 18 and 16): the keyed hash in <code>bb_identity</code> 0.2, its key a file the server reads; shadow tables, triggers and views; what a masked reader can and cannot reach; the lookup; a masked branch on a ZFS clone left with no real value in its files; the costs measured</li><li class="todo">Masked readers, rules on confirmed marks (partial, keyed hash, fake, empty), kept in shadow tables so no masking function runs at read time</li><li class="todo">The key outside every table; unmask and an audited lookup; every access path tested</li><li class="todo">Masked branches, closed until masked and verified</li></ul></td><td class="tb">O1, O2, H21</td></tr>
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Hosted cloud tier</b></td><td class="tb">—</td></tr>
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Networked storage disaggregation</b> (README roadmap; see the storage engine note on page 1)</td><td class="tb">C1, D1</td></tr>
   </table>

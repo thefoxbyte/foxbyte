@@ -41,6 +41,10 @@ const (
 	// Hardening is fixing what the hardening report finds, one check at a
 	// time or by a profile (points 3.3 and 3.4). The report itself is free.
 	Hardening Feature = "hardening"
+	// Masking is masking personal data for the people who should not see it
+	// (point 7): rules, masked readers, unmask and masked branches. Masks
+	// already made keep working in every edition.
+	Masking Feature = "masking"
 )
 
 // descriptions are used in refusals, so each one says what the user is missing
@@ -56,6 +60,7 @@ var descriptions = map[Feature]string{
 	PersonalData: "personal-data discovery",
 	AccessReview: "the access review report",
 	Hardening:    "hardening fixes and profiles",
+	Masking:      "masking personal data",
 }
 
 // Describe names a feature in a sentence. An unknown feature describes itself,

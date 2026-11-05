@@ -127,6 +127,12 @@ const (
 	// check or profile, on which branch, what changed, and whether it held.
 	EvHardeningFixed   = "hardening.fixed"
 	EvHardeningProfile = "hardening.profile"
+	// Masking (F5): set up on a branch, a rule set or taken off, an account
+	// masked or unmasked. Who decided what a person sees of personal data is
+	// something an auditor asks about.
+	EvMaskSetup   = "mask.setup"
+	EvMaskRule    = "mask.rule"
+	EvMaskAccount = "mask.account"
 	// The databases' audit log (F6) turned on or off: who decided. Whoever
 	// can stop the record of who did what is someone an auditor asks about.
 	EvAuditLogOn  = "audit-log.on"

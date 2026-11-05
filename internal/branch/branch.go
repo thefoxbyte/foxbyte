@@ -314,6 +314,8 @@ func startContainer(name string, primary bool) error {
 		"-v", mountpoint(name) + ":/var/lib/postgresql/data",
 	}
 	args = append(args, restartPolicy...)
+	// The masking keys, read-only, once masking is set up (mask.go).
+	args = append(args, maskMount()...)
 	// The audit log's directory, outside the data directory, which a clone
 	// would copy. Made first: a logging process that cannot write its file
 	// stops the server starting.
@@ -615,17 +617,33 @@ func EnsureUserRole(branchName, email string) error {
 	if branchName == "" {
 		branchName = "main"
 	}
-	k := branchName + "\x00" + email
+	// Masked or not is part of the key: an admin masking an account changes
+	// what its role must be, in every process that makes roles (mask.go).
+	maskedHere := accountMasked(branchName, email)
+	state := "plain"
+	if maskedHere {
+		state = "masked"
+	}
+	k := branchName + "\x00" + email + "\x00" + state
 	if _, ok := ensuredRoles.Load(k); ok {
 		return nil
 	}
 	// One at a time per branch and role, and the one that waited finds the
 	// work done (roleguard.go).
-	defer lockRole("user\x00" + k)()
+	defer lockRole("user\x00" + branchName + "\x00" + email)()
 	if _, ok := ensuredRoles.Load(k); ok {
 		return nil
 	}
-	if err := provisionRole(branchName, userRoleSQL(email, UserRolePassword(email))); err != nil {
+	sql := userRoleSQL(email, UserRolePassword(email))
+	switch {
+	case maskedHere:
+		sql = maskedRoleSQL(email, UserRolePassword(email))
+	case MaskOn():
+		// Unmasked, or exempt here: a role once a masked reader's is made an
+		// ordinary account's again.
+		sql += "\n" + unmaskedRoleSQL(email)
+	}
+	if err := provisionRole(branchName, sql); err != nil {
 		return err
 	}
 	ensuredRoles.Store(k, struct{}{})
