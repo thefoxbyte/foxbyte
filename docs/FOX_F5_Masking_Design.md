@@ -1,6 +1,9 @@
 # F5: masking — design
 
-**Status:** proposed, for agreement. This answers point 7 of the review plan
+**Status:** agreed (5 November 2026, #212), decisions 2 to 4 confirmed by the
+founders. The Gate 0 prototype is built and its suite passes; what it found
+is in section 17, and it changes sections 10, 12 and 13 where marked. This
+answers point 7 of the review plan
 (`docs/FOX_Expert_Review_Plan.md`, foundation F5 and point 7): masking personal
 data for the people who should not see it, without the masks becoming a way to
 recover what they hide. It was written against `main` at `9ddaa89`, after
@@ -273,6 +276,10 @@ A rule is set on a confirmed mark: a column, or a JSON path inside one.
   - It is rate-limited, by default 30 lookups a minute for each account.
   - Every call is recorded with who, when, which column and how many rows,
     never the value.
+  - **A masked login's failing statements are never logged with their text**
+    (section 17, item 1): `ALTER ROLE … SET log_min_error_statement = panic`
+    on every masked login, which only a superuser can set or undo. Without
+    it, a refused lookup put the value being looked up in the server log.
   - A lookup is itself an oracle, one value at a time, and its record is what
     makes using it as one visible.
 
@@ -310,12 +317,17 @@ declared unsupported, never left open.
    console and the API refuse it; only the engine connects.
 2. Every masked column is overwritten in place with its mask: the `partial`,
    `hash`, `fake` and `empty` rules, the same key.
-3. Then the engine:
-   - runs `VACUUM FULL` on each masked table, so the real values' dead rows and
-     the shared blocks of the parent's snapshot are gone from the branch's
-     files **(prototype: confirm against the ZFS clone)**;
-   - runs `ANALYZE`, so `pg_statistic` holds masks, not the real most-common
-     values;
+3. Then the engine, each step a statement of its own (section 17, item 3):
+   - runs `VACUUM FULL` on each masked table, so the real values' dead rows
+     are gone from the branch's files;
+   - runs `ANALYZE`, then `VACUUM FULL pg_statistic`: ANALYZE writes new
+     statistics, and the old rows, with the real most-common values, stay in
+     `pg_statistic`'s file until it is rewritten;
+   - turns WAL recycling off, then switches and checkpoints three times, so
+     the segments from before the masking (the parent's, which the clone came
+     with, and the full-page images of pages as they were before) are
+     deleted, not renamed for reuse with their old bytes in; then turns
+     recycling back on;
    - removes the shadow tables and views, which the branch no longer needs.
 4. **Verified:** a scan (point 4) finds none of the marked categories left in
    clear. Only then does the branch open.
@@ -326,12 +338,18 @@ declared unsupported, never left open.
 
 **What a masked branch cannot promise:**
 - The parent's WAL and backups hold real values. They are the parent's.
-- A masked branch's own WAL, from its first change on, holds masks only
-  **(prototype: confirm nothing before the mask is replayed into it)**.
+- The blocks the clone shares with the parent's snapshot, and the blocks the
+  branch freed, are still on the pool. Only someone with the host's ZFS can
+  reach them, which is the host administrator, outside masking's reach
+  (section 1).
+- **The other way, if the clone ever proves not enough:** a fresh cluster
+  loaded with only the masked rows holds nothing of the parent at all. It
+  took 0.3 s for 20,000 rows (section 17), and it gives up copy-on-write
+  sharing.
 
 ---
 
-## 13. Measured before shipping (prototype)
+## 13. Measured before shipping (prototype; results in section 17)
 
 1. **Write overhead** of the shadow trigger, on a 10,000-row update and on
    pgbench with one marked table, against no masking. Budget: 10%.
@@ -358,10 +376,11 @@ declared unsupported, never left open.
 | 6 | Aadhaar | `partial` or `empty` only, never hashed (section 7) |
 | 7 | Masked branches | Masked in place, vacuumed, analysed, verified by a scan, closed until then (section 12) |
 | 8 | Edition | Enterprise, as point 7 is: rules, masked readers, unmask, the lookup, masked branches. The masks already on a branch keep working in every edition, as anchors and findings do |
+| 9 | The cost, over the 10% budget (section 17, item 4) | Accept it, as the audit log's was: masking is per table, on tables with marks only, and its cost is said before a rule is set. Keep the masks with a trigger a statement (bulk writes 3.6× rather than 5.6×). A C trigger is the way to cut it further, if a customer's write load needs it |
 
 ---
 
-## 15. Gate 0: the prototype
+## 15. Gate 0: the prototype (built; section 17)
 
 The design's claims above marked **(prototype)**, proven in a suite like
 F6's (`docker/postgres/f5_test.go`), on PostgreSQL 18 and 16:
@@ -385,3 +404,87 @@ F6's (`docker/postgres/f5_test.go`), on PostgreSQL 18 and 16:
 | 3 | Unmask, the lookup, the access review's column, reads audited (3.1) | `fox mask unmask …`, `fox mask find …` | unmask; find a person |
 | 4 | The access-path suite (section 11), in the integration suite and the UI suite | | |
 | 5 | Masked branches, gated | `fox branch create --masked` | Masked branch |
+
+---
+
+## 17. What the prototype found (Gate 0)
+
+`make integration-f5` (`scripts/integration_f5.sh`) builds the engine image
+with `bbid_mask_hmac` in `bb_identity` 0.2, and runs throwaway containers,
+with a ZFS pool of its own made from a file for the masked branch. It passes
+57 of 57 on PostgreSQL 18 and 16. On both:
+
+- **Every rule shows its mask:**
+  - a fake name, the same for the same input;
+  - a 64-hex keyed hash;
+  - partial phone and Aadhaar;
+  - an empty column;
+  - a JSON path partial, with the rest of the document as it was.
+- **Out of a masked reader's reach:** the real table, the shadows, the hash
+  function, the fake function and the key file.
+- **Works on masks:** filtering, grouping and joining (a customer's orders by
+  the hashed email), and `EXPLAIN` (two index scans). `pg_stats` shows
+  nothing of the real table, and `COPY` of a query copies masks.
+- **Writes:** a masked reader cannot write a marked table, through the view or
+  around it. What a masked reader makes runs as them: a definer function of
+  their own reading the real table is refused, and a view of their own shows
+  masks.
+- **The lookup** returns the masked row, allows 30 a minute, and records every
+  call without the value.
+- **The application** inserts, updates, changes a key, deletes and truncates
+  as before, and the shadows keep up.
+- **The key:**
+  - domains hash apart;
+  - a missing key, a name that is not a file name, and a key file others can
+    read are each refused, with no key in the message;
+  - the key is in no log;
+  - a session that read the old key reads the new one once the file is
+    replaced (the file's inode and modification time are checked on each
+    call).
+
+**What it changed:**
+
+1. **A refused lookup put its value in the server log.** PostgreSQL logs a
+   failing statement's text (`log_min_error_statement`, `error` by default),
+   and the lookup's value was in it. Every masked login now has
+   `log_min_error_statement = panic`, which only a superuser can set or undo.
+   Afterwards no real value is in the log (section 10).
+2. **Statements that `VACUUM` must run alone.** `VACUUM FULL pg_statistic`
+   sent with another statement runs inside one transaction and is refused,
+   which silently left the old statistics in place. Each step of a masked
+   branch is a statement of its own (section 12).
+3. **A masked branch, step by step, counted as files holding a real value:**
+
+   | After | base/ | pg_wal/ |
+   |---|---|---|
+   | the clone | 2 (the table, and `pg_statistic`) | 2 |
+   | masking in place | 2 | 2 |
+   | `VACUUM FULL` of the table | 1 (`pg_statistic`) | |
+   | `ANALYZE` | 1 | |
+   | `VACUUM FULL pg_statistic` | **0** | 2 |
+   | recycling off, three switches and checkpoints | | **0** |
+
+   So masking in place on the clone leaves no real value in the branch's own
+   files. A fresh cluster loaded with only the masked rows also holds none, in
+   0.3 s for 20,000 rows.
+4. **The cost is over the 10% budget.** PostgreSQL 18, the test VM's 4 CPUs,
+   16 clients, medians of three:
+
+   | | Without masks | With masks |
+   |---|---|---|
+   | One 10,000-row `UPDATE` | 55 ms | 307 ms a row each; **198 ms** a statement each |
+   | Single-row writes | 34,566 tps | 27,297 tps (21% fewer; 30% in a first run) |
+   | Indexed reads | 207,798 tps from the table | 155,810 tps through the view (25% fewer) |
+   | A full scan of 10,000 rows | 2.3 ms | 4.8 ms |
+   | Updating 100 documents of 250 KB, a JSON path masked | 1.4 ms | 544 ms |
+
+   And, for 1,000,000 rows:
+   - **Filling an existing table's masks** in batches of 10,000 takes 14 s. A
+     writer meanwhile, with a 1-second lock timeout, was never held up.
+   - **Rotating the key** takes 21 s.
+
+   The cost falls only on tables with masked columns, and the read cost only
+   on masked readers. Like the audit log's, it is said before a rule is set,
+   not hidden in a default (decision 9). A JSON path in large documents costs
+   most, because the shadow keeps a copy of the whole document. Masking a path
+   in documents over 64 KB is warned about when the rule is set.
