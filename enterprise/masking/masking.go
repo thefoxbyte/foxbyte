@@ -56,9 +56,12 @@ func tablesOf(rules []branch.MaskRule) [][2]string {
 // confirmedCategory is the category of the confirmed finding at a place: a
 // rule is set only on personal data a reviewer confirmed (point 4.6).
 func confirmedCategory(b string, r branch.MaskRule) (string, error) {
-	out, err := branch.QuerySQL(b, fmt.Sprintf(`SELECT CASE WHEN to_regclass('bb.pii_findings') IS NULL THEN '' ELSE
-  coalesce((SELECT category FROM bb.pii_findings WHERE schema_name = %s AND table_name = %s AND column_name = %s
-     AND json_path = %s AND state = 'confirmed' ORDER BY id LIMIT 1), '') END`,
+	// A branch never scanned has no findings, and so nothing confirmed.
+	if ok, err := branch.RelationExists(b, "bb.pii_findings"); err != nil || !ok {
+		return "", err
+	}
+	out, err := branch.QuerySQL(b, fmt.Sprintf(`SELECT coalesce((SELECT category FROM bb.pii_findings WHERE schema_name = %s
+     AND table_name = %s AND column_name = %s AND json_path = %s AND state = 'confirmed' ORDER BY id LIMIT 1), '')`,
 		lit(r.Schema), lit(r.Table), lit(r.Column), lit(r.Path)))
 	if err != nil {
 		return "", fmt.Errorf("reading the findings on %s: %w (%s)", b, err, strings.TrimSpace(out))

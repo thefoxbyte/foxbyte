@@ -3255,11 +3255,14 @@ $S branch delete hardfix2 >/dev/null 2>&1; $S branch delete hardfix >/dev/null 2
 echo "### 11ai. masking personal data (F5 Gate 1, step 1)"
 # Enterprise: rules on confirmed findings; a masked account reads the masks of
 # marked tables and ordinary tables as they are, and cannot write to marked
-# tables; admins and a branch's owner always see real values. On a branch of
-# its own, so main is not restarted.
-$S branch delete maskown >/dev/null 2>&1; $S branch delete maskt >/dev/null 2>&1; $S branch create maskt >/dev/null 2>&1
+# tables; admins and a branch's owner always see real values. On main, as an
+# account reaches main and the branches it owns, and on those it sees real
+# values. Its tables and rules are taken off at the end.
+$S branch delete maskown >/dev/null 2>&1; $S branch delete maskold >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS m_customers, m_orders, m_kyc, m_plain CASCADE" >/dev/null
+$S branch create maskold >/dev/null 2>&1
 gwm() { PGPASSWORD="$1" psql "${GATEWAY}/$2?sslmode=require" -X -q -tA -c "$3" 2>&1; }
-pg pg-maskt "CREATE TABLE m_customers (id bigint PRIMARY KEY, email text, phone text, aadhaar_no text, prefs jsonb, city text, full_name text);
+pg pg-main "CREATE TABLE m_customers (id bigint PRIMARY KEY, email text, phone text, aadhaar_no text, prefs jsonb, city text, full_name text);
   INSERT INTO m_customers VALUES
     (1, 'asha@example.com', '+91 98765 43210', '234567890124', '{\"contact\": {\"mobile\": \"+91 98765 43210\"}, \"theme\": \"dark\"}', 'Pune', 'Asha Rao'),
     (2, 'ravi@example.org', '9876543211', '456789012341', '{\"contact\": {\"mobile\": \"9876543211\"}}', 'Goa', 'Ravi Kumar');
@@ -3270,83 +3273,89 @@ pg pg-maskt "CREATE TABLE m_customers (id bigint PRIMARY KEY, email text, phone 
 printf 'password123\n' | $S user create mask-analyst@foxbyte.dev >/dev/null 2>&1
 MK="$($S apikey create mask-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 assert_eq "before masking, nothing is masked: an account reads real values" \
-  "$($S mask --branch maskt | head -1)|$(gwm "$MK" maskt "SELECT email FROM m_customers WHERE id = 1")" "Masking: not set up on this install.|asha@example.com"
-PRE="$($S mask setup --branch maskt 2>&1)"
+  "$($S mask | head -1)|$(gwm "$MK" main "SELECT email FROM m_customers WHERE id = 1")" "Masking: not set up on this install.|asha@example.com"
+PRE="$($S mask setup 2>&1)"
 assert_eq "setup without --yes says what it makes and that the branch restarts, and makes nothing" \
-  "$(grep -c 'maskt restarts to mount the key' <<<"$PRE")|$(grep -c 'Run again with --yes' <<<"$PRE")|$(sudo test -e "${HOME:?}/${BRAND_STATE_DIR:?}/mask" && echo made || echo none)" "1|1|none"
-SET="$($S mask setup --branch maskt --yes 2>&1)"; rc=$?
+  "$(grep -c 'main restarts to mount the key' <<<"$PRE")|$(grep -c 'Run again with --yes' <<<"$PRE")|$(sudo test -e "${HOME:?}/${BRAND_STATE_DIR:?}/mask" && echo made || echo none)" "1|1|none"
+SET="$($S mask setup --yes 2>&1)"; rc=$?
 assert_eq "with --yes: the key is made, the server's alone, mounted read-only, and the branch set up" \
-  "$rc|$(sudo stat -c '%u %a' "${HOME:?}/${BRAND_STATE_DIR:?}/mask") $(sudo stat -c '%u %a %s' "${HOME:?}/${BRAND_STATE_DIR:?}/mask/default.key")|$(sudo docker inspect -f '{{range .Mounts}}{{if eq .Destination "/run/bb-mask"}}{{.RW}}{{end}}{{end}}' pg-maskt)|$(pg pg-maskt "SELECT to_regrole('db_masked') IS NOT NULL AND to_regclass('bb.mask_rules') IS NOT NULL")" \
+  "$rc|$(sudo stat -c '%u %a' "${HOME:?}/${BRAND_STATE_DIR:?}/mask") $(sudo stat -c '%u %a %s' "${HOME:?}/${BRAND_STATE_DIR:?}/mask/default.key")|$(sudo docker inspect -f '{{range .Mounts}}{{if eq .Destination "/run/bb-mask"}}{{.RW}}{{end}}{{end}}' pg-main)|$(pg pg-main "SELECT to_regrole('db_masked') IS NOT NULL AND to_regclass('bb.mask_rules') IS NOT NULL")" \
   "0|999 700 999 400 32|false|t"
 [ "$rc" = 0 ] || { echo "--- what it said ---"; tail -8 <<<"$SET"; echo "--- end ---"; }
 assert_eq "…and the key is in no table, log or message the setup produced" \
-  "$(sudo docker logs pg-maskt 2>&1 | grep -c "$(sudo od -An -tx1 "${HOME:?}/${BRAND_STATE_DIR:?}/mask/default.key" | tr -d ' \n')")|$(grep -c 'Done.' <<<"$SET")" "0|1"
-assert_eq "the databases started before it are listed as masking nothing until they start again" \
-  "$($S mask --branch maskt --json | hjson "print('main' in d['pending'], 'maskt' in d['pending'])")" "True False"
-NOPE="$($S mask rule m_customers.email --branch maskt --yes 2>&1)"; rc=$?
+  "$(sudo docker logs pg-main 2>&1 | grep -c "$(sudo od -An -tx1 "${HOME:?}/${BRAND_STATE_DIR:?}/mask/default.key" | tr -d ' \n')")|$(grep -c 'Done.' <<<"$SET")" "0|1"
+assert_eq "a branch started before it is listed as masking nothing until it starts again; main restarted with the key" \
+  "$($S mask --json | hjson "print('maskold' in d['pending'], 'main' in d['pending'])")" "True False"
+$S branch delete maskold >/dev/null 2>&1
+NOPE="$($S mask rule m_customers.email --yes 2>&1)"; rc=$?
 assert_eq "a rule is refused where no reviewer confirmed personal data" \
   "$rc|$(grep -c 'no confirmed personal data at public.m_customers.email' <<<"$NOPE")" "1|1"
-$S pii scan --branch maskt >/dev/null 2>&1
-MJ="$($S pii --branch maskt --json 2>/dev/null)"
+$S pii scan >/dev/null 2>&1
+MJ="$($S pii --json 2>/dev/null)"
 mfid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='$1' and f['column']=='$2' and f['path']=='$3'][0])" <<<"$MJ"; }
 for at in "m_customers email" "m_customers phone" "m_customers aadhaar_no" "m_orders customer_email" "m_kyc aadhaar_no"; do
-  $S pii mark "$(mfid $at '')" confirm --branch maskt >/dev/null 2>&1
+  $S pii mark "$(mfid $at '')" confirm >/dev/null 2>&1
 done
-$S pii mark "$(mfid m_customers prefs '$.contact.mobile')" confirm --branch maskt >/dev/null 2>&1
-COST="$($S mask rule m_customers.email --branch maskt 2>&1)"
+$S pii mark "$(mfid m_customers prefs '$.contact.mobile')" confirm >/dev/null 2>&1
+COST="$($S mask rule m_customers.email 2>&1)"
 assert_eq "a rule without --yes says what it costs first, and sets nothing" \
-  "$(grep -c '3.6 times as long' <<<"$COST")|$(grep -c 'a quarter slower' <<<"$COST")|$(grep -c 'Run again with --yes' <<<"$COST")|$($S mask --branch maskt --json | hjson "print(len(d['rules']))")" "1|1|1|0"
+  "$(grep -c '3.6 times as long' <<<"$COST")|$(grep -c 'a quarter slower' <<<"$COST")|$(grep -c 'Run again with --yes' <<<"$COST")|$($S mask --json | hjson "print(len(d['rules']))")" "1|1|1|0"
 assert_eq "…and a partial mask says it costs nothing on writes" \
-  "$($S mask rule m_kyc.aadhaar_no --branch maskt 2>&1 | grep -c 'nothing on writes')" "1"
+  "$($S mask rule m_kyc.aadhaar_no partial 2>&1 | grep -c 'nothing on writes')" "1"
 assert_eq "Aadhaar is never hashed: refused, saying why" \
-  "$($S mask rule m_customers.aadhaar_no hash --branch maskt --yes 2>&1 | grep -c 'never hashed or faked')" "1"
+  "$($S mask rule m_customers.aadhaar_no hash --yes 2>&1 | grep -c 'never hashed or faked')" "1"
 for c in m_customers.email m_customers.phone m_customers.aadhaar_no m_orders.customer_email m_kyc.aadhaar_no; do
-  $S mask rule "$c" --branch maskt --yes >/dev/null 2>&1 || bad "setting the rule on $c"
+  $S mask rule "$c" --yes >/dev/null 2>&1 || bad "setting the rule on $c"
 done
-$S mask rule m_customers.prefs --path '$.contact.mobile' --branch maskt --yes >/dev/null 2>&1 || bad "setting the rule on a JSON path"
+$S mask rule m_customers.prefs --path '$.contact.mobile' --yes >/dev/null 2>&1 || bad "setting the rule on a JSON path"
 assert_eq "each rule is the category's default, and every table's masks are made" \
-  "$($S mask --branch maskt --json | hjson "print(sorted(r['table']+'.'+r['column']+r.get('path','')+':'+r['rule'] for r in d['rules']), sorted(d['ready']))")" \
+  "$($S mask --json | hjson "print(sorted(r['table']+'.'+r['column']+r.get('path','')+':'+r['rule'] for r in d['rules']), sorted(d['ready']))")" \
   "['m_customers.aadhaar_no:partial', 'm_customers.email:hash', 'm_customers.phone:partial', 'm_customers.prefs\$.contact.mobile:partial', 'm_kyc.aadhaar_no:partial', 'm_orders.customer_email:hash'] ['m_customers', 'm_kyc', 'm_orders']"
 assert_eq "a table with only partial masks gets no shadow and no trigger: nothing more on a write" \
-  "$(pg pg-maskt "SELECT to_regclass('bb_mask.public__m_kyc') IS NULL, (SELECT count(*) FROM pg_trigger WHERE tgrelid = 'm_kyc'::regclass)")" "t|0"
+  "$(pg pg-main "SELECT to_regclass('bb_mask.public__m_kyc') IS NULL, (SELECT count(*) FROM pg_trigger WHERE tgrelid = 'm_kyc'::regclass AND tgname LIKE 'bb_mask%')")" "t|0"
 assert_eq "an admin cannot be masked: they can change the masks" \
   "$($S mask account test@foxbyte.dev --yes 2>&1 | grep -c 'is an admin')|$($S mask --json | hjson "print(len(d['accounts']))")" "1|0"
 assert_eq "masking an account without --yes says what changes, and masks nobody" \
-  "$($S mask account mask-analyst@foxbyte.dev 2>&1 | grep -c 'Run again with --yes')|$(gwm "$MK" maskt "SELECT email FROM m_customers WHERE id = 1")" "1|asha@example.com"
+  "$($S mask account mask-analyst@foxbyte.dev 2>&1 | grep -c 'Run again with --yes')|$(gwm "$MK" main "SELECT email FROM m_customers WHERE id = 1")" "1|asha@example.com"
 $S mask account mask-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the account"
 assert_eq "a masked account reads masks: a keyed hash, partial values, a JSON path, the rest of the row as it is" \
-  "$(gwm "$MK" maskt "SELECT length(email), email ~ '^[0-9a-f]{64}\$', phone, aadhaar_no, prefs->'contact'->>'mobile', prefs->>'theme', city, full_name FROM m_customers WHERE id = 1")" \
+  "$(gwm "$MK" main "SELECT length(email), email ~ '^[0-9a-f]{64}\$', phone, aadhaar_no, prefs->'contact'->>'mobile', prefs->>'theme', city, full_name FROM m_customers WHERE id = 1")" \
   "64|t|XXXXXXXXXXX3210|XXXXXXXX0124|XXXXXXXXXXX3210|dark|Pune|Asha Rao"
 assert_eq "…joins on the hash: the same value, the same mask" \
-  "$(gwm "$MK" maskt "SELECT count(*) FROM m_customers c JOIN m_orders o ON o.customer_email = c.email")" "2"
-assert_eq "…a table with only partial masks too" "$(gwm "$MK" maskt "SELECT aadhaar_no FROM m_kyc")" "XXXXXXXX0124"
+  "$(gwm "$MK" main "SELECT count(*) FROM m_customers c JOIN m_orders o ON o.customer_email = c.email")" "2"
+assert_eq "…a table with only partial masks too" "$(gwm "$MK" main "SELECT aadhaar_no FROM m_kyc")" "XXXXXXXX0124"
 assert_eq "…is refused the real table, the shadow and the hash" \
-  "$(gwm "$MK" maskt "SELECT email FROM public.m_customers" | grep -c 'permission denied')|$(gwm "$MK" maskt "SELECT * FROM bb_mask.public__m_customers" | grep -c 'permission denied')|$(gwm "$MK" maskt "SELECT bb_f1.bbid_mask_hmac('default', 'x')" | grep -c 'permission denied')" "1|1|1"
+  "$(gwm "$MK" main "SELECT email FROM public.m_customers" | grep -c 'permission denied')|$(gwm "$MK" main "SELECT * FROM bb_mask.public__m_customers" | grep -c 'permission denied')|$(gwm "$MK" main "SELECT bb_f1.bbid_mask_hmac('default', 'x')" | grep -c 'permission denied')" "1|1|1"
 assert_eq "…cannot write to a marked table, and can to an ordinary one" \
-  "$(gwm "$MK" maskt "UPDATE m_customers SET city = 'x' WHERE id = 1" | grep -cE 'permission denied|cannot update view')|$(gwm "$MK" maskt "UPDATE m_kyc SET aadhaar_no = 'x'" | grep -c 'permission denied')|$(gwm "$MK" maskt "INSERT INTO m_plain VALUES (2, 'by the analyst'); SELECT v FROM m_plain WHERE id = 2")" "1|1|by the analyst"
+  "$(gwm "$MK" main "UPDATE m_customers SET city = 'x' WHERE id = 1" | grep -cE 'permission denied|cannot update view')|$(gwm "$MK" main "UPDATE m_kyc SET aadhaar_no = 'x'" | grep -c 'permission denied')|$(gwm "$MK" main "INSERT INTO m_plain VALUES (2, 'by the analyst'); SELECT v FROM m_plain WHERE id = 2")" "1|1|by the analyst"
 assert_eq "…cannot put its search_path back to the real tables" \
-  "$(gwm "$MK" maskt "SET search_path = public; SELECT email FROM m_customers" | grep -c 'permission denied')" "1"
-gwm "$KEY" maskt "INSERT INTO m_customers VALUES (3, 'neha@example.com', '9123456780', '345678901238', NULL, 'Delhi', 'Neha');
+  "$(gwm "$MK" main "SET search_path = public; SELECT email FROM m_customers" | grep -c 'permission denied')" "1"
+gwm "$KEY" main "INSERT INTO m_customers VALUES (3, 'neha@example.com', '9123456780', '345678901238', NULL, 'Delhi', 'Neha');
   UPDATE m_customers SET email = 'ravi.k@example.org' WHERE id = 2; UPDATE m_customers SET id = 4 WHERE id = 1; DELETE FROM m_customers WHERE id = 3" >/dev/null
 assert_eq "the application's writes keep the masks up: inserts, changes, a moved key and a delete" \
-  "$(gwm "$KEY" maskt "SELECT (SELECT count(*) FROM m_customers), (SELECT count(*) FROM bb_mask.public__m_customers), (SELECT count(*) FROM m_customers c JOIN bb_mask.public__m_customers m USING (id))")|$(gwm "$MK" maskt "SELECT id, email ~ '^[0-9a-f]{64}\$' FROM m_customers ORDER BY id" | tr '\n' ' ')" \
+  "$(pg pg-main "SELECT (SELECT count(*) FROM m_customers), (SELECT count(*) FROM bb_mask.public__m_customers), (SELECT count(*) FROM m_customers c JOIN bb_mask.public__m_customers m USING (id))")|$(gwm "$MK" main "SELECT id, email ~ '^[0-9a-f]{64}\$' FROM m_customers ORDER BY id" | tr '\n' ' ')" \
   "2|2|2|2|t 4|t "
-assert_eq "…and an admin reads real values throughout" "$(gwm "$KEY" maskt "SELECT email FROM m_customers WHERE id = 2")" "ravi.k@example.org"
-code "$MK" -X POST -H 'Content-Type: application/json' -d '{"name":"maskown","from":"maskt"}' https://localhost:8080/api/branches >/dev/null
+assert_eq "…and an admin reads real values throughout" "$(gwm "$KEY" main "SELECT email FROM m_customers WHERE id = 2")" "ravi.k@example.org"
+code "$MK" -X POST -H 'Content-Type: application/json' -d '{"name":"maskown","from":"main"}' https://localhost:8080/api/branches >/dev/null
 assert_eq "the masked account sees real values on a branch it owns" \
   "$(gwm "$MK" maskown "SELECT email FROM m_customers WHERE id = 2")" "ravi.k@example.org"
 assert_eq "the API: an admin reads where masking stands and the cost of a rule; the masked account is refused both" \
-  "$(curl -sk -H "$AUTH" 'https://localhost:8080/api/masking?branch=maskt' | hjson "print(len(d['rules']), [a['email'] for a in d['accounts']])")|$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"branch":"maskt","table":"m_customers","column":"email"}' https://localhost:8080/api/masking/rule | hjson "print('3.6 times' in d['cost'])")|$(code "$MK" 'https://localhost:8080/api/masking?branch=maskt')|$(code "$MK" -X POST -H 'Content-Type: application/json' -d '{"email":"mask-analyst@foxbyte.dev","off":true}' https://localhost:8080/api/masking/account)" \
+  "$(curl -sk -H "$AUTH" 'https://localhost:8080/api/masking?branch=main' | hjson "print(len(d['rules']), [a['email'] for a in d['accounts']])")|$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"branch":"main","table":"m_customers","column":"email"}' https://localhost:8080/api/masking/rule | hjson "print('3.6 times' in d['cost'])")|$(code "$MK" 'https://localhost:8080/api/masking?branch=main')|$(code "$MK" -X POST -H 'Content-Type: application/json' -d '{"email":"mask-analyst@foxbyte.dev","off":true}' https://localhost:8080/api/masking/account)" \
   "6 ['mask-analyst@foxbyte.dev']|True|403|403"
-$S mask rule m_customers.email --off --branch maskt >/dev/null 2>&1 || bad "taking the email rule off"
+$S mask rule m_customers.email --off >/dev/null 2>&1 || bad "taking the email rule off"
 assert_eq "a rule taken off: its column is real again for the masked account, the others still masked" \
-  "$(gwm "$MK" maskt "SELECT email, phone FROM m_customers WHERE id = 2")" "ravi.k@example.org|XXXXXX3211"
+  "$(gwm "$MK" main "SELECT email, phone FROM m_customers WHERE id = 2")" "ravi.k@example.org|XXXXXX3211"
 $S mask account mask-analyst@foxbyte.dev --off --yes >/dev/null 2>&1 || bad "unmasking the account"
 assert_eq "unmasked: real values again, and writes as before" \
-  "$(gwm "$MK" maskt "SELECT phone FROM m_customers WHERE id = 2")|$(gwm "$MK" maskt "UPDATE m_customers SET city = 'Panaji' WHERE id = 2; SELECT city FROM m_customers WHERE id = 2")" "9876543211|Panaji"
+  "$(gwm "$MK" main "SELECT phone FROM m_customers WHERE id = 2")|$(gwm "$MK" main "UPDATE m_customers SET city = 'Panaji' WHERE id = 2; SELECT city FROM m_customers WHERE id = 2")" "9876543211|Panaji"
 assert_eq "every setup, rule and account change is in the security log" \
   "$($S audit log --limit 300 | grep -c 'mask.setup')|$($S audit log --limit 300 | grep -c 'mask.rule')|$($S audit log --limit 300 | grep -c 'mask.account')" "1|7|2"
-$S branch delete maskown >/dev/null 2>&1; $S branch delete maskt >/dev/null 2>&1
+$S branch delete maskown >/dev/null 2>&1
+for c in m_customers.phone m_customers.aadhaar_no m_orders.customer_email m_kyc.aadhaar_no; do $S mask rule "$c" --off >/dev/null 2>&1; done
+$S mask rule m_customers.prefs --path '$.contact.mobile' --off >/dev/null 2>&1
+assert_eq "with every rule taken off, no mask is left behind: no view, shadow, trigger or rule" \
+  "$(pg pg-main "SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'bb_mask' AND c.relkind IN ('r','v')), (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'bb_mask%'), (SELECT count(*) FROM bb.mask_rules)")" "0|0|0"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS m_customers, m_orders, m_kyc, m_plain CASCADE" >/dev/null
 $S user delete mask-analyst@foxbyte.dev >/dev/null 2>&1
 
 echo "### 12. fox uninstall (B1)"

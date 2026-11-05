@@ -385,17 +385,30 @@ func DefaultMaskRule(category string) string {
 	return MaskEmpty
 }
 
-// maskRulesSQL reads a branch's rules; a branch with masking never set up has
-// no table, and so none.
-const maskRulesSQL = `SELECT CASE WHEN to_regclass('bb.mask_rules') IS NULL THEN '[]'::json ELSE
-  (SELECT coalesce(json_agg(json_build_object('schema', schema_name, 'table', table_name, 'column', column_name,
+// maskRulesSQL reads a branch's rules.
+const maskRulesSQL = `SELECT coalesce(json_agg(json_build_object('schema', schema_name, 'table', table_name, 'column', column_name,
      'path', json_path, 'rule', rule, 'category', category, 'by', set_by, 'at', set_at)
-     ORDER BY schema_name, table_name, column_name, json_path), '[]'::json) FROM bb.mask_rules) END`
+     ORDER BY schema_name, table_name, column_name, json_path), '[]'::json) FROM bb.mask_rules`
+
+// RelationExists reports whether a table or view is on a branch. Asked on its
+// own: a query naming a missing table fails when it is planned, whatever CASE
+// is meant to keep it from running.
+func RelationExists(name, rel string) (bool, error) {
+	out, err := QuerySQL(name, "SELECT to_regclass("+quoteLiteral(rel)+") IS NOT NULL")
+	if err != nil {
+		return false, fmt.Errorf("asking %s whether %s is there: %w (%s)", name, rel, err, strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out) == "t", nil
+}
 
 // MaskRulesOn reads a branch's rules. Free.
 func MaskRulesOn(name string) ([]MaskRule, error) {
 	if err := checkName(name); err != nil {
 		return nil, err
+	}
+	// A branch with masking never set up has no table, and so no rules.
+	if ok, err := RelationExists(name, "bb.mask_rules"); err != nil || !ok {
+		return []MaskRule{}, err
 	}
 	out, err := QuerySQL(name, maskRulesSQL)
 	if err != nil {
