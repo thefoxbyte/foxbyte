@@ -3323,7 +3323,7 @@ assert_eq "…a table with only partial masks too" "$(gwm "$MK" maskt "SELECT aa
 assert_eq "…is refused the real table, the shadow and the hash" \
   "$(gwm "$MK" maskt "SELECT email FROM public.m_customers" | grep -c 'permission denied')|$(gwm "$MK" maskt "SELECT * FROM bb_mask.public__m_customers" | grep -c 'permission denied')|$(gwm "$MK" maskt "SELECT bb_f1.bbid_mask_hmac('default', 'x')" | grep -c 'permission denied')" "1|1|1"
 assert_eq "…cannot write to a marked table, and can to an ordinary one" \
-  "$(gwm "$MK" maskt "UPDATE m_customers SET city = 'x' WHERE id = 1" | grep -c 'permission denied')|$(gwm "$MK" maskt "INSERT INTO m_plain VALUES (2, 'by the analyst'); SELECT v FROM m_plain WHERE id = 2")" "1|by the analyst"
+  "$(gwm "$MK" maskt "UPDATE m_customers SET city = 'x' WHERE id = 1" | grep -cE 'permission denied|cannot update view')|$(gwm "$MK" maskt "UPDATE m_kyc SET aadhaar_no = 'x'" | grep -c 'permission denied')|$(gwm "$MK" maskt "INSERT INTO m_plain VALUES (2, 'by the analyst'); SELECT v FROM m_plain WHERE id = 2")" "1|1|by the analyst"
 assert_eq "…cannot put its search_path back to the real tables" \
   "$(gwm "$MK" maskt "SET search_path = public; SELECT email FROM m_customers" | grep -c 'permission denied')" "1"
 gwm "$KEY" maskt "INSERT INTO m_customers VALUES (3, 'neha@example.com', '9123456780', '345678901238', NULL, 'Delhi', 'Neha');
