@@ -8,7 +8,7 @@
 MODULE_big = bb_identity
 OBJS = bb_identity.o
 EXTENSION = bb_identity
-DATA = bb_identity--0.1.sql
+DATA = bb_identity--0.1.sql bb_identity--0.2.sql bb_identity--0.1--0.2.sql
 SHLIB_LINK = -lcrypto
 PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
