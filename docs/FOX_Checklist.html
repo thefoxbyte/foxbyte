@@ -784,6 +784,7 @@
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>More import sources: Cassandra, DynamoDB</b></td><td class="tb">I1–I8</td></tr>
         
     <tr data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">—</td><td><b>Release signatures</b> — done 22 Sep 2026</td><td class="tb">A9, M4</td></tr>
+    <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Masking</b> (point 7, Enterprise; design proposed in <code>docs/FOX_F5_Masking_Design.md</code>)<ul class="subs"><li class="todo">Masked readers, rules on confirmed marks (partial, keyed hash, fake, empty), kept in shadow tables so no masking function runs at read time</li><li class="todo">The key outside every table; unmask and an audited lookup; every access path tested</li><li class="todo">Masked branches, closed until masked and verified</li></ul></td><td class="tb">O1, O2, H21</td></tr>
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Hosted cloud tier</b></td><td class="tb">—</td></tr>
     <tr data-st="todo"><td class="c"><i class="ck todo"></i></td><td class="id">—</td><td><b>Networked storage disaggregation</b> (README roadmap; see the storage engine note on page 1)</td><td class="tb">C1, D1</td></tr>
   </table>
