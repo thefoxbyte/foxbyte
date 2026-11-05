@@ -103,6 +103,7 @@ func Serve(addr string) error {
 	registerAuditSettings(api)         // /api/audit-log/{mode,retention,purge} (admins; F6 step 5a)
 	registerAuditEvidence(api)         // /api/audit-log/evidence (admins, Enterprise; F6 step 6b)
 	registerHardening(api)             // /api/hardening (admins; point 3.2)
+	registerHardeningFixes(api)        // /api/hardening/{fix,profile} (admins, Enterprise; points 3.3, 3.4)
 	registerRequests(api, store)       // /api/branches/{name}/request, /api/requests*
 	registerLicense(api)               // /api/license
 	registerHistory(api, store)        // /api/history* (the caller's own query history)

@@ -13,6 +13,7 @@ import (
 	_ "github.com/thefoxbyte/foxbyte/enterprise/accessreview"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/anchor"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/auditevidence"
+	_ "github.com/thefoxbyte/foxbyte/enterprise/hardening"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/impact"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pii"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pipeline"

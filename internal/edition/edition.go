@@ -38,6 +38,9 @@ const (
 	// AccessReview is the access review report: who can reach what, with
 	// which credentials, and who has gone quiet. Point 4.8.
 	AccessReview Feature = "access-review"
+	// Hardening is fixing what the hardening report finds, one check at a
+	// time or by a profile (points 3.3 and 3.4). The report itself is free.
+	Hardening Feature = "hardening"
 )
 
 // descriptions are used in refusals, so each one says what the user is missing
@@ -52,6 +55,7 @@ var descriptions = map[Feature]string{
 	Pipelines:    "ETL pipelines",
 	PersonalData: "personal-data discovery",
 	AccessReview: "the access review report",
+	Hardening:    "hardening fixes and profiles",
 }
 
 // Describe names a feature in a sentence. An unknown feature describes itself,

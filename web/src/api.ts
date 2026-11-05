@@ -24,6 +24,7 @@ export type Feature =
   | 'pipelines'
   | 'personal-data'
   | 'access-review'
+  | 'hardening'
 
 export type Status = {
   mainReady: boolean
@@ -918,11 +919,24 @@ export type HardeningStatus = 'pass' | 'fail' | 'manual' | 'n/a'
 export type HardeningCheck = {
   id: string; section: string; level: 'basic' | 'strict'; title: string
   status: HardeningStatus; evidence: string; why: string; fix?: string
+  fixable?: boolean // a fix can be made here, after a preview (Enterprise)
 }
 export type HardeningReport = {
   branch: string; generated: string; postgres: string; basis: string
   summary: Record<HardeningStatus, number>; checks: HardeningCheck[]; limits: string[]
+  profile?: { profile: string; by: string; at: string } | null
 }
+// Fixes and profiles (points 3.3, 3.4): admins, Enterprise.
+export type HardeningFix = { id: string; title: string; level: string; changes: string[]; sql: string[] | null; note?: string }
+export type HardeningFixResult = { fix: HardeningFix; before: HardeningCheck; after: HardeningCheck; error?: string }
+export const planHardeningFix = (branch: string, check: string) =>
+  req('POST', `${API}/api/hardening/fix`, { branch, check, apply: false }) as Promise<{ fix: HardeningFix }>
+export const applyHardeningFix = (branch: string, check: string) =>
+  req('POST', `${API}/api/hardening/fix`, { branch, check, apply: true }) as Promise<{ result: HardeningFixResult }>
+export const planHardeningProfile = (branch: string, profile: string) =>
+  req('POST', `${API}/api/hardening/profile`, { branch, profile, apply: false }) as Promise<{ fixes: HardeningFix[]; manual: HardeningCheck[] }>
+export const applyHardeningProfile = (branch: string, profile: string) =>
+  req('POST', `${API}/api/hardening/profile`, { branch, profile, apply: true }) as Promise<{ results: HardeningFixResult[] }>
 const hardeningURL = (branch: string) => `${API}/api/hardening?branch=${encodeURIComponent(branch)}`
 export const getHardening = (branch: string) => req('GET', hardeningURL(branch)) as Promise<HardeningReport>
 export const hardeningJsonUrl = hardeningURL

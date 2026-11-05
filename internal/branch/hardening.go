@@ -48,6 +48,9 @@ type HardeningCheck struct {
 	Evidence string `json:"evidence"` // what was found
 	Why      string `json:"why"`
 	Fix      string `json:"fix,omitempty"` // for fail and manual
+	// Fixable: a fix can be made for it here (Enterprise, 3.3), after a
+	// preview. False in Standard, and for a fix that is a person's to make.
+	Fixable bool `json:"fixable,omitempty"`
 }
 
 // HardeningReport is the report for one branch.
@@ -59,6 +62,8 @@ type HardeningReport struct {
 	Summary   map[string]int   `json:"summary"` // status -> count
 	Checks    []HardeningCheck `json:"checks"`
 	Limits    []string         `json:"limits"`
+	// Profile is the last hardening profile applied to the branch (3.4).
+	Profile *AppliedProfile `json:"profile,omitempty"`
 }
 
 // HardeningBasis says what the checks are, and are not.
@@ -666,6 +671,10 @@ func ProduceHardening(name string) (HardeningReport, error) {
 	}
 	for _, c := range rep.Checks {
 		rep.Summary[c.Status]++
+	}
+	fixable(name, rep.Checks)
+	if p, ok := loadProfiles()[name]; ok {
+		rep.Profile = &p
 	}
 	return rep, nil
 }

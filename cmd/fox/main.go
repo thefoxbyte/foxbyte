@@ -104,6 +104,8 @@ Stack:
   hardening [--branch b] [--level basic|strict] [--failed] [--json]
                        How a branch's PostgreSQL and this install stand against hardening
                        checks: pass, fail, manual or n/a, with the evidence and the fix
+  hardening fix <check> | profile baseline|strict [--branch b] [--yes]
+                       Fix a failing check, or every one a profile covers, after a preview (Enterprise)
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)
