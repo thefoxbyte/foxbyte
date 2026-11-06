@@ -92,12 +92,13 @@ export default function AccessReview() {
           <h2 style={{ marginTop: 22 }}>Accounts</h2>
           <div className="table-wrap">
             <table aria-label="Accounts">
-              <thead><tr><th>Account</th><th>Reaches</th><th>May override on</th><th className="num">Keys</th><th>Last active</th><th>Status</th></tr></thead>
+              <thead><tr><th>Account</th><th>Reaches</th><th>Sees unmasked</th><th>May override on</th><th className="num">Keys</th><th>Last active</th><th>Status</th></tr></thead>
               <tbody>
                 {(report.accounts ?? []).map(a => (
                   <tr key={a.id}>
                     <td>{a.email}{a.admin && <> <span className="badge primary">admin</span></>}</td>
                     <td>{a.reaches}{(a.owns ?? []).length > 0 && <div className="muted" style={{ fontSize: 12 }}>owns {a.owns!.join(', ')}</div>}</td>
+                    <td style={{ fontSize: 13 }} data-testid={`unmasked-${a.email}`}>{a.unmasked}</td>
                     <td>{(a.overrideOn ?? []).length > 0 ? a.overrideOn!.join(', ') : '–'}</td>
                     <td className="num">{a.keys}</td>
                     <td title={`sign-in ${day(a.lastSignIn)} · key ${day(a.lastKeyUse)} · query ${day(a.lastQuery)}`}>{day(a.lastActive)}</td>

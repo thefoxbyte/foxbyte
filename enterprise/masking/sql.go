@@ -413,6 +413,8 @@ func viewSQL(nm names, cols []branch.MaskColumn, own map[string]branch.MaskRule,
 		fmt.Sprintf("CREATE %sVIEW %s AS SELECT %s FROM %s", map[bool]string{true: "OR REPLACE "}[replace], nm.view, strings.Join(sel, ", "), from),
 		"ALTER VIEW " + nm.view + " OWNER TO " + branch.MaskerRole,
 		"GRANT SELECT ON " + nm.base + " TO " + branch.MaskerRole,
+		// An unmask holder's reads of the table are logged (step 3).
+		"GRANT SELECT ON " + nm.base + " TO " + branch.AuditReadRole,
 		"GRANT SELECT ON " + nm.view + " TO " + branch.MaskedRole,
 	}
 }
@@ -429,7 +431,7 @@ const maskTablesDDL = `CREATE TABLE IF NOT EXISTS bb.mask_tables (
 // (bb_identity 0.2), the roles, the schema, the rules table, the fake values,
 // and a masked reader's rights on every table that is not masked.
 func setupSQL() []string {
-	return []string{
+	return append([]string{
 		`DO $bbsetup$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'bb_identity') THEN
     EXECUTE 'ALTER EXTENSION bb_identity UPDATE';
@@ -483,5 +485,73 @@ BEGIN
     END IF;
   END LOOP;
 END $bbgrant$`,
+	}, lookupSQL()...)
+}
+
+// lookupSQL is the lookup (step 3; design, section 10): a masked reader finds
+// a person by an exact value without unmasking. SECURITY DEFINER, as
+// bb_masker, which reads the rules, the tables and the hash, and nobody logs
+// in as. It looks only in a column with a rule of its own, returns the rows
+// masked, as the view has them, allows a number of calls a minute for each
+// account, and records each call without the value. A value that is not of
+// the column's type is refused without being repeated, so it reaches no log.
+func lookupSQL() []string {
+	return []string{
+		`DO $bbaudit$ BEGIN
+  IF to_regrole('` + branch.AuditReadRole + `') IS NULL THEN EXECUTE 'CREATE ROLE ` + branch.AuditReadRole + ` NOLOGIN'; END IF;
+END $bbaudit$`,
+		"GRANT USAGE ON SCHEMA bb TO " + branch.MaskerRole,
+		"GRANT SELECT ON bb.mask_rules, bb.mask_tables TO " + branch.MaskerRole,
+		`CREATE TABLE IF NOT EXISTS ` + branch.MaskSchema + `.lookups (at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  who text NOT NULL, rel text NOT NULL, col text NOT NULL, found int NOT NULL)`,
+		"ALTER TABLE " + branch.MaskSchema + ".lookups OWNER TO " + branch.MaskerRole,
+		"REVOKE ALL ON " + branch.MaskSchema + ".lookups FROM PUBLIC",
+		`CREATE INDEX IF NOT EXISTS lookups_who_at ON ` + branch.MaskSchema + `.lookups (who, at)`,
+		fmt.Sprintf(`CREATE OR REPLACE FUNCTION %[1]s.find(tbl text, col text, val text) RETURNS SETOF jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $bbfind$
+DECLARE s text; t text; v text; r text; d text; typ text; k text; rel regclass; n int; ok boolean;
+BEGIN
+  IF position('.' in tbl) > 0 THEN s := split_part(tbl, '.', 1); t := split_part(tbl, '.', 2); ELSE s := 'public'; t := tbl; END IF;
+  SELECT rule INTO r FROM bb.mask_rules WHERE schema_name = s AND table_name = t AND column_name = col AND json_path = '';
+  IF r IS NULL THEN
+    RAISE EXCEPTION 'a lookup is by a column with a masking rule of its own, and %%.%%.%% has none', s, t, col USING ERRCODE = '42704';
+  END IF;
+  IF (SELECT count(*) FROM %[1]s.lookups WHERE who = session_user AND at > clock_timestamp() - interval '1 minute') >= %[2]d THEN
+    RAISE EXCEPTION 'too many lookups: %[2]d a minute for each account' USING ERRCODE = '53400';
+  END IF;
+  rel := format('%%I.%%I', s, t)::regclass;
+  v := CASE WHEN s = 'public' THEN t ELSE s || '__' || t END;
+  SELECT format_type(a.atttypid, a.atttypmod) INTO typ FROM pg_attribute a WHERE a.attrelid = rel AND a.attname = col;
+  SELECT a.attname INTO k FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+   WHERE i.indrelid = rel AND i.indisprimary;
+  BEGIN
+    EXECUTE format('SELECT CAST($1 AS %%s) IS NOT NULL', typ) INTO ok USING val;
+  EXCEPTION WHEN others THEN
+    RAISE EXCEPTION 'the value is not a %%', typ USING ERRCODE = '22000';
+  END;
+  IF r = 'hash' THEN
+    -- The value hashed here, under the table's domain, against the kept hashes.
+    SELECT coalesce((SELECT key_domain FROM bb.mask_tables WHERE schema_name = s AND table_name = t), 'default') INTO d;
+    RETURN QUERY EXECUTE format('SELECT to_jsonb(m) FROM %[1]s.%%I m WHERE m.%%I = bb_f1.bbid_mask_hmac($2, $1)', v, col) USING val, d;
+  ELSE
+    RETURN QUERY EXECUTE format('SELECT to_jsonb(m) FROM %[1]s.%%I m WHERE m.%%I IN (SELECT n.%%I FROM %%I.%%I n WHERE n.%%I = CAST($1 AS %%s))',
+      v, k, k, s, t, col, typ) USING val;
+  END IF;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  INSERT INTO %[1]s.lookups (who, rel, col, found) VALUES (session_user, s || '.' || t, col, n);
+END $bbfind$`, branch.MaskSchema, branch.LookupsPerMinute),
+		"ALTER FUNCTION " + branch.MaskSchema + ".find(text, text, text) OWNER TO " + branch.MaskerRole,
+		"REVOKE EXECUTE ON FUNCTION " + branch.MaskSchema + ".find(text, text, text) FROM PUBLIC",
+		"GRANT EXECUTE ON FUNCTION " + branch.MaskSchema + ".find(text, text, text) TO " + branch.MaskedRole,
 	}
+}
+
+// auditReadsSQL gives bb_audit_read SELECT on the tables with rules, for a
+// branch whose masks were made before step 3.
+func auditReadsSQL(tables [][2]string) []string {
+	out := lookupSQL()[:1]
+	for _, t := range tables {
+		out = append(out, "GRANT SELECT ON "+ident(t[0])+"."+ident(t[1])+" TO "+branch.AuditReadRole)
+	}
+	return out
 }

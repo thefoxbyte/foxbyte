@@ -7,6 +7,7 @@ package accessreview
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/access"
@@ -30,6 +31,36 @@ type inputs struct {
 	// asserted is, by running branch, what each application key asserted.
 	asserted map[string]map[[2]string]branch.Asserted
 	limits   []string // what gathering could not read
+	// Masking (point 7): whether it is set up, who is masked, and where each
+	// masked account holds unmask.
+	maskOn  bool
+	masked  map[string]bool
+	unmasks map[string][]string // email → branches
+	auditOn bool
+}
+
+// unmaskedText says what an account sees without masking (4.8's column).
+func unmaskedText(in inputs, email string, admin bool, owns []string) string {
+	switch {
+	case !in.maskOn:
+		return "everything the branches it reaches hold: no masking is in place (point 7)"
+	case admin:
+		return "everything: an admin always sees real values"
+	case !in.masked[strings.ToLower(email)]:
+		return "everything the branches it reaches hold: not masked"
+	}
+	s := "masks of marked tables"
+	if len(owns) > 0 {
+		s += "; real values on the branches it owns (" + strings.Join(owns, ", ") + ")"
+	}
+	if u := in.unmasks[strings.ToLower(email)]; len(u) > 0 {
+		sort.Strings(u)
+		s += "; unmask on " + strings.Join(u, ", ") + ", its reads of marked tables audited"
+		if !in.auditOn {
+			s += " once the audit log is on"
+		}
+	}
+	return s
 }
 
 func review(store *auth.Store, o access.ReviewOptions) (access.Review, error) {
@@ -77,6 +108,14 @@ func gather(store *auth.Store) (inputs, error) {
 		if a, err := branch.ListAdmins(b); err == nil {
 			in.admins[b] = a
 		}
+	}
+	in.maskOn, in.auditOn = branch.MaskOn(), branch.AuditOn()
+	in.masked, in.unmasks = map[string]bool{}, map[string][]string{}
+	for _, a := range branch.MaskedAccounts() {
+		in.masked[a.Email] = true
+	}
+	for _, g := range branch.UnmaskGrants() {
+		in.unmasks[g.Email] = append(in.unmasks[g.Email], g.Branch)
 	}
 	if in.apps, err = store.Apps(); err != nil {
 		return in, fmt.Errorf("listing applications: %w", err)
@@ -188,7 +227,7 @@ func build(in inputs, dormantDays int, now time.Time) access.Review {
 		default:
 			ra.Reaches = "main"
 		}
-		ra.Unmasked = "everything the branches it reaches hold: no masking is in place (point 7)"
+		ra.Unmasked = unmaskedText(in, a.Email, ra.Admin, ra.Owns)
 		ra.LastSignIn = ptr(in.signIns[a.Email])
 		ra.LastKeyUse = ptr(lastKeyUse[a.ID])
 		ra.LastQuery = ptr(in.queries[a.Email])
@@ -246,8 +285,13 @@ func build(in inputs, dormantDays int, now time.Time) access.Review {
 
 	r.Summary.Accounts, r.Summary.Keys, r.Summary.Branches = len(r.Accounts), len(r.Keys), len(r.Branches)
 	r.Summary.Applications = len(r.Applications)
+	masking := "No masking is in place yet (point 7), so there are no unmask rights to review: every account sees, unmasked, what the branches it reaches hold."
+	if in.maskOn {
+		masking = "Sees unmasked is from masking (point 7): who an admin masked, and where each masked account owns a branch or holds unmask. " +
+			"An unmask holder's reads of marked tables are audited while the audit log is on. A role someone made directly in Postgres is not seen."
+	}
 	r.Limits = append([]string{
-		"No masking is in place yet (point 7), so there are no unmask rights to review: every account sees, unmasked, what the branches it reaches hold.",
+		masking,
 		fmt.Sprintf("Last active is the newest of a console sign-in, a key's use (recorded to the minute) and a query kept in history. Dormant means no activity FoxByte saw in %d days: a role someone made directly in Postgres is not seen.", dormantDays),
 		"Identity is what each credential is: an agent key marks an agent by how it logs in. Whom a change was made for is what a registered application asserted with its key (Applications), which means the application vouched for the user, not that the user was there.",
 		"What an application's key asserted is counted in the Blackbox and the agent sessions of running branches. A branch made from main holds main's records from before it was made, so two branches' counts can overlap; rows whose last_modified_for names an application are not counted.",

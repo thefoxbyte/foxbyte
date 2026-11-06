@@ -116,6 +116,10 @@ Stack:
                        The masking keys: domains that never hash alike, and rotating a key (Enterprise)
   mask key use <domain> --table [schema.]table [--branch b] [--yes]
                        Put a table's masks under a key domain (Enterprise)
+  mask unmask <email> --branch b [--off] [--yes]
+                       Let a masked account see real values on a branch, every read audited (Enterprise)
+  mask lookups [--branch b] [--limit n] [--json]
+                       Who looked a person up, when, by which column, how many found: never the value
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)

@@ -25,6 +25,8 @@ import (
 //	fox mask key [status] [--json]
 //	fox mask key create|rotate|drop <domain> [--yes]                      (Enterprise)
 //	fox mask key use <domain> --table [schema.]table [--branch b] [--yes] (Enterprise)
+//	fox mask unmask <email> --branch b [--off] [--yes]                    (Enterprise)
+//	fox mask lookups [--branch b] [--limit n] [--json]
 //
 // Reading where masking stands is in every edition; setting it is Enterprise.
 // Each setup, rule and account change is in the security log.
@@ -42,6 +44,12 @@ func maskCmd(args []string) {
 			return
 		case "key":
 			maskKey(args[1:])
+			return
+		case "unmask":
+			maskUnmask(args[1:])
+			return
+		case "lookups":
+			maskLookups(args[1:])
 			return
 		case "status":
 			args = args[1:]
@@ -105,6 +113,14 @@ func printMaskStatus(st branch.MaskStatus) {
 	if len(st.Accounts) == 0 {
 		fmt.Printf("  none: nobody is masked until an admin masks them\n")
 	}
+	fmt.Printf("\nUnmask on %s (%d): real values, every read of a marked table audited\n", st.Branch, len(st.Unmasks))
+	for _, g := range st.Unmasks {
+		fmt.Printf("  %-40s by %s at %s\n", g.Email, g.By, g.At)
+	}
+	if len(st.Unmasks) > 0 && !st.AuditOn {
+		fmt.Printf("  The audit log is off, so their reads are not being logged: %s audit-log on\n", brand.CLI)
+	}
+	fmt.Printf("\nLookups on %s: %d recorded (%s mask lookups --branch %s)\n", st.Branch, len(st.Lookups), brand.CLI, st.Branch)
 }
 
 // maskSetup sets masking up on a branch: the key if the install has none, the
@@ -418,5 +434,68 @@ func printMaskKeys(st branch.MaskKeysStatus) {
 	}
 	if len(st.Stopped) > 0 {
 		fmt.Printf("\nNot running, so not read: %s\n", strings.Join(st.Stopped, ", "))
+	}
+}
+
+// maskUnmask gives a masked account unmask on a branch, or takes it. There it
+// sees real values, and every read it makes of a marked table is audited.
+func maskUnmask(args []string) {
+	requireFeature(edition.Masking)
+	ps := positionals(args, "--branch")
+	b := optValue(args, "--branch")
+	if len(ps) != 1 || b == "" {
+		fmt.Fprintf(os.Stderr, "usage: %s mask unmask <email> --branch b [--off] [--yes]\n", brand.CLI)
+		os.Exit(2)
+	}
+	email, off := strings.ToLower(ps[0]), hasFlag(args, "--off")
+	if !hasFlag(args, "--yes") {
+		if off {
+			fmt.Printf("This takes unmask on %s from %s: they read masks there again.\n", b, email)
+		} else {
+			fmt.Printf("This lets %s see real values on %s, as its owner does.\n\n"+
+				"Every read they make there of a marked table is audited: their role's audit\n"+
+				"role becomes %s, which only a superuser can change, so the audit log\n"+
+				"records those reads, and theirs only. It is listed in the access review.\n",
+				email, b, branch.AuditReadRole)
+			if !branch.AuditOn() {
+				fmt.Printf("\nThe audit log is off, so their reads are not logged until `%s audit-log on`.\n", brand.CLI)
+			}
+		}
+		fmt.Printf("Their open sessions on %s end, so the next one sees the change.\n\nRun again with --yes to go ahead.\n", b)
+		return
+	}
+	must(branch.Unmask(email, b, cliActor(), off))
+	what := "given unmask on " + b
+	if off {
+		what = "no longer unmasked on " + b
+	}
+	recordMask(auth.EvMaskUnmask, b, email+" "+what)
+	fmt.Printf("Done: %s is %s.\n", email, what)
+}
+
+// maskLookups lists a branch's lookups: who, when, which column, how many
+// rows found. Never the value looked up, which is not kept.
+func maskLookups(args []string) {
+	b := maskBranch(args)
+	n := 100
+	if v := optValue(args, "--limit"); v != "" {
+		if _, err := fmt.Sscan(v, &n); err != nil {
+			must(fmt.Errorf("--limit is a number, not %q", v))
+		}
+	}
+	ls, err := branch.Lookups(b, n)
+	must(err)
+	if hasFlag(args, "--json") {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		must(enc.Encode(ls))
+		return
+	}
+	fmt.Printf("Lookups on %s (%d, newest first). The values looked up are not kept.\n", b, len(ls))
+	for _, l := range ls {
+		fmt.Printf("  %s  %-36s %s.%s  found %d\n", l.At, l.Who, l.Table, l.Column, l.Found)
+	}
+	if len(ls) == 0 {
+		fmt.Printf("  none: a masked account looks a person up with SELECT * FROM %s.find('table', 'column', 'value')\n", branch.MaskSchema)
 	}
 }
