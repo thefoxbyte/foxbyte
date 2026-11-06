@@ -65,3 +65,58 @@ test('a rule is set on a confirmed finding after its cost, and an account is mas
   await page.getByRole('dialog').getByRole('button', { name: 'Take it off' }).click()
   await expect(page.getByTestId('open-m_people-email')).toBeVisible({ timeout: 30_000 })
 })
+
+// Keys (step 2): a domain made, a table put under it and back, its key
+// rotated after the page says what that does, and the domain deleted.
+test('a key domain is made, used, rotated and deleted', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Masking' }).click()
+  await page.getByLabel('Branch').selectOption('e2emask')
+  await expect(page.getByTestId('mask-state')).toContainText('On.', { timeout: 30_000 })
+  await expect(page.getByTestId('key-default')).toBeVisible()
+
+  // A keyed rule, so the table has masks a key makes.
+  const row = page.getByTestId('open-m_people-email')
+  await row.getByRole('button', { name: 'Mask…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Set the rule' }).click()
+  await expect(page.getByTestId('rule-m_people-email')).toContainText('made', { timeout: 30_000 })
+
+  await page.getByLabel('New key domain').fill('e2e_tenant')
+  await page.getByRole('form', { name: 'Make a key domain' }).getByRole('button', { name: 'Make…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Make it' }).click()
+  await expect(page.getByTestId('mask-msg')).toHaveText('Key domain e2e_tenant is made.', { timeout: 30_000 })
+  await expect(page.getByTestId('key-e2e_tenant')).toContainText('key 1')
+
+  await page.getByLabel('Table to move').selectOption('public.m_people')
+  await page.getByLabel('Key domain for the table').selectOption('e2e_tenant')
+  await page.getByRole('form', { name: 'Put a table under a key domain' }).getByRole('button', { name: 'Move…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Move it' }).click()
+  await expect(page.getByTestId('mask-msg')).toHaveText('public.m_people on e2emask is under key domain e2e_tenant.', { timeout: 60_000 })
+  await expect(page.getByTestId('key-e2e_tenant')).toContainText('e2emask: public.m_people')
+
+  await page.getByTestId('key-e2e_tenant').getByRole('button', { name: 'Rotate…' }).click()
+  const dlg = page.getByRole('dialog')
+  await expect(dlg.getByTestId('rotate-cost')).toContainText('There is no undo')
+  await expect(dlg).toContainText('e2emask: public.m_people')
+  await dlg.getByRole('button', { name: 'Rotate the key' }).click()
+  await expect(page.getByTestId('mask-msg')).toHaveText("e2e_tenant's key is rotated, and the old one deleted.", { timeout: 120_000 })
+  await expect(page.getByTestId('key-e2e_tenant')).toContainText('key 2')
+
+  // In use, so it cannot be deleted; back to the default, then it can.
+  await page.getByTestId('key-e2e_tenant').getByRole('button', { name: 'Delete…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete it' }).click()
+  await expect(page.getByTestId('mask-err')).toContainText('uses e2e_tenant', { timeout: 30_000 })
+  await page.getByLabel('Table to move').selectOption('public.m_people')
+  await page.getByLabel('Key domain for the table').selectOption('default')
+  await page.getByRole('form', { name: 'Put a table under a key domain' }).getByRole('button', { name: 'Move…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Move it' }).click()
+  await expect(page.getByTestId('mask-msg')).toHaveText('public.m_people on e2emask is under key domain default.', { timeout: 60_000 })
+  await page.getByTestId('key-e2e_tenant').getByRole('button', { name: 'Delete…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete it' }).click()
+  await expect(page.getByTestId('mask-msg')).toHaveText('Key domain e2e_tenant is deleted.', { timeout: 30_000 })
+  await expect(page.getByTestId('key-e2e_tenant')).toHaveCount(0)
+
+  await page.getByTestId('rule-m_people-email').getByRole('button', { name: 'Take off…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Take it off' }).click()
+  await expect(page.getByTestId('open-m_people-email')).toBeVisible({ timeout: 30_000 })
+})

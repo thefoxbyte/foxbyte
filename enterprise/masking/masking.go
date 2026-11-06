@@ -14,14 +14,15 @@ import (
 )
 
 func init() {
-	branch.SetMasker(&branch.Masker{Setup: setup, SetRule: setRule, DropRule: dropRule, MaskTables: maskTables})
+	branch.SetMasker(&branch.Masker{Setup: setup, SetRule: setRule, DropRule: dropRule, MaskTables: maskTables,
+		Rotate: rotate, UseDomain: useDomain})
 }
 
 // setup makes the install's default key if it has none, then the branch's
 // roles, schema, rules table and a masked reader's rights. It runs again
 // safely: a table already masked is masked again from its rules.
 func setup(b, actor string) error {
-	if err := branch.EnsureMaskKey(keyDomain); err != nil {
+	if err := branch.EnsureMaskKey(branch.DefaultMaskDomain); err != nil {
 		return fmt.Errorf("making the masking key: %w", err)
 	}
 	if err := branch.RunMaskSQL(b, actor, setupSQL(), false); err != nil {
@@ -99,7 +100,7 @@ func setRule(b string, r branch.MaskRule) error {
 	if err != nil {
 		return err
 	}
-	if _, err := maskTable(r.Schema, r.Table, cols, rulesFor(rules, r.Schema, r.Table)); err != nil {
+	if _, err := maskTable(r.Schema, r.Table, cols, rulesFor(rules, r.Schema, r.Table), branch.DefaultMaskDomain); err != nil {
 		return err
 	}
 	if err := branch.RunMaskSQL(b, r.By, []string{fmt.Sprintf(`INSERT INTO bb.mask_rules (schema_name, table_name, column_name, json_path, rule, category, set_by)
@@ -135,10 +136,17 @@ func remask(b, schema, table, actor string, all []branch.MaskRule) error {
 	if err != nil {
 		return err
 	}
-	m, err := maskTable(schema, table, cols, rulesFor(all, schema, table))
+	domain, err := tableDomain(b, schema, table)
 	if err != nil {
 		return err
 	}
+	m, err := maskTable(schema, table, cols, rulesFor(all, schema, table), domain)
+	if err != nil {
+		return err
+	}
+	// Made under the domain's key now.
+	k, _ := branch.MaskKeyFor(domain)
+	m.View = append(m.View, tableKeySQL(schema, table, domain, max(k.Gen, 1)))
 	if err := branch.RunMaskSQL(b, actor, append(m.Drop, m.Build...), true); err != nil {
 		return fmt.Errorf("making %s.%s's masks: %w", schema, table, err)
 	}
@@ -174,6 +182,35 @@ func rulesFor(rules []branch.MaskRule, schema, table string) []branch.MaskRule {
 		}
 	}
 	return out
+}
+
+// tableKeySQL records a table's domain and the key its masks are made under.
+func tableKeySQL(schema, table, domain string, gen int) string {
+	return fmt.Sprintf(`INSERT INTO bb.mask_tables (schema_name, table_name, key_domain, key_gen) VALUES (%s, %s, %s, %d)
+  ON CONFLICT (schema_name, table_name) DO UPDATE SET key_domain = EXCLUDED.key_domain, key_gen = EXCLUDED.key_gen`,
+		lit(schema), lit(table), lit(domain), gen)
+}
+
+// tableDomain is the domain a table's masks are under: the default unless one
+// was chosen for it.
+func tableDomain(b, schema, table string) (string, error) {
+	if err := ensureKeysTable(b); err != nil {
+		return "", err
+	}
+	out, err := branch.QuerySQL(b, fmt.Sprintf(`SELECT coalesce((SELECT key_domain FROM bb.mask_tables WHERE schema_name = %s AND table_name = %s), %s)`,
+		lit(schema), lit(table), lit(branch.DefaultMaskDomain)))
+	if err != nil {
+		return "", fmt.Errorf("reading %s.%s's key domain on %s: %w (%s)", schema, table, b, err, strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ensureKeysTable adds the table of keys to a branch set up before step 2.
+func ensureKeysTable(b string) error {
+	if ok, err := branch.RelationExists(b, "bb.mask_tables"); err != nil || ok {
+		return err
+	}
+	return branch.RunMaskSQL(b, "system", []string{maskTablesDDL, "REVOKE ALL ON bb.mask_tables FROM PUBLIC"}, false)
 }
 
 func hasSetup(b string) bool {

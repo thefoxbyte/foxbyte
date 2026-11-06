@@ -2297,6 +2297,68 @@ paths:
         "400": { description: No email, or an admin. }
         "403": { description: Not an admin, or not licensed for masking. }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/keys:
+    get:
+      tags: [audit-log]
+      summary: The install's masking key domains, and the tables using each on the running branches (admins only).
+      description: >-
+        About the keys, never a key. Each domain's key number (one more at each rotation), when it was made and
+        rotated and by whom, whether a rotation was cut short, the tables under it on running branches, those whose
+        masks were made under an older key, and the branches not running, which could not be read.
+      responses:
+        "200":
+          description: Where the keys stand.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        domain: { type: string }
+                        gen: { type: integer }
+                        made: { type: string }
+                        by: { type: string }
+                        rotated: { type: string }
+                        rotatedBy: { type: string }
+                        next: { type: boolean, description: A rotation was cut short; rotating again finishes it. }
+                        tables: { type: array, items: { type: object } }
+                        stale: { type: array, items: { type: object } }
+                  stopped: { type: array, items: { type: string } }
+                  writes: { type: boolean }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/key:
+    post:
+      tags: [audit-log]
+      summary: Make, rotate or delete a key domain, or put a table under one, after a preview (admins only; Enterprise).
+      description: >-
+        create makes a domain with a key of its own; tables in different domains hash apart. rotate makes a new key
+        and writes every hashed or faked mask under the old one again, a batch at a time, masked readers reading the
+        old masks until each table is done; the old key is then deleted, with no undo. drop deletes a domain no
+        table uses, and is refused while a branch stopped since it was made, whose tables cannot be read. use puts a table's masks on a branch under a domain.
+        Without apply, what it does (with rotate, the cost); with apply, it is done. In the security log.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action: { type: string, enum: [create, rotate, drop, use] }
+                domain: { type: string, description: 'A lowercase letter, then up to 23 of a-z, 0-9 and _.' }
+                branch: { type: string, default: main }
+                schema: { type: string, default: public }
+                table: { type: string }
+                apply: { type: boolean }
+      responses:
+        "200": { description: 'A preview (rotate gives {"domain", "cost"}), or once done {"made"}, {"rotated", "done"}, {"deleted"} or {"table", "domain"}.', content: { application/json: { schema: { type: object } } } }
+        "400": { description: A domain name that is not allowed, a domain the install has not got, or no table. }
+        "403": { description: Not an admin, or not licensed for masking. }
+        "409": { description: The domain is used by a table, or a branch stopped since it was made. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/audit-log/evidence:
     get:
       tags: [audit-log]

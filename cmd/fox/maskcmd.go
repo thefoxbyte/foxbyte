@@ -22,6 +22,9 @@ import (
 //	fox mask rule <[schema.]table.column> [rule] [--path $.a.b] [--branch b] [--yes]
 //	fox mask rule <[schema.]table.column> --off [--path $.a.b] [--branch b]
 //	fox mask account <email> [--off] [--yes]                              (Enterprise)
+//	fox mask key [status] [--json]
+//	fox mask key create|rotate|drop <domain> [--yes]                      (Enterprise)
+//	fox mask key use <domain> --table [schema.]table [--branch b] [--yes] (Enterprise)
 //
 // Reading where masking stands is in every edition; setting it is Enterprise.
 // Each setup, rule and account change is in the security log.
@@ -36,6 +39,9 @@ func maskCmd(args []string) {
 			return
 		case "account":
 			maskAccount(args[1:])
+			return
+		case "key":
+			maskKey(args[1:])
 			return
 		case "status":
 			args = args[1:]
@@ -248,5 +254,169 @@ func recordMask(kind, b, detail string) {
 	if s := openStore(); s != nil {
 		s.Audit(kind, cliActor(), b, "", detail)
 		s.Close()
+	}
+}
+
+// maskKey is `fox mask key` (step 2): the install's key domains, and rotating
+// a key. Reading is in every edition; changing a key is Enterprise and in the
+// security log. The keys themselves are never shown.
+func maskKey(args []string) {
+	sub := "status"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub, args = args[0], args[1:]
+	}
+	if sub == "status" {
+		st, err := branch.MaskKeysState()
+		must(err)
+		if hasFlag(args, "--json") {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			must(enc.Encode(st))
+			return
+		}
+		printMaskKeys(st)
+		return
+	}
+	requireFeature(edition.Masking)
+	ps := positionals(args, "--branch", "--table")
+	usage := func() {
+		fmt.Fprintf(os.Stderr, "usage: %[1]s mask key [status] [--json]\n"+
+			"       %[1]s mask key create|rotate|drop <domain> [--yes]\n"+
+			"       %[1]s mask key use <domain> --table [schema.]table [--branch b] [--yes]\n", brand.CLI)
+		os.Exit(2)
+	}
+	if len(ps) != 1 {
+		usage()
+	}
+	domain, yes := ps[0], hasFlag(args, "--yes")
+	switch sub {
+	case "create":
+		must(branch.CheckMaskDomain(domain))
+		if !yes {
+			fmt.Printf("This makes a key domain, %s: a key of its own, 32 random bytes beside the\n"+
+				"default key in %s, never read back and never shown.\n\n"+
+				"Tables put under it (`%s mask key use %s --table …`) hash apart from every\n"+
+				"other domain's, so their masks cannot be joined with them: for data that must\n"+
+				"never be matched up, such as two tenants'. Joins work within one domain.\n\n"+
+				"Run again with --yes to make it.\n", domain, branch.MaskKeyDir(), brand.CLI, domain)
+			return
+		}
+		must(branch.CreateMaskDomain(domain, cliActor()))
+		recordMask(auth.EvMaskKey, "", "key domain "+domain+" made")
+		fmt.Printf("Done: key domain %s made.\n", domain)
+	case "rotate":
+		k, ok := branch.MaskKeyFor(domain)
+		if !ok {
+			must(fmt.Errorf("the install has no key domain %q (`%s mask key` lists them)", domain, brand.CLI))
+		}
+		if !yes {
+			fmt.Printf("This rotates the key of domain %s (key %d).\n\n", domain, max(k.Gen, 1))
+			fmt.Print(branch.MaskRotateCost(domain))
+			st, err := branch.MaskKeysState()
+			must(err)
+			for _, u := range st.Keys {
+				if u.Domain != domain {
+					continue
+				}
+				var keyed []string
+				for _, t := range u.Tables {
+					if t.Keyed {
+						keyed = append(keyed, t.Branch+": "+t.Schema+"."+t.Table)
+					}
+				}
+				fmt.Printf("\nWritten again (%d tables on running branches)\n", len(keyed))
+				for _, t := range keyed {
+					fmt.Printf("  %s\n", t)
+				}
+				if u.Pending {
+					fmt.Printf("\nA rotation of %s was cut short: this carries it on with the key it made.\n", domain)
+				}
+			}
+			if len(st.Stopped) > 0 {
+				fmt.Printf("\nNot running, so not rotated: %s. Their tables in %s keep masks made\n"+
+					"under the old key until `%s mask setup --branch <name>` once each starts;\n"+
+					"`%s mask key` names them.\n", strings.Join(st.Stopped, ", "), domain, brand.CLI, brand.CLI)
+			}
+			fmt.Printf("\nRun again with --yes to rotate it.\n")
+			return
+		}
+		must(branch.RotateMaskKey(domain, cliActor(), func(s string) { fmt.Println("  " + s) }))
+		recordMask(auth.EvMaskKey, "", "key of domain "+domain+" rotated")
+		fmt.Printf("Done: %s's key is rotated, and the old one deleted.\n", domain)
+	case "drop":
+		if !yes {
+			fmt.Printf("This deletes key domain %s and its key. It is refused while a table on\n"+
+				"any branch uses it, or while a branch stopped since it was made, whose tables\n"+
+				"cannot be read.\n\n"+
+				"Run again with --yes to delete it.\n", domain)
+			return
+		}
+		must(branch.DropMaskDomain(domain, cliActor()))
+		recordMask(auth.EvMaskKey, "", "key domain "+domain+" deleted")
+		fmt.Printf("Done: key domain %s deleted.\n", domain)
+	case "use":
+		t := optValue(args, "--table")
+		if t == "" {
+			usage()
+		}
+		schema, table := "public", t
+		if i := strings.Index(t, "."); i >= 0 {
+			schema, table = t[:i], t[i+1:]
+		}
+		b := maskBranch(args)
+		if !yes {
+			fmt.Printf("This puts %s.%s's masks on %s under key domain %s.\n\n"+
+				"Only that table's hashed and faked masks are written again, under %s's key;\n"+
+				"masked readers read the old ones until it is done. Its masks then join only\n"+
+				"with tables in %s.\n\nRun again with --yes to go ahead.\n", schema, table, b, domain, domain, domain)
+			return
+		}
+		must(branch.UseMaskDomain(b, schema, table, domain, cliActor()))
+		recordMask(auth.EvMaskKey, b, fmt.Sprintf("%s.%s on %s put under key domain %s", schema, table, b, domain))
+		fmt.Printf("Done: %s.%s on %s is under key domain %s.\n", schema, table, b, domain)
+	default:
+		usage()
+	}
+}
+
+func printMaskKeys(st branch.MaskKeysStatus) {
+	if len(st.Keys) == 0 {
+		fmt.Printf("Masking keys: none. `%s mask setup` makes the install's first.\n", brand.CLI)
+		return
+	}
+	fmt.Printf("Masking keys (%d). The keys are never shown.\n", len(st.Keys))
+	for _, k := range st.Keys {
+		made := k.Made
+		if made == "" {
+			made = "before key records were kept"
+		}
+		fmt.Printf("\n  %s: key %d, made %s", k.Domain, max(k.Gen, 1), made)
+		if k.By != "" {
+			fmt.Printf(" by %s", k.By)
+		}
+		if k.Rotated != "" {
+			fmt.Printf("; rotated %s by %s", k.Rotated, k.RotBy)
+		}
+		fmt.Println()
+		if k.Next {
+			fmt.Printf("    A ROTATION WAS CUT SHORT: `%s mask key rotate %s --yes` finishes it.\n", brand.CLI, k.Domain)
+		}
+		for _, t := range k.Tables {
+			what := "partial or empty only, no key"
+			if t.Keyed {
+				what = fmt.Sprintf("under key %d", max(t.Gen, 1))
+			}
+			fmt.Printf("    %s: %s.%s, %s\n", t.Branch, t.Schema, t.Table, what)
+		}
+		if len(k.Tables) == 0 {
+			fmt.Printf("    no table on a running branch\n")
+		}
+		for _, t := range k.Stale {
+			fmt.Printf("    MADE UNDER AN OLDER KEY: %s: %s.%s; `%s mask setup --branch %s` makes them again\n",
+				t.Branch, t.Schema, t.Table, brand.CLI, t.Branch)
+		}
+	}
+	if len(st.Stopped) > 0 {
+		fmt.Printf("\nNot running, so not read: %s\n", strings.Join(st.Stopped, ", "))
 	}
 }
