@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
@@ -23,15 +22,8 @@ func init() {
 // roles, schema, rules table and a masked reader's rights. It runs again
 // safely: a table already masked is masked again from its rules.
 func setup(b, actor string) error {
-	made := !branch.MaskKeyFileExists(branch.DefaultMaskDomain)
 	if err := branch.EnsureMaskKey(branch.DefaultMaskDomain); err != nil {
 		return fmt.Errorf("making the masking key: %w", err)
-	}
-	if made {
-		if err := branch.RecordMaskKey(branch.MaskKey{Domain: branch.DefaultMaskDomain, Gen: 1,
-			Made: time.Now().UTC().Format(time.RFC3339), By: actor}); err != nil {
-			return err
-		}
 	}
 	if err := branch.RunMaskSQL(b, actor, setupSQL(), false); err != nil {
 		return fmt.Errorf("setting masking up on %s: %w", b, err)

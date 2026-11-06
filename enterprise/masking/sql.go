@@ -340,13 +340,14 @@ func rekeyTable(schema, table string, cols []branch.MaskColumn, rules []branch.M
 		return rk, false, err
 	}
 	nm := old.nm
-	rk.Start = append([]string{"DROP TABLE IF EXISTS " + nm.next}, nw.shadowDDL(nm.next)...)
+	rk.Start = append(writesWait(nm), "DROP TABLE IF EXISTS "+nm.next)
+	rk.Start = append(rk.Start, nw.shadowDDL(nm.next)...)
 	rk.Start = append(rk.Start, keepFn(nm.fn, []target{{nm.shadow, old}, {nm.next, nw}})...)
 	rk.Fill = nw.fill(nm.next)
-	rk.Swap = []string{
-		"ALTER TABLE " + nm.shadow + " RENAME TO " + ident(nm.shadowName+"__old"),
-		"ALTER TABLE " + nm.next + " RENAME TO " + ident(nm.shadowName),
-	}
+	rk.Swap = append(writesWait(nm),
+		"ALTER TABLE "+nm.shadow+" RENAME TO "+ident(nm.shadowName+"__old"),
+		"ALTER TABLE "+nm.next+" RENAME TO "+ident(nm.shadowName),
+	)
 	// The view now reads the new shadow (by its name, now the shadow's), and
 	// keeps its grants.
 	rk.Swap = append(rk.Swap, viewSQL(nm, cols, nw.own, nw.shadow, nw.k(), true)[0])
@@ -362,8 +363,25 @@ func repointTable(schema, table string, cols []branch.MaskColumn, rules []branch
 	if err != nil || p == nil || len(p.shadow) == 0 {
 		return nil, err
 	}
-	return keepFn(p.nm.fn, []target{{p.nm.shadow, p}}), nil
+	return append(writesWait(p.nm), keepFn(p.nm.fn, []target{{p.nm.shadow, p}})...), nil
 }
+
+// writesWait starts a change to what a table's triggers write: it waits for
+// the writes already running, which finish with the triggers as they were,
+// and holds new ones until it commits, so no write runs triggers changed under
+// it (one would write to a shadow renamed or dropped, or under a key gone).
+// Reads go on. Waiting is bounded: a long transaction on the table is not
+// waited behind with every new write queued after it; the change is tried
+// again.
+func writesWait(nm names) []string {
+	return []string{
+		"SET LOCAL lock_timeout = '" + lockWait + "'",
+		"LOCK TABLE " + nm.base + " IN SHARE ROW EXCLUSIVE MODE",
+	}
+}
+
+// lockWait bounds writesWait.
+const lockWait = "3s"
 
 // viewSQL is the view: every column, in order, the masked ones as their
 // masks, joined to the shadow on key k when there is one. With replace, the

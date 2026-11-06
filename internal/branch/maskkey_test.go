@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A domain a person names is a file name, its next key's name is one too and
@@ -109,5 +110,23 @@ func TestMaskKeysNotLicensed(t *testing.T) {
 		if !errors.Is(err, ErrNotLicensed) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// A stopped branch may use a domain if a table was put under it there, or if
+// the branch was made since the domain (a copy of one that does); one made
+// before and never used is not asked about. Unknown is "may".
+func TestMayUseDomain(t *testing.T) {
+	made := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	k := MaskKey{Domain: "tenant_a", Made: made.Format(time.RFC3339), UsedOn: []string{"used"}}
+	at := map[string]time.Time{"old": made.Add(-time.Hour), "used": made.Add(-time.Hour), "new": made.Add(time.Minute), "same": made}
+	madeAt := func(n string) (time.Time, bool) { t, ok := at[n]; return t, ok }
+	for n, want := range map[string]bool{"old": false, "used": true, "new": true, "same": true, "unknown": true} {
+		if got := mayUseDomain(k, n, madeAt); got != want {
+			t.Errorf("%s: %v, want %v", n, got, want)
+		}
+	}
+	if !mayUseDomain(MaskKey{Domain: "x"}, "old", madeAt) {
+		t.Error("a domain with no making time: every stopped branch may use it")
 	}
 }

@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +55,9 @@ type MaskKey struct {
 	// Pending: a rotation began and has not finished, so <domain>--next.key
 	// is its new key, which running it again carries on with.
 	Pending bool `json:"pending,omitempty"`
+	// UsedOn: the branches a table was put under the domain on, and has not
+	// been taken off since. Read when a branch is stopped and cannot be asked.
+	UsedOn []string `json:"usedOn,omitempty"`
 }
 
 var maskKeysPath = func() string { return brand.StatePath("mask-keys.json") }
@@ -66,7 +71,14 @@ func MaskKeys() []MaskKey {
 		_ = json.Unmarshal(b, &keys)
 	}
 	if MaskOn() && findMaskKey(keys, DefaultMaskDomain) < 0 {
-		keys = append(keys, MaskKey{Domain: DefaultMaskDomain, Gen: 1})
+		// Made by setup, which keeps no record: when the key's file was written.
+		k := MaskKey{Domain: DefaultMaskDomain, Gen: 1}
+		if out, err := capture("stat", "-c", "%Y", maskKeyFile(DefaultMaskDomain)); err == nil {
+			if secs, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64); err == nil && secs > 0 {
+				k.Made = time.Unix(secs, 0).UTC().Format(time.RFC3339)
+			}
+		}
+		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		if (keys[i].Domain == DefaultMaskDomain) != (keys[j].Domain == DefaultMaskDomain) {
@@ -201,17 +213,34 @@ func StoppedBranches() ([]string, error) {
 	return out, nil
 }
 
-// stoppedAt is when a branch's database last stopped, if it has one.
-var stoppedAt = func(name string) (time.Time, bool) {
-	out, err := capture("docker", "inspect", "-f", "{{.State.FinishedAt}}", container(name))
-	if err != nil {
+// mayUseDomain reports whether a stopped branch may have a table under a
+// domain. A table is put under one on a running branch, which is recorded; so
+// only a branch it was put on, or one made since the domain was (its data may
+// be a copy of one it was put on), may. A branch whose making time cannot be
+// read may.
+func mayUseDomain(k MaskKey, name string, madeAt func(string) (time.Time, bool)) bool {
+	if slices.Contains(k.UsedOn, name) {
+		return true
+	}
+	made, err := time.Parse(time.RFC3339, k.Made)
+	t, ok := madeAt(name)
+	return err != nil || !ok || !t.Before(made)
+}
+
+// branchMadeAt is when a branch's data was made: its dataset, or subvolume.
+var branchMadeAt = func(name string) (time.Time, bool) {
+	var out string
+	var err error
+	if _, z := activeStorage().(zfsStorage); z {
+		out, err = capture("zfs", "get", "-Hp", "-o", "value", "creation", dataset(name))
+	} else {
+		out, err = capture("stat", "-c", "%W", mountpoint(name))
+	}
+	secs, perr := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil || perr != nil || secs <= 0 {
 		return time.Time{}, false
 	}
-	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(out))
-	if err != nil || t.Year() < 2000 { // never started: 0001-01-01
-		return time.Time{}, false
-	}
-	return t, true
+	return time.Unix(secs, 0), true
 }
 
 // MaskTableKey is a masked table's key on a branch.
@@ -330,8 +359,8 @@ func MaskRotateCost(domain string) string {
 		"    one is written again, a batch at a time: about 21 seconds a million rows,\n"+
 		"    as measured. Partial and empty masks use no key and are not touched.\n"+
 		"  - masked readers keep reading the old masks until each table is done, then\n"+
-		"    the new ones. Writers are not held up; a table's writes cost about twice\n"+
-		"    the usual masking while its masks are written again.\n"+
+		"    the new ones. A table's writes pause for a moment as it starts and as it\n"+
+		"    is swapped over, and cost about twice the usual masking in between.\n"+
 		"  - every hash and fake changes, so masks copied out before do not match\n"+
 		"    masks read after. That is the point of rotating.\n"+
 		"  - the old key is deleted once every table is done. There is no undo.\n", domain)
@@ -362,9 +391,9 @@ func CreateMaskDomain(domain, actor string) error {
 	return RecordMaskKey(MaskKey{Domain: domain, Gen: 1, Made: time.Now().UTC().Format(time.RFC3339), By: actor})
 }
 
-// DropMaskDomain deletes a key domain no table uses. A branch stopped since
-// the domain was made is not asked, so it is refused: its tables might use
-// the domain, and could not be written once the key is gone. Enterprise.
+// DropMaskDomain deletes a key domain no table uses. A stopped branch cannot
+// be asked, so one that may use the domain (mayUseDomain) refuses it: its
+// tables could not be written once the key is gone. Enterprise.
 func DropMaskDomain(domain, actor string) error {
 	if err := requireMasker(); err != nil {
 		return err
@@ -380,18 +409,14 @@ func DropMaskDomain(domain, actor string) error {
 	if err != nil {
 		return err
 	}
-	// A table is put under a domain on a running branch, so a branch that
-	// stopped before the domain was made cannot use it. Any other stopped
-	// branch might (a branch made from one that does has its tables).
-	made, _ := time.Parse(time.RFC3339, k.Made)
 	var unread []string
 	for _, n := range stopped {
-		if t, ok := stoppedAt(n); !ok || made.IsZero() || !t.Before(made) {
+		if mayUseDomain(k, n, branchMadeAt) {
 			unread = append(unread, n)
 		}
 	}
 	if len(unread) > 0 {
-		return fmt.Errorf("%w: %s stopped after %s was made, so whether a table there uses it cannot be read: start or delete it first",
+		return fmt.Errorf("%w: %s is stopped and may use %s, so it cannot be asked: start or delete it first",
 			ErrMaskDomainInUse, strings.Join(unread, ", "), domain)
 	}
 	names, err := RunningBranches()
@@ -448,5 +473,35 @@ func UseMaskDomain(branchName, schema, table, domain, actor string) error {
 	if masker.UseDomain == nil {
 		return ErrMaskingNotLicensed
 	}
-	return masker.UseDomain(branchName, schema, table, domain, actor)
+	if err := masker.UseDomain(branchName, schema, table, domain, actor); err != nil {
+		return err
+	}
+	return recordDomainUse(branchName)
+}
+
+// recordDomainUse keeps, for each named domain, whether a table on a branch
+// is under it, as read from the branch now.
+func recordDomainUse(branchName string) error {
+	ts, err := MaskTableKeys(branchName)
+	if err != nil {
+		return err
+	}
+	using := map[string]bool{}
+	for _, t := range ts {
+		using[t.Domain] = true
+	}
+	keys := MaskKeys()
+	for i := range keys {
+		if keys[i].Domain == DefaultMaskDomain {
+			continue
+		}
+		on := slices.Contains(keys[i].UsedOn, branchName)
+		switch {
+		case using[keys[i].Domain] && !on:
+			keys[i].UsedOn = append(keys[i].UsedOn, branchName)
+		case !using[keys[i].Domain] && on:
+			keys[i].UsedOn = slices.DeleteFunc(keys[i].UsedOn, func(n string) bool { return n == branchName })
+		}
+	}
+	return SaveMaskKeys(keys)
 }

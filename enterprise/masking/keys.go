@@ -7,6 +7,7 @@ package masking
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
@@ -35,16 +36,29 @@ func rekey(b, schema, table, from, to, domain string, gen int, actor string) err
 	if !keyed {
 		return branch.RunMaskSQL(b, actor, []string{tableKeySQL(schema, table, domain, gen)}, false)
 	}
-	if err := branch.RunMaskSQL(b, actor, rk.Start, true); err != nil {
+	if err := runHoldingWrites(b, actor, rk.Start, true); err != nil {
 		return fmt.Errorf("starting %s.%s's new masks: %w", schema, table, err)
 	}
 	if err := branch.RunMaskScript(b, rk.Fill); err != nil {
 		return fmt.Errorf("writing %s.%s's new masks: %w (masked readers still read the old ones; run it again)", schema, table, err)
 	}
-	if err := branch.RunMaskSQL(b, actor, append(rk.Swap, tableKeySQL(schema, table, domain, gen)), true); err != nil {
+	if err := runHoldingWrites(b, actor, append(rk.Swap, tableKeySQL(schema, table, domain, gen)), true); err != nil {
 		return fmt.Errorf("swapping in %s.%s's new masks: %w (masked readers still read the old ones; run it again)", schema, table, err)
 	}
 	return nil
+}
+
+// runHoldingWrites runs statements that begin with writesWait, again while
+// the wait times out behind a long transaction, for up to a minute.
+func runHoldingWrites(b, actor string, stmts []string, replace bool) error {
+	var err error
+	for try := 0; try < 15; try++ {
+		if err = branch.RunMaskSQL(b, actor, stmts, replace); err == nil || !strings.Contains(err.Error(), "lock timeout") {
+			return err
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("a transaction on the table kept its writes from pausing for a minute: %w (run it again)", err)
 }
 
 // useDomain puts a table's masks on a branch under another domain: only that
@@ -186,7 +200,7 @@ func repoint(b, domain string, gen int, actor string) error {
 			return err
 		}
 		if len(stmts) > 0 {
-			if err := branch.RunMaskSQL(b, actor, stmts, false); err != nil {
+			if err := runHoldingWrites(b, actor, stmts, false); err != nil {
 				return err
 			}
 		}

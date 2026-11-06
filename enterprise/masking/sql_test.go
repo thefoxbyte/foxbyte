@@ -180,6 +180,12 @@ func TestRekeyTable(t *testing.T) {
 			t.Errorf("start is missing %q:\n%s", want, start)
 		}
 	}
+	// Writes wait for the triggers to change, and only those: reads go on.
+	for name, stmts := range map[string][]string{"start": rk.Start, "swap": rk.Swap} {
+		if stmts[0] != "SET LOCAL lock_timeout = '3s'" || stmts[1] != `LOCK TABLE "public"."customers" IN SHARE ROW EXCLUSIVE MODE` {
+			t.Errorf("%s does not hold writes first: %q", name, stmts[:2])
+		}
+	}
 	if strings.Contains(start, "DROP VIEW") || strings.Contains(start, "REVOKE ALL ON \"public\"") {
 		t.Errorf("a masked reader loses the table while it is rekeyed:\n%s", start)
 	}
@@ -222,7 +228,8 @@ func TestRepointTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := strings.Join(stmts, ";\n")
-	if !strings.HasPrefix(all, `CREATE OR REPLACE FUNCTION bb_mask."keep__public__customers"()`) ||
+	if !strings.HasPrefix(all, "SET LOCAL lock_timeout") || !strings.Contains(all, `LOCK TABLE "public"."customers" IN SHARE ROW EXCLUSIVE MODE`) ||
+		!strings.Contains(all, `CREATE OR REPLACE FUNCTION bb_mask."keep__public__customers"()`) ||
 		strings.Contains(all, "--next") || strings.Contains(all, "DROP") || !strings.Contains(all, "'default'") {
 		t.Errorf("repointing:\n%s", all)
 	}
