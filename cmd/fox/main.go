@@ -112,6 +112,10 @@ Stack:
                        Set masking up on a branch; mask an account on every branch it does not own (Enterprise)
   mask rule <[schema.]table.column> [partial|hash|fake|empty] [--path $.a.b] [--off] [--branch b] [--yes]
                        Mask a confirmed finding for masked accounts, after saying what it costs (Enterprise)
+  mask key [status] [--json] | create <domain> | rotate <domain> | drop <domain> [--yes]
+                       The masking keys: domains that never hash alike, and rotating a key (Enterprise)
+  mask key use <domain> --table [schema.]table [--branch b] [--yes]
+                       Put a table's masks under a key domain (Enterprise)
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)

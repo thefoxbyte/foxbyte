@@ -958,6 +958,17 @@ export const dropMaskRule = (branch: string, at: MaskPlace) =>
   req('POST', `${API}/api/masking/rule`, { branch, ...at, off: true }) as Promise<{ off: string }>
 export const maskAccount = (email: string, off: boolean) =>
   req('POST', `${API}/api/masking/account`, { email, off }) as Promise<{ email: string; masked: boolean }>
+// Masking keys (F5 step 2): about the keys, never a key.
+export type MaskTableKey = { branch: string; schema: string; table: string; domain: string; gen: number; keyed: boolean }
+export type MaskKeyUse = {
+  domain: string; gen: number; made: string; by: string; rotated?: string; rotatedBy?: string
+  next: boolean; tables: MaskTableKey[]; stale: MaskTableKey[]
+}
+export type MaskKeysStatus = { keys: MaskKeyUse[]; stopped: string[]; writes: boolean }
+export type MaskKeyAction = 'create' | 'rotate' | 'drop' | 'use'
+export const getMaskKeys = () => req('GET', `${API}/api/masking/keys`) as Promise<MaskKeysStatus>
+export const maskKey = (action: MaskKeyAction, domain: string, apply: boolean, at?: { branch: string; schema: string; table: string }) =>
+  req('POST', `${API}/api/masking/key`, { action, domain, apply, ...(at ?? {}) }) as Promise<{ cost?: string; done?: string[] }>
 
 const hardeningURL = (branch: string) => `${API}/api/hardening?branch=${encodeURIComponent(branch)}`
 export const getHardening = (branch: string) => req('GET', hardeningURL(branch)) as Promise<HardeningReport>

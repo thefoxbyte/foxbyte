@@ -41,7 +41,7 @@ var everyRule = []branch.MaskRule{
 // the hash never in the view, a trigger a statement, and the rights taken
 // before anything is made.
 func TestMaskTableEveryRule(t *testing.T) {
-	m, err := maskTable("public", "customers", customers, everyRule)
+	m, err := maskTable("public", "customers", customers, everyRule, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestMaskTableEveryRule(t *testing.T) {
 // Only partial and empty need no key: no shadow, no trigger, nothing more on
 // a write.
 func TestMaskTableWithoutAShadow(t *testing.T) {
-	m, err := maskTable("public", "customers", customers, []branch.MaskRule{rule("aadhaar", "", "partial", "aadhaar")})
+	m, err := maskTable("public", "customers", customers, []branch.MaskRule{rule("aadhaar", "", "partial", "aadhaar")}, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestMaskTableWithoutAShadow(t *testing.T) {
 
 // No rules: the masks go, and the masked reader's rights come back.
 func TestMaskTableNoRules(t *testing.T) {
-	m, err := maskTable("public", "customers", customers, nil)
+	m, err := maskTable("public", "customers", customers, nil, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestMaskTableRefuses(t *testing.T) {
 		"array path":  {customers, []branch.MaskRule{rule("prefs", "$.orders[*].email", "hash", "email")}, "array's elements"},
 		"both levels": {customers, []branch.MaskRule{rule("prefs", "", "empty", "other"), rule("prefs", "$.a", "partial", "other")}, "take one off"},
 	} {
-		_, err := maskTable("public", "customers", c.cols, c.rules)
+		_, err := maskTable("public", "customers", c.cols, c.rules, "default")
 		if err == nil || !errors.Is(err, branch.ErrInvalidRequest) || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -142,5 +142,88 @@ func TestMaskNames(t *testing.T) {
 	}
 	if namesFor("public", "orders").view != `bb_mask."orders"` {
 		t.Fatal(namesFor("public", "orders"))
+	}
+}
+
+// A table's masks under a named domain hash under that domain's key.
+func TestMaskTableUnderADomain(t *testing.T) {
+	m, err := maskTable("public", "customers", customers, everyRule, "tenant_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := strings.Join(m.Build, ";\n")
+	if !strings.Contains(build, `bbid_mask_hmac('tenant_a', (n."email")::text)`) || strings.Contains(build, "'default'") {
+		t.Errorf("not under tenant_a's key:\n%s", build)
+	}
+}
+
+// Rekeying: a second shadow kept under the new key beside the old, filled
+// without replacing what the triggers wrote, then swapped in with the view
+// replaced in place (its grants kept) and the triggers keeping only it.
+func TestRekeyTable(t *testing.T) {
+	rk, keyed, err := rekeyTable("public", "customers", customers, everyRule, "default", "default--next")
+	if err != nil || !keyed {
+		t.Fatalf("keyed %v: %v", keyed, err)
+	}
+	start := strings.Join(rk.Start, ";\n")
+	for _, want := range []string{
+		`DROP TABLE IF EXISTS bb_mask."public__customers__next"`,
+		`CREATE TABLE bb_mask."public__customers__next"`,
+		`INSERT INTO bb_mask."public__customers" ("id", "name", "email"`,
+		`bbid_mask_hmac('default', (n."email")::text)`,
+		`INSERT INTO bb_mask."public__customers__next" ("id", "name", "email"`,
+		`bbid_mask_hmac('default--next', (n."email")::text)`,
+		`TRUNCATE bb_mask."public__customers", bb_mask."public__customers__next"`,
+		`CREATE OR REPLACE FUNCTION bb_mask."keep__public__customers"()`,
+	} {
+		if !strings.Contains(start, want) {
+			t.Errorf("start is missing %q:\n%s", want, start)
+		}
+	}
+	if strings.Contains(start, "DROP VIEW") || strings.Contains(start, "REVOKE ALL ON \"public\"") {
+		t.Errorf("a masked reader loses the table while it is rekeyed:\n%s", start)
+	}
+	if !strings.Contains(rk.Fill, `bb_mask."public__customers__next"`) || !strings.Contains(rk.Fill, "DO NOTHING") ||
+		!strings.Contains(rk.Fill, "'default--next'") || !strings.Contains(rk.Fill, "COMMIT") {
+		t.Errorf("the fill:\n%s", rk.Fill)
+	}
+	swap := strings.Join(rk.Swap, ";\n")
+	for _, want := range []string{
+		`ALTER TABLE bb_mask."public__customers" RENAME TO "public__customers__old"`,
+		`ALTER TABLE bb_mask."public__customers__next" RENAME TO "public__customers"`,
+		`CREATE OR REPLACE VIEW bb_mask."customers"`,
+		`DROP TABLE bb_mask."public__customers__old"`,
+	} {
+		if !strings.Contains(swap, want) {
+			t.Errorf("the swap is missing %q:\n%s", want, swap)
+		}
+	}
+	if strings.Contains(swap, "'default'") || strings.Contains(swap, "__next\" (") || strings.Contains(swap, "GRANT") {
+		t.Errorf("after the swap the triggers keep only the new shadow, under the new key, and grants are kept:\n%s", swap)
+	}
+	if i, j := strings.Index(swap, "RENAME TO \"public__customers\""), strings.Index(swap, "CREATE OR REPLACE VIEW"); i < 0 || j < i {
+		t.Errorf("the view is replaced before the new shadow has the shadow's name:\n%s", swap)
+	}
+}
+
+// Only partial and empty: no key, so nothing to rekey.
+func TestRekeyTableNothingKeyed(t *testing.T) {
+	_, keyed, err := rekeyTable("public", "customers", customers, []branch.MaskRule{rule("aadhaar", "", "partial", "aadhaar")}, "default", "x")
+	if err != nil || keyed {
+		t.Fatalf("keyed %v: %v", keyed, err)
+	}
+}
+
+// After the new key is in the domain's file, the triggers write under the
+// domain's name again, and nothing else changes.
+func TestRepointTable(t *testing.T) {
+	stmts, err := repointTable("public", "customers", customers, everyRule, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(stmts, ";\n")
+	if !strings.HasPrefix(all, `CREATE OR REPLACE FUNCTION bb_mask."keep__public__customers"()`) ||
+		strings.Contains(all, "--next") || strings.Contains(all, "DROP") || !strings.Contains(all, "'default'") {
+		t.Errorf("repointing:\n%s", all)
 	}
 }

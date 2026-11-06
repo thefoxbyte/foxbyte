@@ -124,6 +124,9 @@ for id in $("$S" pii --branch e2emask --json 2>/dev/null | python3 -c 'import sy
 	"$S" pii mark "$id" confirm --branch e2emask >/dev/null 2>&1
 done
 "$S" mask setup --branch e2emask --yes >/dev/null 2>&1
+# masking.spec.ts's key test makes e2e_tenant and deletes it; a run cut short
+# may have left it.
+"$S" mask key drop e2e_tenant --yes >/dev/null 2>&1
 printf '%s\n' "$PASSWORD" | "$S" user create e2e-masked@foxbyte.dev >/dev/null 2>&1
 "$S" mask account e2e-masked@foxbyte.dev --off --yes >/dev/null 2>&1
 
@@ -241,6 +244,7 @@ echo "### cleanup"
 "$S" app remove uishop >/dev/null 2>&1
 "$S" mask account e2e-masked@foxbyte.dev --off --yes >/dev/null 2>&1
 "$S" user delete e2e-masked@foxbyte.dev >/dev/null 2>&1
+"$S" mask key drop e2e_tenant --yes >/dev/null 2>&1
 for b in "$BRANCH" "$NEW_BRANCH" e2eui3 e2emask; do "$S" branch delete "$b" >/dev/null 2>&1; done
 cd "$ROOT" || exit 1
 # A failure leaves the screenshots and traces where CI can collect them.

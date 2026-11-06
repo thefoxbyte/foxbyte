@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from 'react'
 import {
-  applyMaskSetup, dropMaskRule, getMasking, getPersonalData, maskAccount, planMaskRule, planMaskSetup, setMaskRule,
-  type MaskPlace, type MaskRule, type MaskRuleName, type MaskStatus, type PIIFinding,
+  applyMaskSetup, dropMaskRule, getMaskKeys, getMasking, getPersonalData, maskAccount, maskKey, planMaskRule, planMaskSetup,
+  setMaskRule, type MaskKeysStatus, type MaskPlace, type MaskRule, type MaskRuleName, type MaskStatus, type PIIFinding,
 } from '../api'
 import { useConfirm } from '../confirm'
 import { useFeatures, why } from '../features'
@@ -35,6 +35,7 @@ const allowed = (category: string): MaskRuleName[] =>
 
 const where = (p: MaskPlace) => `${p.schema}.${p.table}.${p.column}${p.path ? ' ' + p.path : ''}`
 const key = (p: MaskPlace) => `${p.schema}\u0000${p.table}\u0000${p.column}\u0000${p.path ?? ''}`
+const WARN = 'color-mix(in srgb, var(--red) 78%, var(--text))'
 const viewOf = (r: MaskRule) => (r.schema === 'public' ? r.table : `${r.schema}__${r.table}`)
 
 export default function Masking() {
@@ -44,6 +45,9 @@ export default function Masking() {
   const [confirmed, setConfirmed] = useState<PIIFinding[]>([])
   const [choice, setChoice] = useState<Record<string, MaskRuleName>>({})
   const [email, setEmail] = useState('')
+  const [keys, setKeys] = useState<MaskKeysStatus | null>(null)
+  const [domain, setDomain] = useState('')
+  const [move, setMove] = useState({ table: '', domain: '' })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [msg, setMsg] = useState('')
@@ -56,6 +60,7 @@ export default function Masking() {
     try {
       const s = await getMasking(b)
       setSt(s)
+      try { setKeys(await getMaskKeys()) } catch { setKeys(null) }
       try {
         const pd = await getPersonalData(b)
         setConfirmed((pd.findings ?? []).filter(f => f.state === 'confirmed'))
@@ -127,7 +132,67 @@ export default function Masking() {
     return off ? `${e} is unmasked.` : `${e} is masked.`
   })
 
+  const createDomain = (d: string) => run(async () => {
+    const ok = await confirm({
+      title: `Make key domain ${d}`,
+      message: <>
+        <p>A key of its own: 32 random bytes beside the default key, never read back and never shown.</p>
+        <p>Tables put under it hash apart from every other domain&rsquo;s, so their masks cannot be joined with them: for data
+          that must never be matched up, such as two tenants&rsquo;. Joins work within one domain.</p>
+      </>,
+      confirmText: 'Make it',
+    })
+    if (!ok) return ''
+    await maskKey('create', d, true)
+    setDomain('')
+    return `Key domain ${d} is made.`
+  })
+
+  const rotate = (d: string) => run(async () => {
+    const p = await maskKey('rotate', d, false)
+    const u = keys?.keys.find(k => k.domain === d)
+    const keyed = (u?.tables ?? []).filter(t => t.keyed)
+    const ok = await confirm({
+      title: `Rotate ${d}'s key`,
+      message: <>
+        <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }} data-testid="rotate-cost">{p.cost}</pre>
+        <p>Written again: {keyed.length ? keyed.map(t => `${t.branch}: ${t.schema}.${t.table}`).join(', ') : 'no table on a running branch'}.</p>
+        {(keys?.stopped.length ?? 0) > 0 && <p>Not running, so not rotated: {keys!.stopped.join(', ')}. Set masking up on each again once it starts.</p>}
+      </>,
+      confirmText: 'Rotate the key',
+    })
+    if (!ok) return ''
+    setBusy(true)
+    try { await maskKey('rotate', d, true) } finally { setBusy(false) }
+    return `${d}'s key is rotated, and the old one deleted.`
+  })
+
+  const dropDomain = (d: string) => run(async () => {
+    const ok = await confirm({
+      title: `Delete key domain ${d}`,
+      message: 'Its key is deleted. Refused while a table on any branch uses it, or while a branch stopped since it was made, whose tables cannot be read.',
+      confirmText: 'Delete it',
+    })
+    if (!ok) return ''
+    await maskKey('drop', d, true)
+    return `Key domain ${d} is deleted.`
+  })
+
+  const moveTable = (t: string, d: string) => run(async () => {
+    const [schema, table] = t.split('.')
+    const ok = await confirm({
+      title: `Put ${t} under ${d}`,
+      message: `Only ${t}'s hashed and faked masks on ${branch} are written again, under ${d}'s key; masked accounts read the old ones until it is done. Its masks then join only with tables in ${d}.`,
+      confirmText: 'Move it',
+    })
+    if (!ok) return ''
+    await maskKey('use', d, true, { branch, schema, table })
+    return `${t} on ${branch} is under key domain ${d}.`
+  })
+
   const ruled = new Set((st?.rules ?? []).map(r => key(r)))
+  const ruleTables = [...new Set((st?.rules ?? []).map(r => `${r.schema}.${r.table}`))]
+  const domainOf = (t: string) => keys?.keys.find(k => k.tables.some(x => x.branch === branch && `${x.schema}.${x.table}` === t))?.domain ?? 'default'
   const ready = new Set(st?.ready ?? [])
   const open = confirmed.filter(f => !ruled.has(key({ schema: f.schema, table: f.table, column: f.column, path: f.path || undefined })))
 
@@ -148,7 +213,7 @@ export default function Masking() {
         <button className="ghost" onClick={() => load(branch)} disabled={busy}>{busy ? 'Reading…' : 'Refresh'}</button>
       </div>
 
-      {err && <div className="err" style={{ marginTop: 12 }}>{err}</div>}
+      {err && <div className="err" style={{ marginTop: 12 }} data-testid="mask-err">{err}</div>}
       {msg && <p className="ok" style={{ marginTop: 12 }} data-testid="mask-msg">{msg}</p>}
 
       {st && (
@@ -177,7 +242,7 @@ export default function Masking() {
                     <td><code>{where(r)}</code></td>
                     <td><span className="badge">{r.rule}</span></td>
                     <td>{r.category}</td>
-                    <td>{ready.has(viewOf(r)) ? 'made' : <span style={{ color: "color-mix(in srgb, var(--red) 78%, var(--text))" }}>not made: masked accounts are refused the table</span>}</td>
+                    <td>{ready.has(viewOf(r)) ? 'made' : <span style={{ color: WARN }}>not made: masked accounts are refused the table</span>}</td>
                     <td className="muted" style={{ fontSize: 13 }}>{r.by}, {new Date(r.at).toLocaleString()}</td>
                     <td>{setting && <button className="ghost" onClick={() => drop(r)}>Take off…</button>}</td>
                   </tr>
@@ -238,13 +303,83 @@ export default function Masking() {
             </table>
           </div>
           {setting && st.on && (
-            <form className="row" style={{ gap: 10, marginTop: 10, alignItems: 'flex-end' }}
+            <form className="row" style={{ gap: 10, marginTop: 10, alignItems: 'flex-end' }} aria-label="Mask an account"
               onSubmit={e => { e.preventDefault(); if (email.trim()) account(email.trim().toLowerCase(), false) }}>
               <label className="field">Account&rsquo;s email
                 <input aria-label="Account to mask" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="analyst@example.com" />
               </label>
               <button className="primary" type="submit" disabled={!email.trim()}>Mask…</button>
             </form>
+          )}
+
+          {keys && keys.keys.length > 0 && (
+            <>
+              <h2 style={{ marginTop: 18 }}>Keys</h2>
+              <p className="muted" style={{ marginTop: -4, fontSize: 13 }}>
+                Hashes and fakes are made with a key domain&rsquo;s key, so the same value masks alike in every table of a
+                domain, and tables in different domains never join. The keys themselves are never shown.
+              </p>
+              <div className="table-wrap">
+                <table aria-label="Masking keys">
+                  <thead><tr><th>Domain</th><th>Key</th><th>Tables on running branches</th><th /></tr></thead>
+                  <tbody>
+                    {keys.keys.map(k => (
+                      <tr key={k.domain} data-testid={`key-${k.domain}`}>
+                        <td><code>{k.domain}</code></td>
+                        <td>
+                          key {Math.max(k.gen, 1)}
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            {k.made ? `made ${new Date(k.made).toLocaleString()}${k.by ? ' by ' + k.by : ''}` : 'made before key records were kept'}
+                            {k.rotated && <>; rotated {new Date(k.rotated).toLocaleString()} by {k.rotatedBy}</>}
+                          </div>
+                          {k.next && <div style={{ fontSize: 12, color: WARN }}>A rotation was cut short: rotate again to finish it.</div>}
+                        </td>
+                        <td style={{ fontSize: 13 }}>
+                          {k.tables.length ? k.tables.map(t => `${t.branch}: ${t.schema}.${t.table}`).join(', ') : <span className="muted">none</span>}
+                          {k.stale.length > 0 && <div style={{ fontSize: 12, color: WARN }} data-testid={`stale-${k.domain}`}>
+                            Made under an older key: {k.stale.map(t => `${t.branch}: ${t.schema}.${t.table}`).join(', ')}. Set masking up on that branch again.
+                          </div>}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {setting && <button className="ghost" onClick={() => rotate(k.domain)} disabled={busy}>Rotate…</button>}
+                          {setting && k.domain !== 'default' && <button className="ghost" onClick={() => dropDomain(k.domain)}>Delete…</button>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {keys.stopped.length > 0 && <p className="muted" style={{ fontSize: 13 }}>Not running, so not read: {keys.stopped.join(', ')}.</p>}
+              {setting && (
+                <div className="row" style={{ gap: 16, marginTop: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                  <form className="row" style={{ gap: 10, alignItems: 'flex-end' }} aria-label="Make a key domain"
+                    onSubmit={e => { e.preventDefault(); if (domain.trim()) createDomain(domain.trim()) }}>
+                    <label className="field">New key domain
+                      <input aria-label="New key domain" value={domain} onChange={e => setDomain(e.target.value)} placeholder="tenant_a" />
+                    </label>
+                    <button className="primary" type="submit" disabled={!domain.trim()}>Make…</button>
+                  </form>
+                  {ruleTables.length > 0 && keys.keys.length > 1 && (
+                    <form className="row" style={{ gap: 10, alignItems: 'flex-end' }} aria-label="Put a table under a key domain"
+                      onSubmit={e => { e.preventDefault(); if (move.table && move.domain) moveTable(move.table, move.domain) }}>
+                      <label className="field">Table on {branch}
+                        <select aria-label="Table to move" value={move.table} onChange={e => setMove({ ...move, table: e.target.value })}>
+                          <option value="">…</option>
+                          {ruleTables.map(t => <option key={t} value={t}>{t} ({domainOf(t)})</option>)}
+                        </select>
+                      </label>
+                      <label className="field">Under
+                        <select aria-label="Key domain for the table" value={move.domain} onChange={e => setMove({ ...move, domain: e.target.value })}>
+                          <option value="">…</option>
+                          {keys.keys.map(k => <option key={k.domain} value={k.domain}>{k.domain}</option>)}
+                        </select>
+                      </label>
+                      <button className="primary" type="submit" disabled={!move.table || !move.domain}>Move…</button>
+                    </form>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </>
       )}

@@ -433,6 +433,10 @@ type Masker struct {
 	SetRule    func(branch string, r MaskRule) error
 	DropRule   func(branch, schema, table, column, path, actor string) error
 	MaskTables func(branch string) ([]string, error) // the tables whose masks are ready
+	// Step 2 (maskkey.go): a domain's key rotated on every running branch,
+	// and a table's masks put under a domain.
+	Rotate    func(domain, actor string, say func(string)) error
+	UseDomain func(branch, schema, table, domain, actor string) error
 }
 
 var masker *Masker

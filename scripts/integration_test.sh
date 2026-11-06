@@ -87,7 +87,7 @@ rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/anchors/_audit-log"
 rm -f "$HOME/$BRAND_STATE_DIR/sync-commit"
 # Masking's key and masked accounts (F5): §11ai starts from an install that
 # has never set masking up.
-sudo rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/mask"; rm -f "${HOME:?}/${BRAND_STATE_DIR:?}/masked-accounts.json"
+sudo rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/mask"; rm -f "${HOME:?}/${BRAND_STATE_DIR:?}/masked-accounts.json" "${HOME:?}/${BRAND_STATE_DIR:?}/mask-keys.json"
 # And the primary pointer, for the same reason: a run cut short after a failover
 # leaves 'main' pointing at the promoted standby. `stop` above has already
 # removed every container, so there is no promoted standby left to protect, and
@@ -3357,6 +3357,102 @@ assert_eq "with every rule taken off, no mask is left behind: no view, shadow, t
   "$(pg pg-main "SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'bb_mask' AND c.relkind IN ('r','v')), (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'bb_mask%'), (SELECT count(*) FROM bb.mask_rules)")" "0|0|0"
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS m_customers, m_orders, m_kyc, m_plain CASCADE" >/dev/null
 $S user delete mask-analyst@foxbyte.dev >/dev/null 2>&1
+
+echo "### 11aj. masking keys: domains and rotation (F5 Gate 1, step 2)"
+# Enterprise: a key domain hashes apart from the others; a table's masks are
+# put under one and back; a key is rotated while the application writes and a
+# masked account reads, the old key deleted; a branch stopped meanwhile is
+# named and its masks made again; a domain in use is not deleted. On main,
+# set up by §11ai. Its tables and rules are taken off at the end.
+$S branch delete keystale >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS k_people, k_orders CASCADE" >/dev/null
+pg pg-main "CREATE TABLE k_people (id bigint PRIMARY KEY, email text, phone text);
+  INSERT INTO k_people SELECT g, 'person' || g || '@example.com', '98765' || lpad(g::text, 5, '0') FROM generate_series(1, 5000) g;
+  CREATE TABLE k_orders (id bigint PRIMARY KEY, cust_email text);
+  INSERT INTO k_orders VALUES (1, 'person1@example.com'), (2, 'person2@example.com')" >/dev/null
+$S pii scan >/dev/null 2>&1
+KJ="$($S pii --json 2>/dev/null)"
+kfid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='$1' and f['column']=='$2'][0])" <<<"$KJ"; }
+for at in "k_people email" "k_people phone" "k_orders cust_email"; do $S pii mark "$(kfid $at)" confirm >/dev/null 2>&1; done
+for c in k_people.email k_people.phone k_orders.cust_email; do $S mask rule "$c" --yes >/dev/null 2>&1 || bad "setting the rule on $c"; done
+printf 'password123\n' | $S user create key-analyst@foxbyte.dev >/dev/null 2>&1
+KK="$($S apikey create key-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+$S mask account key-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the key analyst"
+KD="${HOME:?}/${BRAND_STATE_DIR:?}/mask"
+keyhex() { sudo od -An -tx1 "$KD/$1.key" | tr -d ' \n'; }
+JOIN="SELECT count(*) FROM k_people p JOIN k_orders o ON o.cust_email = p.email"
+assert_eq "the default domain: key 1, made by setup, the key itself never shown; masks join within it" \
+  "$($S mask key --json | hjson "k=[x for x in d['keys'] if x['domain']=='default'][0]; print(k['gen'], bool(k['made']), 'key' in k)")|$($S mask key | grep -c "$(keyhex default)")|$(gwm "$KK" main "$JOIN")" "1 True False|0|2"
+
+assert_eq "a domain's name is checked: a capital, a dot or a dash is refused" \
+  "$($S mask key create Tenant --yes 2>&1 | grep -c 'a key domain is a lowercase letter')|$($S mask key create a.b --yes 2>&1 | grep -c 'a key domain is')|$($S mask key create a-b --yes 2>&1 | grep -c 'a key domain is')" "1|1|1"
+assert_eq "making a domain without --yes says what it is for, and makes nothing" \
+  "$($S mask key create tenant_a 2>&1 | grep -c 'hash apart')|$(sudo test -e "$KD/tenant_a.key" && echo made || echo none)" "1|none"
+$S mask key create tenant_a --yes >/dev/null 2>&1 || bad "making tenant_a"
+assert_eq "with --yes: a key of its own, the server's alone, 32 bytes, unlike the default's" \
+  "$(sudo stat -c '%u %a %s' "$KD/tenant_a.key")|$([ "$(keyhex tenant_a)" != "$(keyhex default)" ] && echo apart)|$($S mask key --json | hjson "print(sorted(k['domain'] for k in d['keys']))")" \
+  "999 400 32|apart|['default', 'tenant_a']"
+assert_eq "…a second domain of the same name is refused" "$($S mask key create tenant_a --yes 2>&1 | grep -c 'already has a key domain')" "1"
+assert_eq "putting a table under a domain without --yes changes nothing" \
+  "$($S mask key use tenant_a --table k_orders 2>&1 | grep -c 'Run again with --yes')|$(gwm "$KK" main "$JOIN")" "1|2"
+$S mask key use tenant_a --table k_orders --yes >/dev/null 2>&1 || bad "putting k_orders under tenant_a"
+assert_eq "under tenant_a, k_orders's masks are tenant_a's hashes and no longer join with the default domain's" \
+  "$(gwm "$KK" main "$JOIN")|$(pg pg-main "SELECT count(*) FROM bb_mask.public__k_orders m JOIN k_orders o USING (id) WHERE m.cust_email = bb_f1.bbid_mask_hmac('tenant_a', o.cust_email)")|$($S mask key --json | hjson "print([t['table'] for k in d['keys'] if k['domain']=='tenant_a' for t in k['tables'] if t['branch']=='main'])")" \
+  "0|2|['k_orders']"
+assert_eq "a domain a table uses is not deleted" \
+  "$($S mask key drop tenant_a --yes 2>&1 | grep -c 'main:public.k_orders uses tenant_a')|$(sudo test -e "$KD/tenant_a.key" && echo kept)" "1|kept"
+
+ROTD="$(mktemp -d)"
+# A branch with masks, stopped through the rotation: named, then made again.
+$S branch create keystale >/dev/null 2>&1
+$S branch suspend keystale >/dev/null 2>&1
+OLDKEY="$(keyhex default)"
+OLDMASK="$(gwm "$KK" main "SELECT email FROM k_people WHERE id = 1")"
+PRE="$($S mask key rotate default 2>&1)"
+assert_eq "rotating without --yes says what it does and costs, names the tables and the stopped branch, and makes no key" \
+  "$(grep -c 'There is no undo' <<<"$PRE")|$(grep -c '21 seconds a million rows' <<<"$PRE")|$(grep -c 'main: public.k_people' <<<"$PRE")|$(grep -c 'keystale' <<<"$PRE")|$(sudo test -e "$KD/default--next.key" && echo made || echo none)|$(keyhex default | grep -c "$OLDKEY")" \
+  "1|1|1|1|none|1"
+# The application writes and a masked account reads all through the rotation.
+( for i in $(seq 1 60); do gwm "$KEY" main "UPDATE k_people SET email = 'w$i@example.com' WHERE id = $((i * 50)); INSERT INTO k_people VALUES ($((100000 + i)), 'n$i@example.com', '1')" | grep -c ERROR; done ) >"$ROTD/writer.log" 2>&1 &
+RW=$!
+( for _ in $(seq 1 40); do gwm "$KK" main "SELECT count(*) FROM k_people" | grep -cvE '^[0-9]+$'; done ) >"$ROTD/reader.log" 2>&1 &
+RR=$!
+ROT="$($S mask key rotate default --yes 2>&1)"; rc=$?
+wait "$RW" "$RR"
+assert_eq "with --yes: every table in the domain is written again, and the old key's file now holds a new key" \
+  "$rc|$(grep -c 'main: public.k_people written again under the new key' <<<"$ROT")|$(keyhex default | grep -c "$OLDKEY")|$(sudo stat -c '%u %a %s' "$KD/default.key")|$(sudo test -e "$KD/default--next.key" && echo left || echo gone)" \
+  "0|1|0|999 400 32|gone"
+[ "$rc" = 0 ] || { echo "--- what it said ---"; tail -8 <<<"$ROT"; echo "--- end ---"; }
+assert_eq "…the writer was never refused, and the masked reader never failed, while it ran" \
+  "$(awk '{s+=$1} END {print s+0}' "$ROTD/writer.log")|$(awk '{s+=$1} END {print s+0}' "$ROTD/reader.log")" "0|0"
+assert_eq "…every mask, the writer's included, is under the new key, nothing is left over, and only tenant_a's table is untouched" \
+  "$(pg pg-main "SELECT (SELECT count(*) FROM bb_mask.public__k_people m JOIN k_people p USING (id) WHERE m.email IS DISTINCT FROM bb_f1.bbid_mask_hmac('default', p.email)), (SELECT count(*) FROM k_people) = (SELECT count(*) FROM bb_mask.public__k_people), (SELECT count(*) FROM pg_class WHERE relname LIKE '%\_\_next' OR relname LIKE '%\_\_old'), (SELECT count(*) FROM bb_mask.public__k_orders m JOIN k_orders o USING (id) WHERE m.cust_email = bb_f1.bbid_mask_hmac('tenant_a', o.cust_email))")" \
+  "0|t|0|2"
+assert_eq "…the masked account reads the new masks, every hash changed: masks copied out before do not match" \
+  "$(NEW="$(gwm "$KK" main "SELECT email FROM k_people WHERE id = 1")"; [ "$NEW" != "$OLDMASK" ] && [ ${#NEW} = 64 ] && echo changed)|$(gwm "$KK" main "SELECT count(*) FROM k_people WHERE email = '$OLDMASK'")" "changed|0"
+assert_eq "…the default key is key 2, rotated by who asked; the new key is in no log" \
+  "$($S mask key --json | hjson "k=[x for x in d['keys'] if x['domain']=='default'][0]; print(k['gen'], k['rotatedBy'].startswith('cli:'), k['next'])")|$(sudo docker logs pg-main 2>&1 | grep -c "$(keyhex default)")" \
+  "2 True False|0"
+$S branch resume keystale >/dev/null 2>&1
+assert_eq "the branch stopped through it is named as made under an older key (its tenant_a table is not), and set up again it is not" \
+  "$($S mask key --json | hjson "print(sorted(t['branch']+':'+t['table'] for k in d['keys'] for t in k['stale']))")|$($S mask setup --branch keystale --yes >/dev/null 2>&1; $S mask key --json | hjson "print(sum(len(k['stale']) for k in d['keys']))")|$(pg pg-keystale "SELECT count(*) FROM bb_mask.public__k_people m JOIN k_people p USING (id) WHERE m.email IS DISTINCT FROM bb_f1.bbid_mask_hmac('default', p.email)")" \
+  "['keystale:k_people']|0|0"
+$S mask key use default --table k_orders --yes >/dev/null 2>&1 || bad "putting k_orders back under default"
+assert_eq "back under the default domain, k_orders joins again, under the new key" "$(gwm "$KK" main "$JOIN")" "2"
+assert_eq "the API: an admin reads the keys and a rotation's cost; a bad name is refused; the masked account is refused" \
+  "$(curl -sk -H "$AUTH" https://localhost:8080/api/masking/keys | hjson "print(sorted(k['domain'] for k in d['keys']))")|$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"action":"rotate","domain":"tenant_a"}' https://localhost:8080/api/masking/key | hjson "print('There is no undo' in d['cost'])")|$(code "$KEY" -X POST -H 'Content-Type: application/json' -d '{"action":"create","domain":"Bad","apply":true}' https://localhost:8080/api/masking/key)|$(code "$KK" https://localhost:8080/api/masking/keys)|$(code "$KK" -X POST -H 'Content-Type: application/json' -d '{"action":"rotate","domain":"default","apply":true}' https://localhost:8080/api/masking/key)" \
+  "['default', 'tenant_a']|True|400|403|403"
+$S branch delete keystale >/dev/null 2>&1
+$S mask key drop tenant_a --yes >/dev/null 2>&1 || bad "deleting tenant_a once no table uses it"
+assert_eq "a domain no table uses is deleted, its key with it; the default cannot be" \
+  "$(sudo test -e "$KD/tenant_a.key" && echo kept || echo gone)|$($S mask key --json | hjson "print([k['domain'] for k in d['keys']])")|$($S mask key drop default --yes 2>&1 | grep -c 'default domain is the install')" \
+  "gone|['default']|1"
+assert_eq "every key change is in the security log" "$($S audit log --limit 300 | grep -c 'mask.key')" "5"
+for c in k_people.email k_people.phone k_orders.cust_email; do $S mask rule "$c" --off >/dev/null 2>&1; done
+$S mask account key-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS k_people, k_orders CASCADE" >/dev/null
+$S user delete key-analyst@foxbyte.dev >/dev/null 2>&1
+rm -rf "${ROTD:?}"
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

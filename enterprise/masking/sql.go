@@ -17,8 +17,6 @@ import (
 // 6 and 7, as the prototype proved them in section 17), made from its rules and
 // its columns by pure functions, so the tests can read it.
 
-const keyDomain = "default"
-
 func ident(s string) string { return branch.QuoteIdent(s) }
 func lit(s string) string   { return branch.QuoteLiteral(s) }
 
@@ -27,6 +25,8 @@ func lit(s string) string   { return branch.QuoteLiteral(s) }
 // name reaches it; a table in another schema's view is <schema>__<table>.
 type names struct {
 	base, shadow, view, fn string
+	next                   string // the shadow a rotation fills, until it is swapped in
+	shadowName             string // the shadow's name in bb_mask, unquoted
 }
 
 func namesFor(schema, table string) names {
@@ -35,10 +35,12 @@ func namesFor(schema, table string) names {
 		view = schema + "__" + table
 	}
 	return names{
-		base:   ident(schema) + "." + ident(table),
-		shadow: branch.MaskSchema + "." + ident(schema+"__"+table),
-		view:   branch.MaskSchema + "." + ident(view),
-		fn:     branch.MaskSchema + "." + ident("keep__"+schema+"__"+table),
+		base:       ident(schema) + "." + ident(table),
+		shadow:     branch.MaskSchema + "." + ident(schema+"__"+table),
+		view:       branch.MaskSchema + "." + ident(view),
+		fn:         branch.MaskSchema + "." + ident("keep__"+schema+"__"+table),
+		next:       branch.MaskSchema + "." + ident(schema+"__"+table+"__next"),
+		shadowName: schema + "__" + table,
 	}
 }
 
@@ -53,9 +55,10 @@ func pathKeys(p string) ([]string, error) {
 	return strings.Split(strings.TrimPrefix(p, "$."), "."), nil
 }
 
-// hash is the keyed hash of an expression as text.
-func hash(expr string) string {
-	return fmt.Sprintf("bb_f1.bbid_mask_hmac(%s, (%s)::text)", lit(keyDomain), expr)
+// hash is the keyed hash of an expression as text, under a key (a domain's,
+// or its next one's during a rotation).
+func hash(key, expr string) string {
+	return fmt.Sprintf("bb_f1.bbid_mask_hmac(%s, (%s)::text)", lit(key), expr)
 }
 
 // partial keeps the last four characters, every other one an X, so the mask
@@ -65,12 +68,12 @@ func partial(expr string) string {
 }
 
 // scalar is a rule applied to a text value.
-func scalar(rule, category, expr string) string {
+func scalar(key, rule, category, expr string) string {
 	switch rule {
 	case branch.MaskHash:
-		return hash(expr)
+		return hash(key, expr)
 	case branch.MaskFake:
-		return fmt.Sprintf("%s.fake(%s, %s)", branch.MaskSchema, lit(strings.ToLower(category)), hash(expr))
+		return fmt.Sprintf("%s.fake(%s, %s)", branch.MaskSchema, lit(strings.ToLower(category)), hash(key, expr))
 	case branch.MaskPartial:
 		return partial(expr)
 	}
@@ -91,10 +94,22 @@ type shadowCol struct {
 	name, typ, expr string // expr over the row alias n
 }
 
-// maskTable makes it, from the table's columns and its rules. A table with no
-// rules gets only Drop and its rights back.
-func maskTable(schema, table string, cols []branch.MaskColumn, rules []branch.MaskRule) (tableMask, error) {
-	nm := namesFor(schema, table)
+// plan is a table's masks under one key: what the shadow keeps, and how.
+type plan struct {
+	nm     names
+	pk     branch.MaskColumn
+	cols   []branch.MaskColumn
+	own    map[string]branch.MaskRule
+	shadow []shadowCol
+}
+
+// planTable checks a table's rules against its columns and works out its
+// masks under a key. A table with no rules has no plan.
+func planTable(schema, table string, cols []branch.MaskColumn, rules []branch.MaskRule, key string) (*plan, error) {
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	p := &plan{nm: namesFor(schema, table), cols: cols, own: map[string]branch.MaskRule{}}
 	var keys []branch.MaskColumn
 	byName := map[string]branch.MaskColumn{}
 	for _, c := range cols {
@@ -103,144 +118,150 @@ func maskTable(schema, table string, cols []branch.MaskColumn, rules []branch.Ma
 			keys = append(keys, c)
 		}
 	}
-	var m tableMask
-	m.Drop = []string{
-		"REVOKE ALL ON " + nm.base + " FROM " + branch.MaskedRole,
-		"DROP VIEW IF EXISTS " + nm.view,
-		"DROP TRIGGER IF EXISTS bb_mask_i ON " + nm.base,
-		"DROP TRIGGER IF EXISTS bb_mask_u ON " + nm.base,
-		"DROP TRIGGER IF EXISTS bb_mask_d ON " + nm.base,
-		"DROP TRIGGER IF EXISTS bb_mask_t ON " + nm.base,
-		"DROP FUNCTION IF EXISTS " + nm.fn + "()",
-		"DROP TABLE IF EXISTS " + nm.shadow,
-	}
-	if len(rules) == 0 {
-		m.Drop = append(m.Drop, "GRANT SELECT, INSERT, UPDATE, DELETE ON "+nm.base+" TO "+branch.MaskedRole)
-		return m, nil
-	}
 	if len(keys) != 1 {
-		return m, fmt.Errorf("%w: %s.%s has %s: masks are kept by a one-column primary key", branch.ErrInvalidRequest, schema, table,
+		return nil, fmt.Errorf("%w: %s.%s has %s: masks are kept by a one-column primary key", branch.ErrInvalidRequest, schema, table,
 			map[bool]string{true: "no primary key", false: "a primary key of several columns"}[len(keys) == 0])
 	}
-	pk := keys[0]
+	p.pk = keys[0]
 
 	// The rules by column: the column's own, and its JSON paths.
-	own := map[string]branch.MaskRule{}
 	paths := map[string][]branch.MaskRule{}
 	for _, r := range rules {
 		c, ok := byName[r.Column]
 		if !ok {
-			return m, fmt.Errorf("%w: %s.%s has no column %q", branch.ErrInvalidRequest, schema, table, r.Column)
+			return nil, fmt.Errorf("%w: %s.%s has no column %q", branch.ErrInvalidRequest, schema, table, r.Column)
 		}
 		if c.Key {
-			return m, fmt.Errorf("%w: %s is the table's key, which the masks are kept by: it cannot be masked", branch.ErrInvalidRequest, r.Where())
+			return nil, fmt.Errorf("%w: %s is the table's key, which the masks are kept by: it cannot be masked", branch.ErrInvalidRequest, r.Where())
 		}
 		if r.Path == "" {
-			own[r.Column] = r
+			p.own[r.Column] = r
 			continue
 		}
 		if c.Type != "jsonb" {
-			return m, fmt.Errorf("%w: a JSON path is masked in a jsonb column, and %s is %s", branch.ErrInvalidRequest, r.Column, c.Type)
+			return nil, fmt.Errorf("%w: a JSON path is masked in a jsonb column, and %s is %s", branch.ErrInvalidRequest, r.Column, c.Type)
 		}
 		if _, err := pathKeys(r.Path); err != nil {
-			return m, err
+			return nil, err
 		}
 		paths[r.Column] = append(paths[r.Column], r)
 	}
 
-	var shadow []shadowCol
 	for _, c := range cols {
-		if r, ok := own[c.Name]; ok && (r.Rule == branch.MaskHash || r.Rule == branch.MaskFake) {
-			shadow = append(shadow, shadowCol{c.Name, "text", scalar(r.Rule, r.Category, "n."+ident(c.Name))})
+		if r, ok := p.own[c.Name]; ok && (r.Rule == branch.MaskHash || r.Rule == branch.MaskFake) {
+			p.shadow = append(p.shadow, shadowCol{c.Name, "text", scalar(key, r.Rule, r.Category, "n."+ident(c.Name))})
 			continue
 		}
 		if ps, ok := paths[c.Name]; ok {
-			if _, whole := own[c.Name]; whole {
-				return m, fmt.Errorf("%w: %s has a rule of its own and on its paths: take one off", branch.ErrInvalidRequest, c.Name)
+			if _, whole := p.own[c.Name]; whole {
+				return nil, fmt.Errorf("%w: %s has a rule of its own and on its paths: take one off", branch.ErrInvalidRequest, c.Name)
 			}
 			sort.Slice(ps, func(i, j int) bool { return ps[i].Path < ps[j].Path })
 			doc := "n." + ident(c.Name)
 			for _, r := range ps {
 				ks, _ := pathKeys(r.Path)
 				arr := "'{" + strings.Join(ks, ",") + "}'"
-				val := fmt.Sprintf("to_jsonb(%s)", scalar(r.Rule, r.Category, "n."+ident(c.Name)+" #>> "+arr))
+				val := fmt.Sprintf("to_jsonb(%s)", scalar(key, r.Rule, r.Category, "n."+ident(c.Name)+" #>> "+arr))
 				if r.Rule == branch.MaskEmpty {
 					val = "'null'::jsonb"
 				}
 				doc = fmt.Sprintf("CASE WHEN n.%[1]s #> %[2]s IS NULL THEN %[3]s ELSE jsonb_set(%[3]s, %[2]s, %[4]s) END",
 					ident(c.Name), arr, doc, val)
 			}
-			shadow = append(shadow, shadowCol{c.Name, "jsonb", doc})
+			p.shadow = append(p.shadow, shadowCol{c.Name, "jsonb", doc})
 		}
 	}
+	return p, nil
+}
 
-	if len(shadow) == 0 {
-		// Only partial and empty: no secret, so nothing is kept, and writes
-		// to the table cost nothing more. The view computes the masks.
-		m.View = viewSQL(nm, cols, own, nil, "")
-		return m, nil
-	}
+// k is the key column, quoted.
+func (p *plan) k() string { return ident(p.pk.Name) }
 
-	// The shadow: the key, and the masks kept.
-	defs := []string{ident(pk.Name) + " " + pk.Type + " PRIMARY KEY"}
-	var colNames, exprs, sets []string
-	for _, s := range shadow {
+// shadowDDL makes a shadow by the name given, owned by bb_masker, indexed on
+// its hashes.
+func (p *plan) shadowDDL(shadow string) []string {
+	defs := []string{p.k() + " " + p.pk.Type + " PRIMARY KEY"}
+	for _, s := range p.shadow {
 		defs = append(defs, ident(s.name)+" "+s.typ)
-		colNames = append(colNames, ident(s.name))
+	}
+	out := []string{
+		"CREATE TABLE " + shadow + " (" + strings.Join(defs, ", ") + ")",
+		"ALTER TABLE " + shadow + " OWNER TO " + branch.MaskerRole,
+	}
+	for _, s := range p.shadow {
+		if s.typ == "text" {
+			out = append(out, fmt.Sprintf("CREATE INDEX ON %s (%s)", shadow, ident(s.name)))
+		}
+	}
+	return out
+}
+
+// upsert writes the masks of the rows in from into a shadow; with keep, a
+// row already there is left as it is.
+func (p *plan) upsert(shadow, from string, keep bool) string {
+	var names, exprs, sets []string
+	for _, s := range p.shadow {
+		names = append(names, ident(s.name))
 		exprs = append(exprs, s.expr)
 		sets = append(sets, ident(s.name)+" = EXCLUDED."+ident(s.name))
 	}
-	k := ident(pk.Name)
-	m.Build = []string{
-		"CREATE TABLE " + nm.shadow + " (" + strings.Join(defs, ", ") + ")",
-		"ALTER TABLE " + nm.shadow + " OWNER TO " + branch.MaskerRole,
-		"GRANT SELECT ON " + nm.base + " TO " + branch.MaskerRole,
-	}
-	for _, s := range shadow {
-		if s.typ == "text" {
-			m.Build = append(m.Build, fmt.Sprintf("CREATE INDEX ON %s (%s)", nm.shadow, ident(s.name)))
+	k := p.k()
+	cols, vals, conflict := "", "", " ON CONFLICT ("+k+") DO NOTHING"
+	if len(names) > 0 {
+		cols, vals = ", "+strings.Join(names, ", "), ", "+strings.Join(exprs, ", ")
+		if !keep {
+			conflict = " ON CONFLICT (" + k + ") DO UPDATE SET " + strings.Join(sets, ", ")
 		}
 	}
-	upsert := func(from string) string {
-		cols, vals, set := "", "", ""
-		if len(colNames) > 0 {
-			cols, vals = ", "+strings.Join(colNames, ", "), ", "+strings.Join(exprs, ", ")
-			set = " ON CONFLICT (" + k + ") DO UPDATE SET " + strings.Join(sets, ", ")
-		} else {
-			set = " ON CONFLICT (" + k + ") DO NOTHING"
-		}
-		return fmt.Sprintf("INSERT INTO %s (%s%s) SELECT n.%s%s FROM %s%s", nm.shadow, k, cols, k, vals, from, set)
+	return fmt.Sprintf("INSERT INTO %s (%s%s) SELECT n.%s%s FROM %s%s", shadow, k, cols, k, vals, from, conflict)
+}
+
+// target is a shadow a trigger keeps, under one plan's key.
+type target struct {
+	shadow string
+	p      *plan
+}
+
+// keepFn is the function the triggers run: one call a statement, from its
+// transition tables (decision 9, and section 17: 198 ms rather than 307 for a
+// 10,000-row update), keeping each target. Two during a rotation.
+func keepFn(fn string, targets []target) []string {
+	k := targets[0].p.k()
+	var trunc, del, moved, ups []string
+	for _, t := range targets {
+		trunc = append(trunc, t.shadow)
+		del = append(del, fmt.Sprintf("DELETE FROM %s s USING o WHERE s.%[2]s = o.%[2]s", t.shadow, k))
+		moved = append(moved, fmt.Sprintf("DELETE FROM %s s USING o WHERE s.%[2]s = o.%[2]s AND NOT EXISTS (SELECT 1 FROM n WHERE n.%[2]s = o.%[2]s)", t.shadow, k))
+		ups = append(ups, t.p.upsert(t.shadow, "n", false))
 	}
-	// One trigger a statement, from its transition tables (decision 9, and
-	// section 17: 198 ms rather than 307 for a 10,000-row update).
-	m.Build = append(m.Build,
-		fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $bbmask$
+	return []string{
+		fmt.Sprintf(`CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $bbmask$
 BEGIN
   IF TG_OP = 'TRUNCATE' THEN
-    TRUNCATE %[2]s;
+    TRUNCATE %s;
     RETURN NULL;
   END IF;
   IF TG_OP = 'DELETE' THEN
-    DELETE FROM %[2]s s USING o WHERE s.%[3]s = o.%[3]s;
+    %s;
     RETURN NULL;
   END IF;
   IF TG_OP = 'UPDATE' THEN
-    DELETE FROM %[2]s s USING o WHERE s.%[3]s = o.%[3]s AND NOT EXISTS (SELECT 1 FROM n WHERE n.%[3]s = o.%[3]s);
+    %s;
   END IF;
-  %[4]s;
+  %s;
   RETURN NULL;
-END $bbmask$`, nm.fn, nm.shadow, k, upsert("n")),
-		"ALTER FUNCTION "+nm.fn+"() OWNER TO "+branch.MaskerRole,
-		"REVOKE EXECUTE ON FUNCTION "+nm.fn+"() FROM PUBLIC",
-		fmt.Sprintf("CREATE TRIGGER bb_mask_i AFTER INSERT ON %s REFERENCING NEW TABLE AS n FOR EACH STATEMENT EXECUTE FUNCTION %s()", nm.base, nm.fn),
-		fmt.Sprintf("CREATE TRIGGER bb_mask_u AFTER UPDATE ON %s REFERENCING OLD TABLE AS o NEW TABLE AS n FOR EACH STATEMENT EXECUTE FUNCTION %s()", nm.base, nm.fn),
-		fmt.Sprintf("CREATE TRIGGER bb_mask_d AFTER DELETE ON %s REFERENCING OLD TABLE AS o FOR EACH STATEMENT EXECUTE FUNCTION %s()", nm.base, nm.fn),
-		fmt.Sprintf("CREATE TRIGGER bb_mask_t AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION %s()", nm.base, nm.fn),
-	)
+END $bbmask$`, fn, strings.Join(trunc, ", "), strings.Join(del, ";\n    "), strings.Join(moved, ";\n    "), strings.Join(ups, ";\n  ")),
+		"ALTER FUNCTION " + fn + "() OWNER TO " + branch.MaskerRole,
+		"REVOKE EXECUTE ON FUNCTION " + fn + "() FROM PUBLIC",
+	}
+}
 
-	// The rows already there, 10,000 at a time, each batch committed: a
-	// writer meanwhile is never held up (section 17: 1,000,000 in 14 s).
-	m.Fill = fmt.Sprintf(`DO $bbfill$
+// fill writes the masks of the rows already there into a shadow, 10,000 at a
+// time, each batch committed: a writer meanwhile is never held up (section
+// 17: 1,000,000 in 14 s). A row the triggers wrote first is left as it is.
+func (p *plan) fill(shadow string) string {
+	k := p.k()
+	return fmt.Sprintf(`DO $bbfill$
 DECLARE last %[1]s; nxt %[1]s;
 BEGIN
   LOOP
@@ -250,16 +271,104 @@ BEGIN
     last := nxt;
     COMMIT;
   END LOOP;
-END $bbfill$;`, pk.Type, k, nm.base,
-		strings.Replace(upsert(nm.base+" n WHERE (last IS NULL OR n."+k+" > last) AND n."+k+" <= nxt"), "DO UPDATE SET "+strings.Join(sets, ", "), "DO NOTHING", 1))
+END $bbfill$;`, p.pk.Type, k, p.nm.base, p.upsert(shadow, p.nm.base+" n WHERE (last IS NULL OR n."+k+" > last) AND n."+k+" <= nxt", true))
+}
 
-	m.View = viewSQL(nm, cols, own, shadow, k)
+// maskTable makes a table's masks under a key, from its columns and its
+// rules. A table with no rules gets only Drop and its rights back.
+func maskTable(schema, table string, cols []branch.MaskColumn, rules []branch.MaskRule, key string) (tableMask, error) {
+	nm := namesFor(schema, table)
+	var m tableMask
+	m.Drop = []string{
+		"REVOKE ALL ON " + nm.base + " FROM " + branch.MaskedRole,
+		"DROP VIEW IF EXISTS " + nm.view,
+		"DROP TRIGGER IF EXISTS bb_mask_i ON " + nm.base,
+		"DROP TRIGGER IF EXISTS bb_mask_u ON " + nm.base,
+		"DROP TRIGGER IF EXISTS bb_mask_d ON " + nm.base,
+		"DROP TRIGGER IF EXISTS bb_mask_t ON " + nm.base,
+		"DROP FUNCTION IF EXISTS " + nm.fn + "()",
+		"DROP TABLE IF EXISTS " + nm.next,
+		"DROP TABLE IF EXISTS " + nm.shadow,
+	}
+	p, err := planTable(schema, table, cols, rules, key)
+	if err != nil {
+		return m, err
+	}
+	if p == nil {
+		m.Drop = append(m.Drop, "GRANT SELECT, INSERT, UPDATE, DELETE ON "+nm.base+" TO "+branch.MaskedRole)
+		return m, nil
+	}
+	if len(p.shadow) == 0 {
+		// Only partial and empty: no secret, so nothing is kept, and writes
+		// to the table cost nothing more. The view computes the masks.
+		m.View = viewSQL(nm, cols, p.own, nil, "", false)
+		return m, nil
+	}
+	m.Build = append(p.shadowDDL(nm.shadow), "GRANT SELECT ON "+nm.base+" TO "+branch.MaskerRole)
+	m.Build = append(m.Build, keepFn(nm.fn, []target{{nm.shadow, p}})...)
+	m.Build = append(m.Build,
+		fmt.Sprintf("CREATE TRIGGER bb_mask_i AFTER INSERT ON %s REFERENCING NEW TABLE AS n FOR EACH STATEMENT EXECUTE FUNCTION %s()", nm.base, nm.fn),
+		fmt.Sprintf("CREATE TRIGGER bb_mask_u AFTER UPDATE ON %s REFERENCING OLD TABLE AS o NEW TABLE AS n FOR EACH STATEMENT EXECUTE FUNCTION %s()", nm.base, nm.fn),
+		fmt.Sprintf("CREATE TRIGGER bb_mask_d AFTER DELETE ON %s REFERENCING OLD TABLE AS o FOR EACH STATEMENT EXECUTE FUNCTION %s()", nm.base, nm.fn),
+		fmt.Sprintf("CREATE TRIGGER bb_mask_t AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION %s()", nm.base, nm.fn),
+	)
+	m.Fill = p.fill(nm.shadow)
+	m.View = viewSQL(nm, cols, p.own, p.shadow, p.k(), false)
 	return m, nil
 }
 
+// tableRekey is moving a table's masks from one key to another while masked
+// readers keep reading the old ones (design, section 8): a second shadow,
+// kept by the triggers under the new key beside the old, filled, then swapped
+// in for the old in one transaction.
+type tableRekey struct {
+	Start []string // the next shadow, and the triggers keeping both
+	Fill  string   // the next shadow's masks of the rows already there
+	Swap  []string // the next shadow becomes the shadow, the view reads it, the triggers keep only it
+}
+
+// rekeyTable makes it. A table with no keyed masks has nothing to move: ok is
+// false.
+func rekeyTable(schema, table string, cols []branch.MaskColumn, rules []branch.MaskRule, from, to string) (tableRekey, bool, error) {
+	var rk tableRekey
+	old, err := planTable(schema, table, cols, rules, from)
+	if err != nil || old == nil || len(old.shadow) == 0 {
+		return rk, false, err
+	}
+	nw, err := planTable(schema, table, cols, rules, to)
+	if err != nil {
+		return rk, false, err
+	}
+	nm := old.nm
+	rk.Start = append([]string{"DROP TABLE IF EXISTS " + nm.next}, nw.shadowDDL(nm.next)...)
+	rk.Start = append(rk.Start, keepFn(nm.fn, []target{{nm.shadow, old}, {nm.next, nw}})...)
+	rk.Fill = nw.fill(nm.next)
+	rk.Swap = []string{
+		"ALTER TABLE " + nm.shadow + " RENAME TO " + ident(nm.shadowName+"__old"),
+		"ALTER TABLE " + nm.next + " RENAME TO " + ident(nm.shadowName),
+	}
+	// The view now reads the new shadow (by its name, now the shadow's), and
+	// keeps its grants.
+	rk.Swap = append(rk.Swap, viewSQL(nm, cols, nw.own, nw.shadow, nw.k(), true)[0])
+	rk.Swap = append(rk.Swap, keepFn(nm.fn, []target{{nm.shadow, nw}})...)
+	rk.Swap = append(rk.Swap, "DROP TABLE "+branch.MaskSchema+"."+ident(nm.shadowName+"__old"))
+	return rk, true, nil
+}
+
+// repointTable has a table's triggers write its masks under another name for
+// the same key: once a rotation's new key is in the domain's own file.
+func repointTable(schema, table string, cols []branch.MaskColumn, rules []branch.MaskRule, key string) ([]string, error) {
+	p, err := planTable(schema, table, cols, rules, key)
+	if err != nil || p == nil || len(p.shadow) == 0 {
+		return nil, err
+	}
+	return keepFn(p.nm.fn, []target{{p.nm.shadow, p}}), nil
+}
+
 // viewSQL is the view: every column, in order, the masked ones as their
-// masks, joined to the shadow on key k when there is one.
-func viewSQL(nm names, cols []branch.MaskColumn, own map[string]branch.MaskRule, shadow []shadowCol, k string) []string {
+// masks, joined to the shadow on key k when there is one. With replace, the
+// view there is replaced and keeps its owner and grants.
+func viewSQL(nm names, cols []branch.MaskColumn, own map[string]branch.MaskRule, shadow []shadowCol, k string, replace bool) []string {
 	kept := map[string]bool{}
 	for _, s := range shadow {
 		kept[s.name] = true
@@ -283,12 +392,20 @@ func viewSQL(nm names, cols []branch.MaskColumn, own map[string]branch.MaskRule,
 		from += fmt.Sprintf(" JOIN %s m ON m.%s = n.%s", nm.shadow, k, k)
 	}
 	return []string{
-		fmt.Sprintf("CREATE VIEW %s AS SELECT %s FROM %s", nm.view, strings.Join(sel, ", "), from),
+		fmt.Sprintf("CREATE %sVIEW %s AS SELECT %s FROM %s", map[bool]string{true: "OR REPLACE "}[replace], nm.view, strings.Join(sel, ", "), from),
 		"ALTER VIEW " + nm.view + " OWNER TO " + branch.MaskerRole,
 		"GRANT SELECT ON " + nm.base + " TO " + branch.MaskerRole,
 		"GRANT SELECT ON " + nm.view + " TO " + branch.MaskedRole,
 	}
 }
+
+// maskTablesDDL keeps each masked table's key (step 2): its domain, and the
+// key of that domain its masks were made under. A table not in it is the
+// default domain's, under its first key, as on a branch set up in step 1.
+const maskTablesDDL = `CREATE TABLE IF NOT EXISTS bb.mask_tables (
+  schema_name text NOT NULL, table_name text NOT NULL,
+  key_domain text NOT NULL DEFAULT 'default', key_gen int NOT NULL DEFAULT 1,
+  PRIMARY KEY (schema_name, table_name))`
 
 // setupSQL is what a branch needs before any table is masked: the hash
 // (bb_identity 0.2), the roles, the schema, the rules table, the fake values,
@@ -315,6 +432,8 @@ END $bbsetup$`,
   set_by text NOT NULL, set_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (schema_name, table_name, column_name, json_path))`,
 		"REVOKE ALL ON bb.mask_rules FROM PUBLIC",
+		maskTablesDDL,
+		"REVOKE ALL ON bb.mask_tables FROM PUBLIC",
 		// fake: a realistic value, the same for the same input, chosen by the
 		// hash. Never granted: it takes a hash, and is called by the triggers.
 		`CREATE OR REPLACE FUNCTION ` + branch.MaskSchema + `.fake(kind text, h text) RETURNS text LANGUAGE sql IMMUTABLE AS $bbfake$
