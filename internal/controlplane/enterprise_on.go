@@ -15,6 +15,7 @@ import (
 	_ "github.com/thefoxbyte/foxbyte/enterprise/auditevidence"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/hardening"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/impact"
+	_ "github.com/thefoxbyte/foxbyte/enterprise/masking"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pii"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/pipeline"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/policy"

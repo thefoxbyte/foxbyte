@@ -106,6 +106,12 @@ Stack:
                        checks: pass, fail, manual or n/a, with the evidence and the fix
   hardening fix <check> | profile baseline|strict [--branch b] [--yes]
                        Fix a failing check, or every one a profile covers, after a preview (Enterprise)
+  mask [status] [--branch b] [--json]
+                       Masking personal data: the rules on a branch, and the accounts masked
+  mask setup [--branch b] [--yes] | account <email> [--off] [--yes]
+                       Set masking up on a branch; mask an account on every branch it does not own (Enterprise)
+  mask rule <[schema.]table.column> [partial|hash|fake|empty] [--path $.a.b] [--off] [--branch b] [--yes]
+                       Mask a confirmed finding for masked accounts, after saying what it costs (Enterprise)
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)
@@ -406,6 +412,8 @@ func main() {
 		accessCmd(os.Args[2:])
 	case "hardening":
 		hardeningCmd(os.Args[2:])
+	case "mask":
+		maskCmd(os.Args[2:])
 	case "app":
 		appCmd(os.Args[2:])
 	case "check":

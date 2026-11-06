@@ -25,6 +25,7 @@ export type Feature =
   | 'personal-data'
   | 'access-review'
   | 'hardening'
+  | 'masking'
 
 export type Status = {
   mainReady: boolean
@@ -937,6 +938,27 @@ export const planHardeningProfile = (branch: string, profile: string) =>
   req('POST', `${API}/api/hardening/profile`, { branch, profile, apply: false }) as Promise<{ fixes: HardeningFix[]; manual: HardeningCheck[] }>
 export const applyHardeningProfile = (branch: string, profile: string) =>
   req('POST', `${API}/api/hardening/profile`, { branch, profile, apply: true }) as Promise<{ results: HardeningFixResult[] }>
+// Masking (F5, point 4.6): admins only. Reading where it stands is free;
+// setting it up, rules and masked accounts are Enterprise.
+export type MaskRuleName = 'partial' | 'hash' | 'fake' | 'empty'
+export type MaskRule = { schema: string; table: string; column: string; path?: string; rule: MaskRuleName; category: string; by: string; at: string }
+export type MaskedAccount = { email: string; by: string; at: string }
+export type MaskStatus = { on: boolean; pending: string[]; branch: string; rules: MaskRule[]; ready: string[]; accounts: MaskedAccount[]; writes: boolean }
+export type MaskPlace = { schema: string; table: string; column: string; path?: string }
+export const getMasking = (branch: string) => req('GET', `${API}/api/masking?branch=${encodeURIComponent(branch)}`) as Promise<MaskStatus>
+export const planMaskSetup = (branch: string) =>
+  req('POST', `${API}/api/masking/setup`, { branch, apply: false }) as Promise<{ branch: string; restart: boolean; keyDir: string }>
+export const applyMaskSetup = (branch: string) =>
+  req('POST', `${API}/api/masking/setup`, { branch, apply: true }) as Promise<{ branch: string; restarted: boolean }>
+export const planMaskRule = (branch: string, at: MaskPlace, rule: MaskRuleName | '') =>
+  req('POST', `${API}/api/masking/rule`, { branch, ...at, rule, apply: false }) as Promise<{ where: string; cost: string }>
+export const setMaskRule = (branch: string, at: MaskPlace, rule: MaskRuleName | '') =>
+  req('POST', `${API}/api/masking/rule`, { branch, ...at, rule, apply: true }) as Promise<{ set: string }>
+export const dropMaskRule = (branch: string, at: MaskPlace) =>
+  req('POST', `${API}/api/masking/rule`, { branch, ...at, off: true }) as Promise<{ off: string }>
+export const maskAccount = (email: string, off: boolean) =>
+  req('POST', `${API}/api/masking/account`, { email, off }) as Promise<{ email: string; masked: boolean }>
+
 const hardeningURL = (branch: string) => `${API}/api/hardening?branch=${encodeURIComponent(branch)}`
 export const getHardening = (branch: string) => req('GET', hardeningURL(branch)) as Promise<HardeningReport>
 export const hardeningJsonUrl = hardeningURL
