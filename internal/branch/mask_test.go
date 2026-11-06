@@ -77,6 +77,11 @@ func TestMaskedRoleSQL(t *testing.T) {
 			t.Errorf("unmasking is missing %q:\n%s", want, un)
 		}
 	}
+	// An email is not an identifier, so to_regrole of it is NULL: the role is
+	// looked up by name.
+	if strings.Contains(un, "to_regrole(r)") || !strings.Contains(un, "pg_roles WHERE rolname = r") {
+		t.Errorf("unmasking finds the role with to_regrole, which never finds an email:\n%s", un)
+	}
 	if !strings.Contains(endSessionsSQL("a@b.c"), "pg_terminate_backend") {
 		t.Error("the sessions are not ended")
 	}

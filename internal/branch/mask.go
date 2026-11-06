@@ -253,7 +253,8 @@ func unmaskedRoleSQL(email string) string {
 	return fmt.Sprintf(`DO $do$
 DECLARE r text := %s;
 BEGIN
-  IF to_regrole(r) IS NOT NULL AND to_regrole('%[2]s') IS NOT NULL AND pg_has_role(r, '%[2]s', 'MEMBER') THEN
+  -- By name in pg_roles: to_regrole reads an identifier, and an email is not one.
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) AND to_regrole('%[2]s') IS NOT NULL AND pg_has_role(r, '%[2]s', 'MEMBER') THEN
     EXECUTE format('REVOKE %[2]s FROM %%I', r);
     EXECUTE format('GRANT db_client TO %%I', r);
     EXECUTE format('ALTER ROLE %%I SET role = db_client', r);
