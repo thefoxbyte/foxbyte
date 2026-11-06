@@ -105,6 +105,9 @@ func UnmaskGrantsOf(email string) []string {
 }
 
 func saveUnmasks(list []UnmaskGrant) error {
+	if list == nil {
+		list = []UnmaskGrant{} // [], not null, for whoever reads the file
+	}
 	b, err := json.MarshalIndent(list, "", "  ")
 	if err != nil {
 		return err

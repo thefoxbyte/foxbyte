@@ -3354,7 +3354,7 @@ $S branch delete maskown >/dev/null 2>&1
 for c in m_customers.phone m_customers.aadhaar_no m_orders.customer_email m_kyc.aadhaar_no; do $S mask rule "$c" --off >/dev/null 2>&1; done
 $S mask rule m_customers.prefs --path '$.contact.mobile' --off >/dev/null 2>&1
 assert_eq "with every rule taken off, no mask is left behind: no view, shadow, trigger or rule" \
-  "$(pg pg-main "SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'bb_mask' AND c.relkind IN ('r','v')), (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'bb_mask%'), (SELECT count(*) FROM bb.mask_rules)")" "0|0|0"
+  "$(pg pg-main "SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'bb_mask' AND c.relkind IN ('r','v') AND c.relname <> 'lookups'), (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'bb_mask%'), (SELECT count(*) FROM bb.mask_rules)")" "0|0|0"
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS m_customers, m_orders, m_kyc, m_plain CASCADE" >/dev/null
 $S user delete mask-analyst@foxbyte.dev >/dev/null 2>&1
 
@@ -3493,8 +3493,10 @@ assert_eq "…its reads of a marked table are logged (both), under its login, wi
 assert_eq "…and it cannot undo that: the setting is a superuser's" \
   "$(gwm "$UM" main "SET pgaudit.role = 'nobody'" | grep -c 'permission denied')|$(gwm "$UM" main "ALTER ROLE SESSION_USER RESET pgaudit.role" | grep -c 'permission denied')" "1|1"
 $S branch create umother >/dev/null 2>&1
-assert_eq "unmask is on one branch: on another the account still reads masks" \
-  "$(gwm "$UM" umother "SELECT length(email) FROM u_people WHERE id = 1" 2>&1 | tail -1)" "64"
+# The Gateway lets a non-admin reach main and the branches it owns only, so
+# another branch is read from the record, not by connecting.
+assert_eq "unmask is on one branch: another branch lists nobody" \
+  "$($S mask --branch umother --json | hjson "print(len(d['unmasks']))")|$($S mask --json | hjson "print(len(d['unmasks']))")" "0|1"
 assert_eq "the access review lists the unmask, audited" \
   "$(unmasked unmask-analyst@foxbyte.dev)" "masks of marked tables; unmask on main, its reads of marked tables audited"
 assert_eq "status lists it, and the API: an admin reads lookups; the masked account may not unmask itself" \

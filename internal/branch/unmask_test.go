@@ -49,6 +49,9 @@ func TestUnmaskOnABranch(t *testing.T) {
 		t.Errorf("the file: %v %v", st, err)
 	}
 	forgetBranchUnmasks("dev")
+	if b, _ := os.ReadFile(unmaskPath()); strings.TrimSpace(string(b)) != "[]" {
+		t.Errorf("no grants left is [], not %q", b)
+	}
 	if hasUnmask("dev", "m@x.io") || !accountMasked("dev", "m@x.io") {
 		t.Error("a deleted branch's grant stays, and would reach a branch made later with its name")
 	}
