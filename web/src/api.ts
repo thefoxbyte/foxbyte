@@ -943,7 +943,12 @@ export const applyHardeningProfile = (branch: string, profile: string) =>
 export type MaskRuleName = 'partial' | 'hash' | 'fake' | 'empty'
 export type MaskRule = { schema: string; table: string; column: string; path?: string; rule: MaskRuleName; category: string; by: string; at: string }
 export type MaskedAccount = { email: string; by: string; at: string }
-export type MaskStatus = { on: boolean; pending: string[]; branch: string; rules: MaskRule[]; ready: string[]; accounts: MaskedAccount[]; writes: boolean }
+export type UnmaskGrant = { email: string; branch: string; by: string; at: string }
+export type MaskLookup = { at: string; who: string; table: string; column: string; found: number }
+export type MaskStatus = {
+  on: boolean; pending: string[]; branch: string; rules: MaskRule[]; ready: string[]; accounts: MaskedAccount[]; writes: boolean
+  unmasks: UnmaskGrant[]; lookups: MaskLookup[]; auditOn: boolean
+}
 export type MaskPlace = { schema: string; table: string; column: string; path?: string }
 export const getMasking = (branch: string) => req('GET', `${API}/api/masking?branch=${encodeURIComponent(branch)}`) as Promise<MaskStatus>
 export const planMaskSetup = (branch: string) =>
@@ -958,6 +963,8 @@ export const dropMaskRule = (branch: string, at: MaskPlace) =>
   req('POST', `${API}/api/masking/rule`, { branch, ...at, off: true }) as Promise<{ off: string }>
 export const maskAccount = (email: string, off: boolean) =>
   req('POST', `${API}/api/masking/account`, { email, off }) as Promise<{ email: string; masked: boolean }>
+export const unmaskAccount = (email: string, branch: string, off: boolean) =>
+  req('POST', `${API}/api/masking/unmask`, { email, branch, off }) as Promise<{ email: string; branch: string; unmasked: boolean; auditOn: boolean }>
 // Masking keys (F5 step 2): about the keys, never a key.
 export type MaskTableKey = { branch: string; schema: string; table: string; domain: string; gen: number; keyed: boolean }
 export type MaskKeyUse = {

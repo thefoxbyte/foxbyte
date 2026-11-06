@@ -15,7 +15,7 @@ import (
 
 func init() {
 	branch.SetMasker(&branch.Masker{Setup: setup, SetRule: setRule, DropRule: dropRule, MaskTables: maskTables,
-		Rotate: rotate, UseDomain: useDomain})
+		Rotate: rotate, UseDomain: useDomain, AuditReads: auditReads})
 }
 
 // setup makes the install's default key if it has none, then the branch's
@@ -156,7 +156,9 @@ func remask(b, schema, table, actor string, all []branch.MaskRule) error {
 		}
 	}
 	if len(m.View) > 0 {
-		if err := branch.RunMaskSQL(b, actor, m.View, false); err != nil {
+		// The view's grants name bb_audit_read, which a branch set up before
+		// step 3 may not have.
+		if err := branch.RunMaskSQL(b, actor, append(lookupSQL()[:1], m.View...), false); err != nil {
 			return fmt.Errorf("making %s.%s's view: %w", schema, table, err)
 		}
 	}
@@ -228,4 +230,29 @@ func maskTables(b string) ([]string, error) {
 	var names []string
 	err = json.Unmarshal([]byte(strings.TrimSpace(out)), &names)
 	return names, err
+}
+
+// auditReads gives bb_audit_read SELECT on a branch's tables with rules, so an
+// unmask holder's reads of them are logged: tables masked since step 3 have it
+// from their view, older ones get it here. The lookup is made too, if the
+// branch was set up before it existed.
+func auditReads(b string) error {
+	if !hasSetup(b) {
+		return fmt.Errorf("%w: masking is not set up on %s: %s mask setup --branch %s", branch.ErrInvalidRequest, b, brand.CLI, b)
+	}
+	if ok, err := branch.RelationExists(b, branch.MaskSchema+".lookups"); err != nil {
+		return err
+	} else if !ok {
+		if err := ensureKeysTable(b); err != nil {
+			return err
+		}
+		if err := branch.RunMaskSQL(b, "system", lookupSQL(), false); err != nil {
+			return fmt.Errorf("making the lookup on %s: %w", b, err)
+		}
+	}
+	rules, err := branch.MaskRulesOn(b)
+	if err != nil {
+		return err
+	}
+	return branch.RunMaskSQL(b, "system", auditReadsSQL(tablesOf(rules)), false)
 }

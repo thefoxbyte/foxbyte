@@ -620,9 +620,13 @@ func EnsureUserRole(branchName, email string) error {
 	// Masked or not is part of the key: an admin masking an account changes
 	// what its role must be, in every process that makes roles (mask.go).
 	maskedHere := accountMasked(branchName, email)
+	audited := readsAudited(branchName, email)
 	state := "plain"
-	if maskedHere {
+	switch {
+	case maskedHere:
 		state = "masked"
+	case audited:
+		state = "unmasked" // an unmask holder: real values, reads audited
 	}
 	k := branchName + "\x00" + email + "\x00" + state
 	if _, ok := ensuredRoles.Load(k); ok {
@@ -640,8 +644,8 @@ func EnsureUserRole(branchName, email string) error {
 		sql = maskedRoleSQL(email, UserRolePassword(email))
 	case MaskOn():
 		// Unmasked, or exempt here: a role once a masked reader's is made an
-		// ordinary account's again.
-		sql += "\n" + unmaskedRoleSQL(email)
+		// ordinary account's again, its reads audited if it holds unmask here.
+		sql += "\n" + unmaskedRoleSQL(email) + "\n" + auditedReadsSQL(email, audited)
 	}
 	if err := provisionRole(branchName, sql); err != nil {
 		return err
@@ -880,6 +884,7 @@ func Delete(name string) error {
 	}
 	forgetBranchRoles(name)
 	forgetCatalogScan(name)
+	forgetBranchUnmasks(name)
 	removeContainer(container(name))
 	return activeStorage().destroy(name)
 }

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   applyMaskSetup, dropMaskRule, getMaskKeys, getMasking, getPersonalData, maskAccount, maskKey, planMaskRule, planMaskSetup,
-  setMaskRule, type MaskKeysStatus, type MaskPlace, type MaskRule, type MaskRuleName, type MaskStatus, type PIIFinding,
+  setMaskRule, unmaskAccount, type MaskKeysStatus, type MaskPlace, type MaskRule, type MaskRuleName, type MaskStatus, type PIIFinding,
 } from '../api'
 import { useConfirm } from '../confirm'
 import { useFeatures, why } from '../features'
@@ -48,6 +48,7 @@ export default function Masking() {
   const [keys, setKeys] = useState<MaskKeysStatus | null>(null)
   const [domain, setDomain] = useState('')
   const [move, setMove] = useState({ table: '', domain: '' })
+  const [unmaskFor, setUnmaskFor] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [msg, setMsg] = useState('')
@@ -190,6 +191,25 @@ export default function Masking() {
     return `${t} on ${branch} is under key domain ${d}.`
   })
 
+  const unmask = (e: string, off: boolean) => run(async () => {
+    const ok = await confirm({
+      title: off ? `Take unmask on ${branch} from ${e}` : `Unmask ${e} on ${branch}`,
+      message: off
+        ? `They read masks on ${branch} again. Their open sessions there end.`
+        : <>
+          <p>They see real values on {branch}, as its owner does. Every read they make there of a marked table is audited: their
+            role&rsquo;s audit role becomes <code>bb_audit_read</code>, which only a superuser can change. Listed in the access review.</p>
+          {!st?.auditOn && <p data-testid="unmask-audit-off"><b>The audit log is off</b>, so their reads are not logged until it is turned on.</p>}
+          <p>Their open sessions on {branch} end.</p>
+        </>,
+      confirmText: off ? 'Take it off' : 'Unmask',
+    })
+    if (!ok) return ''
+    await unmaskAccount(e, branch, off)
+    if (!off) setUnmaskFor('')
+    return off ? `${e} reads masks on ${branch} again.` : `${e} sees real values on ${branch}, every read audited.`
+  })
+
   const ruled = new Set((st?.rules ?? []).map(r => key(r)))
   const ruleTables = [...new Set((st?.rules ?? []).map(r => `${r.schema}.${r.table}`))]
   const domainOf = (t: string) => keys?.keys.find(k => k.tables.some(x => x.branch === branch && `${x.schema}.${x.table}` === t))?.domain ?? 'default'
@@ -310,6 +330,65 @@ export default function Masking() {
               </label>
               <button className="primary" type="submit" disabled={!email.trim()}>Mask…</button>
             </form>
+          )}
+
+          {st.on && (
+            <>
+              <h2 style={{ marginTop: 18 }}>Unmask on {st.branch}</h2>
+              <p className="muted" style={{ marginTop: -4, fontSize: 13 }}>
+                A masked account given unmask on a branch sees real values there, and every read it makes of a marked table is audited.
+                {!st.auditOn && <> The audit log is off, so those reads are not being logged.</>}
+              </p>
+              <div className="table-wrap">
+                <table aria-label="Unmask rights">
+                  <thead><tr><th>Account</th><th>Given by</th><th /></tr></thead>
+                  <tbody>
+                    {st.unmasks.map(g => (
+                      <tr key={g.email} data-testid={`unmask-${g.email}`}>
+                        <td>{g.email}</td>
+                        <td className="muted" style={{ fontSize: 13 }}>{g.by}, {new Date(g.at).toLocaleString()}</td>
+                        <td>{setting && <button className="ghost" onClick={() => unmask(g.email, true)}>Take off…</button>}</td>
+                      </tr>
+                    ))}
+                    {st.unmasks.length === 0 && <tr><td colSpan={3} className="muted">Nobody: masked accounts read masks on {st.branch}.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              {setting && st.accounts.length > 0 && (
+                <form className="row" style={{ gap: 10, marginTop: 10, alignItems: 'flex-end' }} aria-label="Unmask an account"
+                  onSubmit={e => { e.preventDefault(); if (unmaskFor) unmask(unmaskFor, false) }}>
+                  <label className="field">Masked account
+                    <select aria-label="Account to unmask" value={unmaskFor} onChange={e => setUnmaskFor(e.target.value)}>
+                      <option value="">…</option>
+                      {st.accounts.filter(a => !st.unmasks.some(g => g.email === a.email)).map(a => <option key={a.email} value={a.email}>{a.email}</option>)}
+                    </select>
+                  </label>
+                  <button className="primary" type="submit" disabled={!unmaskFor}>Unmask…</button>
+                </form>
+              )}
+
+              <h2 style={{ marginTop: 18 }}>Lookups on {st.branch}</h2>
+              <p className="muted" style={{ marginTop: -4, fontSize: 13 }}>
+                A masked account finds a person by an exact value without unmasking: <code>SELECT * FROM bb_mask.find(&#39;table&#39;, &#39;column&#39;, &#39;value&#39;)</code>,
+                which returns the rows masked, 30 a minute. Each call is recorded here; the value never is.
+              </p>
+              <div className="table-wrap">
+                <table aria-label="Lookups">
+                  <thead><tr><th>When</th><th>Who</th><th>Column</th><th>Found</th></tr></thead>
+                  <tbody>
+                    {st.lookups.map((l, i) => (
+                      <tr key={i} data-testid="lookup">
+                        <td className="muted" style={{ fontSize: 13 }}>{new Date(l.at).toLocaleString()}</td>
+                        <td>{l.who}</td>
+                        <td><code>{l.table}.{l.column}</code></td>
+                        <td>{l.found}</td>
+                      </tr>
+                    ))}
+                    {st.lookups.length === 0 && <tr><td colSpan={4} className="muted">None.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
 
           {keys && keys.keys.length > 0 && (

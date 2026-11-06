@@ -23,6 +23,8 @@ import (
 //	POST /api/masking/rule     {"branch", "schema", "table", "column", "path", "rule", "off", "apply"}
 //	                                                 a rule's cost, or with apply sets it; off takes it off (Enterprise)
 //	POST /api/masking/account  {"email", "off"}      masks an account, or unmasks it (Enterprise)
+//	POST /api/masking/unmask   {"email", "branch", "off"}  gives a masked account unmask on a branch, or takes it (Enterprise)
+//	GET  /api/masking/lookups?branch=main            who looked a person up, never the value: free
 //	GET  /api/masking/keys                           the key domains and the tables using each: free
 //	POST /api/masking/key      {"action": "create"|"rotate"|"drop"|"use", "domain", "branch", "schema", "table", "apply"}
 //	                                                 what a key change does, or with apply makes it (Enterprise)
@@ -182,6 +184,40 @@ func registerMasking(mux *http.ServeMux) {
 	})
 
 	registerMaskKeys(mux, read, record)
+
+	mux.HandleFunc("POST /api/masking/unmask", func(w http.ResponseWriter, r *http.Request) {
+		b, actor, ok := read(w, r)
+		if !ok {
+			return
+		}
+		email := strings.ToLower(strings.TrimSpace(b.Email))
+		if err := branch.Unmask(email, b.Branch, actor, b.Off); err != nil {
+			maskFail(w, err)
+			return
+		}
+		what := "given unmask on " + b.Branch
+		if b.Off {
+			what = "no longer unmasked on " + b.Branch
+		}
+		record(r, actor, auth.EvMaskUnmask, b.Branch, email+" "+what)
+		writeJSON(w, 200, map[string]any{"email": email, "branch": b.Branch, "unmasked": !b.Off, "auditOn": branch.AuditOn()})
+	})
+	mux.HandleFunc("GET /api/masking/lookups", func(w http.ResponseWriter, r *http.Request) {
+		if !isAdmin(r) {
+			writeErr(w, 403, errors.New("only an admin may read the lookups"))
+			return
+		}
+		b := r.URL.Query().Get("branch")
+		if b == "" {
+			b = "main"
+		}
+		ls, err := branch.Lookups(b, 500)
+		if err != nil {
+			maskFail(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"branch": b, "lookups": ls})
+	})
 }
 
 // registerMaskKeys is step 2's: the keys. Admins only, as the rest.

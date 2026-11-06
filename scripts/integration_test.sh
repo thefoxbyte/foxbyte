@@ -87,7 +87,7 @@ rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/anchors/_audit-log"
 rm -f "$HOME/$BRAND_STATE_DIR/sync-commit"
 # Masking's key and masked accounts (F5): §11ai starts from an install that
 # has never set masking up.
-sudo rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/mask"; rm -f "${HOME:?}/${BRAND_STATE_DIR:?}/masked-accounts.json" "${HOME:?}/${BRAND_STATE_DIR:?}/mask-keys.json"
+sudo rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/mask"; rm -f "${HOME:?}/${BRAND_STATE_DIR:?}/masked-accounts.json" "${HOME:?}/${BRAND_STATE_DIR:?}/mask-keys.json" "${HOME:?}/${BRAND_STATE_DIR:?}/unmask-grants.json"
 # And the primary pointer, for the same reason: a run cut short after a failover
 # leaves 'main' pointing at the promoted standby. `stop` above has already
 # removed every container, so there is no promoted standby left to protect, and
@@ -3456,6 +3456,84 @@ $S mask account key-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS k_people, k_orders CASCADE" >/dev/null
 $S user delete key-analyst@foxbyte.dev >/dev/null 2>&1
 rm -rf "${ROTD:?}"
+
+echo "### 11ak. masking: unmask, the lookup, the access review, reads audited (F5 Gate 1, step 3)"
+# Enterprise: a masked account given unmask on a branch sees real values
+# there, and its reads of marked tables are logged by the audit log, its only;
+# it cannot undo that. The lookup finds a person by an exact value, masked, 30
+# a minute, recorded without the value. The access review says who sees what.
+# On main, set up by §11ai.
+$S branch delete umother >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS u_people CASCADE" >/dev/null
+pg pg-main "CREATE TABLE u_people (id bigint PRIMARY KEY, email text, phone text, aadhaar_no text);
+  INSERT INTO u_people VALUES (1, 'asha.u@example.com', '+91 98765 43210', '234567890124'), (2, 'ravi.u@example.org', '9876543211', '456789012341')" >/dev/null
+$S pii scan >/dev/null 2>&1
+UJ="$($S pii --json 2>/dev/null)"
+ufid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='u_people' and f['column']=='$1'][0])" <<<"$UJ"; }
+for c in email phone aadhaar_no; do $S pii mark "$(ufid $c)" confirm >/dev/null 2>&1; $S mask rule "u_people.$c" --yes >/dev/null 2>&1 || bad "setting the rule on u_people.$c"; done
+for u in unmask-analyst plain-person; do printf 'password123\n' | $S user create "$u@foxbyte.dev" >/dev/null 2>&1; done
+UM="$($S apikey create unmask-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+$S mask account unmask-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the analyst"
+UROLE="SELECT coalesce(array_to_string(rolconfig, ' '), '') FROM pg_roles WHERE rolname = 'unmask-analyst@foxbyte.dev'"
+unmasked() { $S access review --json 2>/dev/null | hjson "print([a['unmasked'] for a in d['accounts'] if a['email']=='$1'][0])"; }
+assert_eq "the access review says who sees what: an admin real values, an account not masked everything, a masked one masks" \
+  "$(unmasked test@foxbyte.dev | grep -c 'an admin always sees real values')|$(unmasked plain-person@foxbyte.dev | grep -c 'not masked')|$(unmasked unmask-analyst@foxbyte.dev | grep -c '^masks of marked tables$')" "1|1|1"
+assert_eq "unmask is for a masked account: one that is not is refused, saying why; so is a branch that is not there" \
+  "$($S mask unmask plain-person@foxbyte.dev --branch main --yes 2>&1 | grep -c 'is not masked, so it sees real values already')|$($S mask unmask unmask-analyst@foxbyte.dev --branch nosuchbranch --yes 2>&1 | grep -c 'there is no branch')" "1|1"
+PRE="$($S mask unmask unmask-analyst@foxbyte.dev --branch main 2>&1)"
+assert_eq "without --yes it says what changes, that reads are audited and the audit log is off, and changes nothing" \
+  "$(grep -c 'Every read they make there of a marked table is audited' <<<"$PRE")|$(grep -c 'The audit log is off' <<<"$PRE")|$(gwm "$UM" main "SELECT length(email) FROM u_people WHERE id = 1")" "1|1|64"
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+$S mask unmask unmask-analyst@foxbyte.dev --branch main --yes >/dev/null 2>&1 || bad "unmasking the analyst on main"
+assert_eq "with unmask on main, the masked account reads real values there, and its role's audit role is bb_audit_read" \
+  "$(gwm "$UM" main "SELECT email, phone FROM u_people WHERE id = 1")|$(pg pg-main "$UROLE" | grep -o 'pgaudit.role=bb_audit_read')" "asha.u@example.com|+91 98765 43210|pgaudit.role=bb_audit_read"
+gwm "$UM" main "SELECT count(*) FROM u_people" >/dev/null; sleep 1.5
+assert_eq "…its reads of a marked table are logged (both), under its login, with nothing the table holds" \
+  "$(auditlog main | grep '"user":"unmask-analyst@foxbyte.dev"' | grep -c 'AUDIT: OBJECT,[0-9]*,[0-9]*,READ,SELECT,TABLE,public.u_people,')|$(auditlog main | grep -c 'asha.u@example.com')" "2|0"
+assert_eq "…and it cannot undo that: the setting is a superuser's" \
+  "$(gwm "$UM" main "SET pgaudit.role = 'nobody'" | grep -c 'permission denied')|$(gwm "$UM" main "ALTER ROLE SESSION_USER RESET pgaudit.role" | grep -c 'permission denied')" "1|1"
+$S branch create umother >/dev/null 2>&1
+assert_eq "unmask is on one branch: on another the account still reads masks" \
+  "$(gwm "$UM" umother "SELECT length(email) FROM u_people WHERE id = 1" 2>&1 | tail -1)" "64"
+assert_eq "the access review lists the unmask, audited" \
+  "$(unmasked unmask-analyst@foxbyte.dev)" "masks of marked tables; unmask on main, its reads of marked tables audited"
+assert_eq "status lists it, and the API: an admin reads lookups; the masked account may not unmask itself" \
+  "$($S mask --json | hjson "print([g['email'] for g in d['unmasks']], d['auditOn'])")|$(code "$KEY" https://localhost:8080/api/masking/lookups?branch=main)|$(code "$UM" -X POST -H 'Content-Type: application/json' -d '{"email":"unmask-analyst@foxbyte.dev","branch":"umother"}' https://localhost:8080/api/masking/unmask)" \
+  "['unmask-analyst@foxbyte.dev'] True|200|403"
+$S mask unmask unmask-analyst@foxbyte.dev --branch main --off --yes >/dev/null 2>&1 || bad "taking unmask off"
+assert_eq "unmask taken off: masks again, and the audit role is gone from the role" \
+  "$(gwm "$UM" main "SELECT length(email) FROM u_people WHERE id = 1")|$(pg pg-main "$UROLE" | grep -c 'pgaudit.role')" "64|0"
+
+# The lookup: by an exact value, the rows masked; nothing outside a rule.
+assert_eq "the lookup finds a person by an exact value and returns the row masked: by a hash, and by a partial mask" \
+  "$(gwm "$UM" main "SELECT d->>'id', length(d->>'email'), d->>'phone' FROM bb_mask.find('u_people', 'email', 'asha.u@example.com') d")|$(gwm "$UM" main "SELECT d->>'id', d->>'aadhaar_no' FROM bb_mask.find('public.u_people', 'aadhaar_no', '456789012341') d")|$(gwm "$UM" main "SELECT count(*) FROM bb_mask.find('u_people', 'email', 'nobody@example.com')")" \
+  "1|64|XXXXXXXXXXX3210|2|XXXXXXXX2341|0"
+assert_eq "…only in a column with a rule of its own, and never a table without one" \
+  "$(gwm "$UM" main "SELECT * FROM bb_mask.find('u_people', 'id', '1')" | grep -c 'has none')|$(gwm "$UM" main "SELECT * FROM bb_mask.find('pg_authid', 'rolpassword', 'x')" | grep -c 'has none')|$(gwm "$KEY" main "SELECT * FROM bb_mask.find('u_people', 'email', 'x')" | grep -c 'permission denied')" "1|1|1"
+LK="$($S mask lookups --json)"
+assert_eq "each lookup is recorded: who, which column, how many found; never the value; the masked account cannot read the record" \
+  "$(hjson "print(len(d), sorted(set(l['who'] for l in d)), sorted(set(l['column'] for l in d)), sum(l['found'] for l in d))" <<<"$LK")|$(grep -cE 'asha|456789' <<<"$LK")|$(gwm "$UM" main "SELECT count(*) FROM bb_mask.lookups" | grep -c 'permission denied')" \
+  "3 ['unmask-analyst@foxbyte.dev'] ['aadhaar_no', 'email'] 2|0|1"
+for _ in $(seq 27); do gwm "$UM" main "SELECT count(*) FROM bb_mask.find('u_people', 'email', 'x@example.com')" >/dev/null; done
+assert_eq "30 lookups a minute for each account, then refused" \
+  "$(gwm "$UM" main "SELECT count(*) FROM bb_mask.find('u_people', 'email', 'asha.u@example.com')" | grep -c 'too many lookups')" "1"
+assert_eq "no value looked up is in the database's log" "$(sudo docker logs pg-main 2>&1 | grep -cE 'asha.u@example.com|456789012341|x@example.com')" "0"
+
+# A branch's unmask goes with it; an account unmasked keeps none.
+$S mask unmask unmask-analyst@foxbyte.dev --branch umother --yes >/dev/null 2>&1 || bad "unmask on umother"
+$S branch delete umother >/dev/null 2>&1
+$S mask unmask unmask-analyst@foxbyte.dev --branch main --yes >/dev/null 2>&1
+UG="${HOME:?}/${BRAND_STATE_DIR:?}/unmask-grants.json"
+assert_eq "a deleted branch's unmask is gone with it, so a branch made later with its name has none" \
+  "$(python3 -c 'import json,sys; print(sorted(g["branch"] for g in json.load(open(sys.argv[1]))))' "$UG")" "['main']"
+$S mask account unmask-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
+assert_eq "an account unmasked keeps no unmask, and its audit role is gone" \
+  "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$UG")|$(pg pg-main "$UROLE" | grep -c 'pgaudit.role')" "0|0"
+assert_eq "every unmask given and taken is in the security log" "$($S audit log --limit 300 | grep -c 'mask.unmask')" "4"
+$S audit-log off --yes >/dev/null 2>&1; main_up
+for c in email phone aadhaar_no; do $S mask rule "u_people.$c" --off >/dev/null 2>&1; done
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS u_people CASCADE" >/dev/null
+for u in unmask-analyst plain-person; do $S user delete "$u@foxbyte.dev" >/dev/null 2>&1; done
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
