@@ -106,7 +106,7 @@ func printMaskStatus(st branch.MaskStatus) {
 	if len(st.Rules) == 0 {
 		fmt.Printf("  none: %s mask rule <table.column> sets one on a confirmed finding\n", brand.CLI)
 	}
-	fmt.Printf("\nMasked accounts (%d), on every branch they do not own\n", len(st.Accounts))
+	fmt.Printf("\nMasked accounts (%d), on every branch, their own included\n", len(st.Accounts))
 	for _, a := range st.Accounts {
 		fmt.Printf("  %-40s by %s at %s\n", a.Email, a.By, a.At)
 	}
@@ -121,6 +121,24 @@ func printMaskStatus(st branch.MaskStatus) {
 		fmt.Printf("  The audit log is off, so their reads are not being logged: %s audit-log on\n", brand.CLI)
 	}
 	fmt.Printf("\nLookups on %s: %d recorded (%s mask lookups --branch %s)\n", st.Branch, len(st.Lookups), brand.CLI, st.Branch)
+	// The paths around the masks (step 4).
+	if len(st.Closed) > 0 {
+		fmt.Printf("\nClosed to masked accounts on %s (%d): they would read real values through these\n", st.Branch, len(st.Closed))
+		for _, c := range st.Closed {
+			why := "a view reading a masked column"
+			if c.Kind == "refs" {
+				why = "a foreign key into a masked column: writing it would say which values are there"
+			}
+			fmt.Printf("  %-40s %s taken: %s\n", c.Relation, c.Privs, why)
+		}
+	}
+	if len(st.Definers) > 0 {
+		fmt.Printf("\nDefiner functions a masked account can run that read masked tables (%d): each can return real values\n", len(st.Definers))
+		for _, d := range st.Definers {
+			fmt.Printf("  %-40s runs as %s, names %s\n", d.Function, d.Owner, strings.Join(d.Tables, ", "))
+		}
+		fmt.Printf("  Take EXECUTE from PUBLIC on each (REVOKE EXECUTE ON FUNCTION … FROM PUBLIC), or make it SECURITY INVOKER.\n")
+	}
 }
 
 // maskSetup sets masking up on a branch: the key if the install has none, the
@@ -250,9 +268,9 @@ func maskAccount(args []string) {
 		if off {
 			fmt.Printf("This unmasks %s: they see real values again on every branch.\n", email)
 		} else {
-			fmt.Printf("This masks %s on every branch they do not own: they read the masks of\n"+
-				"marked tables, ordinary tables as they are, and cannot write to marked\n"+
-				"tables. An admin is never masked.\n", email)
+			fmt.Printf("This masks %s on every branch, their own included: they read the\n"+
+				"masks of marked tables, ordinary tables as they are, and cannot write to\n"+
+				"marked tables. Their agent keys read the same. An admin is never masked.\n", email)
 		}
 		fmt.Printf("Their open sessions end, so the next one sees the change.\n\nRun again with --yes to go ahead.\n")
 		return

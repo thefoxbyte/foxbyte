@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
@@ -210,23 +209,27 @@ func readsAudited(branchName, email string) bool {
 	return ok && hasUnmask(branchName, email)
 }
 
-// maskExempt: an install admin, or the branch's owner. A variable so the
-// tests need neither a database nor an account store.
+// maskExempt: an install admin, who can change the masks and so is never
+// masked. A branch's owner used to be exempt too, until the access-path suite
+// (step 4) found the way through it: a masked account made a branch of main,
+// owned it, and read real values there. A masked account is masked on every
+// branch, its own included; only unmask lifts it, on one branch. A variable so
+// the tests need neither a database nor an account store.
 var maskExempt = func(branchName, email string) bool {
-	if ok, err := IsAdmin("main", email); err == nil && ok {
-		return true
-	}
-	st, err := auth.OpenFromEnv()
-	if err != nil {
-		return false
-	}
-	defer st.Close()
-	owner, ok := st.BranchOwner(branchName)
-	if !ok {
-		return false
-	}
-	u, ok := st.UserByEmail(email)
-	return ok && u.ID == owner
+	ok, err := IsAdmin("main", email)
+	return err == nil && ok
+}
+
+// IsMaskedAccount reports whether an admin has masked an account, on any
+// branch: the paths that cannot keep the masks refuse it (step 4).
+func IsMaskedAccount(email string) bool {
+	_, ok := loadMasked()[strings.ToLower(strings.TrimPrefix(email, agentKeyRolePrefix))]
+	return ok
+}
+
+// AccountMaskedOn reports whether an account reads masks on a branch.
+func AccountMaskedOn(branchName, email string) bool {
+	return accountMasked(branchName, strings.TrimPrefix(email, agentKeyRolePrefix))
 }
 
 // maskedRoleSQL makes a masked reader's login role, or turns an account's
@@ -296,10 +299,12 @@ func ApplyAccountMask(branchName, email string) error {
 		return err
 	}
 	forgetUserRole(branchName, email)
-	return nil
+	// Its agent keys read what it reads (step 4).
+	return applyAgentKeyMask(branchName, email)
 }
 
 func forgetUserRole(branchName, email string) {
+	forgetAgentKeyRole(branchName, email)
 	for _, m := range []string{"masked", "plain", "unmasked"} {
 		ensuredRoles.Delete(branchName + "\x00" + email + "\x00" + m)
 	}
@@ -569,6 +574,79 @@ type MaskStatus struct {
 	Lookups  []Lookup        `json:"lookups"`  // this branch's latest
 	// AuditOn: whether unmask holders' reads are being logged (the audit log, F6).
 	AuditOn bool `json:"auditOn"`
+	// Definers: SECURITY DEFINER functions a masked account may run, owned by
+	// a role that reads a masked table's real values, whose body names one.
+	// Each can hand those values to a masked caller: listed, never altered
+	// (design, section 11).
+	Definers []DefinerFunc `json:"definers"`
+	// Closed: what the guard took from masked accounts, and why (step 4).
+	Closed []MaskClosed `json:"closed"`
+}
+
+// MaskClosed is one object the guard on the paths around the masks closed to
+// masked accounts: a view reading a masked column ("reads"), or a table with
+// a foreign key into one ("refs"), and the rights it took.
+type MaskClosed struct {
+	Relation string `json:"relation"`
+	Kind     string `json:"kind"`
+	Privs    string `json:"privs"`
+	At       string `json:"at"`
+}
+
+// maskDefinersSQL finds the definer functions that can leak masked values.
+const maskDefinersSQL = `WITH marked AS (
+  SELECT DISTINCT c.oid AS rel, n.nspname, c.relname
+    FROM bb.mask_rules r JOIN pg_namespace n ON n.nspname = r.schema_name
+    JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = r.table_name)
+SELECT coalesce(json_agg(json_build_object('function', f, 'owner', owner, 'tables', tables) ORDER BY f), '[]'::json)
+  FROM (SELECT p.oid::regprocedure::text AS f, pg_get_userbyid(p.proowner) AS owner,
+               array_agg(m.nspname || '.' || m.relname ORDER BY m.nspname, m.relname) AS tables
+          FROM pg_proc p
+          JOIN pg_namespace pn ON pn.oid = p.pronamespace
+          JOIN pg_roles o ON o.oid = p.proowner
+          JOIN marked m ON p.prosrc ~* ('\m' || regexp_replace(m.relname, '([^[:alnum:]_])', '\\\1', 'g') || '\M')
+         WHERE p.prosecdef
+           AND pn.nspname NOT IN ('pg_catalog', 'information_schema', 'bb', 'bb_f1', '` + MaskSchema + `')
+           AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                            WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+           AND has_function_privilege('` + MaskedRole + `', p.oid, 'EXECUTE')
+           AND (o.rolsuper OR has_table_privilege(p.proowner, m.rel, 'SELECT'))
+         GROUP BY p.oid, p.proowner) x`
+
+// maskClosedSQL reads what the guard closed.
+const maskClosedSQL = `SELECT coalesce(json_agg(json_build_object('relation', name, 'kind', kind, 'privs', privs,
+  'at', to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')) ORDER BY name), '[]'::json) FROM bb.mask_closed`
+
+// maskPathFindings reads a running branch's definer functions and closed
+// objects; a branch set up before step 4 has no guard yet, and none closed.
+func maskPathFindings(name string) ([]DefinerFunc, []MaskClosed, error) {
+	defs, closed := []DefinerFunc{}, []MaskClosed{}
+	if ok, err := RelationExists(name, "bb.mask_rules"); err != nil || !ok {
+		return defs, closed, err
+	}
+	out, err := QuerySQL(name, "SELECT CASE WHEN to_regrole('"+MaskedRole+"') IS NULL THEN '[]'::json ELSE ("+maskDefinersSQL+") END")
+	if err != nil {
+		return defs, closed, fmt.Errorf("reading the definer functions on %s: %w (%s)", name, err, strings.TrimSpace(out))
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &defs); err != nil {
+		return defs, closed, err
+	}
+	if ok, err := RelationExists(name, "bb.mask_closed"); err == nil && ok {
+		out, err := QuerySQL(name, maskClosedSQL)
+		if err != nil {
+			return defs, closed, fmt.Errorf("reading what masking closed on %s: %w (%s)", name, err, strings.TrimSpace(out))
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &closed); err != nil {
+			return defs, closed, err
+		}
+	}
+	if defs == nil {
+		defs = []DefinerFunc{}
+	}
+	if closed == nil {
+		closed = []MaskClosed{}
+	}
+	return defs, closed, nil
 }
 
 // MaskingStatus reads it. Free.
@@ -577,7 +655,8 @@ func MaskingStatus(branchName string) (MaskStatus, error) {
 		branchName = "main"
 	}
 	st := MaskStatus{On: MaskOn(), Branch: branchName, Pending: []string{}, Rules: []MaskRule{}, Ready: []string{},
-		Accounts: MaskedAccounts(), Writes: requireMasker() == nil, Unmasks: []UnmaskGrant{}, Lookups: []Lookup{}, AuditOn: AuditOn()}
+		Accounts: MaskedAccounts(), Writes: requireMasker() == nil, Unmasks: []UnmaskGrant{}, Lookups: []Lookup{}, AuditOn: AuditOn(),
+		Definers: []DefinerFunc{}, Closed: []MaskClosed{}}
 	for _, g := range UnmaskGrants() {
 		if g.Branch == branchName {
 			st.Unmasks = append(st.Unmasks, g)
@@ -596,6 +675,9 @@ func MaskingStatus(branchName string) (MaskStatus, error) {
 	st.Rules = rules
 	if ls, err := Lookups(branchName, 50); err == nil {
 		st.Lookups = ls
+	}
+	if d, c, err := maskPathFindings(branchName); err == nil {
+		st.Definers, st.Closed = d, c
 	}
 	if masker != nil && masker.MaskTables != nil {
 		if t, err := masker.MaskTables(branchName); err == nil && t != nil {

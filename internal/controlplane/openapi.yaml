@@ -430,6 +430,7 @@ paths:
         unchanged, commit_lsn, xid, lsn), begin and commit when transactions=1, resync or error. Values are Postgres text as JSON strings,
         never numbers, so bigint and numeric survive. Resume with ?since=<commit_lsn>.
         Accepts an API key scoped to this branch, which no other /api route does.
+        Refused (403) to a masked account on a branch with masks: the feed carries real values.
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
         - name: since
@@ -1010,6 +1011,7 @@ paths:
     get:
       tags: [ledger]
       summary: The branch's Blackbox history (filterable).
+      description: A masked account reads the entries with each statement's text hidden, as it can hold real values.
       parameters:
         - { $ref: "#/components/parameters/BranchName" }
         - { name: actor, in: query, schema: { type: string } }
@@ -1104,7 +1106,7 @@ paths:
     get:
       tags: [ledger]
       summary: Every Blackbox entry with its capture columns, one JSON document per line.
-      description: The input fox-verify checks offline with --export.
+      description: The input fox-verify checks offline with --export. Refused (403) to a masked account, as every row carries its statement.
       parameters: [{ $ref: "#/components/parameters/BranchName" }]
       responses:
         "200":
@@ -2204,7 +2206,10 @@ paths:
         Whether masking is set up, the databases started before it was (which mask nothing until they start
         again), a branch's rules and the tables whose masks are made, and the accounts masked. A masked account
         reads the masks of marked tables, ordinary tables as they are, and cannot write to marked tables, on
-        every branch it does not own. Admins are never masked.
+        every branch, its own included; its agent keys read the same. Admins are never masked. Also listed:
+        closed, what the guard took from masked accounts (views reading a masked column, tables with a foreign
+        key into one), and definers, the SECURITY DEFINER functions a masked account may run that can return
+        real values.
       parameters:
         - { name: branch, in: query, schema: { type: string, default: main } }
       responses:

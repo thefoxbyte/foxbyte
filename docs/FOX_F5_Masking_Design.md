@@ -255,9 +255,12 @@ A rule is set on a confirmed mark: a column, or a JSON path inside one.
   `fox mask account <email>`, or the access page in the console. A masked
   account's role leaves `db_client` and joins `db_masked`, whose grants are
   section 6's.
-- **Admins and branch owners always see real values.** They can change the
-  masks, so masking them would only pretend; the design says so rather than
-  hiding it.
+- **Admins always see real values.** They can change the masks, so masking
+  them would only pretend; the design says so rather than hiding it.
+- **A branch's owner is masked too, if its account is (step 4).** Owners were
+  exempt until the access-path suite found the way through it: a masked
+  account made a branch of main, owned it, and read everything there. The
+  branch carries the masks, and only unmask lifts them, on one branch.
 - **Agents:**
   - An agent key can be made masked.
   - Agents are pointed at masked branches (section 12), which is where they
@@ -306,6 +309,30 @@ declared unsupported, never left open.
 | Logical replication, continuous import | not given to masked accounts |
 | Branch create, restore, promote | masks travel; a promoted change request does not unmask |
 | The lookup | masked rows, rate-limited, recorded |
+
+**What the suite found (step 4).** Run as a masked account and as its agent
+key: integration §11al and `web/tests/masking.spec.ts`. Eight paths gave real
+values; each is closed and tested.
+
+| Path | Found | Now |
+|---|---|---|
+| A branch it makes, of main or back in time; an agent branch | owners saw real values | masked on its own branches too; agent branches refused to it |
+| Agent keys; MCP `run_sql`, `execute_change` | the agent role was in `db_client` | a masked agent role: `db_masked`, a member of `db_agent` with neither its rights nor `SET ROLE` (PostgreSQL 16+), so still an agent to the Blackbox; never a shared role |
+| Realtime | the feed decoded every published table for anyone on the branch | refused to a masked account where there are masks |
+| The Gateway's fallback | a role that could not be made, or not yet on a standby, fell back to the shared role | refused, to try again |
+| The Blackbox's statements | `GET /ledger` and its export carried every statement's text | the entries without the text; the export, whose rows must verify, refused |
+| Views and materialized views by others | the default privileges gave masked readers `SELECT` on a view reading a marked table as its owner | the guard (`bb.mask_close_paths`, an event trigger) takes it, and gives it back when the rule goes |
+| `GRANT` on a marked table or such a view (a promoted change request included) | given | taken back; to `PUBLIC`, refused |
+| A foreign key into a masked column | a write said whether a guessed value exists | `INSERT` and `UPDATE` on that table taken |
+| A definer function owned by a reader of real values | could return them | listed by `fox mask` and the Masking page, never changed |
+
+Kept, now tested: `COPY`, `RETURNING`, `ON CONFLICT`, `MERGE`, errors (a
+cast quotes the mask), `pg_stats` and extended statistics (nothing),
+`EXPLAIN` (no values), the console's query, grid, object browser and exports,
+temporary views and functions (masks only). Left, and said: `CREATE TABLE AS`
+copies real values into an ordinary table, which the scan finds on its next
+run; the change requests list shows a request's SQL to anyone on its
+branches.
 
 ---
 

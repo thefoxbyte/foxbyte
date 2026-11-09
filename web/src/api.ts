@@ -948,6 +948,10 @@ export type MaskLookup = { at: string; who: string; table: string; column: strin
 export type MaskStatus = {
   on: boolean; pending: string[]; branch: string; rules: MaskRule[]; ready: string[]; accounts: MaskedAccount[]; writes: boolean
   unmasks: UnmaskGrant[]; lookups: MaskLookup[]; auditOn: boolean
+  // The paths around the masks (step 4): definer functions that can return
+  // real values to a masked caller, and what the guard closed to masked accounts.
+  definers?: { function: string; owner: string; tables: string[] }[]
+  closed?: { relation: string; kind: 'reads' | 'refs'; privs: string; at: string }[]
 }
 export type MaskPlace = { schema: string; table: string; column: string; path?: string }
 export const getMasking = (branch: string) => req('GET', `${API}/api/masking?branch=${encodeURIComponent(branch)}`) as Promise<MaskStatus>

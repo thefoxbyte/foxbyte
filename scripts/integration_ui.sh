@@ -118,7 +118,12 @@ rtsql "INSERT INTO public.pii_people VALUES (1, '234567890124', 'a@example.com',
 # account to mask that is not an admin; the page sets the rules.
 "$S" branch delete e2emask >/dev/null 2>&1; "$S" branch create e2emask >/dev/null 2>&1
 sudo docker exec -e PGPASSWORD=foxbyte pg-e2emask psql -U dbadmin -d appdb -q -c \
-	"CREATE TABLE public.m_people (id int PRIMARY KEY, aadhaar_no text, email text); INSERT INTO public.m_people VALUES (1, '234567890124', 'a@example.com'), (2, '456789012341', 'b@example.org')" >/dev/null 2>&1
+	"CREATE TABLE public.m_people (id int PRIMARY KEY, aadhaar_no text, email text UNIQUE); INSERT INTO public.m_people VALUES (1, '234567890124', 'a@example.com'), (2, '456789012341', 'b@example.org')" >/dev/null 2>&1
+# For the access paths (step 4): a table with a foreign key into the email, and
+# a definer function that reads it as its owner, a superuser.
+sudo docker exec -e PGPASSWORD=foxbyte pg-e2emask psql -U dbadmin -d appdb -q -c \
+	"CREATE TABLE public.m_logins (id int PRIMARY KEY, login text REFERENCES public.m_people(email));
+	 CREATE FUNCTION public.m_email_of(i int) RETURNS text LANGUAGE sql SECURITY DEFINER AS \$\$ SELECT email FROM public.m_people WHERE id = i \$\$" >/dev/null 2>&1
 "$S" pii scan --branch e2emask >/dev/null 2>&1
 for id in $("$S" pii --branch e2emask --json 2>/dev/null | python3 -c 'import sys,json; print(" ".join(str(f["id"]) for f in json.load(sys.stdin)["findings"] if f["table"] == "m_people"))'); do
 	"$S" pii mark "$id" confirm --branch e2emask >/dev/null 2>&1
@@ -129,6 +134,9 @@ done
 "$S" mask key drop e2e_tenant --yes >/dev/null 2>&1
 printf '%s\n' "$PASSWORD" | "$S" user create e2e-masked@foxbyte.dev >/dev/null 2>&1
 "$S" mask account e2e-masked@foxbyte.dev --off --yes >/dev/null 2>&1
+# The masked account owns the branch, as a developer owns the one they made:
+# masking.spec.ts's access-path test signs in as it and still reads masks.
+"$S" branch owner e2emask e2e-masked@foxbyte.dev >/dev/null 2>&1
 
 # Application identity (F1), for the Blackbox's "for" test: a table made on the
 # branch in a transaction that asserted alice, with a token signed by an

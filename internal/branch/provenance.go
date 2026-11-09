@@ -463,6 +463,9 @@ func ExecuteChange(req ExecuteChangeRequest) (ExecuteChangeResult, error) {
 	login := engineLogin{mode: loginLegacy}
 	if req.Account != "" {
 		login = engineAgentLogin(name, req.Account)
+		if login.refused != nil {
+			return ExecuteChangeResult{}, login.refused
+		}
 	} else {
 		role, asAgent := agentLoginRole(name)
 		login.role, login.password = role, ClientRolePassword()

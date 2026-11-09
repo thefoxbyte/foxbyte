@@ -155,3 +155,65 @@ test('a masked account is given unmask on a branch, and the access review says s
   await page.getByRole('dialog').getByRole('button', { name: 'Unmask', exact: true }).click()
   await expect(page.getByTestId(`account-${masked}`)).toHaveCount(0, { timeout: 30_000 })
 })
+
+// The access paths (step 4): the masked account owns e2emask
+// (integration_ui.sh) and still reads masks there, in the console's query and
+// in the Blackbox, whose statements it cannot read; the Masking page lists
+// what the guard closed and the definer function that could leak.
+test('a masked account reads masks on its own branch, and the page lists the paths it closed', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Masking' }).click()
+  await page.getByLabel('Branch').selectOption('e2emask')
+  await expect(page.getByTestId('mask-state')).toContainText('On.', { timeout: 30_000 })
+  await page.getByTestId('open-m_people-email').getByRole('button', { name: 'Mask…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Set the rule' }).click()
+  await expect(page.getByTestId('rule-m_people-email')).toContainText('made', { timeout: 30_000 })
+  await page.getByLabel('Account to mask').fill(masked)
+  await page.getByRole('form', { name: 'Mask an account' }).getByRole('button', { name: 'Mask…' }).click()
+  const dlg = page.getByRole('dialog')
+  await expect(dlg).toContainText('their own included')
+  await dlg.getByRole('button', { name: 'Mask', exact: true }).click()
+  await expect(page.getByTestId(`account-${masked}`)).toBeVisible({ timeout: 30_000 })
+
+  // What the guard closed, and the definer function that can leak.
+  await expect(page.getByTestId('closed-public.m_logins')).toContainText('foreign key into a masked column')
+  await expect(page.getByTestId('definer-m_email_of(integer)')).toContainText('public.m_people')
+
+  // As the masked account, which owns e2emask: masks in the console.
+  await page.context().clearCookies()
+  await page.goto('/login', { waitUntil: 'domcontentloaded' })
+  await page.getByPlaceholder('you@example.com').fill(masked)
+  await page.getByPlaceholder('password').fill(password)
+  await page.getByRole('button', { name: /log in/i }).click()
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption('e2emask')
+  await page.locator('textarea.editor').fill('SELECT email FROM m_people ORDER BY id')
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.getByText(/^[0-9a-f]{64}$/).first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText('a@example.com')).toHaveCount(0)
+  await page.locator('textarea.editor').fill('SELECT * FROM public.m_people')
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.getByText(/permission denied/).first()).toBeVisible({ timeout: 30_000 })
+
+  // The Blackbox: its entries, without their statements' text.
+  await page.goto('/blackbox', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption('e2emask')
+  const row = page.locator('tr.lg-row').first()
+  await expect(row).toBeVisible({ timeout: 30_000 })
+  await row.click()
+  await expect(page.locator('pre.lg-statement').first()).toContainText('hidden from masked accounts')
+
+  // Back as the admin: everything taken off, so a rerun starts as this one did.
+  await page.context().clearCookies()
+  await signIn(page)
+  await page.getByRole('link', { name: 'Masking' }).click()
+  await page.getByLabel('Branch').selectOption('e2emask')
+  await page.getByTestId(`account-${masked}`).getByRole('button', { name: 'Unmask…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Unmask', exact: true }).click()
+  await expect(page.getByTestId(`account-${masked}`)).toHaveCount(0, { timeout: 30_000 })
+  await page.getByTestId('rule-m_people-email').getByRole('button', { name: 'Take off…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Take it off' }).click()
+  await expect(page.getByTestId('open-m_people-email')).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByTestId('closed-public.m_logins')).toHaveCount(0)
+})

@@ -137,17 +137,63 @@ func agentClientRoleSQL(password string) string {
 // password. A member of db_client for the account's data access, and of
 // db_agent so the Blackbox records it as an agent. Never of db_admin: an agent
 // holding an admin's key still cannot override a guardrail.
+//
+// An agent key of a masked account reads what its account reads (step 4):
+// masked, its role is a masked reader's (maskedAgentKeyRoleSQL), and an
+// account unmasked, or given unmask here, has it made an ordinary one again.
 func agentKeyRoleSQL(role, password string) string {
-	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(role)), fmt.Sprintf(`      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-        EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client, %s', r);
+	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(role)), fmt.Sprintf(`      PERFORM set_config('client_min_messages', 'warning', true); -- a grant held already is no news
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client, %[1]s', r);
       END IF;
-      EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', r, %s);
-      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, AgentClientRole, quoteLiteral(password)))
+      EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', r, %[2]s);
+      IF to_regrole('%[3]s') IS NOT NULL AND pg_has_role(r, '%[3]s', 'MEMBER') THEN
+        EXECUTE format('REVOKE %[3]s FROM %%I', r);
+        EXECUTE format('ALTER ROLE %%I RESET search_path', r);
+        EXECUTE format('ALTER ROLE %%I RESET log_min_error_statement', r);
+      END IF;
+      EXECUTE format('GRANT db_client TO %%I', r);
+      EXECUTE format('GRANT %[1]s TO %%I', r);
+      IF current_setting('server_version_num')::int >= 160000 THEN
+        EXECUTE format('GRANT %[1]s TO %%I WITH INHERIT TRUE, SET TRUE', r);
+      END IF;
+      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, AgentClientRole, quoteLiteral(password), MaskedRole))
+}
+
+// maskedAgentKeyRoleSQL makes an agent key's role a masked reader's: in
+// db_masked, not in db_client, with the masks first in its search_path and its
+// failing statements never logged with their text, as maskedRoleSQL makes a
+// person's. It stays a member of db_agent, so the Blackbox still records an
+// agent, but inherits nothing from it and cannot SET ROLE to it: db_agent is
+// a member of db_client, whose rights read the real tables.
+func maskedAgentKeyRoleSQL(role, password string) string {
+	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(role)), fmt.Sprintf(`      PERFORM set_config('client_min_messages', 'warning', true);
+      IF to_regrole('%[3]s') IS NULL THEN
+        EXECUTE 'CREATE ROLE %[3]s NOLOGIN';
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE %[3]s', r);
+      END IF;
+      EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS PASSWORD %%L', r, %[2]s);
+      IF EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
+           WHERE g.rolname = 'db_client' AND m.member = (SELECT oid FROM pg_roles WHERE rolname = r)) THEN
+        EXECUTE format('REVOKE db_client FROM %%I', r);
+      END IF;
+      IF current_setting('server_version_num')::int >= 160000 THEN
+        EXECUTE format('GRANT %[1]s TO %%I WITH INHERIT FALSE, SET FALSE', r);
+      ELSIF pg_has_role(r, '%[1]s', 'MEMBER') THEN
+        EXECUTE format('REVOKE %[1]s FROM %%I', r); -- no way to keep it without its rights
+      END IF;
+      EXECUTE format('GRANT %[3]s TO %%I', r);
+      EXECUTE format('ALTER ROLE %%I SET role = %[3]s', r);
+      EXECUTE format('ALTER ROLE %%I SET search_path = %[4]s, public', r);
+      EXECUTE format('ALTER ROLE %%I SET log_min_error_statement = panic', r);`, AgentClientRole, quoteLiteral(password), MaskedRole, MaskSchema))
 }
 
 // EnsureAgentKeyRole makes sure the role an agent key belonging to email logs
-// in as exists on a branch. ErrAgentRolesNeedUpgrade means the branch's
-// Blackbox would record that role as a person, and the Gateway refuses.
+// in as exists on a branch, masked when its account is masked there.
+// ErrAgentRolesNeedUpgrade means the branch's Blackbox would record that role
+// as a person, and the Gateway refuses.
 func EnsureAgentKeyRole(branchName, email string) error {
 	if branchName == "" {
 		branchName = "main"
@@ -156,7 +202,12 @@ func EnsureAgentKeyRole(branchName, email string) error {
 		return err
 	}
 	role := AgentKeyRole(email)
-	key, cacheable := agentCacheKey(branchName, branchIdentity(branchName), role)
+	maskedHere := accountMasked(branchName, email)
+	state := "plain"
+	if maskedHere {
+		state = "masked"
+	}
+	key, cacheable := agentCacheKey(branchName, branchIdentity(branchName), role+"\x00"+state)
 	if cacheable {
 		if _, ok := agentRolesReady.Load(key); ok {
 			return nil
@@ -168,13 +219,55 @@ func EnsureAgentKeyRole(branchName, email string) error {
 			return nil
 		}
 	}
-	if err := provisionRole(branchName, agentKeyRoleSQL(role, AgentKeyRolePassword(email))); err != nil {
+	sql := agentKeyRoleSQL(role, AgentKeyRolePassword(email))
+	if maskedHere {
+		sql = maskedAgentKeyRoleSQL(role, AgentKeyRolePassword(email))
+	} else if MaskOn() {
+		// An unmask holder's agent: real values, its reads audited, as its own.
+		sql += "\n" + auditedReadsSQL(role, readsAudited(branchName, email))
+	}
+	if err := provisionRole(branchName, sql); err != nil {
 		return err
 	}
 	if cacheable {
 		agentRolesReady.Store(key, struct{}{})
 	}
 	return nil
+}
+
+// applyAgentKeyMask makes an account's agent-key role on a running branch, if
+// it has one, match whether the account is masked there, and ends that role's
+// sessions: an agent keeps the rights it logged in with until it logs in again.
+func applyAgentKeyMask(branchName, email string) error {
+	role := AgentKeyRole(email)
+	sql := agentKeyRoleSQL(role, AgentKeyRolePassword(email))
+	if accountMasked(branchName, email) {
+		sql = maskedAgentKeyRoleSQL(role, AgentKeyRolePassword(email))
+	}
+	sql += "\n" + auditedReadsSQL(role, readsAudited(branchName, email))
+	exists, err := QuerySQL(branchName, fmt.Sprintf("SELECT count(*) FROM pg_roles WHERE rolname = %s", quoteLiteral(role)))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(exists) == "0" {
+		return nil
+	}
+	if err := provisionRole(branchName, sql+"\n"+endSessionsSQL(role)); err != nil {
+		return err
+	}
+	forgetAgentKeyRole(branchName, email)
+	return nil
+}
+
+// forgetAgentKeyRole drops what this process remembers of an agent key's role.
+func forgetAgentKeyRole(branchName, email string) {
+	role := AgentKeyRole(email)
+	agentRolesReady.Range(func(k, _ any) bool {
+		if ks, ok := k.(string); ok && strings.HasPrefix(ks, branchName+"\x00") && strings.Contains(ks, "\x00"+role+"\x00") {
+			agentRolesReady.Delete(k)
+		}
+		return true
+	})
 }
 
 // agentLoginRole is the role an engine agent session should log in as on a
