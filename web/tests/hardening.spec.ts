@@ -36,7 +36,7 @@ test('a failing check is fixed from the page after showing what changes, and a p
   const branch = process.env.FOX_E2E_BRANCH ?? 'e2eui'
   await signIn(page)
   await page.getByRole('link', { name: 'Hardening' }).click()
-  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByLabel('Branch', { exact: true }).selectOption(branch)
   await page.getByRole('button', { name: 'Check' }).click()
   await expect(page.getByTestId('hardening-summary')).toContainText(`${branch}, PostgreSQL`, { timeout: 30_000 })
   const row = page.getByTestId('check-log.disconnections')

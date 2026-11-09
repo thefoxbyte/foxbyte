@@ -25,7 +25,7 @@ test('a scan from the page finds personal data, keeps where, and shows no value'
   await signIn(page)
   await page.getByRole('link', { name: 'Personal data' }).click()
   await expect(page.getByRole('heading', { name: 'Personal data', exact: true })).toBeVisible()
-  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByLabel('Branch', { exact: true }).selectOption(branch)
   await page.getByRole('button', { name: 'Scan now' }).click()
 
   const found = page.getByRole('table', { name: 'Personal data found' })
@@ -47,7 +47,7 @@ test('a scan from the page finds personal data, keeps where, and shows no value'
 
   // Kept, not recomputed: the findings are there on the next visit.
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByLabel('Branch', { exact: true }).selectOption(branch)
   await expect(row('aadhaar_no')).toContainText('Aadhaar', { timeout: 30_000 })
 
   // Where, never what: no sampled value reaches the screen.
@@ -76,7 +76,7 @@ test('a scan from the page finds personal data, keeps where, and shows no value'
 
   // Kept in the branch: still confirmed on the next visit.
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByLabel('Branch', { exact: true }).selectOption(branch)
   await page.getByRole('button', { name: /^Confirmed \(\d+\)$/ }).click()
   await expect(row('aadhaar_no')).toContainText('confirmed', { timeout: 30_000 })
 
