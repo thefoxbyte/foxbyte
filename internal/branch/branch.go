@@ -316,7 +316,7 @@ func startContainer(name string, primary bool) error {
 	}
 	args = append(args, restartPolicy...)
 	// The masking keys, read-only, once masking is set up (mask.go).
-	args = append(args, maskMount()...)
+	args = append(args, maskMount(name)...)
 	// The audit log's directory, outside the data directory, which a clone
 	// would copy. Made first: a logging process that cannot write its file
 	// stops the server starting.
@@ -848,6 +848,11 @@ func Create(name, parent string) error {
 	if activeStorage().exists(name) {
 		return fmt.Errorf("branch %q already exists", name)
 	}
+	// A masked branch being made, or one that failed, is copied by nobody;
+	// a copy of an open one is masked too (maskedbranch.go).
+	if err := inheritMasked(name, parent); err != nil {
+		return err
+	}
 	if err := ensureNetwork(); err != nil {
 		return err
 	}
@@ -887,7 +892,11 @@ func Delete(name string) error {
 	forgetCatalogScan(name)
 	forgetBranchUnmasks(name)
 	removeContainer(container(name))
-	return activeStorage().destroy(name)
+	if err := activeStorage().destroy(name); err != nil {
+		return err
+	}
+	forgetMaskedBranch(name)
+	return nil
 }
 
 // Reset re-creates a branch as a fresh copy-on-write clone of parent (default
@@ -903,6 +912,14 @@ func Reset(name, parent string) error {
 	}
 	if parent == "" {
 		parent = "main"
+	}
+	// A masked branch is made again as one, from its own source.
+	if r, ok := MaskedBranchOf(name); ok && !r.Inherited {
+		if err := Delete(name); err != nil {
+			return err
+		}
+		_, err := CreateMasked(name, r.From, r.By, func(s string) { fmt.Println("  " + s) })
+		return err
 	}
 	if err := Delete(name); err != nil {
 		return err
@@ -1303,15 +1320,17 @@ func CreateAgentBranch(agentID string) (Info, error) { return CreateAgentBranchF
 // owns the branch (it may use and delete it) and the branch-scoped key minted
 // with it. 0 means no account, as from the command line.
 func CreateAgentBranchFor(owner int64, agentID string) (Info, error) {
-	// An agent branch's own role reads real values: a masked account's agents
-	// belong on a masked branch (design, sections 10 and 12), and use main
-	// until there is one (step 4).
+	// An agent branch's own role reads real values, so a masked account's
+	// agent is given a masked branch of main (design, sections 10 and 12): its
+	// data holds the masks. Main without rules has nothing to mask, and the
+	// account reads it as it is.
+	maskedFor := ""
 	if owner != 0 {
 		if st, err := auth.OpenFromEnv(); err == nil {
 			email := st.EmailOf(owner)
 			st.Close()
 			if email != "" && IsMaskedAccount(email) {
-				return Info{}, fmt.Errorf("%w: %s is masked, and an agent branch's own role would read real values: its agents may use main, where they read masks", ErrInvalidRequest, email)
+				maskedFor = email
 			}
 		}
 	}
@@ -1323,8 +1342,20 @@ func CreateAgentBranchFor(owner int64, agentID string) (Info, error) {
 		}
 	}
 	name := agentBranch(agentID)
-	if err := Create(name, "main"); err != nil {
-		return Info{}, err
+	made := false
+	if maskedFor != "" {
+		switch _, err := CreateMasked(name, "main", maskedFor, nil); {
+		case err == nil:
+			made = true
+		case errors.Is(err, ErrNothingToMask):
+		default:
+			return Info{}, err
+		}
+	}
+	if !made {
+		if err := Create(name, "main"); err != nil {
+			return Info{}, err
+		}
 	}
 	ip, err := containerIP(container(name))
 	if err != nil {
@@ -1430,6 +1461,9 @@ type BranchInfo struct {
 	Refer       string `json:"refer"` // logical size referenced (human)
 	Connections int    `json:"connections"`
 	Port        string `json:"port"`
+	// Masked: a masked branch's state (making, open, failed), "" for any
+	// other (masking step 5).
+	Masked string `json:"masked,omitempty"`
 }
 
 // Branches returns structured info for every branch (including main), enriched
@@ -1446,6 +1480,7 @@ func Branches() ([]BranchInfo, error) {
 			continue // only direct children
 		}
 		bi := BranchInfo{
+			Masked:  maskedStateOf(name),
 			Name:    name,
 			Used:    u.Used,
 			Refer:   u.Refer,
@@ -1552,6 +1587,10 @@ var OnUse func(name string)
 
 func EnsureRunning(name string) (string, error) {
 	if err := checkName(name); err != nil {
+		return "", err
+	}
+	// A masked branch is closed until it is masked and verified.
+	if err := checkBranchOpen(name); err != nil {
 		return "", err
 	}
 	// Before the branch is woken or looked at, so the idle reaper (which runs

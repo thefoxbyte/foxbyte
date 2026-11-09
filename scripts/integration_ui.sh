@@ -116,6 +116,7 @@ rtsql "INSERT INTO public.pii_people VALUES (1, '234567890124', 'a@example.com',
 # Masking (F5), made here for the same reason: its setup restarts the branch to
 # mount the key. A table whose personal data a reviewer confirmed, and an
 # account to mask that is not an admin; the page sets the rules.
+"$S" branch delete e2emb >/dev/null 2>&1
 "$S" branch delete e2emask >/dev/null 2>&1; "$S" branch create e2emask >/dev/null 2>&1
 sudo docker exec -e PGPASSWORD=foxbyte pg-e2emask psql -U dbadmin -d appdb -q -c \
 	"CREATE TABLE public.m_people (id int PRIMARY KEY, aadhaar_no text, email text UNIQUE); INSERT INTO public.m_people VALUES (1, '234567890124', 'a@example.com'), (2, '456789012341', 'b@example.org')" >/dev/null 2>&1
@@ -253,7 +254,7 @@ echo "### cleanup"
 "$S" mask account e2e-masked@foxbyte.dev --off --yes >/dev/null 2>&1
 "$S" user delete e2e-masked@foxbyte.dev >/dev/null 2>&1
 "$S" mask key drop e2e_tenant --yes >/dev/null 2>&1
-for b in "$BRANCH" "$NEW_BRANCH" e2eui3 e2emask; do "$S" branch delete "$b" >/dev/null 2>&1; done
+for b in "$BRANCH" "$NEW_BRANCH" e2eui3 e2emb e2emask; do "$S" branch delete "$b" >/dev/null 2>&1; done
 cd "$ROOT" || exit 1
 # A failure leaves the screenshots and traces where CI can collect them.
 if [ "$rc" = 0 ]; then

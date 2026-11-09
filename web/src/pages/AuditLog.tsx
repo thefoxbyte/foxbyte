@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { auditEvidenceUrl, getAuditLog, getAuditMarks, getAuditRecords, getBranches, getUnauditedPersonal, markPersonalTables, purgeAuditText, sendAuditForward, setAuditForward, setAuditMode, setAuditRetention, stopAuditForward, unmarkAudited, type AuditAnchors, type AuditEntry, type AuditFor, type AuditLogReply, type AuditMarks, type Branch } from '../api'
 import { useConfirm } from '../confirm'
 import { BRAND } from '../brand'
@@ -389,9 +389,15 @@ export default function AuditLog() {
     getAuditLog().then(setData, e => setErr((e as Error).message))
     getBranches().then(setBranches, () => setBranches([]))
   }, [])
+  // Only the latest load is shown: main's, asked for when the page opened,
+  // must not land after the branch the person picked since.
+  const latestMarks = useRef(0)
   const loadMarks = useCallback((b: string) => {
+    const mine = ++latestMarks.current
     setMarks(null); setMarkErr('')
-    getAuditMarks(b).then(setMarks, e => setMarkErr((e as Error).message))
+    getAuditMarks(b).then(
+      m => { if (mine === latestMarks.current) setMarks(m) },
+      e => { if (mine === latestMarks.current) setMarkErr((e as Error).message) })
   }, [])
   useEffect(() => { loadMarks(branch) }, [branch, loadMarks])
 

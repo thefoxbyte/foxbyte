@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
@@ -27,6 +28,7 @@ import (
 //	fox mask key use <domain> --table [schema.]table [--branch b] [--yes] (Enterprise)
 //	fox mask unmask <email> --branch b [--off] [--yes]                    (Enterprise)
 //	fox mask lookups [--branch b] [--limit n] [--json]
+//	fox mask branches [--json]
 //
 // Reading where masking stands is in every edition; setting it is Enterprise.
 // Each setup, rule and account change is in the security log.
@@ -50,6 +52,9 @@ func maskCmd(args []string) {
 			return
 		case "lookups":
 			maskLookups(args[1:])
+			return
+		case "branches":
+			maskBranches(args[1:])
 			return
 		case "status":
 			args = args[1:]
@@ -515,5 +520,65 @@ func maskLookups(args []string) {
 	}
 	if len(ls) == 0 {
 		fmt.Printf("  none: a masked account looks a person up with SELECT * FROM %s.find('table', 'column', 'value')\n", branch.MaskSchema)
+	}
+}
+
+// maskedBranchCreate is `fox branch create <name> --masked [--from b]` (step
+// 5): the copy is closed until it is masked and verified, says each step, and
+// a failure leaves it closed with the reasons.
+func maskedBranchCreate(name, from string, started time.Time) {
+	if from == "" {
+		from = "main"
+	}
+	fmt.Printf("Making %s, a masked branch of %s. It is closed until it is masked and verified.\n", name, from)
+	rec, err := branch.CreateMasked(name, from, cliActor(), func(s string) { fmt.Println("  " + s) })
+	forgetOwner(name)
+	if err != nil {
+		if rec.Name != "" {
+			recordMask(auth.EvMaskBranch, name, "refused: "+err.Error())
+			fmt.Fprintf(os.Stderr, "\n%s was not opened:\n", name)
+			for _, p := range rec.Problems {
+				fmt.Fprintf(os.Stderr, "  - %s\n", p)
+			}
+		}
+		must(err)
+	}
+	recordMask(auth.EvMaskBranch, name, fmt.Sprintf("opened, a masked branch of %s: %d table(s), %d row(s) masked", from, rec.Tables, rec.Rows))
+	fmt.Printf("\nBranch %q is masked, verified and open in %s: %d table(s), %d row(s) masked in place.\n", name, took(started), rec.Tables, rec.Rows)
+	fmt.Println("Nobody is masked on it: its data holds the masks. Its Blackbox starts here; the history before is " + from + "'s.")
+	branch.PrintConnectHint(os.Stdout, name)
+}
+
+// maskBranches is `fox mask branches [--json]`: every masked branch, how far
+// its making got, and what it found.
+func maskBranches(args []string) {
+	list := branch.MaskedBranches()
+	if hasFlag(args, "--json") {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		must(enc.Encode(list))
+		return
+	}
+	if len(list) == 0 {
+		fmt.Printf("No masked branches. %s branch create <name> --masked [--from main] makes one.\n", brand.CLI)
+		return
+	}
+	for _, r := range list {
+		state := r.State
+		switch {
+		case r.State == branch.MaskedMaking:
+			state = "being masked: " + r.Step
+		case r.State == branch.MaskedFailed:
+			state = "closed, not masked: " + r.Error
+		case r.Inherited:
+			state = "open (a copy of a masked branch)"
+		}
+		fmt.Printf("%-24s of %-12s %s\n", r.Name, r.From, state)
+		if r.State == branch.MaskedOpen && !r.Inherited {
+			fmt.Printf("  %d table(s), %d row(s) masked, by %s, %s\n", r.Tables, r.Rows, r.By, r.Finished)
+		}
+		for _, p := range r.Problems {
+			fmt.Printf("  - %s\n", p)
+		}
 	}
 }

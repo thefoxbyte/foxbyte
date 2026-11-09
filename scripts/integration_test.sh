@@ -3621,8 +3621,10 @@ code "$PM" -X POST -H 'Content-Type: application/json' -d '{"name":"pmpit"}' "ht
 assert_eq "a branch it makes of main, and one made back in time, read masks: owning them does not unmask" \
   "$(gwm "$PM" pmown "SELECT phone FROM p_people WHERE id = 2")|$(gwm "$PM" pmown "SELECT * FROM public.p_people" | grep -c 'permission denied')|$(gwm "$PM" pmpit "SELECT phone FROM p_people WHERE id = 2")" "XXXXXX3211|1|XXXXXX3211"
 assert_eq "…its agent key too, on its own branch" "$(gwm "$PA" pmown "SELECT phone FROM p_people WHERE id = 2")" "XXXXXX3211"
-assert_eq "an agent branch is refused: its own role would read real values" \
-  "$(code "$PM" -X POST https://localhost:8088/agents/pm1/branch)|$(as "$PM" -X POST https://localhost:8088/agents/pm1/branch | grep -c 'is masked')" "409|1"
+# Refused in step 4; since step 5 it is a masked branch of main (§11am).
+assert_eq "an agent branch is never one whose role reads real values: it is made as a masked branch" \
+  "$(code "$PM" -X POST https://localhost:8088/agents/pm1/branch)|$($S mask branches --json | hjson "print([b['state'] for b in d if b['name']=='agent-pm1'][0])")" "201|open"
+curl -sk -o /dev/null -H "Authorization: Bearer $PM" -X DELETE https://localhost:8088/agents/pm1/branch
 $S mask unmask path-analyst@foxbyte.dev --branch pmown --yes >/dev/null 2>&1 || bad "unmask on pmown"
 assert_eq "unmask on its branch lifts it there only, its agent key's too" \
   "$(gwm "$PM" pmown "SELECT phone FROM p_people WHERE id = 2")|$(gwm "$PA" pmown "SELECT phone FROM p_people WHERE id = 2")|$(gwm "$PM" main "SELECT phone FROM p_people WHERE id = 2")" "9876543211|9876543211|XXXXXX3211"
@@ -3658,6 +3660,109 @@ $S mask account path-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
 assert_eq "every rule off: nothing is left closed" "$($S mask --json | hjson "print(len(d['closed']))")" "0"
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS p_people, p_logins, p_notes, p_late CASCADE; DROP FUNCTION IF EXISTS p_phone_of(text)" >/dev/null
 for u in path-dev path-analyst; do $S user delete "$u@foxbyte.dev" >/dev/null 2>&1; done
+
+echo "### 11am. masking: masked branches (F5 Gate 1, step 5)"
+# Enterprise: `fox branch create <name> --masked` makes a copy whose marked
+# columns hold their masks, closed until it is masked and verified: no real
+# value left in its tables, statistics, WAL or Blackbox, and the scan finding
+# no masked category where no rule masked it. On an open one nobody is masked.
+# On main, set up by §11ai.
+for b in mb1c mb1 mb2 mbnone agent-mbag; do $S branch delete "$b" >/dev/null 2>&1; done
+curl -sk -o /dev/null -H "$AUTH" -X DELETE https://localhost:8088/agents/mbag/branch
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS b_people, b_orders, b_logins, b_feature CASCADE" >/dev/null
+pg pg-main "CREATE TABLE b_people (id bigint PRIMARY KEY, email text, phone text, aadhaar_no text, prefs jsonb, city text);
+  INSERT INTO b_people SELECT g, CASE WHEN g = 1 THEN 'asha.b@example.com' ELSE 'person' || g || '@example.org' END,
+    CASE WHEN g = 1 THEN '+91 98765 43210' ELSE '98' || lpad(g::text, 8, '0') END, CASE WHEN g = 1 THEN '234567890124' ELSE '456789012341' END,
+    jsonb_build_object('contact', jsonb_build_object('mobile', '+91 98765 43210'), 'theme', 'dark'), 'Pune' FROM generate_series(1, 2000) g;
+  CREATE TABLE b_orders (id bigint PRIMARY KEY, customer_email text, total int);
+  INSERT INTO b_orders SELECT g, CASE WHEN g = 1 THEN 'asha.b@example.com' ELSE 'person' || g || '@example.org' END, g FROM generate_series(1, 2000) g;
+  CREATE TABLE b_logins (id bigint PRIMARY KEY, login text);
+  INSERT INTO b_logins SELECT g, 'person' || g || '@example.org' FROM generate_series(1, 200) g; ANALYZE" >/dev/null
+# A statement whose text holds a real value, as the Blackbox records it.
+gwm "$KEY" main "CREATE TABLE b_tmp AS SELECT 1 AS x WHERE 'asha.b@example.com' <> ''" >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS b_tmp" >/dev/null
+$S pii scan >/dev/null 2>&1
+BJ="$($S pii --json 2>/dev/null)"
+bfid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='$1' and f['column']=='$2' and f['path']=='$3'][0])" <<<"$BJ"; }
+for at in "b_people email" "b_people phone" "b_people aadhaar_no" "b_orders customer_email"; do $S pii mark "$(bfid $at '')" confirm >/dev/null 2>&1; done
+$S pii mark "$(bfid b_people prefs '$.contact.mobile')" confirm >/dev/null 2>&1
+for c in b_people.email b_people.phone b_people.aadhaar_no b_orders.customer_email; do $S mask rule "$c" --yes >/dev/null 2>&1 || bad "setting the rule on $c"; done
+$S mask rule b_people.prefs --path '$.contact.mobile' --yes >/dev/null 2>&1 || bad "the JSON path's rule"
+printf 'password123\n' | $S user create mb-analyst@foxbyte.dev >/dev/null 2>&1
+MB="$($S apikey create mb-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+MBA="$($S apikey create mb-analyst@foxbyte.dev agent --agent 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+$S mask account mb-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the analyst"
+FORK="$(pg pg-main "SELECT max(id) FROM bb.schema_ledger")"
+assert_eq "main's Blackbox holds a statement with a real value in it, as a source's can" \
+  "$(pg pg-main "SELECT count(*) > 0 FROM bb.schema_ledger WHERE statement LIKE '%asha.b@%'")" "t"
+
+# The first run: b_logins holds emails no rule masks, so it stays closed.
+OUT1="$($S branch create mb1 --masked 2>&1)"; rc=$?
+assert_eq "a masked branch whose scan finds a masked category with no rule stays closed, saying where and what to do" \
+  "$rc|$(grep -c 'public.b_logins.login holds email with no rule masking it' <<<"$OUT1")|$(grep -c 'reject the finding there as not personal data' <<<"$OUT1")|$($S mask branches --json | hjson "print([b['state'] for b in d if b['name']=='mb1'][0])")" "1|1|1|failed"
+[ "$rc" = 1 ] || { echo "--- what it said ---"; tail -15 <<<"$OUT1"; echo "--- end ---"; }
+assert_eq "…closed to the Gateway, even an admin, and to the API, which says why; it may be deleted" \
+  "$(gwm "$KEY" mb1 "SELECT 1" | grep -c 'was not masked')|$(code "$KEY" https://localhost:8080/api/branches/mb1/schema)|$(as "$KEY" https://localhost:8080/api/branches/mb1/schema | grep -c 'stays closed')|$(curl -sk -H "$AUTH" https://localhost:8080/api/branches | hjson "print([b.get('masked') for b in d if b['name']=='mb1'][0])")" \
+  "1|423|1|failed"
+$S pii mark "$(bfid b_logins login '')" reject >/dev/null 2>&1
+OUT2="$($S branch create mb1 --masked 2>&1)"; rc=$?
+assert_eq "the finding rejected on the source, run again: it starts over from the source, is masked, verified and opened" \
+  "$rc|$(grep -c 'did not finish: starting again from main' <<<"$OUT2")|$(grep -c 'is masked, verified and open' <<<"$OUT2")|$($S mask branches --json | hjson "b=[x for x in d if x['name']=='mb1'][0]; print(b['state'], b['tables'], b['rows'], b['fork']==$FORK)")" \
+  "0|1|1|open 2 4000 True"
+[ "$rc" = 0 ] || { echo "--- what it said ---"; tail -15 <<<"$OUT2"; echo "--- end ---"; }
+assert_eq "its marked columns hold their masks, for anyone, the superuser included; the rest as it was" \
+  "$(pg pg-mb1 "SELECT email ~ '^[0-9a-f]{64}\$', phone, aadhaar_no, prefs->'contact'->>'mobile', prefs->>'theme', city FROM b_people WHERE id = 1")|$(pg pg-mb1 "SELECT count(*) FROM b_people WHERE email = 'asha.b@example.com' OR phone LIKE '%98765 43210'")" \
+  "t|XXXXXXXXXXX3210|XXXXXXXX0124|XXXXXXXXXXX3210|dark|Pune|0"
+assert_eq "…and joins on the hash, as on main for a masked account" \
+  "$(pg pg-mb1 "SELECT count(*) FROM b_people p JOIN b_orders o ON o.customer_email = p.email")" "2000"
+MBDIR="$(sudo docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' pg-mb1)"
+left_mb() { sudo grep -rlaE 'asha\.b@example\.com|98765 43210|234567890124' "$MBDIR/$1" 2>/dev/null | wc -l | tr -d ' '; }
+assert_eq "no file of its tables, statistics or WAL holds a real value; its Blackbox none of main's entries" \
+  "$(left_mb base)|$(left_mb pg_wal)|$(pg pg-mb1 "SELECT count(*) FROM bb.schema_ledger WHERE id <= $FORK")|$(pg pg-mb1 "SELECT count(*) FROM bb.schema_ledger WHERE statement LIKE '%asha.b@%'")" "0|0|0|0"
+[ -n "$MBDIR" ] || bad "the masked branch's data folder was not found"
+assert_eq "the masks' machinery is gone and the key never mounted: nothing there can make a mask" \
+  "$(pg pg-mb1 "SELECT to_regnamespace('bb_mask') IS NULL, (SELECT count(*) FROM pg_event_trigger WHERE evtname = 'bb_mask_close'), to_regclass('bb.mask_rules') IS NULL")|$(sudo docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' pg-mb1 | grep -c '/run/bb-mask')" "t|0|t|0"
+# Made through the API by the masked account itself: it owns it, and reads it.
+assert_eq "the API makes one in the background, closed meanwhile: 202, then 423 until it opens" \
+  "$(code "$MB" -X POST -H 'Content-Type: application/json' -d '{"name":"mb2","from":"main","masked":true}' https://localhost:8080/api/branches)|$(code "$MB" https://localhost:8080/api/branches/mb2/schema)" "202|423"
+for _ in $(seq 1 120); do [ "$(as "$MB" https://localhost:8080/api/masking/branches | hjson "print([b['state'] for b in d if b['name']=='mb2'][0] if any(b['name']=='mb2' for b in d) else '')")" = making ] || break; sleep 2; done
+assert_eq "…open: the masked account reads it as it is, masks in its data, not as a masked reader; so does its agent key" \
+  "$(as "$MB" https://localhost:8080/api/masking/branches | hjson "print([b['state'] for b in d if b['name']=='mb2'][0])")|$(gwm "$MB" mb2 "SELECT current_user, phone FROM public.b_people WHERE id = 1")|$(gwm "$MBA" mb2 "SELECT phone FROM b_people WHERE id = 1")" \
+  "open|db_client|XXXXXXXXXXX3210|XXXXXXXXXXX3210"
+assert_eq "…and writes it as any account writes its own branch" \
+  "$(gwm "$MB" mb2 "UPDATE b_people SET city = 'Goa' WHERE id = 2; SELECT city FROM b_people WHERE id = 2")" "Goa"
+# A change request from it carries only what was done on it.
+gwm "$MB" mb2 "CREATE TABLE b_feature (id int PRIMARY KEY)" >/dev/null
+RQ="$(as "$MB" -X POST -H 'Content-Type: application/json' -d '{"target":"main"}' https://localhost:8080/api/branches/mb2/request)"
+RID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$RQ" 2>/dev/null)"
+assert_eq "a change request from a masked branch carries only its own change, nothing of its making" \
+  "$(hjson "print([e['command'] for e in d], [e['object'] for e in d])" <<<"$RQ")" "['CREATE TABLE'] ['public.b_feature']"
+APR="$(curl -sk -X POST -H "$AUTH" -H 'content-type: application/json' -d '{}' "https://localhost:8080/api/requests/$RID/approve")"
+assert_eq "…approved, main has the change and keeps every mask: the masked account still reads masks there" \
+  "$(pg pg-main "SELECT to_regclass('public.b_feature') IS NOT NULL")|$(gwm "$MB" main "SELECT phone FROM b_people WHERE id = 1")|$(pg pg-main "SELECT to_regclass('bb_mask.b_people') IS NOT NULL")" "t|XXXXXXXXXXX3210|t"
+[ -n "$RID" ] && grep -q '"status":"approved"' <<<"$APR" || { echo "--- request $RID, approval ---"; head -c 600 <<<"$APR"; echo; echo "--- end ---"; }
+# A masked account's agent is given a masked branch.
+AGR="$(as "$MB" -X POST https://localhost:8088/agents/mbag/branch)"
+assert_eq "a masked account's agent branch is made as a masked branch of main" \
+  "$(hjson "print(d.get('branch'))" <<<"$AGR")|$($S mask branches --json | hjson "print([b['state'] for b in d if b['name']=='agent-mbag'][0])")|$(pg pg-agent-mbag "SELECT phone FROM b_people WHERE id = 1")" "agent-mbag|open|XXXXXXXXXXX3210"
+curl -sk -o /dev/null -H "Authorization: Bearer $MB" -X DELETE https://localhost:8088/agents/mbag/branch
+RS="$($S branch reset mb1 2>&1)"
+assert_eq "reset makes it again as a masked branch of its source" \
+  "$(grep -c 'is masked and verified, and open' <<<"$RS")|$(pg pg-mb1 "SELECT phone FROM b_people WHERE id = 1")" "1|XXXXXXXXXXX3210"
+grep -q 'is masked and verified, and open' <<<"$RS" || { echo "--- what it said ---"; tail -8 <<<"$RS"; echo "--- end ---"; }
+assert_eq "a copy of a masked branch is one too, at once" \
+  "$($S branch create mb1c --from mb1 >/dev/null 2>&1; $S mask branches --json | hjson "b=[x for x in d if x['name']=='mb1c'][0]; print(b['state'], b.get('inherited'))")|$(pg pg-mb1c "SELECT phone FROM b_people WHERE id = 1")" "open True|XXXXXXXXXXX3210"
+assert_eq "a masked branch asked of a branch that is not there is refused" \
+  "$($S branch create mbnone --masked --from nosuchbranch 2>&1 | grep -ciE 'not found|no branch')|$($S mask branches --json | hjson "print(any(b['name']=='mbnone' for b in d))")" "1|False"
+assert_eq "every masked branch made or refused is in the security log" \
+  "$($S audit log --limit 400 | grep 'mask.branch' | grep -c 'refused')|$($S audit log --limit 400 | grep 'mask.branch' | grep -c 'opened')" "1|2"
+for b in mb1c mb1 mb2; do $S branch delete "$b" >/dev/null 2>&1; done
+assert_eq "a deleted masked branch's record goes with it" "$($S mask branches --json | hjson "print(len([b for b in d if b['name'].startswith('mb')]))")" "0"
+$S mask account mb-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
+for c in b_people.email b_people.phone b_people.aadhaar_no b_orders.customer_email; do $S mask rule "$c" --off >/dev/null 2>&1; done
+$S mask rule b_people.prefs --path '$.contact.mobile' --off >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS b_people, b_orders, b_logins, b_feature CASCADE" >/dev/null
+$S user delete mb-analyst@foxbyte.dev >/dev/null 2>&1
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

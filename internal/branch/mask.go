@@ -52,8 +52,10 @@ func MaskOn() bool {
 
 // maskMount is the containers' key mount, once masking is set up. Read-only:
 // nothing in a database may change a key.
-func maskMount() []string {
-	if !MaskOn() {
+func maskMount(name string) []string {
+	// A masked branch never has the key: its data holds the masks, and
+	// nothing there needs to make one.
+	if !MaskOn() || IsMaskedBranch(name) {
 		return nil
 	}
 	return []string{"-v", MaskKeyDir() + ":" + maskKeysInContainer + ":ro"}
@@ -196,6 +198,10 @@ func SaveMaskedAccounts(list []MaskedAccount) error {
 // owner, who always see real values (design, decision 3).
 func accountMasked(branchName, email string) bool {
 	if _, ok := loadMasked()[strings.ToLower(email)]; !ok {
+		return false
+	}
+	// A masked branch's data holds the masks: nobody is masked there.
+	if maskedBranchOpen(branchName) {
 		return false
 	}
 	// Unmask on this branch (step 3): real values, its reads audited.
@@ -454,6 +460,9 @@ type Masker struct {
 	// Step 3 (unmask.go): bb_audit_read given SELECT on a branch's masked
 	// tables, so an unmask holder's reads of them are logged.
 	AuditReads func(branch string) error
+	// Step 5 (maskedbranch.go): a copy masked in place, cleaned, and
+	// verified; say is told each step.
+	MaskBranch func(name string, rec MaskedBranch, say func(string)) (MaskedBranchWork, error)
 }
 
 var masker *Masker

@@ -4,6 +4,7 @@ import {
   listBackups, API, type Status, type Branch, type Backup,
 } from '../api'
 import { useConfirm } from '../confirm'
+import { useFeatures } from '../features'
 
 function Dot({ up }: { up: boolean }) {
   return <span className={'dot ' + (up ? 'up' : 'down')} />
@@ -125,6 +126,8 @@ export default function Dashboard() {
   const [branches, setBranches] = useState<Branch[]>([])
   const [name, setName] = useState('')
   const [from, setFrom] = useState('main')
+  const [masked, setMasked] = useState(false)
+  const { can } = useFeatures()
   const [err, setErr] = useState('')
   const [offline, setOffline] = useState(false)
 
@@ -148,7 +151,7 @@ export default function Dashboard() {
   }
   const create = () => {
     const n = name.trim()
-    if (n) { act(() => createBranch(n, from === 'main' ? undefined : from)); setName('') }
+    if (n) { act(() => createBranch(n, from === 'main' ? undefined : from, masked)); setName(''); setMasked(false) }
   }
 
   if (offline) {
@@ -201,6 +204,12 @@ export default function Dashboard() {
             <option key={b.name} value={b.name}>{b.name}</option>
           ))}
         </select>
+        {can('masking') && (
+          <label className="muted" style={{ fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            title="Its marked columns hold their masks; closed until it is masked and verified">
+            <input type="checkbox" aria-label="Mask its marked columns" checked={masked} onChange={e => setMasked(e.target.checked)} /> masked
+          </label>
+        )}
         <button className="primary" onClick={create} disabled={!name.trim()}>+ Create branch</button>
       </div>
       {err && <div className="err">{err}</div>}
@@ -222,8 +231,17 @@ export default function Dashboard() {
                 return (
                   <tr key={b.name}>
                     <td className="name-cell"><b>{b.name}</b></td>
-                    <td><span className={'badge ' + type}>{type}</span></td>
-                    <td><span className={'state ' + (running ? 'running' : 'suspended')}><Dot up={running} /> {running ? 'running' : 'suspended'}</span></td>
+                    <td>
+                      <span className={'badge ' + type}>{type}</span>
+                      {b.masked && <> <span className="badge" data-testid={`masked-${b.name}`}>masked</span></>}
+                    </td>
+                    <td>
+                      {b.masked === 'making'
+                        ? <span className="state suspended" data-testid={`masking-${b.name}`}>being masked: closed</span>
+                        : b.masked === 'failed'
+                          ? <span className="state suspended" data-testid={`masking-${b.name}`}>closed: not masked (see Masking)</span>
+                          : <span className={'state ' + (running ? 'running' : 'suspended')}><Dot up={running} /> {running ? 'running' : 'suspended'}</span>}
+                    </td>
                     <td>
                       <div className="meter-row">
                         <div className="cow"><span style={{ width: pct + '%' }} /></div>

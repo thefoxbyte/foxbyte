@@ -120,6 +120,7 @@ Stack:
                        Let a masked account see real values on a branch, every read audited (Enterprise)
   mask lookups [--branch b] [--limit n] [--json]
                        Who looked a person up, when, by which column, how many found: never the value
+  mask branches [--json] The masked branches: how far each one's making got, and what it found
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)
@@ -161,6 +162,8 @@ PostgreSQL versions:
 
 Branching:
   branch create <name> [--from <branch>]  Instant copy-on-write branch of main, or of another branch
+  branch create <name> --masked [--from <branch>]
+                       A branch whose marked columns hold their masks, closed until masked and verified (Enterprise)
   branch list           List branches and their containers
   branch delete <name>  Stop and destroy a branch
   branch owner <name> [email]  Show who owns a branch, or give it to an account
@@ -765,10 +768,14 @@ func branchCmd(args []string) {
 	case "create":
 		name := firstPositional(args[1:], "--from")
 		if name == "" {
-			fmt.Println("usage: fox branch create <name> [--from <branch>]")
+			fmt.Println("usage: fox branch create <name> [--from <branch>] [--masked]")
 			os.Exit(2)
 		}
 		started := time.Now()
+		if hasFlag(args[1:], "--masked") {
+			maskedBranchCreate(name, optValue(args[1:], "--from"), started)
+			return
+		}
 		must(branch.Create(name, optValue(args[1:], "--from")))
 		// Made here, it is nobody's but an admin's — even if an account once
 		// owned a branch of that name.
