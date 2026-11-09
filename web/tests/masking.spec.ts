@@ -120,3 +120,38 @@ test('a key domain is made, used, rotated and deleted', async ({ page }) => {
   await page.getByRole('dialog').getByRole('button', { name: 'Take it off' }).click()
   await expect(page.getByTestId('open-m_people-email')).toBeVisible({ timeout: 30_000 })
 })
+
+// Unmask (step 3): a masked account given unmask on a branch, listed, said
+// to be audited, shown in the access review, then taken off.
+test('a masked account is given unmask on a branch, and the access review says so', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Masking' }).click()
+  await page.getByLabel('Branch').selectOption('e2emask')
+  await expect(page.getByTestId('mask-state')).toContainText('On.', { timeout: 30_000 })
+
+  await page.getByLabel('Account to mask').fill(masked)
+  await page.getByRole('form', { name: 'Mask an account' }).getByRole('button', { name: 'Mask…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Mask', exact: true }).click()
+  await expect(page.getByTestId(`account-${masked}`)).toBeVisible({ timeout: 30_000 })
+
+  await page.getByLabel('Account to unmask').selectOption(masked)
+  await page.getByRole('form', { name: 'Unmask an account' }).getByRole('button', { name: 'Unmask…' }).click()
+  const dlg = page.getByRole('dialog')
+  await expect(dlg).toContainText('Every read they make there of a marked table is audited')
+  await dlg.getByRole('button', { name: 'Unmask', exact: true }).click()
+  await expect(page.getByTestId('mask-msg')).toHaveText(`${masked} sees real values on e2emask, every read audited.`, { timeout: 30_000 })
+  await expect(page.getByTestId(`unmask-${masked}`)).toBeVisible()
+  await expect(page.getByRole('table', { name: 'Lookups' })).toBeVisible()
+
+  await page.getByRole('link', { name: 'Access review' }).click()
+  await expect(page.getByTestId(`unmasked-${masked}`)).toContainText('unmask on e2emask', { timeout: 30_000 })
+
+  await page.getByRole('link', { name: 'Masking' }).click()
+  await page.getByLabel('Branch').selectOption('e2emask')
+  await page.getByTestId(`unmask-${masked}`).getByRole('button', { name: 'Take off…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Take it off' }).click()
+  await expect(page.getByTestId(`unmask-${masked}`)).toHaveCount(0, { timeout: 30_000 })
+  await page.getByTestId(`account-${masked}`).getByRole('button', { name: 'Unmask…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Unmask', exact: true }).click()
+  await expect(page.getByTestId(`account-${masked}`)).toHaveCount(0, { timeout: 30_000 })
+})

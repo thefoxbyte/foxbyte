@@ -134,6 +134,7 @@ const (
 	EvMaskRule    = "mask.rule"
 	EvMaskAccount = "mask.account"
 	EvMaskKey     = "mask.key"
+	EvMaskUnmask  = "mask.unmask"
 	// The databases' audit log (F6) turned on or off: who decided. Whoever
 	// can stop the record of who did what is someone an auditor asks about.
 	EvAuditLogOn  = "audit-log.on"

@@ -199,7 +199,15 @@ func accountMasked(branchName, email string) bool {
 	if _, ok := loadMasked()[strings.ToLower(email)]; !ok {
 		return false
 	}
-	return !maskExempt(branchName, email)
+	// Unmask on this branch (step 3): real values, its reads audited.
+	return !hasUnmask(branchName, email) && !maskExempt(branchName, email)
+}
+
+// readsAudited reports whether an account's reads on a branch are audited as
+// an unmask holder's: masked, and given unmask there.
+func readsAudited(branchName, email string) bool {
+	_, ok := loadMasked()[strings.ToLower(email)]
+	return ok && hasUnmask(branchName, email)
 }
 
 // maskExempt: an install admin, or the branch's owner. A variable so the
@@ -283,6 +291,7 @@ func ApplyAccountMask(branchName, email string) error {
 	if accountMasked(branchName, email) {
 		sql = maskedRoleSQL(email, UserRolePassword(email))
 	}
+	sql += "\n" + auditedReadsSQL(email, readsAudited(branchName, email))
 	if err := provisionRole(branchName, sql+"\n"+endSessionsSQL(email)); err != nil {
 		return err
 	}
@@ -291,7 +300,7 @@ func ApplyAccountMask(branchName, email string) error {
 }
 
 func forgetUserRole(branchName, email string) {
-	for _, m := range []string{"masked", "plain"} {
+	for _, m := range []string{"masked", "plain", "unmasked"} {
 		ensuredRoles.Delete(branchName + "\x00" + email + "\x00" + m)
 	}
 	ensuredRoles.Delete(branchName + "\x00" + email)
@@ -437,6 +446,9 @@ type Masker struct {
 	// and a table's masks put under a domain.
 	Rotate    func(domain, actor string, say func(string)) error
 	UseDomain func(branch, schema, table, domain, actor string) error
+	// Step 3 (unmask.go): bb_audit_read given SELECT on a branch's masked
+	// tables, so an unmask holder's reads of them are logged.
+	AuditReads func(branch string) error
 }
 
 var masker *Masker
@@ -522,6 +534,12 @@ func MaskAccount(email, actor string, off bool) error {
 	if err := SaveMaskedAccounts(list); err != nil {
 		return err
 	}
+	if off {
+		// Unmask is a masked account's right: an account unmasked has none.
+		if err := changeUnmasks(func(g UnmaskGrant) bool { return !strings.EqualFold(g.Email, email) }, nil); err != nil {
+			return err
+		}
+	}
 	names, err := RunningBranches()
 	if err != nil {
 		return err
@@ -547,6 +565,10 @@ type MaskStatus struct {
 	Ready    []string        `json:"ready"`    // tables whose masks are made
 	Accounts []MaskedAccount `json:"accounts"` // install-wide
 	Writes   bool            `json:"writes"`   // whether this install sets rules (Enterprise)
+	Unmasks  []UnmaskGrant   `json:"unmasks"`  // on this branch
+	Lookups  []Lookup        `json:"lookups"`  // this branch's latest
+	// AuditOn: whether unmask holders' reads are being logged (the audit log, F6).
+	AuditOn bool `json:"auditOn"`
 }
 
 // MaskingStatus reads it. Free.
@@ -555,7 +577,12 @@ func MaskingStatus(branchName string) (MaskStatus, error) {
 		branchName = "main"
 	}
 	st := MaskStatus{On: MaskOn(), Branch: branchName, Pending: []string{}, Rules: []MaskRule{}, Ready: []string{},
-		Accounts: MaskedAccounts(), Writes: requireMasker() == nil}
+		Accounts: MaskedAccounts(), Writes: requireMasker() == nil, Unmasks: []UnmaskGrant{}, Lookups: []Lookup{}, AuditOn: AuditOn()}
+	for _, g := range UnmaskGrants() {
+		if g.Branch == branchName {
+			st.Unmasks = append(st.Unmasks, g)
+		}
+	}
 	if p, err := MaskPending(); err == nil && p != nil {
 		st.Pending = p
 	}
@@ -567,6 +594,9 @@ func MaskingStatus(branchName string) (MaskStatus, error) {
 		return st, err
 	}
 	st.Rules = rules
+	if ls, err := Lookups(branchName, 50); err == nil {
+		st.Lookups = ls
+	}
 	if masker != nil && masker.MaskTables != nil {
 		if t, err := masker.MaskTables(branchName); err == nil && t != nil {
 			st.Ready = t
