@@ -19,7 +19,10 @@ set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 C=fox-f6-proto
-WORK="$(mktemp -d)"
+# On disk, not in /tmp: the measured forensic round writes about 3.6 GB of
+# audit log a minute, and /tmp in the test VM is a 2 GB tmpfs. Filled, the log
+# stopped the round, which then said nothing at all (found 10 Nov 2026).
+WORK="$(mktemp -d -p /var/tmp)"
 PASS=0
 FAIL=0
 

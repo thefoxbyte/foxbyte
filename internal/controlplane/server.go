@@ -1037,6 +1037,13 @@ func scriptCell(b []byte, oid uint32, m *pgtype.Map) any {
 // someone reading a table wants, and pgx can produce it for any type it knows
 // (pgText). Values that already render well are left exactly as they were.
 func cell(v any, oid uint32, m *pgtype.Map) any {
+	// A json or jsonb value is JSON whole: an array in it is not a Postgres
+	// array, and its objects are not cells of their own. Rendered element by
+	// element, '[{"a": 1}]' reached the console as ["{\"a\":1}"], and an
+	// EXPLAIN (FORMAT JSON) plan as a list holding its text (point 12.4).
+	if a, ok := v.([]any); ok && (oid == pgtype.JSONOID || oid == pgtype.JSONBOID) {
+		return jsonText(a)
+	}
 	switch t := v.(type) {
 	case nil, bool, string, int16, int32, int64, float32, float64:
 		return v

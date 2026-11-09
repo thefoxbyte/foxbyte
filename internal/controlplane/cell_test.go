@@ -87,3 +87,18 @@ func mustNumeric(t *testing.T, s string) pgtype.Numeric {
 	}
 	return n
 }
+
+// A json or jsonb array is JSON whole, its objects not cells of their own
+// (point 12.4: an EXPLAIN plan is one).
+func TestCellJSONArray(t *testing.T) {
+	m := pgtype.NewMap()
+	v := []any{map[string]any{"a": float64(1)}, "x"}
+	for _, oid := range []uint32{pgtype.JSONOID, pgtype.JSONBOID} {
+		if got := cell(v, oid, m); got != `[{"a":1},"x"]` {
+			t.Errorf("oid %d: %#v", oid, got)
+		}
+	}
+	if got := cell(float64(2), pgtype.JSONBOID, m); got != float64(2) {
+		t.Errorf("a json number changed: %#v", got)
+	}
+}
