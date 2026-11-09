@@ -268,3 +268,33 @@ func TestCloseSQL(t *testing.T) {
 		t.Error("setup does not make the guard")
 	}
 }
+
+// A masked branch's steps (step 5): the machinery dropped, the Blackbox
+// emptied past its append-only triggers with its numbering kept, each masked
+// table rewritten with the statistics, and the WAL from before removed with
+// recycling put back; each a statement of its own.
+func TestMaskBranchSQL(t *testing.T) {
+	for _, want := range []string{"SET bb.allow_destructive = on", "DROP EVENT TRIGGER IF EXISTS bb_mask_close", "DROP SCHEMA IF EXISTS bb_mask CASCADE",
+		"DROP TABLE IF EXISTS bb.mask_closed, bb.mask_rules, bb.mask_tables"} {
+		if !strings.Contains(dropMachinerySQL, want) {
+			t.Errorf("the machinery's drop lacks %q", want)
+		}
+	}
+	if !strings.Contains(freshBlackboxSQL, "session_replication_role = replica") || !strings.Contains(freshBlackboxSQL, "'bb.schema_ledger'") ||
+		strings.Contains(freshBlackboxSQL, "RESTART IDENTITY") {
+		t.Error("the Blackbox is emptied past its triggers, keeping its numbering")
+	}
+	rw := rewriteSQL([][2]string{{"public", "people"}, {"crm", "leads"}})
+	for _, want := range []string{`VACUUM FULL "public"."people";` + "\n", `VACUUM FULL "crm"."leads";` + "\n", "ANALYZE;\n", "VACUUM FULL pg_statistic;\n", "VACUUM FULL pg_statistic_ext_data;\n", "CHECKPOINT;\n"} {
+		if !strings.Contains(rw, want) {
+			t.Errorf("the rewrite lacks %q", want)
+		}
+	}
+	if strings.Count(dropWALSQL, "pg_switch_wal()") != 3 || strings.Count(dropWALSQL, "CHECKPOINT;") != 3 ||
+		!strings.Contains(dropWALSQL, "ALTER SYSTEM SET wal_recycle = off") || !strings.Contains(dropWALSQL, "ALTER SYSTEM RESET wal_recycle") {
+		t.Error("three switches and checkpoints with recycling off, then back")
+	}
+	if !strings.Contains(beforeWALSQL, "pg_drop_replication_slot") {
+		t.Error("the source's slots would keep the old WAL")
+	}
+}

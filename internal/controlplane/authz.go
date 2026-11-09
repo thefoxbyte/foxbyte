@@ -63,6 +63,15 @@ func authorize(next http.Handler) http.Handler {
 			if name != "" && !allowed(w, r, u, name, needFor(r.Method, tail)) {
 				return
 			}
+			// A masked branch is closed until it is masked and verified
+			// (masking step 5): it may only be deleted. After the access
+			// check, so a caller who may not reach it learns nothing.
+			if name != "" && !(r.Method == http.MethodDelete && tail == "") {
+				if err := branch.CheckBranchOpen(name); err != nil {
+					writeErr(w, 423, err)
+					return
+				}
+			}
 		}
 		switch r.URL.Path {
 		case "/api/ledger/diff", "/api/blackbox/diff":

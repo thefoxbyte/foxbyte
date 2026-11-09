@@ -15,7 +15,7 @@ import (
 
 func init() {
 	branch.SetMasker(&branch.Masker{Setup: setup, SetRule: setRule, DropRule: dropRule, MaskTables: maskTables,
-		Rotate: rotate, UseDomain: useDomain, AuditReads: auditReads})
+		Rotate: rotate, UseDomain: useDomain, AuditReads: auditReads, MaskBranch: maskBranch})
 }
 
 // setup makes the install's default key if it has none, then the branch's

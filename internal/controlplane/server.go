@@ -292,8 +292,9 @@ func registerAPI(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /api/branches", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name string `json:"name"`
-			From string `json:"from"` // the branch to copy; default main
+			Name   string `json:"name"`
+			From   string `json:"from"`   // the branch to copy; default main
+			Masked bool   `json:"masked"` // a masked branch (masking step 5): made in the background
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if !nameRe.MatchString(body.Name) {
@@ -307,6 +308,10 @@ func registerAPI(mux *http.ServeMux) {
 		// Copying a branch reads all of it, so it needs the right to use it.
 		if u, _ := auth.UserFrom(r.Context()); !acl.Can(u, body.From, access.Use) {
 			writeErr(w, 404, fmt.Errorf("%w: %q", branch.ErrParentNotFound, body.From))
+			return
+		}
+		if body.Masked {
+			createMaskedBranch(w, r, body.Name, body.From)
 			return
 		}
 		if err := branch.Create(body.Name, body.From); err != nil {

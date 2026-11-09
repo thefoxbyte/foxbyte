@@ -177,13 +177,13 @@ func TestMaskMount(t *testing.T) {
 	t.Cleanup(func() { MaskKeyDir = old })
 	dir := filepath.Join(t.TempDir(), "mask")
 	MaskKeyDir = func() string { return dir }
-	if MaskOn() || maskMount() != nil {
+	if MaskOn() || maskMount("main") != nil {
 		t.Fatal("mounted before setup")
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(maskMount(), " "); !MaskOn() || got != "-v "+dir+":/run/bb-mask:ro" {
+	if got := strings.Join(maskMount("main"), " "); !MaskOn() || got != "-v "+dir+":/run/bb-mask:ro" {
 		t.Fatalf("the mount: %q", got)
 	}
 }

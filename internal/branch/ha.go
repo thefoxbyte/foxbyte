@@ -305,7 +305,7 @@ func standbyRunArgs(dataPath string) []string {
 		args = append(args, auditMount("standby")...)
 	}
 	// The masking keys, as main has them: a standby promoted keeps masking.
-	args = append(args, maskMount()...)
+	args = append(args, maskMount("main")...)
 	// The standby streams from the primary and archives WAL after a failover, so
 	// it is long-lived and must come back on its own like main (see restartPolicy).
 	args = append(args, restartPolicy...)

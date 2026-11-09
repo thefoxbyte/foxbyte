@@ -69,6 +69,10 @@ func engineAgentLogin(branchName, account string) engineLogin {
 		}
 		return engineLogin{role: role, password: pw, mode: mode}
 	}
+	// A masked branch not yet open is the engine's alone.
+	if err := checkBranchOpen(branchName); err != nil {
+		return engineLogin{mode: loginClaimed, refused: err}
+	}
 	email := strings.TrimPrefix(account, agentKeyRolePrefix)
 	masked := strings.Contains(email, "@") && IsMaskedAccount(email)
 	refuse := func(why string) engineLogin {

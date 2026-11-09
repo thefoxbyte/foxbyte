@@ -44,6 +44,8 @@ export const has = (s: Status | null | undefined, f: Feature) => !!s?.features?.
 export type Branch = {
   name: string; primary: boolean; agent: boolean; state: string
   used: string; refer: string; connections: number; port: string
+  // A masked branch's state (masking step 5): being made, open, or failed and closed.
+  masked?: 'making' | 'open' | 'failed'
 }
 // One statement's outcome. `results` always holds at least one, so a caller can
 // read one shape whether the SQL was a single statement or a script; the fields
@@ -384,8 +386,15 @@ export const startEditionSwitch = (edition: 'enterprise' | 'standard', acceptLic
 export const getEditionSwitch = () => req('GET', `${API}/api/edition/switch`) as Promise<EditionSwitch>
 export const getBranches = () => req('GET', `${API}/api/branches`) as Promise<Branch[]>
 // from: the branch to copy (default main).
-export const createBranch = (name: string, from?: string) =>
-  req('POST', `${API}/api/branches`, from ? { name, from } : { name })
+export const createBranch = (name: string, from?: string, masked?: boolean) =>
+  req('POST', `${API}/api/branches`, { name, ...(from ? { from } : {}), ...(masked ? { masked: true } : {}) })
+// A masked branch (step 5): how far its making got, and what verifying found.
+export type MaskedBranch = {
+  name: string; from: string; by: string; started: string; finished?: string
+  state: 'making' | 'open' | 'failed'; step?: string; error?: string; problems?: string[]
+  fork: number; tables: number; rows: number; inherited?: boolean
+}
+export const getMaskedBranches = () => req('GET', `${API}/api/masking/branches`) as Promise<MaskedBranch[]>
 export const deleteBranch = (name: string) => req('DELETE', `${API}/api/branches/${name}`)
 export const suspendBranch = (name: string) => req('POST', `${API}/api/branches/${name}/suspend`)
 export const resumeBranch = (name: string) => req('POST', `${API}/api/branches/${name}/resume`)

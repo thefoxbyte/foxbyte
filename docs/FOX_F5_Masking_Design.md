@@ -363,6 +363,23 @@ branches.
 6. **Its access is never weaker than the source's:** owners, guardrails and
    policies carry over, and every change is in the Blackbox.
 
+**As built (step 5), with three decisions taken on 9 Nov 2026:**
+- **The Blackbox starts afresh.** The copy's Blackbox was the source's, and its
+  statements can hold real values (an `UPDATE`'s literals); it is hash-chained,
+  so its text cannot be blanked. It is emptied, keeping its numbering, and the
+  branch's record keeps the source's last entry: a change request from the
+  branch is measured from it, and carries only what was done on the branch.
+- **The scan blocks.** Besides every ruled column holding its masks (checked
+  row by row before the machinery goes), the branch opens only if the scan
+  finds no masked category, nor anything a reviewer confirmed, in a column
+  without a rule. A finding rejected on the source is ignored.
+- **A masked account's agent branch is a masked branch of main.**
+- Also: the source's replication slots, which keep old WAL, are dropped; the
+  statistics' files include `pg_statistic_ext_data`; the branch never mounts
+  the key; a copy of an open masked branch is one at once; reset makes it
+  again; the API makes one in the background (202) and reserves its record
+  first, so it is closed from the moment it is asked for.
+
 **What a masked branch cannot promise:**
 - The parent's WAL and backups hold real values. They are the parent's.
 - The blocks the clone shares with the parent's snapshot, and the blocks the

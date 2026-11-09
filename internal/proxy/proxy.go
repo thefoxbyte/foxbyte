@@ -376,6 +376,10 @@ func handle(client net.Conn) {
 		a, err := branch.EnsureRunning(target) // resumes the branch if suspended
 		if err != nil {
 			log.Printf("route dbname=%q: %v", target, err)
+			if errors.Is(err, branch.ErrBranchClosed) {
+				sendError(client, "57P03", err.Error()) // cannot_connect_now: a masked branch being made
+				return
+			}
 			sendError(client, "3D000", err.Error()) // invalid_catalog_name
 			return
 		}

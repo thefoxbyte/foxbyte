@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  applyMaskSetup, dropMaskRule, getMaskKeys, getMasking, getPersonalData, maskAccount, maskKey, planMaskRule, planMaskSetup,
-  setMaskRule, unmaskAccount, type MaskKeysStatus, type MaskPlace, type MaskRule, type MaskRuleName, type MaskStatus, type PIIFinding,
+  applyMaskSetup, dropMaskRule, getMaskKeys, getMaskedBranches, getMasking, getPersonalData, maskAccount, maskKey, planMaskRule, planMaskSetup,
+  setMaskRule, unmaskAccount, type MaskKeysStatus, type MaskedBranch, type MaskPlace, type MaskRule, type MaskRuleName, type MaskStatus, type PIIFinding,
 } from '../api'
 import { useConfirm } from '../confirm'
 import { useFeatures, why } from '../features'
@@ -46,6 +46,7 @@ export default function Masking() {
   const [choice, setChoice] = useState<Record<string, MaskRuleName>>({})
   const [email, setEmail] = useState('')
   const [keys, setKeys] = useState<MaskKeysStatus | null>(null)
+  const [mbs, setMbs] = useState<MaskedBranch[]>([])
   const [domain, setDomain] = useState('')
   const [move, setMove] = useState({ table: '', domain: '' })
   const [unmaskFor, setUnmaskFor] = useState('')
@@ -56,20 +57,33 @@ export default function Masking() {
   const { can, edition } = useFeatures()
   const setting = can('masking')
 
+  // Only the latest load is shown: one for main started when the page opened
+  // must not land after the branch the person picked since.
+  const latest = useRef(0)
   const load = useCallback(async (b: string) => {
+    const mine = ++latest.current
+    const stale = () => mine !== latest.current
     setBusy(true); setErr('')
     try {
       const s = await getMasking(b)
+      if (stale()) return
       setSt(s)
-      try { setKeys(await getMaskKeys()) } catch { setKeys(null) }
+      try { const k = await getMaskKeys(); if (!stale()) setKeys(k) } catch { if (!stale()) setKeys(null) }
+      try { const m = await getMaskedBranches(); if (!stale()) setMbs(m) } catch { if (!stale()) setMbs([]) }
       try {
         const pd = await getPersonalData(b)
-        setConfirmed((pd.findings ?? []).filter(f => f.state === 'confirmed'))
-      } catch { setConfirmed([]) }
-    } catch (e) { setSt(null); setErr((e as Error).message) }
-    finally { setBusy(false) }
+        if (!stale()) setConfirmed((pd.findings ?? []).filter(f => f.state === 'confirmed'))
+      } catch { if (!stale()) setConfirmed([]) }
+    } catch (e) { if (!stale()) { setSt(null); setErr((e as Error).message) } }
+    finally { if (!stale()) setBusy(false) }
   }, [])
   useEffect(() => { load('main') }, [load])
+  // While a masked branch is being made, its progress is read again.
+  useEffect(() => {
+    if (!mbs.some(m => m.state === 'making')) return
+    const t = setInterval(async () => { try { setMbs(await getMaskedBranches()) } catch { /* kept */ } }, 3000)
+    return () => clearInterval(t)
+  }, [mbs])
 
   const run = async (f: () => Promise<string>) => {
     setErr(''); setMsg('')
@@ -442,6 +456,35 @@ export default function Masking() {
               )}
             </>
           )}
+
+          <h2 style={{ marginTop: 18 }}>Masked branches</h2>
+          <p className="muted" style={{ marginTop: -4, fontSize: 13 }}>
+            A masked branch&rsquo;s marked columns hold their masks, so nobody is masked on it: a copy for people and agents
+            who should never see the real values. It is closed until it is masked and verified. Make one on the
+            Dashboard (<i>masked</i>), or with <code>fox branch create &lt;name&gt; --masked</code>.
+          </p>
+          <div className="table-wrap">
+            <table aria-label="Masked branches">
+              <thead><tr><th>Branch</th><th>Of</th><th>State</th><th>Masked</th></tr></thead>
+              <tbody>
+                {mbs.map(m => (
+                  <tr key={m.name} data-testid={`maskedbranch-${m.name}`}>
+                    <td><b>{m.name}</b></td>
+                    <td>{m.from}</td>
+                    <td>
+                      {m.state === 'open' ? (m.inherited ? 'open: a copy of a masked branch' : 'open: masked and verified')
+                        : m.state === 'making' ? `being masked: ${m.step ?? ''}` : `closed, not masked: ${m.error ?? ''}`}
+                      {(m.problems ?? []).length > 0 && (
+                        <ul style={{ margin: '4px 0 0', fontSize: 13 }}>{(m.problems ?? []).map((p, i) => <li key={i}>{p}</li>)}</ul>
+                      )}
+                    </td>
+                    <td className="muted" style={{ fontSize: 13 }}>{m.state === 'open' && !m.inherited ? `${m.tables} table(s), ${m.rows} row(s)` : '—'}</td>
+                  </tr>
+                ))}
+                {mbs.length === 0 && <tr><td colSpan={4} className="muted">None.</td></tr>}
+              </tbody>
+            </table>
+          </div>
 
           {keys && keys.keys.length > 0 && (
             <>

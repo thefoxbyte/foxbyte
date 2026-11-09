@@ -484,7 +484,9 @@ paths:
               properties:
                 name: { type: string, example: qa }
                 from: { type: string, example: main, description: "The branch to copy (default main)." }
+                masked: { type: boolean, description: "A masked branch (Enterprise, masking step 5): its marked columns hold their masks. Answered 202 and made in the background; closed (423) until it is masked and verified. GET /api/masking/branches says how far it got." }
       responses:
+        "202": { description: 'A masked branch is being made: {"name", "from", "status": "masking"}.', content: { application/json: { schema: { type: object } } } }
         "201":
           description: Created.
           content:
@@ -2332,6 +2334,18 @@ paths:
       responses:
         "200": { description: '{"branch", "lookups": [{"at", "who", "table", "column", "found"}]}', content: { application/json: { schema: { type: object } } } }
         "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/branches:
+    get:
+      tags: [audit-log]
+      summary: The masked branches the caller may reach, how far each one's making got, and what verifying found.
+      description: >-
+        A masked branch (POST /api/branches with masked, or fox branch create --masked) is closed until it is masked
+        and verified: no real value left in its tables, statistics, WAL or Blackbox, and the personal-data scan
+        finding no masked category, nor anything confirmed, where no rule masked it. Problems name tables and
+        columns, never a value.
+      responses:
+        "200": { description: '[{"name", "from", "by", "started", "finished", "state": "making|open|failed", "step", "error", "problems", "fork", "tables", "rows", "inherited"}]', content: { application/json: { schema: { type: array, items: { type: object } } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
   /api/masking/keys:
     get:

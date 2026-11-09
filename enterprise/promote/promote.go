@@ -67,12 +67,26 @@ func build(source, target string, history []auth.ChangeRequest) (entries []branc
 	if n > 0 {
 		forkAfterID = srcRows[n-1].ID
 	}
+	// A masked branch's Blackbox starts at its making (masking step 5): it
+	// shares no entry with the source, so the fork is the source's last entry
+	// when it was copied, which its record keeps. Every entry of its own is
+	// after it, and the target's own changes are those after it too.
+	ns, nt := n, n
+	if fork, ok := branch.MaskedBranchFork(source); ok && n == 0 {
+		ns, nt, forkAfterID = 0, len(tgtRows), fork
+		for i, r := range tgtRows {
+			if r.ID > fork {
+				nt = i
+				break
+			}
+		}
+	}
 	promoted, fromUs := alreadyPromoted(source, target, history)
 
 	// What the target has changed on its own since the fork: the objects a replay
 	// could walk into. Entries this source gave it are not the target's own doing.
 	tgtTouched := map[string]bool{}
-	for _, r := range tgtRows[n:] {
+	for _, r := range tgtRows[nt:] {
 		if r.ObjectIdentity == "" || r.Status == "BLOCKED" || fromUs[r.Session] {
 			continue
 		}
@@ -81,7 +95,7 @@ func build(source, target string, history []auth.ChangeRequest) (entries []branc
 
 	var conflicts []string
 	seen := map[string]bool{}
-	for _, r := range srcRows[n:] {
+	for _, r := range srcRows[ns:] {
 		if r.Status == "BLOCKED" {
 			continue // it never happened, so there is nothing to carry over
 		}

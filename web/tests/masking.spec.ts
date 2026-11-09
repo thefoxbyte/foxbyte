@@ -23,7 +23,7 @@ test('a rule is set on a confirmed finding after its cost, and an account is mas
   await signIn(page)
   await page.getByRole('link', { name: 'Masking' }).click()
   await expect(page.getByRole('heading', { name: 'Masking', exact: true })).toBeVisible()
-  await page.getByLabel('Branch').selectOption('e2emask')
+  await page.getByLabel('Branch', { exact: true }).selectOption('e2emask')
   await expect(page.getByTestId('mask-state')).toContainText('On.', { timeout: 30_000 })
 
   // Aadhaar: masked by display only, never hashed or faked.
@@ -71,7 +71,7 @@ test('a rule is set on a confirmed finding after its cost, and an account is mas
 test('a key domain is made, used, rotated and deleted', async ({ page }) => {
   await signIn(page)
   await page.getByRole('link', { name: 'Masking' }).click()
-  await page.getByLabel('Branch').selectOption('e2emask')
+  await page.getByLabel('Branch', { exact: true }).selectOption('e2emask')
   await expect(page.getByTestId('mask-state')).toContainText('On.', { timeout: 30_000 })
   await expect(page.getByTestId('key-default')).toBeVisible()
 
@@ -126,7 +126,7 @@ test('a key domain is made, used, rotated and deleted', async ({ page }) => {
 test('a masked account is given unmask on a branch, and the access review says so', async ({ page }) => {
   await signIn(page)
   await page.getByRole('link', { name: 'Masking' }).click()
-  await page.getByLabel('Branch').selectOption('e2emask')
+  await page.getByLabel('Branch', { exact: true }).selectOption('e2emask')
   await expect(page.getByTestId('mask-state')).toContainText('On.', { timeout: 30_000 })
 
   await page.getByLabel('Account to mask').fill(masked)
@@ -147,7 +147,7 @@ test('a masked account is given unmask on a branch, and the access review says s
   await expect(page.getByTestId(`unmasked-${masked}`)).toContainText('unmask on e2emask', { timeout: 30_000 })
 
   await page.getByRole('link', { name: 'Masking' }).click()
-  await page.getByLabel('Branch').selectOption('e2emask')
+  await page.getByLabel('Branch', { exact: true }).selectOption('e2emask')
   await page.getByTestId(`unmask-${masked}`).getByRole('button', { name: 'Take off…' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Take it off' }).click()
   await expect(page.getByTestId(`unmask-${masked}`)).toHaveCount(0, { timeout: 30_000 })
@@ -163,7 +163,7 @@ test('a masked account is given unmask on a branch, and the access review says s
 test('a masked account reads masks on its own branch, and the page lists the paths it closed', async ({ page }) => {
   await signIn(page)
   await page.getByRole('link', { name: 'Masking' }).click()
-  await page.getByLabel('Branch').selectOption('e2emask')
+  await page.getByLabel('Branch', { exact: true }).selectOption('e2emask')
   await expect(page.getByTestId('mask-state')).toContainText('On.', { timeout: 30_000 })
   await page.getByTestId('open-m_people-email').getByRole('button', { name: 'Mask…' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Set the rule' }).click()
@@ -208,7 +208,7 @@ test('a masked account reads masks on its own branch, and the page lists the pat
   await page.context().clearCookies()
   await signIn(page)
   await page.getByRole('link', { name: 'Masking' }).click()
-  await page.getByLabel('Branch').selectOption('e2emask')
+  await page.getByLabel('Branch', { exact: true }).selectOption('e2emask')
   await page.getByTestId(`account-${masked}`).getByRole('button', { name: 'Unmask…' }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Unmask', exact: true }).click()
   await expect(page.getByTestId(`account-${masked}`)).toHaveCount(0, { timeout: 30_000 })
@@ -216,4 +216,54 @@ test('a masked account reads masks on its own branch, and the page lists the pat
   await page.getByRole('dialog').getByRole('button', { name: 'Take it off' }).click()
   await expect(page.getByTestId('open-m_people-email')).toBeVisible({ timeout: 30_000 })
   await expect(page.getByTestId('closed-public.m_logins')).toHaveCount(0)
+})
+
+// Masked branches (step 5): one made from the Dashboard is closed while it is
+// masked, then listed on the Masking page as masked and verified, and its
+// marked column holds the mask for anyone who reads it.
+test('a masked branch is made from the Dashboard, closed until masked and verified', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Masking' }).click()
+  await page.getByLabel('Branch', { exact: true }).selectOption('e2emask')
+  await expect(page.getByTestId('mask-state')).toContainText('On.', { timeout: 30_000 })
+  await page.getByTestId('open-m_people-email').getByRole('button', { name: 'Mask…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Set the rule' }).click()
+  await expect(page.getByTestId('rule-m_people-email')).toContainText('made', { timeout: 30_000 })
+  // Aadhaar was confirmed too: a masked branch is not opened while it is
+  // real. The first test leaves its rule set; run alone, this one sets it.
+  const setAadhaar = (await page.getByTestId('open-m_people-aadhaar_no').count()) > 0
+  if (setAadhaar) {
+    await page.getByTestId('open-m_people-aadhaar_no').getByRole('button', { name: 'Mask…' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Set the rule' }).click()
+  }
+  await expect(page.getByTestId('rule-m_people-aadhaar_no')).toContainText('partial', { timeout: 30_000 })
+
+  await page.getByRole('link', { name: 'Dashboard' }).click()
+  await page.getByPlaceholder(/new branch name/i).fill('e2emb')
+  await page.locator('select').first().selectOption('e2emask')
+  await page.getByLabel('Mask its marked columns').check()
+  await page.getByRole('button', { name: /create branch/i }).click()
+  await expect(page.getByTestId('masked-e2emb')).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByTestId('masking-e2emb')).toHaveCount(0, { timeout: 180_000 })
+
+  await page.getByRole('link', { name: 'Masking' }).click()
+  await expect(page.getByTestId('maskedbranch-e2emb')).toContainText('open: masked and verified', { timeout: 30_000 })
+
+  // Read as the admin, who sees real values everywhere else: the mask.
+  await page.goto('/console', { waitUntil: 'domcontentloaded' })
+  await page.locator('select').first().selectOption('e2emb')
+  await page.locator('textarea.editor').fill('SELECT email FROM m_people ORDER BY id')
+  await page.getByRole('button', { name: /^run/i }).click()
+  await expect(page.getByText(/^[0-9a-f]{64}$/).first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText('a@example.com')).toHaveCount(0)
+
+  // Taken away again, so a rerun starts as this one did.
+  expect((await page.request.delete('/api/branches/e2emb')).ok()).toBeTruthy()
+  await page.getByRole('link', { name: 'Masking' }).click()
+  await page.getByLabel('Branch', { exact: true }).selectOption('e2emask')
+  for (const c of setAadhaar ? ['email', 'aadhaar_no'] : ['email']) {
+    await page.getByTestId(`rule-m_people-${c}`).getByRole('button', { name: 'Take off…' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Take it off' }).click()
+    await expect(page.getByTestId(`open-m_people-${c}`)).toBeVisible({ timeout: 30_000 })
+  }
 })

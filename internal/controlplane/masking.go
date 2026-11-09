@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
@@ -218,6 +219,19 @@ func registerMasking(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, map[string]any{"branch": b, "lookups": ls})
 	})
+	// The masked branches the caller may reach (step 5): how far each one's
+	// making got, and what verifying found. Names of tables and columns,
+	// never a value.
+	mux.HandleFunc("GET /api/masking/branches", func(w http.ResponseWriter, r *http.Request) {
+		u, _ := auth.UserFrom(r.Context())
+		out := []branch.MaskedBranch{}
+		for _, m := range branch.MaskedBranches() {
+			if acl.Can(u, m.Name, access.Use) {
+				out = append(out, m)
+			}
+		}
+		writeJSON(w, 200, out)
+	})
 }
 
 // registerMaskKeys is step 2's: the keys. Admins only, as the rest.
@@ -321,4 +335,50 @@ func maskFail(w http.ResponseWriter, err error) {
 	default:
 		writeErr(w, 500, err)
 	}
+}
+
+// createMaskedBranch answers POST /api/branches with "masked": a masked
+// branch (step 5). Masking takes as long as the tables are large, so it runs
+// in the background and is answered 202; the branch is closed until it is
+// masked and verified, and GET /api/masking/branches says how far it got.
+// What can be refused at once is: the licence, a source without rules, a name
+// in use.
+func createMaskedBranch(w http.ResponseWriter, r *http.Request, name, from string) {
+	if from == "" {
+		from = "main"
+	}
+	if !requireFeature(w, edition.Masking) {
+		return
+	}
+	if rules, err := branch.MaskRulesOn(from); err != nil {
+		writeErr(w, 404, err)
+		return
+	} else if len(rules) == 0 && !branch.IsMaskedBranch(from) {
+		writeErr(w, 400, fmt.Errorf("%w: %s has no masking rules, so a masked branch of it would hold everything it holds", branch.ErrNothingToMask, from))
+		return
+	}
+	if old, ok := branch.MaskedBranchOf(name); (ok && old.State == branch.MaskedOpen) || (!ok && branch.Exists(name)) {
+		writeErr(w, 409, fmt.Errorf("branch %q already exists", name))
+		return
+	}
+	u, _ := auth.UserFrom(r.Context())
+	// Closed from the moment it is asked for.
+	if err := branch.ReserveMasked(name, from, u.Email); err != nil {
+		writeErr(w, 409, err)
+		return
+	}
+	if err := own(r, name); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	ip := remoteIP(r)
+	go func() {
+		rec, err := branch.CreateMasked(name, from, u.Email, nil)
+		what := fmt.Sprintf("opened, a masked branch of %s: %d table(s), %d row(s) masked", from, rec.Tables, rec.Rows)
+		if err != nil {
+			what = "refused: " + err.Error()
+		}
+		secLog.Audit(auth.EvMaskBranch, u.Email, name, ip, what)
+	}()
+	writeJSON(w, 202, map[string]string{"name": name, "from": from, "status": "masking"})
 }
