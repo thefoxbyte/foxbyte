@@ -749,6 +749,70 @@ paths:
         "409": { description: A row was changed or deleted since it was loaded; nothing saved. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/sessions:
+    get:
+      tags: [branches]
+      summary: The client sessions on a branch, and what each is running (point 12.5).
+      description: >-
+        The branch's owner and an admin see every client session; anyone else who may use the branch sees
+        their own and their agent keys' (all is false), since another account's statement can hold values
+        that are not theirs. Each has its process id, login role, application, state, what it waits on and
+        who blocks it, when it began, its current or last statement (at most 4,000 characters), and whether
+        it is FoxByte's own.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200": { description: '{"branch", "all", "sessions": [{"pid", "user", "app", "state", "wait", "started", "since", "xact", "query", "blockedBy", "engine"}]}', content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/branches/{name}/sessions/{pid}/cancel:
+    post:
+      tags: [branches]
+      summary: Cancel a session's running query; the session stays (point 12.5).
+      description: The owner or an admin may cancel any client session's; anyone else their own. FoxByte's own sessions are refused. Recorded in the security log.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }, { name: pid, in: path, required: true, schema: { type: integer } }]
+      responses:
+        "200": { description: '{"branch", "pid", "user", "ended": false}', content: { application/json: { schema: { type: object } } } }
+        "404": { description: No such session, or none of the caller's. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/branches/{name}/sessions/{pid}/end:
+    post:
+      tags: [branches]
+      summary: End a session, rolling back what it had open (point 12.5).
+      description: As cancel, but the session is closed. Recorded in the security log.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }, { name: pid, in: path, required: true, schema: { type: integer } }]
+      responses:
+        "200": { description: '{"branch", "pid", "user", "ended": true}', content: { application/json: { schema: { type: object } } } }
+        "404": { description: No such session, or none of the caller's. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/branches/{name}/maintenance:
+    get:
+      tags: [branches]
+      summary: Each table's upkeep, or one table's (point 12.5).
+      description: Estimated live and dead rows, size, and when each was last vacuumed and analysed, by hand and by autovacuum. FoxByte's own tables are left out.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: schema, in: query, schema: { type: string, default: public } }
+        - { name: table, in: query, schema: { type: string } }
+      responses:
+        "200": { description: '{"branch", "tables": [{"schema", "table", "live", "dead", "bytes", "lastVacuum", "lastAutoVacuum", "lastAnalyze", "lastAutoAnalyze", "vacuums", "analyzes"}]}', content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [branches]
+      summary: Vacuum or analyse a table (the branch's owner or an admin; point 12.5).
+      description: >-
+        op is vacuum, analyze or vacuum-analyze; VACUUM FULL is not offered, as it locks the table for as long
+        as it takes. Run as the engine; neither reads nor changes what the table holds. Recorded in the
+        security log.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { schema: { type: string, default: public }, table: { type: string }, op: { type: string, enum: [vacuum, analyze, vacuum-analyze] } }, required: [table, op] }
+      responses:
+        "200": { description: '{"branch", "op", "ms", "table": {…}}', content: { application/json: { schema: { type: object } } } }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such table. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/branches/{name}/tracking:
     get:
       tags: [branches]

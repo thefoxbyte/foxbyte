@@ -11,14 +11,16 @@ import { CatalogGroups, ObjectView, TableParts } from '../components/ObjectBrows
 import { EditGrid, FilterBar, type ColInfo } from '../components/DataGrid'
 import { TrackingControl, trackedOf } from '../components/Tracking'
 import { AuditControl } from '../components/AuditMark'
+import TableUpkeep from '../components/TableUpkeep'
 import { countQuery, nextSort, rowsQuery, summary, type Filter, type Sort } from '../gridquery'
 import { applySuggestion, schemaFrom, snippets, SCHEMA_SQL, type Rel } from '../sqlcomplete'
 
 type DbObject = { schema: string; name: string; type: 'table' | 'view' }
-type Tab = 'rows' | 'structure' | 'indexes' | 'constraints' | 'triggers' | 'ddl'
-// Tabs the catalog fills (point 12.1), rather than a query of the console's own.
-const CATALOG_TABS: Tab[] = ['constraints', 'triggers', 'ddl']
-const TAB_LABEL: Record<Tab, string> = { rows: 'Rows', structure: 'Structure', indexes: 'Indexes', constraints: 'Constraints', triggers: 'Triggers', ddl: 'CREATE script' }
+type Tab = 'rows' | 'structure' | 'indexes' | 'constraints' | 'triggers' | 'ddl' | 'upkeep'
+// Tabs the catalog fills (point 12.1), rather than a query of the console's own,
+// and the table's upkeep (12.5), which has a component of its own.
+const CATALOG_TABS: Tab[] = ['constraints', 'triggers', 'ddl', 'upkeep']
+const TAB_LABEL: Record<Tab, string> = { rows: 'Rows', structure: 'Structure', indexes: 'Indexes', constraints: 'Constraints', triggers: 'Triggers', ddl: 'CREATE script', upkeep: 'Upkeep' }
 
 const PAGE = 100
 const HISTORY_KEY = 'fox.history.open'
@@ -597,7 +599,7 @@ export default function Console() {
                   }} />
               </div>
               <div className="db-tabs">
-                {((sel.type === 'view' ? ['rows', 'structure', 'ddl'] : ['rows', 'structure', 'indexes', 'constraints', 'triggers', 'ddl']) as Tab[]).map(t => (
+                {((sel.type === 'view' ? ['rows', 'structure', 'ddl'] : ['rows', 'structure', 'indexes', 'constraints', 'triggers', 'ddl', 'upkeep']) as Tab[]).map(t => (
                   <button key={t} className={tab === t ? 'active' : ''} onClick={() => switchTab(t)}>
                     {TAB_LABEL[t]}
                   </button>
@@ -618,7 +620,9 @@ export default function Console() {
                   )}
                 </div>
               )}
-              {CATALOG_TABS.includes(tab)
+              {tab === 'upkeep'
+                ? <TableUpkeep branch={branch} schema={sel.schema} table={sel.name} />
+                : CATALOG_TABS.includes(tab)
                 ? <TableParts branch={branch} tab={tab as 'constraints' | 'triggers' | 'ddl'} onOpenSql={openSql}
                     obj={catalog.find(o => (o.kind === 'table' || o.kind === 'view') && o.schema === sel.schema && o.name === sel.name) ?? null} />
                 : tab === 'rows' && editing && browseRes && !browseRes.error

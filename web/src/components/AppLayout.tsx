@@ -30,6 +30,7 @@ export const APP_NAV: NavSection[] = [
       { to: '/import', label: 'Import', icon: I.IconImport },
       { to: '/pipelines', label: 'Pipelines', icon: I.IconPipelines },
       { to: '/realtime', label: 'Realtime', icon: I.IconConsole },
+      { to: '/sessions', label: 'Sessions', icon: I.IconConsole },
     ],
   },
   {

@@ -160,6 +160,11 @@ const (
 	// The evidence export produced (F6 step 6b): for which period, and
 	// whether the records went with it.
 	EvAuditLogEvidence = "audit-log.evidence"
+	// A session's query cancelled, or the session ended, and a table vacuumed
+	// or analysed (point 12.5).
+	EvSessionCancel = "session.cancel"
+	EvSessionEnd    = "session.end"
+	EvMaintenance   = "maintenance"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence
