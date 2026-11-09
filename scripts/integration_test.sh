@@ -3764,6 +3764,76 @@ $S mask rule b_people.prefs --path '$.contact.mobile' --off >/dev/null 2>&1
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS b_people, b_orders, b_logins, b_feature CASCADE" >/dev/null
 $S user delete mb-analyst@foxbyte.dev >/dev/null 2>&1
 
+echo "### 11an. sessions and upkeep (point 12.5)"
+# Who is connected to a branch and what each runs; a query cancelled, a
+# session ended; a table vacuumed and analysed. The branch's owner and an
+# admin see and stop everyone's sessions, anyone else their own; FoxByte's own
+# are not ended from here; upkeep is the owner's.
+$S branch delete sesown >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS s_orders CASCADE" >/dev/null
+pg pg-main "CREATE TABLE s_orders (id int PRIMARY KEY, total int); INSERT INTO s_orders SELECT g, g FROM generate_series(1, 5000) g; DELETE FROM s_orders WHERE id <= 2000" >/dev/null
+for u in ses-dev ses-other; do printf 'password123\n' | $S user create "$u@foxbyte.dev" >/dev/null 2>&1; done
+SD="$($S apikey create ses-dev@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+SO="$($S apikey create ses-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+spid() { as "$1" "https://localhost:8080/api/branches/${3:-main}/sessions" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(str(s["pid"]) for s in d["sessions"] if sys.argv[1] in s["query"]))' "$2"; }
+gwm "$SD" main "SELECT pg_sleep(30) AS sd_sleep" > /tmp/ses-cancel.out 2>&1 & W1=$!
+for _ in $(seq 1 40); do [ -n "$(spid "$KEY" sd_sleep)" ] && break; sleep 0.25; done
+P1="$(spid "$KEY" sd_sleep)"
+assert_eq "an admin sees every client session, with its login and statement; the account sees its own; another account does not see it" \
+  "$([ -n "$P1" ] && echo found)|$(as "$KEY" https://localhost:8080/api/branches/main/sessions | hjson "print(d['all'], [s['user'] for s in d['sessions'] if 'sd_sleep' in s['query']])")|$(spid "$SD" sd_sleep)|$(as "$SO" https://localhost:8080/api/branches/main/sessions | hjson "print(d['all'], sum('sd_sleep' in s['query'] for s in d['sessions']))")" \
+  "found|True ['ses-dev@foxbyte.dev']|$P1|False 0"
+assert_eq "another account may not cancel it, and is not told whose it is" \
+  "$(code "$SO" -X POST "https://localhost:8080/api/branches/main/sessions/$P1/cancel")|$(as "$SO" -X POST "https://localhost:8080/api/branches/main/sessions/$P1/cancel" | grep -c 'no session')" "404|1"
+assert_eq "an admin cancels its query: the client is told, the session was not the admin's" \
+  "$(code "$KEY" -X POST "https://localhost:8080/api/branches/main/sessions/$P1/cancel")" "200"
+wait "$W1"
+assert_eq "…and the client's statement ended, cancelled" "$(grep -c 'canceling statement due to user request' /tmp/ses-cancel.out)" "1"
+gwm "$SD" main "SELECT pg_sleep(30) AS sd_own" > /tmp/ses-own.out 2>&1 & W2=$!
+for _ in $(seq 1 40); do [ -n "$(spid "$SD" sd_own)" ] && break; sleep 0.25; done
+assert_eq "the account cancels its own" \
+  "$(code "$SD" -X POST "https://localhost:8080/api/branches/main/sessions/$(spid "$SD" sd_own)/cancel")" "200"
+wait "$W2"
+gwm "$SD" main "SELECT pg_sleep(30) AS sd_end" > /tmp/ses-end.out 2>&1 & W3=$!
+for _ in $(seq 1 40); do [ -n "$(spid "$KEY" sd_end)" ] && break; sleep 0.25; done
+P3="$(spid "$KEY" sd_end)"
+PRE="$($S sessions end "$P3" 2>&1)"
+assert_eq "fox sessions lists it; ending it without --yes says what it ends and ends nothing" \
+  "$($S sessions | grep -c "^$P3 .*ses-dev@foxbyte.dev.*sd_end")|$(grep -c 'Run again with --yes' <<<"$PRE")|$(spid "$KEY" sd_end)" "1|1|$P3"
+assert_eq "…with --yes the session is ended: the client sees its connection closed" \
+  "$($S sessions end "$P3" --yes 2>&1 | grep -c "Ended session $P3")" "1"
+wait "$W3"
+assert_eq "…and was told by whom" "$(grep -cE 'terminating connection due to administrator command|server closed the connection' /tmp/ses-end.out)" "1"
+sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -c "SELECT pg_sleep(20) AS engine_own" >/dev/null 2>&1 & W4=$!
+for _ in $(seq 1 40); do [ -n "$(spid "$KEY" engine_own)" ] && break; sleep 0.25; done
+PE="$(spid "$KEY" engine_own)"
+assert_eq "FoxByte's own session is listed as its own and not ended from here" \
+  "$(as "$KEY" https://localhost:8080/api/branches/main/sessions | hjson "print([s['engine'] for s in d['sessions'] if 'engine_own' in s['query']])")|$(code "$KEY" -X POST "https://localhost:8080/api/branches/main/sessions/$PE/end")|$($S sessions end "$PE" --yes 2>&1 | grep -c "own, and is not ended from here")" "[True]|400|1"
+sudo docker exec pg-main psql -U dbadmin -d appdb -tAc "SELECT pg_cancel_backend($PE)" >/dev/null 2>&1; wait "$W4"
+assert_eq "a session that is not there is 404; a pid that is not a number, 400" \
+  "$(code "$KEY" -X POST https://localhost:8080/api/branches/main/sessions/999999/cancel)|$(code "$KEY" -X POST https://localhost:8080/api/branches/main/sessions/abc/cancel)" "404|400"
+assert_eq "every cancel and end is in the security log, under who did it" \
+  "$($S audit log --limit 300 | grep 'session.cancel' | grep -c 'ses-dev')|$($S audit log --limit 300 | grep 'session.end' | grep -c 'ses-dev')" "2|1"
+# Upkeep.
+MO="$($S maintain vacuum-analyze s_orders 2>&1)"
+assert_eq "fox maintain vacuums and analyses a table, and says what it found" \
+  "$(grep -c 'vacuum-analyze of public.s_orders on main done' <<<"$MO")|$($S maintain --table s_orders --json | hjson "t=d[0]; print(t['lastVacuum'] != '', t['lastAnalyze'] != '', t['vacuums'] >= 1, t['dead'])")" "1|True True True 0"
+assert_eq "…its list shows every table's upkeep, the engine's own left out" \
+  "$($S maintain | grep -c '^public.s_orders ')|$($S maintain --json | hjson "print(any(t['schema'] in ('bb', 'bb_mask') for t in d))")" "1|False"
+assert_eq "upkeep is read by anyone who may use the branch; run by its owner or an admin" \
+  "$(code "$SD" 'https://localhost:8080/api/branches/main/maintenance?table=s_orders')|$(code "$SD" -X POST -H 'Content-Type: application/json' -d '{"table":"s_orders","op":"analyze"}' https://localhost:8080/api/branches/main/maintenance)|$(as "$KEY" -X POST -H 'Content-Type: application/json' -d '{"table":"s_orders","op":"analyze"}' https://localhost:8080/api/branches/main/maintenance | hjson "print(d['op'], d['table']['table'], d['table']['lastAnalyze'] != '')")" \
+  "200|403|analyze s_orders True"
+assert_eq "VACUUM FULL is not offered; a table that is not there is 404" \
+  "$(code "$KEY" -X POST -H 'Content-Type: application/json' -d '{"table":"s_orders","op":"vacuum full"}' https://localhost:8080/api/branches/main/maintenance)|$(code "$KEY" -X POST -H 'Content-Type: application/json' -d '{"table":"no_such","op":"vacuum"}' https://localhost:8080/api/branches/main/maintenance)" "400|404"
+code "$SD" -X POST -H 'Content-Type: application/json' -d '{"name":"sesown","from":"main"}' https://localhost:8080/api/branches >/dev/null
+gwm "$SO" main "SELECT 1" >/dev/null
+assert_eq "on a branch it owns, the account runs upkeep and sees every session there" \
+  "$(code "$SD" -X POST -H 'Content-Type: application/json' -d '{"table":"s_orders","op":"vacuum"}' https://localhost:8080/api/branches/sesown/maintenance)|$(as "$SD" https://localhost:8080/api/branches/sesown/sessions | hjson "print(d['all'])")" "200|True"
+assert_eq "each upkeep run is in the security log" "$($S audit log --limit 300 | grep -cE '(vacuum|analyze|vacuum-analyze) of public.s_orders')" "3"
+$S branch delete sesown >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS s_orders CASCADE" >/dev/null
+for u in ses-dev ses-other; do $S user delete "$u@foxbyte.dev" >/dev/null 2>&1; done
+rm -f /tmp/ses-cancel.out /tmp/ses-own.out /tmp/ses-end.out
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

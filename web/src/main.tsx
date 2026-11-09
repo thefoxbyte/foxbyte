@@ -24,6 +24,7 @@ import Applications from './pages/Applications'
 import AuditLog from './pages/AuditLog'
 import Hardening from './pages/Hardening'
 import Masking from './pages/Masking'
+import Sessions from './pages/Sessions'
 import PipelineEditor from './pages/PipelineEditor'
 import { ConfirmProvider } from './confirm'
 import Dashboard from './pages/Dashboard'
@@ -123,6 +124,7 @@ const router = createBrowserRouter([
       { path: 'audit-log', element: <AuditLog /> },
       { path: 'hardening', element: <Hardening /> },
       { path: 'masking', element: <Masking /> },
+      { path: 'sessions', element: <Sessions /> },
       { path: 'pipelines/:id', element: <PipelineEditor /> },
       { path: 'console', element: <Console /> },
       { path: 'keys', element: <ApiKeys /> },

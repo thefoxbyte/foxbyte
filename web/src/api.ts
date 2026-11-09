@@ -1054,3 +1054,23 @@ export const addAppKey = (name: string, public_key: string, kid = '') =>
 export const revokeAppKey = (name: string, kid: string, compromised_since = '') =>
   req('POST', `${API}/api/apps/${encodeURIComponent(name)}/keys/${encodeURIComponent(kid)}/revoke`,
     compromised_since ? { compromised_since } : {}) as Promise<AppChange>
+
+// Sessions and upkeep (point 12.5).
+export type DbSession = {
+  pid: number; user: string; app: string; state: string; wait: string
+  started: string; since: string; xact: string; query: string; blockedBy: number[]; engine: boolean
+}
+export type SessionsList = { branch: string; all: boolean; sessions: DbSession[] }
+export const getSessions = (branch: string) =>
+  req('GET', `${API}/api/branches/${encodeURIComponent(branch)}/sessions`) as Promise<SessionsList>
+export const signalSession = (branch: string, pid: number, end: boolean) =>
+  req('POST', `${API}/api/branches/${encodeURIComponent(branch)}/sessions/${pid}/${end ? 'end' : 'cancel'}`)
+export type TableUpkeepStats = {
+  schema: string; table: string; live: number; dead: number; bytes: number
+  lastVacuum: string; lastAutoVacuum: string; lastAnalyze: string; lastAutoAnalyze: string; vacuums: number; analyzes: number
+}
+export type MaintenanceOp = 'vacuum' | 'analyze' | 'vacuum-analyze'
+export const getUpkeep = (branch: string, schema: string, table: string) =>
+  req('GET', `${API}/api/branches/${encodeURIComponent(branch)}/maintenance?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`) as Promise<{ branch: string; tables: TableUpkeepStats[] }>
+export const runMaintenance = (branch: string, schema: string, table: string, op: MaintenanceOp) =>
+  req('POST', `${API}/api/branches/${encodeURIComponent(branch)}/maintenance`, { schema, table, op }) as Promise<{ branch: string; op: MaintenanceOp; ms: number; table: TableUpkeepStats }>

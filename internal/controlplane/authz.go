@@ -131,6 +131,11 @@ func needFor(method, tail string) access.Level {
 	// sensitive, so reading the findings is the owner's, as scanning is.
 	case tail == "personal-data", strings.HasPrefix(tail, "personal-data/"):
 		return access.Manage
+	// Vacuuming and analysing (point 12.5) change how the branch runs: the
+	// owner's. Reading a table's upkeep, and one's own sessions, is Use; whose
+	// sessions are shown and may be signalled is decided in sessions.go.
+	case tail == "maintenance" && method != http.MethodGet:
+		return access.Manage
 	}
 	return access.Use
 }

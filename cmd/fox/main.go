@@ -160,6 +160,15 @@ PostgreSQL versions:
   pg upgrade --rollback | --finalize
                        Go back to the kept databases, or delete them
 
+Sessions and upkeep:
+  sessions [--branch b] [--json]
+                       Who is connected to a branch and what each is running
+  sessions cancel|end <pid> [--branch b] [--yes]
+                       Cancel a session's query, or end the session
+  maintain [--branch b] [--table t] [--json]
+                       Each table's rows, dead rows, and when it was last vacuumed and analysed
+  maintain vacuum|analyze|vacuum-analyze <[schema.]table> [--branch b]
+                       Vacuum or analyse a table
 Branching:
   branch create <name> [--from <branch>]  Instant copy-on-write branch of main, or of another branch
   branch create <name> --masked [--from <branch>]
@@ -425,6 +434,10 @@ func main() {
 		hardeningCmd(os.Args[2:])
 	case "mask":
 		maskCmd(os.Args[2:])
+	case "sessions":
+		sessionsCmd(os.Args[2:])
+	case "maintain":
+		maintainCmd(os.Args[2:])
 	case "app":
 		appCmd(os.Args[2:])
 	case "check":

@@ -110,6 +110,7 @@ func Serve(addr string) error {
 	registerHistory(api, store)        // /api/history* (the caller's own query history)
 	registerSavedQueries(api, store)   // /api/saved-queries* (the caller's own)
 	registerTracking(api)              // /api/branches/{name}/tracking* (points 5, 6)
+	registerSessions(api)              // /api/branches/{name}/{sessions*,maintenance} (point 12.5)
 	registerPersonalData(api)          // /api/branches/{name}/personal-data* (point 4)
 	registerPersonalDataReview(api)    // /api/branches/{name}/personal-data/findings/* (point 4.6)
 	registerPersonalDataInventory(api) // /api/branches/{name}/personal-data/{unclassified,columns/*} (point 4.7)
