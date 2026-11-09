@@ -124,7 +124,7 @@ export default function Masking() {
       title: off ? `Unmask ${e}` : `Mask ${e}`,
       message: off
         ? 'They see real values again on every branch. Their open sessions end.'
-        : 'They read the masks of marked tables, ordinary tables as they are, and cannot write to marked tables, on every branch they do not own. Their open sessions end. An admin is never masked.',
+        : 'They read the masks of marked tables, ordinary tables as they are, and cannot write to marked tables, on every branch, their own included, and so do their agent keys. Their open sessions end. An admin is never masked.',
       confirmText: off ? 'Unmask' : 'Mask',
     })
     if (!ok) return ''
@@ -305,7 +305,7 @@ export default function Masking() {
 
           <h2 style={{ marginTop: 18 }}>Masked accounts</h2>
           <p className="muted" style={{ marginTop: -4, fontSize: 13 }}>
-            Install-wide: masked on every branch they do not own. Nobody is masked until an admin masks them.
+            Install-wide: masked on every branch, their own included. Nobody is masked until an admin masks them.
           </p>
           <div className="table-wrap">
             <table aria-label="Masked accounts">
@@ -388,6 +388,58 @@ export default function Masking() {
                   </tbody>
                 </table>
               </div>
+
+              {(st.closed ?? []).length > 0 && (
+                <>
+                  <h2 style={{ marginTop: 18 }}>Closed to masked accounts</h2>
+                  <p className="muted" style={{ marginTop: -4, fontSize: 13 }}>
+                    Masked accounts would read real values through these, so their rights on them were taken away. They
+                    come back when the rule that closed them is taken off.
+                  </p>
+                  <div className="table-wrap">
+                    <table aria-label="Closed to masked accounts">
+                      <thead><tr><th>Object</th><th>Taken</th><th>Why</th></tr></thead>
+                      <tbody>
+                        {(st.closed ?? []).map(c => (
+                          <tr key={c.relation} data-testid={`closed-${c.relation}`}>
+                            <td><code>{c.relation}</code></td>
+                            <td>{c.privs}</td>
+                            <td className="muted" style={{ fontSize: 13 }}>
+                              {c.kind === 'refs'
+                                ? 'A foreign key into a masked column: a write would say whether a value is there.'
+                                : 'A view reading a masked column, as its owner.'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
+
+              {(st.definers ?? []).length > 0 && (
+                <>
+                  <h2 style={{ marginTop: 18 }}>Definer functions that can leak</h2>
+                  <p className="muted" style={{ marginTop: -4, fontSize: 13 }} data-testid="definers-note">
+                    Masked accounts can run these, and each runs as a role that reads real values of a masked table. Take
+                    EXECUTE from PUBLIC on each, or make it SECURITY INVOKER.
+                  </p>
+                  <div className="table-wrap">
+                    <table aria-label="Definer functions that can leak">
+                      <thead><tr><th>Function</th><th>Runs as</th><th>Names</th></tr></thead>
+                      <tbody>
+                        {(st.definers ?? []).map(d => (
+                          <tr key={d.function} data-testid={`definer-${d.function}`}>
+                            <td><code>{d.function}</code></td>
+                            <td>{d.owner}</td>
+                            <td>{d.tables.join(', ')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
             </>
           )}
 

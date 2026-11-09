@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
@@ -1302,6 +1303,18 @@ func CreateAgentBranch(agentID string) (Info, error) { return CreateAgentBranchF
 // owns the branch (it may use and delete it) and the branch-scoped key minted
 // with it. 0 means no account, as from the command line.
 func CreateAgentBranchFor(owner int64, agentID string) (Info, error) {
+	// An agent branch's own role reads real values: a masked account's agents
+	// belong on a masked branch (design, sections 10 and 12), and use main
+	// until there is one (step 4).
+	if owner != 0 {
+		if st, err := auth.OpenFromEnv(); err == nil {
+			email := st.EmailOf(owner)
+			st.Close()
+			if email != "" && IsMaskedAccount(email) {
+				return Info{}, fmt.Errorf("%w: %s is masked, and an agent branch's own role would read real values: its agents may use main, where they read masks", ErrInvalidRequest, email)
+			}
+		}
+	}
 	// Cap concurrent agent branches so an agent loop can't exhaust the pool
 	// (each branch is a full Postgres). 0 disables the cap.
 	if max := agentMax(); max > 0 {

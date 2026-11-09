@@ -234,3 +234,37 @@ func TestRepointTable(t *testing.T) {
 		t.Errorf("repointing:\n%s", all)
 	}
 }
+
+// The guard on the paths around the masks (step 4): made in bb, as the engine,
+// run after every statement that can open a path, refusing a GRANT to PUBLIC
+// and giving back what it took when nothing closes it any more; set up with
+// every branch, and never callable by a masked reader.
+func TestCloseSQL(t *testing.T) {
+	all := strings.Join(closeSQL(), ";\n")
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS bb.mask_closed",
+		"FUNCTION bb.mask_close_paths(granting boolean",
+		"SECURITY DEFINER SET search_path = pg_catalog",
+		"REVOKE EXECUTE ON FUNCTION bb.mask_close_paths(boolean) FROM PUBLIC",
+		"CREATE EVENT TRIGGER bb_mask_close ON ddl_command_end",
+		"'CREATE VIEW'", "'CREATE MATERIALIZED VIEW'", "'GRANT'", "'ALTER TABLE'",
+		"to PUBLIC would give masked accounts",
+		"con.contype = 'f' AND con.confkey && mk.cols",
+		"ARRAY['INSERT', 'UPDATE']",
+		"GRANT %s ON %s TO %I",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("the guard lacks %q", want)
+		}
+	}
+	if strings.Contains(all, "CREATE TEMP") {
+		t.Error("a temporary table would fire the guard's own event trigger")
+	}
+	if strings.Count(all, "(") != strings.Count(all, ")") {
+		t.Error("unbalanced parentheses: plpgsql reads past the statement's end")
+	}
+	setup := strings.Join(setupSQL(), ";\n")
+	if !strings.Contains(setup, "bb.mask_close_paths_et") {
+		t.Error("setup does not make the guard")
+	}
+}

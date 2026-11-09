@@ -49,9 +49,10 @@ func unmaskedText(in inputs, email string, admin bool, owns []string) string {
 	case !in.masked[strings.ToLower(email)]:
 		return "everything the branches it reaches hold: not masked"
 	}
+	// Its own branches included: owning one no longer unmasks (step 4).
 	s := "masks of marked tables"
 	if len(owns) > 0 {
-		s += "; real values on the branches it owns (" + strings.Join(owns, ", ") + ")"
+		s += ", on the branches it owns too (" + strings.Join(owns, ", ") + ")"
 	}
 	if u := in.unmasks[strings.ToLower(email)]; len(u) > 0 {
 		sort.Strings(u)

@@ -3337,8 +3337,11 @@ assert_eq "the application's writes keep the masks up: inserts, changes, a moved
   "2|2|2|2|t 4|t "
 assert_eq "…and an admin reads real values throughout" "$(gwm "$KEY" main "SELECT email FROM m_customers WHERE id = 2")" "ravi.k@example.org"
 code "$MK" -X POST -H 'Content-Type: application/json' -d '{"name":"maskown","from":"main"}' https://localhost:8080/api/branches >/dev/null
-assert_eq "the masked account sees real values on a branch it owns" \
-  "$(gwm "$MK" maskown "SELECT email FROM m_customers WHERE id = 2")" "ravi.k@example.org"
+# Owners once saw real values on their branches; a masked account made one of
+# main and read everything there. Now it is masked on its own branches too
+# (step 4).
+assert_eq "the masked account reads masks on a branch it owns too: owning one does not unmask" \
+  "$(gwm "$MK" maskown "SELECT email ~ '^[0-9a-f]{64}\$', phone FROM m_customers WHERE id = 2")" "t|XXXXXX3211"
 assert_eq "the API: an admin reads where masking stands and the cost of a rule; the masked account is refused both" \
   "$(curl -sk -H "$AUTH" 'https://localhost:8080/api/masking?branch=main' | hjson "print(len(d['rules']), [a['email'] for a in d['accounts']])")|$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"branch":"main","table":"m_customers","column":"email"}' https://localhost:8080/api/masking/rule | hjson "print('3.6 times' in d['cost'])")|$(code "$MK" 'https://localhost:8080/api/masking?branch=main')|$(code "$MK" -X POST -H 'Content-Type: application/json' -d '{"email":"mask-analyst@foxbyte.dev","off":true}' https://localhost:8080/api/masking/account)" \
   "6 ['mask-analyst@foxbyte.dev']|True|403|403"
@@ -3536,6 +3539,125 @@ $S audit-log off --yes >/dev/null 2>&1; main_up
 for c in email phone aadhaar_no; do $S mask rule "u_people.$c" --off >/dev/null 2>&1; done
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS u_people CASCADE" >/dev/null
 for u in unmask-analyst plain-person; do $S user delete "$u@foxbyte.dev" >/dev/null 2>&1; done
+
+echo "### 11al. masking: every access path (F5 Gate 1, step 4)"
+# Enterprise. The suite runs as a masked account and as its agent on each path
+# the design names (section 11): each keeps the masks or is refused. The
+# tables are made by an ordinary account through the Gateway, as an
+# application's are, so what it makes later is granted as the defaults say.
+# On main, set up by §11ai.
+for b in pmown pmpit; do $S branch delete "$b" >/dev/null 2>&1; done
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS p_people, p_logins, p_notes, p_late CASCADE; DROP FUNCTION IF EXISTS p_phone_of(text)" >/dev/null
+for u in path-dev path-analyst; do printf 'password123\n' | $S user create "$u@foxbyte.dev" >/dev/null 2>&1; done
+PD="$($S apikey create path-dev@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+PM="$($S apikey create path-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+PA="$($S apikey create path-analyst@foxbyte.dev agent --agent 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+gwm "$PD" main "CREATE TABLE p_people (id bigint PRIMARY KEY, email text UNIQUE, phone text, city text);
+  INSERT INTO p_people VALUES (1, 'asha.p@example.com', '+91 98765 43210', 'Pune'), (2, 'ravi.p@example.org', '9876543211', 'Goa');
+  CREATE TABLE p_logins (id serial PRIMARY KEY, login text REFERENCES p_people(email), at timestamptz DEFAULT now());
+  CREATE TABLE p_notes (id serial PRIMARY KEY, person bigint REFERENCES p_people(id), note text)" >/dev/null
+$S pii scan >/dev/null 2>&1
+PJ="$($S pii --json 2>/dev/null)"
+pfid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='p_people' and f['column']=='$1'][0])" <<<"$PJ"; }
+for c in email phone; do $S pii mark "$(pfid $c)" confirm >/dev/null 2>&1; $S mask rule "p_people.$c" --yes >/dev/null 2>&1 || bad "setting the rule on p_people.$c"; done
+$S mask account path-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the analyst"
+PREAL="asha.p@example.com|98765 43210"
+leaks() { grep -cE "$PREAL"; }
+assert_eq "Gateway: masks; the real table refused" \
+  "$(gwm "$PM" main "SELECT email ~ '^[0-9a-f]{64}\$', phone, city FROM p_people WHERE id = 1")|$(gwm "$PM" main "SELECT * FROM public.p_people" | grep -c 'permission denied')" "t|XXXXXXXXXXX3210|Pune|1"
+pq() { as "$1" -H 'Content-Type: application/json' -X POST -d "$(python3 -c 'import json,sys; print(json.dumps({"sql": sys.argv[1]}))' "$2")" https://localhost:8080/api/branches/main/query; }
+assert_eq "console query, as the account's own role: masks; the real table refused" \
+  "$(pq "$PM" "SELECT email, phone FROM p_people" | leaks)|$(pq "$PM" "SELECT phone FROM p_people WHERE id = 1" | grep -c 'XXXXXXXXXXX3210')|$(pq "$PM" "SELECT * FROM public.p_people" | grep -c 'permission denied')" "0|1|1"
+assert_eq "the data grid: the marked table's real rows refused, its edit refused" \
+  "$(pq "$PM" 'SELECT * FROM "public"."p_people" LIMIT 100' | grep -c 'permission denied')|$(code "$PM" -X POST -H 'Content-Type: application/json' -d '{"schema":"public","table":"p_people","changes":[{"op":"update","key":{"id":"1"},"values":{"city":"x"}}]}' https://localhost:8080/api/branches/main/rows | grep -vc '^200$')$(pg pg-main "SELECT city FROM p_people WHERE id = 1")" "1|1Pune"
+assert_eq "exports, CSV and workbook: masks" \
+  "$(as "$PM" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM p_people"}' https://localhost:8080/api/branches/main/export | leaks)|$(as "$PM" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM p_people"}' https://localhost:8080/api/branches/main/export | grep -c 'XXXXXX3211')|$(as "$PM" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM p_people","format":"xlsx"}' https://localhost:8080/api/branches/main/export | python3 -c 'import sys,zipfile,io; z=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())); print(sum(b"asha.p@" in z.read(n) for n in z.namelist()))')" "0|1|0"
+assert_eq "the object browser: definitions, no values" \
+  "$(as "$PM" 'https://localhost:8080/api/branches/main/schema' | leaks)" "0"
+assert_eq "an agent key of the masked account: masks through the Gateway, as a masked agent role; db_client out of reach" \
+  "$(gwm "$PA" main "SELECT current_user, session_user, phone FROM p_people WHERE id = 2")|$(gwm "$PA" main "SET ROLE db_client" | grep -c 'permission denied')|$(gwm "$PA" main "SELECT * FROM public.p_people" | grep -c 'permission denied')" \
+  "db_masked|agent:path-analyst@foxbyte.dev|XXXXXX3211|1|1"
+mcpm() { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" \
+    | env FOX_API_KEY="$PA" "$S" mcp 2>/dev/null \
+    | python3 -c 'import sys,json
+for line in sys.stdin:
+    m=json.loads(line)
+    if m.get("id")==2:
+        r=m.get("result") or {}; e=m.get("error") or {}
+        print((r.get("content") or [{}])[0].get("text","") or e.get("message",""))'; }
+assert_eq "MCP run_sql and execute_change, as the masked agent: masks; writing a marked table refused" \
+  "$(mcpm run_sql '{"sql":"SELECT email, phone FROM p_people"}' | leaks)|$(mcpm run_sql '{"sql":"SELECT phone FROM p_people WHERE id = 1"}' | grep -c 'XXXXXXXXXXX3210')|$(mcpm execute_change '{"sql":"UPDATE p_people SET city = city","agent_id":"pm"}' | grep -cE 'permission denied|cannot update')" "0|1|1"
+assert_eq "joins, views and functions it writes read masks only; it cannot make objects in public" \
+  "$(gwm "$PM" main "CREATE TEMP VIEW tv AS SELECT p.phone FROM p_people p JOIN p_notes n ON n.person = p.id; SELECT count(*) FROM tv; SELECT phone FROM p_people")" \
+  "0
+XXXXXXXXXXX3210
+XXXXXX3211"
+assert_eq "…a temporary function sees masks too; CREATE in public refused" \
+  "$(gwm "$PM" main "CREATE FUNCTION pg_temp.f(t text) RETURNS text LANGUAGE sql AS \$\$ SELECT t \$\$; SELECT pg_temp.f(phone) FROM p_people WHERE id = 1")|$(gwm "$PM" main "CREATE VIEW public.pv AS SELECT 1" | grep -c 'permission denied')" "XXXXXXXXXXX3210|1"
+assert_eq "RETURNING, ON CONFLICT and MERGE: no write to a marked table" \
+  "$(gwm "$PM" main "INSERT INTO p_people (id) VALUES (9) RETURNING *" | grep -cE 'permission denied|cannot insert')|$(gwm "$PM" main "INSERT INTO p_people (id) VALUES (1) ON CONFLICT (id) DO NOTHING" | grep -cE 'permission denied|cannot insert|no unique')|$(gwm "$PM" main "DELETE FROM p_people WHERE id = 1 RETURNING phone" | grep -cE 'permission denied|cannot delete')|$(gwm "$PM" main "MERGE INTO p_people t USING (SELECT 1 AS id) s ON t.id = s.id WHEN MATCHED THEN DELETE" | grep -cE 'permission denied|cannot')" "1|1|1|1"
+assert_eq "errors show masks: a failed cast quotes the mask" \
+  "$(gwm "$PM" main "SELECT phone::int FROM p_people WHERE id = 2" | grep -c 'XXXXXX3211')" "1"
+assert_eq "pg_stats and extended statistics: nothing of the real table; EXPLAIN: no values" \
+  "$(pg pg-main "ANALYZE p_people" >/dev/null; gwm "$PM" main "SELECT count(*) FROM pg_stats WHERE tablename IN ('p_people', 'public__p_people')")|$(gwm "$PM" main "SELECT count(*) FROM pg_stats_ext WHERE tablename = 'p_people'")|$(gwm "$PM" main "EXPLAIN (VERBOSE) SELECT * FROM p_people WHERE city = 'Pune'" | leaks)" "0|0|0"
+assert_eq "COPY: masks from a query, the real table refused, the view refused" \
+  "$(gwm "$PM" main "COPY (SELECT phone FROM p_people WHERE id = 2) TO STDOUT")|$(gwm "$PM" main "COPY public.p_people TO STDOUT" | grep -c 'permission denied')|$(gwm "$PM" main "COPY p_people TO STDOUT" | grep -c 'cannot copy from view')" "XXXXXX3211|1|1"
+assert_eq "realtime: refused to the masked account, saying why, before anything else; an account not masked is not" \
+  "$(code "$PM" https://localhost:8080/api/branches/main/realtime)|$(as "$PM" https://localhost:8080/api/branches/main/realtime | grep -c 'is masked, and the change feed would carry')|$(code "$PD" https://localhost:8080/api/branches/main/realtime | grep -vc '^403$')" "403|1|1"
+# A continuous import copies an outside source into a branch of its own, and
+# reads no marked table; its list is the imports' state, no rows.
+assert_eq "logical replication: the cutover is an admin's; the imports' list carries no values" \
+  "$(code "$PM" -X POST https://localhost:8080/api/branches/main/replication/cutover)|$(as "$PM" https://localhost:8080/api/replication | leaks)" "403|0"
+# The Blackbox: a statement's text can hold real values.
+gwm "$PD" main "UPDATE p_people SET city = 'Pune' WHERE email = 'asha.p@example.com'" >/dev/null
+gwm "$PD" main "CREATE TABLE p_late (id int PRIMARY KEY)" >/dev/null
+assert_eq "Blackbox: the masked account reads the entries without their text; an admin with it; its export refused" \
+  "$(as "$PM" 'https://localhost:8080/api/branches/main/ledger?limit=200' | leaks)|$(as "$PM" 'https://localhost:8080/api/branches/main/ledger?limit=20' | grep -c 'hidden from masked accounts')|$(curl -sk -H "$AUTH" 'https://localhost:8080/api/branches/main/ledger?limit=20' | grep -c 'CREATE TABLE p_late')|$(code "$PM" https://localhost:8080/api/branches/main/ledger/export)" "0|1|1|403"
+# Branches: owning one does not unmask, and the masks travel.
+code "$PM" -X POST -H 'Content-Type: application/json' -d '{"name":"pmown","from":"main"}' https://localhost:8080/api/branches >/dev/null
+LATE="$(pg pg-main "SELECT max(id) FROM bb.schema_ledger WHERE object_identity = 'public.p_late' AND command_tag = 'CREATE TABLE'")"
+code "$PM" -X POST -H 'Content-Type: application/json' -d '{"name":"pmpit"}' "https://localhost:8080/api/branches/main/ledger/$LATE/branch" >/dev/null
+assert_eq "a branch it makes of main, and one made back in time, read masks: owning them does not unmask" \
+  "$(gwm "$PM" pmown "SELECT phone FROM p_people WHERE id = 2")|$(gwm "$PM" pmown "SELECT * FROM public.p_people" | grep -c 'permission denied')|$(gwm "$PM" pmpit "SELECT phone FROM p_people WHERE id = 2")" "XXXXXX3211|1|XXXXXX3211"
+assert_eq "…its agent key too, on its own branch" "$(gwm "$PA" pmown "SELECT phone FROM p_people WHERE id = 2")" "XXXXXX3211"
+assert_eq "an agent branch is refused: its own role would read real values" \
+  "$(code "$PM" -X POST https://localhost:8088/agents/pm1/branch)|$(as "$PM" -X POST https://localhost:8088/agents/pm1/branch | grep -c 'is masked')" "409|1"
+$S mask unmask path-analyst@foxbyte.dev --branch pmown --yes >/dev/null 2>&1 || bad "unmask on pmown"
+assert_eq "unmask on its branch lifts it there only, its agent key's too" \
+  "$(gwm "$PM" pmown "SELECT phone FROM p_people WHERE id = 2")|$(gwm "$PA" pmown "SELECT phone FROM p_people WHERE id = 2")|$(gwm "$PM" main "SELECT phone FROM p_people WHERE id = 2")" "9876543211|9876543211|XXXXXX3211"
+# What others make: views over a marked column, grants, foreign keys.
+gwm "$PD" main "CREATE VIEW p_summary AS SELECT email, city FROM p_people; CREATE VIEW p_cities AS SELECT id, city FROM p_people;
+  CREATE VIEW p_summary2 AS SELECT * FROM p_summary; CREATE MATERIALIZED VIEW p_mv AS SELECT phone FROM p_people" >/dev/null
+assert_eq "a view or materialized view over a marked column, made by an ordinary account, is closed to masked accounts; one over unmarked columns is not" \
+  "$(gwm "$PM" main "SELECT * FROM p_summary" | grep -c 'permission denied')|$(gwm "$PM" main "SELECT * FROM p_summary2" | grep -c 'permission denied')|$(gwm "$PM" main "SELECT * FROM p_mv" | grep -c 'permission denied')|$(gwm "$PM" main "SELECT city FROM p_cities WHERE id = 1")|$(gwm "$PD" main "SELECT email FROM p_summary WHERE city = 'Pune'")" \
+  "1|1|1|Pune|asha.p@example.com"
+assert_eq "a grant on a marked table or such a view is taken back; to PUBLIC it is refused, saying why" \
+  "$(gwm "$PD" main "GRANT SELECT ON p_people TO db_masked; GRANT SELECT ON p_summary TO \"path-analyst@foxbyte.dev\"" >/dev/null; gwm "$PM" main "SELECT * FROM public.p_people" | grep -c 'permission denied')$(gwm "$PM" main "SELECT * FROM p_summary" | grep -c 'permission denied')|$(gwm "$PD" main "GRANT SELECT ON p_summary TO PUBLIC" | grep -c 'to PUBLIC would give masked accounts')" "11|1"
+assert_eq "a foreign key into a marked column: writing that table is refused, it would say which values exist; one into the key is not" \
+  "$(gwm "$PM" main "INSERT INTO p_logins (login) VALUES ('guess@example.com')" | grep -c 'permission denied')|$(gwm "$PM" main "INSERT INTO p_notes (person, note) VALUES (1, 'n'); SELECT count(*) FROM p_notes")" "1|1"
+assert_eq "mask status lists what it closed, and why" \
+  "$($S mask --json | hjson "print(sorted(c['relation']+':'+c['kind'] for c in d['closed']))")|$($S mask | grep -c 'Closed to masked accounts on main')" \
+  "['public.p_logins:refs', 'public.p_mv:reads', 'public.p_summary2:reads', 'public.p_summary:reads']|1"
+gwm "$PD" main "CREATE FUNCTION p_phone_of(e text) RETURNS text LANGUAGE sql SECURITY DEFINER AS \$\$ SELECT phone FROM p_people WHERE email = e \$\$" >/dev/null
+assert_eq "a SECURITY DEFINER function owned by a reader of real values is listed: it can return them" \
+  "$($S mask --json | hjson "print([x['function']+'/'+x['owner']+'/'+','.join(x['tables']) for x in d['definers']])")|$($S mask | grep -c 'Definer functions a masked account can run')" \
+  "['p_phone_of(text)/db_client/public.p_people']|1"
+gwm "$PD" main "REVOKE EXECUTE ON FUNCTION p_phone_of(text) FROM PUBLIC" >/dev/null
+assert_eq "…and once EXECUTE is taken from PUBLIC it is not" "$($S mask --json | hjson "print(len(d['definers']))")" "0"
+$S mask rule p_people.email --off >/dev/null 2>&1 || bad "taking the email rule off"
+assert_eq "a rule taken off opens what it alone closed: the email views and the foreign key, not the phone's" \
+  "$(gwm "$PM" main "SELECT email FROM p_summary WHERE city = 'Goa'")|$(gwm "$PM" main "INSERT INTO p_logins (login) VALUES ('ravi.p@example.org'); SELECT count(*) FROM p_logins")|$(gwm "$PM" main "SELECT * FROM p_mv" | grep -c 'permission denied')" "ravi.p@example.org|1|1"
+assert_eq "no path above gave the masked account a real phone number" "$(gwm "$PM" main "SELECT count(*) FROM p_people WHERE phone LIKE '%98765 43210'")" "0"
+# The guard is the engine's: no definer function as a superuser outside bb.
+assert_eq "the hardening report's definer check still passes with the guard in place" \
+  "$($S hardening --json 2>/dev/null | hjson "print([c['status'] for c in d['checks'] if c['id']=='roles.definer'][0])")" "pass"
+for b in pmown pmpit; do $S branch delete "$b" >/dev/null 2>&1; done
+$S mask rule p_people.phone --off >/dev/null 2>&1
+$S mask account path-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
+assert_eq "every rule off: nothing is left closed" "$($S mask --json | hjson "print(len(d['closed']))")" "0"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS p_people, p_logins, p_notes, p_late CASCADE; DROP FUNCTION IF EXISTS p_phone_of(text)" >/dev/null
+for u in path-dev path-analyst; do $S user delete "$u@foxbyte.dev" >/dev/null 2>&1; done
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

@@ -423,6 +423,11 @@ func handle(client net.Conn) {
 			return
 		}
 		if standbyRead && !branch.StandbyKnowsRole(role) {
+			if branch.IsMaskedAccount(actor) {
+				// The shared role reads real values (step 4).
+				sendError(client, "57P03", fmt.Sprintf("this agent's masked role is not on the standby yet: try again in a moment, or read from %q's primary", target))
+				return
+			}
 			// As for a person below: a read-only session has nothing to be
 			// attributed for.
 			log.Printf("standby read: role %q not replayed yet (using %s)", role, realUser)
@@ -430,9 +435,21 @@ func handle(client net.Conn) {
 			loginUser, backendPass = role, branch.AgentKeyRolePassword(actor)
 		}
 	case actor != "":
+		// A masked account never falls back to the shared role, which reads
+		// real values (step 4): it is refused, and tries again.
+		masked := branch.IsMaskedAccount(actor)
 		if err := branch.EnsureUserRole(target, actor); err != nil {
+			if masked {
+				log.Printf("per-user role %q on %s: %v (masked: refused)", actor, target, err)
+				sendError(client, "28000", fmt.Sprintf("could not log %s in to branch %q as its masked role", actor, target))
+				return
+			}
 			log.Printf("per-user role %q on %s: %v (using %s)", actor, target, err, realUser)
 		} else if standbyRead && !branch.StandbyKnowsRole(actor) {
+			if masked {
+				sendError(client, "57P03", fmt.Sprintf("your masked role is not on the standby yet: try again in a moment, or read from %q's primary", target))
+				return
+			}
 			// The role was created on the primary a moment ago and the copy has
 			// not replayed it yet. The shared role costs attribution and
 			// nothing else here: this session cannot write, so it has nothing

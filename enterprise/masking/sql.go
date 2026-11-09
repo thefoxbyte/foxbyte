@@ -485,8 +485,130 @@ BEGIN
     END IF;
   END LOOP;
 END $bbgrant$`,
-	}, lookupSQL()...)
+	}, append(lookupSQL(), closeSQL()...)...)
 }
+
+// closeSQL is the guard on the paths around the views (step 4; design,
+// section 11). Masks are kept by taking a masked reader's grant on a marked
+// table away; three things gave real values back, and the guard closes them:
+//
+//   - a view or materialized view reading a marked column, made by anyone but
+//     the masks' owner: it reads as its owner, and the default privileges gave
+//     a masked reader SELECT on it the moment it was made;
+//   - a GRANT on a marked table, or on such a view, to db_masked, to one of
+//     its members, or to PUBLIC, as a promoted change request can carry;
+//   - INSERT and UPDATE on a table with a foreign key into a marked column: a
+//     violation, or none, says whether a guessed value is there.
+//
+// bb.mask_close_paths takes a masked reader's rights on each away, keeping
+// what it took in bb.mask_closed, and gives them back when the rule that
+// closed them is taken off. It runs after every statement that can open one
+// (an event trigger) and after every change of the masks. A GRANT to PUBLIC
+// is refused, saying why; found by any other statement, PUBLIC's right is
+// taken away, with a warning. In bb, as the engine's own superuser: it takes
+// rights on objects others own, and bb is where the hardening report expects
+// the engine's own definer functions.
+func closeSQL() []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS bb.mask_closed (rel oid PRIMARY KEY, name text NOT NULL, kind text NOT NULL,
+  privs text NOT NULL DEFAULT '', at timestamptz NOT NULL DEFAULT now())`,
+		"REVOKE ALL ON bb.mask_closed FROM PUBLIC",
+		"GRANT SELECT ON bb.mask_closed TO " + branch.MaskerRole,
+		`CREATE OR REPLACE FUNCTION bb.mask_close_paths(granting boolean DEFAULT false) RETURNS int
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $bbclose$
+DECLARE o record; g record; want text[]; rels oid[]; kinds text[]; n int := 0; masked oid; ns oid;
+BEGIN
+  IF to_regclass('bb.mask_rules') IS NULL OR to_regrole('` + branch.MaskedRole + `') IS NULL THEN RETURN 0; END IF;
+  masked := to_regrole('` + branch.MaskedRole + `');
+  ns := (SELECT oid FROM pg_namespace WHERE nspname = '` + branch.MaskSchema + `');
+  -- No temporary table: making one is a CREATE TABLE, and would fire this again.
+  WITH RECURSIVE marked AS (
+    SELECT c.oid AS rel, array_agg(a.attnum) AS cols
+      FROM bb.mask_rules r
+      JOIN pg_namespace s ON s.nspname = r.schema_name
+      JOIN pg_class c ON c.relnamespace = s.oid AND c.relname = r.table_name
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = r.column_name
+     GROUP BY c.oid),
+  readers(rel) AS (
+    SELECT rw.ev_class
+      FROM marked mk
+      JOIN pg_depend d ON d.refclassid = 'pg_class'::regclass AND d.refobjid = mk.rel
+                      AND (d.refobjsubid = 0 OR d.refobjsubid = ANY (mk.cols))
+      JOIN pg_rewrite rw ON d.classid = 'pg_rewrite'::regclass AND d.objid = rw.oid
+      JOIN pg_class v ON v.oid = rw.ev_class
+     WHERE rw.ev_class <> mk.rel AND v.relnamespace IS DISTINCT FROM ns
+    UNION
+    SELECT rw.ev_class
+      FROM readers x
+      JOIN pg_depend d ON d.refclassid = 'pg_class'::regclass AND d.refobjid = x.rel
+      JOIN pg_rewrite rw ON d.classid = 'pg_rewrite'::regclass AND d.objid = rw.oid
+      JOIN pg_class v ON v.oid = rw.ev_class
+     WHERE rw.ev_class <> x.rel AND v.relnamespace IS DISTINCT FROM ns),
+  refs AS (SELECT DISTINCT con.conrelid AS rel
+          FROM pg_constraint con JOIN marked mk ON mk.rel = con.confrelid
+         WHERE con.contype = 'f' AND con.confkey && mk.cols
+           AND con.conrelid NOT IN (SELECT rel FROM marked) AND con.conrelid NOT IN (SELECT rel FROM readers)),
+  closing AS (SELECT rel, 'base' AS kind FROM marked
+    UNION SELECT rel, 'reads' FROM readers WHERE rel NOT IN (SELECT rel FROM marked)
+    UNION SELECT rel, 'refs' FROM refs)
+  SELECT coalesce(array_agg(rel), '{}'), coalesce(array_agg(kind), '{}') INTO rels, kinds FROM closing;
+  FOR o IN SELECT x.rel, x.kind, x.rel::regclass::text AS name, c.relacl
+             FROM unnest(rels, kinds) AS x(rel, kind) JOIN pg_class c ON c.oid = x.rel LOOP
+    want := CASE WHEN o.kind = 'refs' THEN ARRAY['INSERT', 'UPDATE']
+                 ELSE ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'] END;
+    FOR g IN SELECT a.grantee, array_agg(a.privilege_type::text) AS privs FROM aclexplode(o.relacl) a
+              WHERE a.privilege_type = ANY (want)
+                AND (a.grantee IN (0, masked) OR a.grantee IN (SELECT member FROM pg_auth_members WHERE roleid = masked))
+              GROUP BY a.grantee LOOP
+      IF g.grantee = 0 THEN
+        IF granting THEN
+          RAISE EXCEPTION 'refused: % on % to PUBLIC would give masked accounts the real values of a masked table', array_to_string(g.privs, ', '), o.name
+            USING ERRCODE = '42501', HINT = 'grant to the roles that need it, not to PUBLIC';
+        END IF;
+        RAISE WARNING 'masking: % on % taken from PUBLIC, which masked accounts are members of', array_to_string(g.privs, ', '), o.name;
+        EXECUTE format('REVOKE %s ON %s FROM PUBLIC', array_to_string(g.privs, ', '), o.name);
+      ELSIF g.grantee = masked THEN
+        IF o.kind <> 'base' THEN
+          INSERT INTO bb.mask_closed (rel, name, kind, privs) VALUES (o.rel, o.name, o.kind, array_to_string(g.privs, ', '))
+            ON CONFLICT (rel) DO NOTHING;
+        END IF;
+        EXECUTE format('REVOKE %s ON %s FROM %I', array_to_string(g.privs, ', '), o.name, '` + branch.MaskedRole + `');
+      ELSE
+        EXECUTE format('REVOKE %s ON %s FROM %I', array_to_string(g.privs, ', '), o.name, pg_get_userbyid(g.grantee));
+      END IF;
+      n := n + 1;
+    END LOOP;
+  END LOOP;
+  -- Given back where nothing closes it any more; forgotten where it is gone.
+  FOR o IN SELECT k.rel, k.privs, k.kind FROM bb.mask_closed k
+            WHERE NOT EXISTS (SELECT 1 FROM unnest(rels, kinds) AS x(rel, kind) WHERE x.rel = k.rel AND x.kind = k.kind) LOOP
+    DELETE FROM bb.mask_closed WHERE rel = o.rel;
+    IF EXISTS (SELECT 1 FROM pg_class WHERE oid = o.rel) AND NOT (o.rel = ANY (rels)) THEN
+      EXECUTE format('GRANT %s ON %s TO %I', o.privs, o.rel::regclass::text, '` + branch.MaskedRole + `');
+    END IF;
+  END LOOP;
+  RETURN n;
+END $bbclose$`,
+		"REVOKE EXECUTE ON FUNCTION bb.mask_close_paths(boolean) FROM PUBLIC",
+		`CREATE OR REPLACE FUNCTION bb.mask_close_paths_et() RETURNS event_trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $bbcloseet$
+BEGIN
+  PERFORM bb.mask_close_paths(tg_tag = 'GRANT');
+END $bbcloseet$`,
+		"REVOKE EXECUTE ON FUNCTION bb.mask_close_paths_et() FROM PUBLIC",
+		`DO $bbet$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_event_trigger WHERE evtname = 'bb_mask_close') THEN
+    CREATE EVENT TRIGGER bb_mask_close ON ddl_command_end
+      WHEN TAG IN ('CREATE VIEW', 'ALTER VIEW', 'CREATE MATERIALIZED VIEW', 'ALTER MATERIALIZED VIEW', 'CREATE RULE',
+                   'CREATE TABLE', 'ALTER TABLE', 'GRANT', 'ALTER DEFAULT PRIVILEGES')
+      EXECUTE FUNCTION bb.mask_close_paths_et();
+  END IF;
+END $bbet$`,
+	}
+}
+
+// closePathsSQL runs the guard now, after a change of the masks.
+const closePathsSQL = "SELECT bb.mask_close_paths(false)"
 
 // lookupSQL is the lookup (step 3; design, section 10): a masked reader finds
 // a person by an exact value without unmasking. SECURITY DEFINER, as

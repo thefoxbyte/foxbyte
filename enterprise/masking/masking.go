@@ -37,7 +37,7 @@ func setup(b, actor string) error {
 			return err
 		}
 	}
-	return nil
+	return closePaths(b, actor)
 }
 
 // tablesOf is the tables rules are on, each once.
@@ -161,6 +161,24 @@ func remask(b, schema, table, actor string, all []branch.MaskRule) error {
 		if err := branch.RunMaskSQL(b, actor, append(lookupSQL()[:1], m.View...), false); err != nil {
 			return fmt.Errorf("making %s.%s's view: %w", schema, table, err)
 		}
+	}
+	return closePaths(b, actor)
+}
+
+// closePaths runs the guard on the paths around the views (closeSQL) after
+// the masks changed: what a new rule closes is closed, and what a rule taken
+// off closed is open again. A branch set up before step 4 gets the guard
+// first.
+func closePaths(b, actor string) error {
+	if ok, err := branch.RelationExists(b, "bb.mask_closed"); err != nil {
+		return err
+	} else if !ok {
+		if err := branch.RunMaskSQL(b, actor, closeSQL(), false); err != nil {
+			return fmt.Errorf("making the masks' guard on %s: %w", b, err)
+		}
+	}
+	if err := branch.RunMaskSQL(b, actor, []string{closePathsSQL}, false); err != nil {
+		return fmt.Errorf("closing the paths around %s's masks: %w", b, err)
 	}
 	return nil
 }

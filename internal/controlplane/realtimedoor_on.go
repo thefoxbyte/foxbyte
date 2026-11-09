@@ -89,7 +89,12 @@ func realtimeGate(store *auth.Store, acl *access.Checker) func(func(http.Respons
 			if !requireFeature(w, edition.Realtime) {
 				return
 			}
-			// 5. And the engine.
+			// 5. Never a masked account's, where there are masks: said
+			//    whether or not the feed is set up, which is no secret.
+			if refuseMaskedRealtime(w, r, u, name) {
+				return
+			}
+			// 6. And the engine.
 			if !branch.RealtimeOn() {
 				writeErr(w, 409, fmt.Errorf("the change feed is not set up on this install — run `fox realtime setup`"))
 				return
