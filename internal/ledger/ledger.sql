@@ -696,20 +696,65 @@ LANGUAGE sql IMMUTABLE AS $$
     coalesce(r.risk,''), 'UTF8')), 'hex');
 $$;
 
+-- The head of the chain, one row: the last id handed out and its row_hash. The
+-- tail used to be read with SELECT … ORDER BY id DESC, under whatever snapshot
+-- the transaction had, and in REPEATABLE READ or SERIALIZABLE that snapshot can
+-- be older than the lock: two rows chained off one parent, and verify called it
+-- tampering. An UPDATE of a row changed since the snapshot fails with a
+-- serialization error instead, so a stale writer retries rather than forks.
+--
+-- One transaction, under the lock appends take: an append by the previous
+-- bb.chain_row must not fall between reading the tail here and the new one
+-- going in. Seeded from the tail on an existing ledger; nothing written so far
+-- changes. The head only ever moves forward here: a tail ahead of it was
+-- written by an older engine, and a tail behind it has lost rows, which the
+-- next entry's link should go on showing.
+BEGIN;
+DO $$ BEGIN PERFORM pg_advisory_xact_lock(hashtext('bb.schema_ledger')); END $$;
+CREATE TABLE IF NOT EXISTS bb.ledger_head (
+  id        boolean PRIMARY KEY DEFAULT true CHECK (id),
+  last_id   bigint NOT NULL,
+  last_hash text   NOT NULL
+);
+INSERT INTO bb.ledger_head (last_id, last_hash)
+SELECT coalesce(t.id, 0), coalesce(t.row_hash, '')
+FROM (SELECT 1) one LEFT JOIN LATERAL
+     (SELECT id, row_hash FROM bb.schema_ledger ORDER BY id DESC LIMIT 1) t ON true
+ON CONFLICT (id) DO UPDATE SET last_id = EXCLUDED.last_id, last_hash = EXCLUDED.last_hash
+  WHERE EXCLUDED.last_id > bb.ledger_head.last_id;
+
+-- The id comes from the head too, after the lock, so id order is chain order
+-- (the column's default is taken before the lock, by whoever got there first)
+-- and a rolled-back entry leaves no gap. The default stays: it costs a sequence
+-- value and keeps the sequence ahead of every id, should an older engine ever
+-- write here again.
+--
+-- A ledger emptied by the engine (a masked branch starts with a fresh one) starts
+-- a new chain, with ids carrying on. Reading it is safe at this point: the UPDATE
+-- above has proved this snapshot saw the head's latest change, and with it the
+-- last entry.
 CREATE OR REPLACE FUNCTION bb.chain_row() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE prev text;
 BEGIN
   -- Serialize appends so two concurrent inserts can't chain off the same row.
   PERFORM pg_advisory_xact_lock(hashtext('bb.schema_ledger'));
-  SELECT row_hash INTO prev FROM bb.schema_ledger ORDER BY id DESC LIMIT 1;
+  UPDATE bb.ledger_head SET last_id = last_id + 1 RETURNING last_id, last_hash INTO NEW.id, prev;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'bb.ledger_head has no row: restart the engine to restore it';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM bb.schema_ledger) THEN
+    prev := '';
+  END IF;
   NEW.prev_hash := coalesce(prev, '');
   NEW.row_hash  := bb._ledger_hash(NEW);
+  UPDATE bb.ledger_head SET last_hash = NEW.row_hash;
   RETURN NEW;
 END;
 $$;
 CREATE OR REPLACE TRIGGER bb_chain BEFORE INSERT ON bb.schema_ledger
   FOR EACH ROW EXECUTE FUNCTION bb.chain_row();
+COMMIT;
 
 -- Append-only: the ledger records history, so history cannot be rewritten.
 CREATE OR REPLACE FUNCTION bb.deny_change() RETURNS trigger
