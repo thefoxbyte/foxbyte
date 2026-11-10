@@ -434,8 +434,8 @@ func EnsureRealtimeRole(name, password string) error {
     EXECUTE format('CREATE ROLE %%I LOGIN REPLICATION NOSUPERUSER NOBYPASSRLS NOINHERIT', %s);
   END IF;
   EXECUTE format('ALTER ROLE %%I PASSWORD %%L', %s, %s);
-END $$`, QuoteLiteral(RealtimeRole), QuoteLiteral(RealtimeRole),
-		QuoteLiteral(RealtimeRole), QuoteLiteral(password)))
+END $$`, bodyLiteral(RealtimeRole), bodyLiteral(RealtimeRole),
+		bodyLiteral(RealtimeRole), bodyLiteral(password)))
 }
 
 // RealtimeRolePassword is the decode role's password, derived from the install

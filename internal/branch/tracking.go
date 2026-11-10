@@ -105,17 +105,49 @@ func trackSQL(actor, tool, body string, override bool) string {
 	return b.String()
 }
 
-// tableRef is a table as a regclass, from its schema and name, quoted.
+// tableRef is a table as a regclass, from its schema and name, quoted. The
+// names go through bodyLiteral because the result is placed inside DO bodies
+// (markSQL and friends) as well as plain statements; callers check the names
+// with checkTableName first.
 func tableRef(schema, table string) string {
 	if schema == "" {
 		schema = "public"
 	}
-	return fmt.Sprintf("format('%%I.%%I', %s, %s)::regclass", QuoteLiteral(schema), QuoteLiteral(table))
+	return fmt.Sprintf("format('%%I.%%I', %s, %s)::regclass", bodyLiteral(schema), bodyLiteral(table))
+}
+
+// ErrBadTableName is returned for a schema or table name no Postgres table
+// could have.
+var ErrBadTableName = errors.New("not a table name")
+
+// checkTableName refuses a schema or table name that cannot name a table:
+// empty (the table), longer than Postgres keeps (63 bytes), or holding a
+// control character. These names arrive from URLs and scan results and are
+// run by the superuser, so anything that is not a plausible name is refused
+// before any SQL is built from it.
+func checkTableName(schema, table string) error {
+	for _, n := range []struct{ what, v string }{{"schema", schema}, {"table", table}} {
+		if n.what == "table" && n.v == "" {
+			return fmt.Errorf("%w: the table name is empty", ErrBadTableName)
+		}
+		if len(n.v) > 63 {
+			return fmt.Errorf("%w: a %s name is at most 63 bytes", ErrBadTableName, n.what)
+		}
+		for _, r := range n.v {
+			if r < 0x20 || r == 0x7f {
+				return fmt.Errorf("%w: the %s name holds a control character", ErrBadTableName, n.what)
+			}
+		}
+	}
+	return nil
 }
 
 // TrackTable starts tracking a table. A table tracked already gains the for
 // column, if it is asked for and the table lacks it; nothing else changes.
 func TrackTable(target, schema, table string, o TrackOptions, actor, tool string) error {
+	if err := checkTableName(schema, table); err != nil {
+		return err
+	}
 	if err := CheckTrackOptions(o); err != nil {
 		return err
 	}
@@ -135,6 +167,9 @@ func trackTableSQL(rel string, o TrackOptions) string {
 
 // UntrackTable stops tracking a table; its columns, and what they hold, stay.
 func UntrackTable(target, schema, table, actor, tool string) error {
+	if err := checkTableName(schema, table); err != nil {
+		return err
+	}
 	return trackExec(target, trackSQL(actor, tool, fmt.Sprintf("SELECT bb.untrack_table(%s);", tableRef(schema, table)), true))
 }
 

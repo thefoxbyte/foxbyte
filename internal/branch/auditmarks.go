@@ -93,12 +93,18 @@ func MarkAudited(target, schema, table string, reads bool, actor, tool string) e
 	if err := checkName(target); err != nil {
 		return err
 	}
+	if err := checkTableName(schema, table); err != nil {
+		return err
+	}
 	return trackExec(target, auditRolesSQL()+trackSQL(actor, tool, markSQL(tableRef(schema, table), reads), false))
 }
 
 // UnmarkAudited stops auditing a table's reads and writes.
 func UnmarkAudited(target, schema, table, actor, tool string) error {
 	if err := checkName(target); err != nil {
+		return err
+	}
+	if err := checkTableName(schema, table); err != nil {
 		return err
 	}
 	return trackExec(target, auditRolesSQL()+trackSQL(actor, tool, unmarkSQL(tableRef(schema, table)), false))

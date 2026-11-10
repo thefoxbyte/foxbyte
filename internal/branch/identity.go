@@ -75,7 +75,7 @@ func identityDataSQL(branch string, st identityState) string {
 	var b strings.Builder
 	b.WriteString("DO $id$\nBEGIN\n")
 	b.WriteString("  IF to_regclass('bb_f1.install') IS NULL OR to_regclass('bb.app_issuers') IS NULL THEN RETURN; END IF;\n")
-	fmt.Fprintf(&b, "  INSERT INTO bb_f1.install (id, install_id, branch) VALUES (1, %s, %s)\n", quoteLiteral(st.installID), quoteLiteral(branch))
+	fmt.Fprintf(&b, "  INSERT INTO bb_f1.install (id, install_id, branch) VALUES (1, %s, %s)\n", bodyLiteral(st.installID), bodyLiteral(branch))
 	b.WriteString("    ON CONFLICT (id) DO UPDATE SET install_id = excluded.install_id, branch = excluded.branch;\n")
 	b.WriteString("  DELETE FROM bb.app_issuers;\n")
 	for _, a := range st.apps {
@@ -85,8 +85,8 @@ func identityDataSQL(branch string, st identityState) string {
 		for _, k := range a.Keys {
 			fmt.Fprintf(&b, "  INSERT INTO bb.app_issuers (issuer, kid, db_role, public_key, max_life, on_invalid, revoked_at, compromised_since)\n")
 			fmt.Fprintf(&b, "    VALUES (%s, %s, %s, decode(%s, 'hex'), make_interval(secs => %d), %s, %s, %s);\n",
-				quoteLiteral(a.Name), quoteLiteral(k.Kid), quoteLiteral(a.Account), quoteLiteral(k.PublicKey),
-				a.MaxLife, quoteLiteral(a.OnInvalid), sqlTime(k.Revoked), sqlTime(k.CompromisedSince))
+				bodyLiteral(a.Name), bodyLiteral(k.Kid), bodyLiteral(a.Account), bodyLiteral(k.PublicKey),
+				a.MaxLife, bodyLiteral(a.OnInvalid), sqlTime(k.Revoked), sqlTime(k.CompromisedSince))
 		}
 	}
 	b.WriteString("END\n$id$;\n")

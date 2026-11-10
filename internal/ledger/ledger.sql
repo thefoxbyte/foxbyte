@@ -765,6 +765,22 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA bb TO db_client;
 -- …except the one that advances a run's statement position: a client calling it
 -- could line a blocked statement up with a harmless one's text.
 REVOKE EXECUTE ON FUNCTION bb._statement_texts(text, text, text) FROM PUBLIC, db_client;
+-- …and dblink, wherever it lives. Only the Blackbox's SECURITY DEFINER triggers
+-- call it, and they run as the owner. A client holding it could open
+-- connections from inside the database to anywhere the container can reach,
+-- with any credentials it has or has learned (audit GW-1).
+DO $dbl$
+DECLARE f regprocedure;
+BEGIN
+  FOR f IN SELECT p.oid::regprocedure
+             FROM pg_depend d
+             JOIN pg_extension e ON e.oid = d.refobjid
+             JOIN pg_proc p ON p.oid = d.objid
+            WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_extension'::regclass
+              AND d.deptype = 'e' AND e.extname = 'dblink' LOOP
+    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, db_client', f);
+  END LOOP;
+END $dbl$;
 
 -- ── Capture on ───────────────────────────────────────────────────────────────
 -- Last, deliberately. This script re-runs on every `fox start`, and its own

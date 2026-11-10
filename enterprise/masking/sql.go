@@ -234,8 +234,8 @@ func keepFn(fn string, targets []target) []string {
 		moved = append(moved, fmt.Sprintf("DELETE FROM %s s USING o WHERE s.%[2]s = o.%[2]s AND NOT EXISTS (SELECT 1 FROM n WHERE n.%[2]s = o.%[2]s)", t.shadow, k))
 		ups = append(ups, t.p.upsert(t.shadow, "n", false))
 	}
-	return []string{
-		fmt.Sprintf(`CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $bbmask$
+	// The body names the table's columns, which whoever made it chose.
+	body := fmt.Sprintf(`
 BEGIN
   IF TG_OP = 'TRUNCATE' THEN
     TRUNCATE %s;
@@ -250,7 +250,10 @@ BEGIN
   END IF;
   %s;
   RETURN NULL;
-END $bbmask$`, fn, strings.Join(trunc, ", "), strings.Join(del, ";\n    "), strings.Join(moved, ";\n    "), strings.Join(ups, ";\n  ")),
+END `, strings.Join(trunc, ", "), strings.Join(del, ";\n    "), strings.Join(moved, ";\n    "), strings.Join(ups, ";\n  "))
+	tag := branch.DollarTag("bbmask", body)
+	return []string{
+		fmt.Sprintf(`CREATE OR REPLACE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS %s%s%s`, fn, tag, body, tag),
 		"ALTER FUNCTION " + fn + "() OWNER TO " + branch.MaskerRole,
 		"REVOKE EXECUTE ON FUNCTION " + fn + "() FROM PUBLIC",
 	}
@@ -261,7 +264,8 @@ END $bbmask$`, fn, strings.Join(trunc, ", "), strings.Join(del, ";\n    "), stri
 // 17: 1,000,000 in 14 s). A row the triggers wrote first is left as it is.
 func (p *plan) fill(shadow string) string {
 	k := p.k()
-	return fmt.Sprintf(`DO $bbfill$
+	// The body names the table and its key, which whoever made it chose.
+	body := fmt.Sprintf(`
 DECLARE last %[1]s; nxt %[1]s;
 BEGIN
   LOOP
@@ -271,7 +275,9 @@ BEGIN
     last := nxt;
     COMMIT;
   END LOOP;
-END $bbfill$;`, p.pk.Type, k, p.nm.base, p.upsert(shadow, p.nm.base+" n WHERE (last IS NULL OR n."+k+" > last) AND n."+k+" <= nxt", true))
+END `, p.pk.Type, k, p.nm.base, p.upsert(shadow, p.nm.base+" n WHERE (last IS NULL OR n."+k+" > last) AND n."+k+" <= nxt", true))
+	tag := branch.DollarTag("bbfill", body)
+	return "DO " + tag + body + tag + ";"
 }
 
 // maskTable makes a table's masks under a key, from its columns and its

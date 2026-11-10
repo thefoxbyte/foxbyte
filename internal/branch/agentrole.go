@@ -130,7 +130,7 @@ func agentClientRoleSQL(password string) string {
         EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client', %[1]s);
       END IF;
       EXECUTE format('ALTER ROLE %%I WITH LOGIN NOSUPERUSER PASSWORD %%L', %[1]s, %[2]s);
-      EXECUTE format('ALTER ROLE %%I SET role = db_client', %[1]s);`, quoteLiteral(AgentClientRole), quoteLiteral(password)))
+      EXECUTE format('ALTER ROLE %%I SET role = db_client', %[1]s);`, bodyLiteral(AgentClientRole), bodyLiteral(password)))
 }
 
 // agentKeyRoleSQL creates an agent key's role if it is missing and sets its
@@ -142,7 +142,7 @@ func agentClientRoleSQL(password string) string {
 // masked, its role is a masked reader's (maskedAgentKeyRoleSQL), and an
 // account unmasked, or given unmask here, has it made an ordinary one again.
 func agentKeyRoleSQL(role, password string) string {
-	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(role)), fmt.Sprintf(`      PERFORM set_config('client_min_messages', 'warning', true); -- a grant held already is no news
+	return retryingRoleDO(fmt.Sprintf("r text := %s;", bodyLiteral(role)), fmt.Sprintf(`      PERFORM set_config('client_min_messages', 'warning', true); -- a grant held already is no news
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
         EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB NOBYPASSRLS INHERIT IN ROLE db_client, %[1]s', r);
       END IF;
@@ -157,7 +157,7 @@ func agentKeyRoleSQL(role, password string) string {
       IF current_setting('server_version_num')::int >= 160000 THEN
         EXECUTE format('GRANT %[1]s TO %%I WITH INHERIT TRUE, SET TRUE', r);
       END IF;
-      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, AgentClientRole, quoteLiteral(password), MaskedRole))
+      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, AgentClientRole, bodyLiteral(password), MaskedRole))
 }
 
 // maskedAgentKeyRoleSQL makes an agent key's role a masked reader's: in
@@ -167,7 +167,7 @@ func agentKeyRoleSQL(role, password string) string {
 // agent, but inherits nothing from it and cannot SET ROLE to it: db_agent is
 // a member of db_client, whose rights read the real tables.
 func maskedAgentKeyRoleSQL(role, password string) string {
-	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(role)), fmt.Sprintf(`      PERFORM set_config('client_min_messages', 'warning', true);
+	return retryingRoleDO(fmt.Sprintf("r text := %s;", bodyLiteral(role)), fmt.Sprintf(`      PERFORM set_config('client_min_messages', 'warning', true);
       IF to_regrole('%[3]s') IS NULL THEN
         EXECUTE 'CREATE ROLE %[3]s NOLOGIN';
       END IF;
@@ -187,7 +187,7 @@ func maskedAgentKeyRoleSQL(role, password string) string {
       EXECUTE format('GRANT %[3]s TO %%I', r);
       EXECUTE format('ALTER ROLE %%I SET role = %[3]s', r);
       EXECUTE format('ALTER ROLE %%I SET search_path = %[4]s, public', r);
-      EXECUTE format('ALTER ROLE %%I SET log_min_error_statement = panic', r);`, AgentClientRole, quoteLiteral(password), MaskedRole, MaskSchema))
+      EXECUTE format('ALTER ROLE %%I SET log_min_error_statement = panic', r);`, AgentClientRole, bodyLiteral(password), MaskedRole, MaskSchema))
 }
 
 // EnsureAgentKeyRole makes sure the role an agent key belonging to email logs

@@ -18,8 +18,14 @@ package branch
 // ensureDblinkSQL puts dblink where the triggers look: installed if it is
 // missing, moved back to public if something carried it elsewhere. Left alone
 // in public or bb, so it changes nothing on a branch that is already right.
+//
+// It also takes dblink away from clients: only the Blackbox's SECURITY DEFINER
+// triggers call it, as the owner, and a client holding it could open
+// connections from inside the database to anything the container can reach
+// (audit GW-1). healDblink runs this on every start, so a branch made before
+// the change loses the grant the next time it starts.
 const ensureDblinkSQL = `DO $do$
-DECLARE s name;
+DECLARE s name; f regprocedure;
 BEGIN
   SELECT n.nspname INTO s FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
    WHERE e.extname = 'dblink';
@@ -28,6 +34,17 @@ BEGIN
   ELSIF s NOT IN ('public', 'bb') THEN
     ALTER EXTENSION dblink SET SCHEMA public;
   END IF;
+  FOR f IN SELECT p.oid::regprocedure
+             FROM pg_depend d
+             JOIN pg_extension e ON e.oid = d.refobjid
+             JOIN pg_proc p ON p.oid = d.objid
+            WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_extension'::regclass
+              AND d.deptype = 'e' AND e.extname = 'dblink' LOOP
+    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f);
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'db_client') THEN
+      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM db_client', f);
+    END IF;
+  END LOOP;
 END $do$;`
 
 // ensureDblink restores the Blackbox's dblink on a branch.

@@ -247,7 +247,7 @@ func AccountMaskedOn(branchName, email string) bool {
 // a masked account on a branch with no masks reads nothing there, rather than
 // everything.
 func maskedRoleSQL(email, password string) string {
-	return retryingRoleDO(fmt.Sprintf("r text := %s;", quoteLiteral(email)), fmt.Sprintf(`      IF to_regrole('%[2]s') IS NULL THEN
+	return retryingRoleDO(fmt.Sprintf("r text := %s;", bodyLiteral(email)), fmt.Sprintf(`      IF to_regrole('%[2]s') IS NULL THEN
         EXECUTE 'CREATE ROLE %[2]s NOLOGIN';
       END IF;
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
@@ -261,7 +261,7 @@ func maskedRoleSQL(email, password string) string {
       EXECUTE format('ALTER ROLE %%I SET role = %[2]s', r);
       EXECUTE format('ALTER ROLE %%I SET search_path = %[3]s, public', r);
       EXECUTE format('ALTER ROLE %%I SET log_min_error_statement = panic', r);`,
-		quoteLiteral(password), MaskedRole, MaskSchema))
+		bodyLiteral(password), MaskedRole, MaskSchema))
 }
 
 // unmaskedRoleSQL turns a masked reader's role back into an ordinary
@@ -278,7 +278,7 @@ BEGIN
     EXECUTE format('ALTER ROLE %%I RESET search_path', r);
     EXECUTE format('ALTER ROLE %%I RESET log_min_error_statement', r);
   END IF;
-END $do$;`, quoteLiteral(email), MaskedRole)
+END $do$;`, bodyLiteral(email), MaskedRole)
 }
 
 // endSessionsSQL ends an account's sessions on a branch: a session opened
