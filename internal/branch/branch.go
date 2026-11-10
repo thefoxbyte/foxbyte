@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 	"github.com/thefoxbyte/foxbyte/internal/secrets"
 )
@@ -1518,35 +1519,92 @@ type BranchInfo struct {
 
 // Branches returns structured info for every branch (including main), enriched
 // with container state, connections, and copy-on-write size.
+//
+// One docker inspect for every branch's state and address, then each running
+// branch's connection count, several at a time. A docker that does not answer
+// shows every branch as absent, as it always did: this is a report, and nothing
+// that removes a container reads it.
 func Branches() ([]BranchInfo, error) {
-	usages, err := activeStorage().usage()
+	usages, err := branchUsages()
 	if err != nil {
 		return nil, err
 	}
 	var infos []BranchInfo
+	var conts []string
 	for _, u := range usages {
 		name := u.Name
 		if strings.Contains(name, "/") {
 			continue // only direct children
 		}
-		bi := BranchInfo{
+		infos = append(infos, BranchInfo{
 			Masked:  maskedStateOf(name),
 			Name:    name,
 			Used:    u.Used,
 			Refer:   u.Refer,
 			Primary: name == "main",
 			Agent:   strings.HasPrefix(name, "agent-"),
-			State:   ContainerState(name),
+			State:   "absent",
+		})
+		conts = append(conts, container(name))
+	}
+	if len(conts) == 0 {
+		return infos, nil
+	}
+	out, _ := inspectContainers(execProbe, conts) // what it found, whatever else it says
+	facts := parseFacts(out)
+	forEachBounded(len(infos), func(i int) {
+		f, ok := facts[conts[i]]
+		if !ok {
+			return
 		}
-		if bi.State == "running" {
-			bi.Port = "5432" // in-container port; branches are reached via the gateway
-			if c, err := ActiveConnections(name); err == nil {
-				bi.Connections = c
+		infos[i].State = f.state
+		if f.state == "running" {
+			infos[i].Port = "5432" // in-container port; branches are reached via the gateway
+			if c, err := countConnections(infos[i].Name, f.ip); err == nil {
+				infos[i].Connections = c
 			}
 		}
-		infos = append(infos, bi)
-	}
+	})
 	return infos, nil
+}
+
+// branchUsages and countConnections are Branches' other two sources, variables
+// so a test can count them.
+var (
+	branchUsages = func() ([]branchUsage, error) { return activeStorage().usage() }
+
+	countConnections = func(name, ip string) (int, error) {
+		if ip != "" {
+			if n, err := connectionsOver(ip); err == nil {
+				return n, nil
+			}
+		}
+		return activeConnectionsWithin(execProbe, name)
+	}
+)
+
+// connectionsOver reads a branch's connection count over the docker network,
+// which stateConn already does as this role: no sudo, docker or psql process for
+// a number the dashboard wants for every branch every few seconds. Its callers
+// fall back to the exec, so a branch this cannot reach is no worse off.
+func connectionsOver(ip string) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s@%s:5432/%s", pgUser, ip, pgDatabase))
+	if err != nil {
+		return 0, err
+	}
+	cfg.Password = pgPass()
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close(context.Background())
+	var n int
+	if err := conn.QueryRow(ctx, activeConnectionsSQL).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // Storage summarises pool usage for the dashboard.
@@ -1737,10 +1795,14 @@ func Wake(name string) error {
 
 // ActiveConnections returns the number of client connections currently open to a
 // branch (used to avoid suspending a branch that is in use).
-func ActiveConnections(name string) (int, error) {
-	out, err := capture("docker", "exec", "--env-file", pgEnvFile(), container(name),
-		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc",
-		"SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid();")
+func ActiveConnections(name string) (int, error) { return activeConnectionsWithin(execQuick, name) }
+
+const activeConnectionsSQL = "SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid();"
+
+// activeConnectionsWithin is ActiveConnections bounded by d.
+func activeConnectionsWithin(d time.Duration, name string) (int, error) {
+	out, err := captureWithin(d, "docker", "exec", "--env-file", pgEnvFile(), container(name),
+		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc", activeConnectionsSQL)
 	if err != nil {
 		return 0, err
 	}
