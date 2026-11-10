@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useEffect, useState, type ReactNode } from 'react'
-import { getObject, runQuery, type CatalogKind, type CatalogObject, type CatalogPart, type FuncParam, type ObjectDetail } from '../api'
+import { getObject, runQuery, type CatalogCol, type CatalogKind, type CatalogObject, type CatalogPart, type FuncParam, type ObjectDetail } from '../api'
 import { useConfirm } from '../confirm'
 import { buildCall, inputsOf, quoteIdent, type ArgInput } from '../runcall'
-import { dropRoutine, dropTrigger, renameRoutine, renameTrigger } from '../ddl'
+import { dropColumn, dropKey, dropRoutine, dropTable, dropTrigger, renameKey, renameRoutine, renameTable, renameTrigger } from '../ddl'
 import { RenameDialog, RoutineDialog, runDDL, TriggerDialog } from './RoutineDialogs'
+import { ColumnDialog, DropDialog, KeyDialog } from './TableDialogs'
 
 // The object browser (point 12.1). The schema rail already lists tables and
 // views; these are the rest of what a branch holds (functions, procedures,
@@ -33,18 +34,20 @@ export function objectLabel(o: CatalogObject): string {
 const objKey = (o: CatalogObject) => `${o.kind}:${o.oid}`
 
 /** The rail's groups beyond tables and views, folded until opened or searched. */
-export function CatalogGroups({ objects, filter, showSystem, active, onOpen, onNew }: {
+export function CatalogGroups({ objects, filter, showSystem, active, onOpen, onNew, onNewTable }: {
   objects: CatalogObject[]
   filter: string
   showSystem: boolean
   active: CatalogObject | null
   onOpen: (o: CatalogObject) => void
   onNew?: () => void
+  onNewTable?: () => void
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   const f = filter.trim().toLowerCase()
   return (
     <>
+      {onNewTable && <button type="button" className="ghost sm obj-new" onClick={onNewTable}>+ New table…</button>}
       {onNew && <button type="button" className="ghost sm obj-new" onClick={onNew}>+ New function…</button>}
       {GROUPS.map(g => {
         const list = objects.filter(o => o.kind === g.kind && (showSystem || !o.system)
@@ -111,7 +114,7 @@ function Parts({ title, parts, empty, onToggle, actions }: {
     <section className="obj-parts" aria-label={title}>
       {!parts?.length ? <p className="muted">{empty}</p> : (
         <table className="obj-table">
-          <thead><tr><th>Name</th><th>Definition</th>{onToggle && <th />}</tr></thead>
+          <thead><tr><th>Name</th><th>Definition</th>{(onToggle || actions) && <th />}</tr></thead>
           <tbody>
             {parts.map(p => (
               <tr key={p.name} data-testid={`part-${p.name}`}>
@@ -121,11 +124,11 @@ function Parts({ title, parts, empty, onToggle, actions }: {
                   {p.disabled && <span className="obj-sub">disabled</span>}
                 </td>
                 <td className="mono">{p.def}</td>
-                {onToggle && (
+                {(onToggle || actions) && (
                   <td style={{ whiteSpace: 'nowrap' }}>
                     {p.system
                       ? <span className="muted" title="FoxByte keeps its records with it: it is not switched off here">FoxByte&rsquo;s own</span>
-                      : <><button type="button" className="ghost sm" onClick={() => onToggle(p)}>{p.disabled ? 'Enable' : 'Disable…'}</button>{actions?.(p)}</>}
+                      : <>{onToggle && <button type="button" className="ghost sm" onClick={() => onToggle(p)}>{p.disabled ? 'Enable' : 'Disable…'}</button>}{actions?.(p)}</>}
                   </td>
                 )}
               </tr>
@@ -207,19 +210,137 @@ function TriggerParts({ branch, obj, d, reload, catalog, onOpenSql }: {
   )
 }
 
-/** The table tabs the catalog fills: constraints, triggers and the CREATE script. */
-export function TableParts({ branch, obj, tab, onOpenSql, catalog }: {
+/** Whether the table dialogs apply: FoxByte's own are not offered, and a foreign table is altered otherwise. */
+export const tableEditable = (o?: CatalogObject | null) => !!o && o.kind === 'table' && !o.system && o.sub !== 'foreign'
+
+export type TableChange = { gone?: boolean; renamed?: string }
+
+/** A table's columns, each edited and dropped; the table renamed and dropped (point 12.3). */
+function ColumnParts({ branch, obj, d, reload, onOpenSql, onChanged }: {
+  branch: string; obj: CatalogObject; d: ObjectDetail; reload: () => void; onOpenSql: (sql: string) => void; onChanged: (c: TableChange) => void
+}) {
+  const [note, setNote] = useState('')
+  const [dialog, setDialog] = useState<{ type: 'add' | 'renameTable' | 'dropTable' } | { type: 'edit' | 'drop'; col: CatalogCol } | null>(null)
+  const schema = obj.schema ?? 'public'
+  const done = (msg: string) => { setDialog(null); setNote(msg); reload(); onChanged({}) }
+  return (
+    <>
+      <div className="table-actions">
+        <button type="button" className="ghost sm" onClick={() => { setNote(''); setDialog({ type: 'add' }) }}>+ Add column…</button>
+        <button type="button" className="ghost sm" onClick={() => { setNote(''); setDialog({ type: 'renameTable' }) }}>Rename table…</button>
+        <button type="button" className="ghost sm danger" onClick={() => { setNote(''); setDialog({ type: 'dropTable' }) }}>Drop table…</button>
+      </div>
+      <section className="obj-parts" aria-label="Columns">
+        <table className="obj-table">
+          <thead><tr><th>Name</th><th>Type</th><th>Not null</th><th>Default</th><th /></tr></thead>
+          <tbody>
+            {(d.columns ?? []).map(c => (
+              <tr key={c.name} data-testid={`col-${c.name}`}>
+                <td className="mono">{c.name}
+                  {c.identity && <span className="obj-sub">identity</span>}
+                  {c.generated && <span className="obj-sub">generated</span>}
+                </td>
+                <td className="mono">{c.type}</td>
+                <td>{c.not_null ? 'not null' : ''}</td>
+                <td className="mono">{c.generated || c.default}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>
+                  <button type="button" className="ghost sm" onClick={() => { setNote(''); setDialog({ type: 'edit', col: c }) }}>Edit…</button>
+                  {' '}<button type="button" className="ghost sm danger" onClick={() => { setNote(''); setDialog({ type: 'drop', col: c }) }}>Drop…</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+      {note && <div className="ok" role="status" data-testid="table-note">{note}</div>}
+      {dialog?.type === 'add' && (
+        <ColumnDialog branch={branch} schema={schema} table={obj.name} onOpenSql={onOpenSql} onClose={() => setDialog(null)} onDone={() => done('Column added.')} />
+      )}
+      {dialog?.type === 'edit' && (
+        <ColumnDialog branch={branch} schema={schema} table={obj.name} edit={dialog.col} onOpenSql={onOpenSql} onClose={() => setDialog(null)} onDone={() => done(`${dialog.col.name} saved.`)} />
+      )}
+      {dialog?.type === 'drop' && (
+        <DropDialog title={`Drop column ${dialog.col.name}`} sql={dropColumn(schema, obj.name, dialog.col.name)} branch={branch} onOpenSql={onOpenSql}
+          onClose={() => setDialog(null)} onDone={() => done(`${dialog.col.name} dropped.`)}>
+          Every row loses this column&rsquo;s value. The change is recorded in the Blackbox.
+        </DropDialog>
+      )}
+      {dialog?.type === 'renameTable' && (
+        <RenameDialog title={`Rename ${obj.name}`} current={obj.name} branch={branch} onOpenSql={onOpenSql}
+          build={to => renameTable(schema, obj.name, to)} onClose={() => setDialog(null)}
+          onDone={to => { setDialog(null); onChanged({ renamed: to }) }} />
+      )}
+      {dialog?.type === 'dropTable' && (
+        <DropDialog title={`Drop table ${obj.name}`} sql={dropTable(schema, obj.name)} branch={branch} onOpenSql={onOpenSql}
+          onClose={() => setDialog(null)} onDone={() => { setDialog(null); onChanged({ gone: true }) }}>
+          The table and all its rows go. A guardrail refuses this until it is allowed: if it does, put it in the editor, where the Console can ask to override.
+        </DropDialog>
+      )}
+    </>
+  )
+}
+
+/** A table's primary, unique, foreign and check keys, added, edited, renamed and dropped (point 12.3). */
+function KeyParts({ branch, obj, d, reload, catalog, onOpenSql, onChanged }: {
+  branch: string; obj: CatalogObject; d: ObjectDetail; reload: () => void; catalog: CatalogObject[]; onOpenSql: (sql: string) => void; onChanged: (c: TableChange) => void
+}) {
+  const [note, setNote] = useState('')
+  const [dialog, setDialog] = useState<{ type: 'add' } | { type: 'edit' | 'rename' | 'drop'; part: CatalogPart } | null>(null)
+  const schema = obj.schema ?? 'public'
+  const done = (msg: string) => { setDialog(null); setNote(msg); reload(); onChanged({}) }
+  const columns = (d.columns ?? []).map(c => c.name)
+  const tables = catalog.filter(o => o.kind === 'table' && !o.system && o.sub !== 'foreign')
+  const hasPrimary = !!d.constraints?.some(k => k.key?.type === 'primary')
+  const dialogProps = { branch, schema, table: obj.name, columns, tables, hasPrimary, onOpenSql, onClose: () => setDialog(null) }
+  return (
+    <>
+      <div className="table-actions">
+        <button type="button" className="ghost sm" onClick={() => { setNote(''); setDialog({ type: 'add' }) }}>+ Add key…</button>
+      </div>
+      <Parts title="Constraints" parts={d.constraints} empty="No constraints." actions={p => (
+        <>
+          {p.key?.editable && <><button type="button" className="ghost sm" onClick={() => { setNote(''); setDialog({ type: 'edit', part: p }) }}>Edit…</button>{' '}</>}
+          <button type="button" className="ghost sm" onClick={() => { setNote(''); setDialog({ type: 'rename', part: p }) }}>Rename…</button>
+          {' '}<button type="button" className="ghost sm danger" onClick={() => { setNote(''); setDialog({ type: 'drop', part: p }) }}>Drop…</button>
+        </>
+      )} />
+      {note && <div className="ok" role="status" data-testid="key-note">{note}</div>}
+      {dialog?.type === 'add' && <KeyDialog {...dialogProps} onDone={() => done('Key added.')} />}
+      {dialog?.type === 'edit' && <KeyDialog {...dialogProps} edit={dialog.part} onDone={() => done(`${dialog.part.name} saved.`)} />}
+      {dialog?.type === 'rename' && (
+        <RenameDialog title={`Rename ${dialog.part.name}`} current={dialog.part.name} branch={branch} onOpenSql={onOpenSql}
+          build={to => renameKey(schema, obj.name, dialog.part.name, to)} onClose={() => setDialog(null)} onDone={() => done('Key renamed.')} />
+      )}
+      {dialog?.type === 'drop' && (
+        <DropDialog title={`Drop ${dialog.part.name}`} sql={dropKey(schema, obj.name, dialog.part.name)} branch={branch} onOpenSql={onOpenSql}
+          onClose={() => setDialog(null)} onDone={() => done(`${dialog.part.name} dropped.`)}>
+          The table stops enforcing this. The change is recorded in the Blackbox.
+        </DropDialog>
+      )}
+    </>
+  )
+}
+
+/** The table tabs the catalog fills: columns, constraints, triggers and the CREATE script. */
+export function TableParts({ branch, obj, tab, onOpenSql, catalog, onChanged }: {
   branch: string
   obj: CatalogObject | null
-  tab: 'constraints' | 'triggers' | 'ddl'
+  tab: 'structure' | 'constraints' | 'triggers' | 'ddl'
   onOpenSql: (sql: string) => void
   catalog: CatalogObject[]
+  onChanged?: (c: TableChange) => void
 }) {
   const { d, err, reload } = useObject(branch, obj)
   if (!obj) return <p className="muted">Not in this branch's catalog for you.</p>
   if (err) return <div className="err">{err}</div>
   if (!d) return <div className="muted">Loading…</div>
-  if (tab === 'constraints') return <Parts title="Constraints" parts={d.constraints} empty="No constraints." />
+  const changed = onChanged ?? (() => {})
+  if (tab === 'structure') return <ColumnParts branch={branch} obj={obj} d={d} reload={reload} onOpenSql={onOpenSql} onChanged={changed} />
+  if (tab === 'constraints') {
+    return tableEditable(obj)
+      ? <KeyParts branch={branch} obj={obj} d={d} reload={reload} catalog={catalog} onOpenSql={onOpenSql} onChanged={changed} />
+      : <Parts title="Constraints" parts={d.constraints} empty="No constraints." />
+  }
   if (tab === 'triggers') return <TriggerParts branch={branch} obj={obj} d={d} reload={reload} catalog={catalog} onOpenSql={onOpenSql} />
   return <DDL text={d.ddl} onOpenSql={onOpenSql} />
 }

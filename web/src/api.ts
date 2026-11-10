@@ -443,7 +443,13 @@ export type CatalogObject = {
 export type TriggerInfo = {
   timing: string; events: string[]; columns?: string[]; forEach: string; when?: string; function: string; args?: string; referencing?: string; constraint?: boolean
 }
-export type CatalogPart = { name: string; kind?: string; def: string; constraint?: boolean; system?: boolean; disabled?: boolean; trigger?: TriggerInfo }
+export type CatalogPart = { name: string; kind?: string; def: string; constraint?: boolean; system?: boolean; disabled?: boolean; trigger?: TriggerInfo; key?: KeyInfo }
+// A table constraint, part by part (point 12.3).
+export type KeyInfo = {
+  type: string; columns?: string[]; refSchema?: string; refTable?: string; refColumns?: string[]
+  onDelete?: string; onUpdate?: string; match?: string
+  deferrable?: boolean; deferred?: boolean; notValid?: boolean; noInherit?: boolean; check?: string; editable?: boolean
+}
 // A function or procedure, attribute by attribute (point 12.3).
 export type RoutineInfo = {
   arguments: string; identity: string; returns?: string; language: string; body: string; atomic?: boolean

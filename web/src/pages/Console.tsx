@@ -7,7 +7,8 @@ import CopyMenu, { cellText } from '../components/CopyMenu'
 import ExportMenu from '../components/ExportMenu'
 import HistoryPanel from '../components/HistoryPanel'
 import { useCompletion } from '../components/Completion'
-import { CatalogGroups, ObjectView, TableParts } from '../components/ObjectBrowser'
+import { CatalogGroups, ObjectView, TableParts, tableEditable, type TableChange } from '../components/ObjectBrowser'
+import { NewTableDialog } from '../components/TableDialogs'
 import { EditGrid, FilterBar, type ColInfo } from '../components/DataGrid'
 import { TrackingControl, trackedOf } from '../components/Tracking'
 import { AuditControl } from '../components/AuditMark'
@@ -100,6 +101,7 @@ export default function Console() {
   const [plan, setPlan] = useState<{ plan: Plan; raw: string } | null>(null)
   const [analyse, setAnalyse] = useState(false)
   const [newRoutine, setNewRoutine] = useState(false)
+  const [newTable, setNewTable] = useState(false)
   const [ranSql, setRanSql] = useState('')
   // The history panel (point 8.2): open or shut, remembered in this browser,
   // and a count of runs so it can show each new one.
@@ -277,6 +279,13 @@ export default function Console() {
     setSel(o); setTab('rows'); setPage(0); setTotal(null); setMode('browse')
     setSort(null); setFilters([]); setEditing(null); setGridNote('')
   }
+  // A table dialog changed the open table: the rail, its key and its columns follow.
+  const tableChanged = (c: TableChange) => {
+    loadObjects(branch)
+    if (c.gone) { setSel(null); setMode('query') }
+    else if (c.renamed) { const to = c.renamed; setSel(s => (s ? { ...s, name: to } : s)) }
+  }
+
   // A table's primary key, which orders its pages and names a row in an edit.
   const keyOf = (o: DbObject) => rels.find(r => r.schema === o.schema && r.name === o.name)?.cols.filter(c => c.pk).map(c => c.name) ?? []
 
@@ -507,7 +516,12 @@ export default function Console() {
             {views.map(item)}
             <CatalogGroups objects={catalog} filter={filter} showSystem={showSystem}
               active={mode === 'object' ? objSel : null}
-              onOpen={o => { setObjSel(o); setMode('object') }} onNew={() => setNewRoutine(true)} />
+              onOpen={o => { setObjSel(o); setMode('object') }} onNew={() => setNewRoutine(true)} onNewTable={() => setNewTable(true)} />
+            {newTable && (
+              <NewTableDialog branch={branch} schemas={catalog.filter(o => o.kind === 'schema' && !o.system).map(o => o.name)} onOpenSql={openSql}
+                onClose={() => setNewTable(false)}
+                onDone={(schema, name) => { setNewTable(false); loadObjects(branch); setSel({ schema, name, type: 'table' }); setTab('structure'); setPage(0); setTotal(null); setMode('browse') }} />
+            )}
             {newRoutine && (
               <RoutineDialog branch={branch} schemas={catalog.filter(o => o.kind === 'schema' && !o.system).map(o => o.name)} onOpenSql={openSql}
                 onClose={() => setNewRoutine(false)} onDone={() => { setNewRoutine(false); loadObjects(branch) }} />
@@ -676,8 +690,8 @@ export default function Console() {
               )}
               {tab === 'upkeep'
                 ? <TableUpkeep branch={branch} schema={sel.schema} table={sel.name} />
-                : CATALOG_TABS.includes(tab)
-                ? <TableParts branch={branch} tab={tab as 'constraints' | 'triggers' | 'ddl'} onOpenSql={openSql} catalog={catalog}
+                : CATALOG_TABS.includes(tab) || (tab === 'structure' && tableEditable(catalog.find(o => o.kind === 'table' && o.schema === sel.schema && o.name === sel.name)))
+                ? <TableParts branch={branch} tab={tab as 'structure' | 'constraints' | 'triggers' | 'ddl'} onOpenSql={openSql} catalog={catalog} onChanged={tableChanged}
                     obj={catalog.find(o => (o.kind === 'table' || o.kind === 'view') && o.schema === sel.schema && o.name === sel.name) ?? null} />
                 : tab === 'rows' && editing && browseRes && !browseRes.error
                   ? <EditGrid cols={browseRes.columns ?? []} rows={browseRes.rows ?? []} info={editing}

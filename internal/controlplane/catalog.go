@@ -132,6 +132,54 @@ type CatalogPart struct {
 	Disabled bool `json:"disabled,omitempty"`
 	// Trigger is a trigger's parts, for the dialog that edits it (point 12.3).
 	Trigger *TriggerInfo `json:"trigger,omitempty"`
+	// Key is a constraint's parts, for the dialog that edits it (point 12.3).
+	Key *ConstraintInfo `json:"key,omitempty"`
+}
+
+// ConstraintInfo is a table constraint, part by part.
+type ConstraintInfo struct {
+	Type       string   `json:"type"` // primary, unique, foreign, check, exclusion
+	Columns    []string `json:"columns,omitempty"`
+	RefSchema  string   `json:"refSchema,omitempty"`
+	RefTable   string   `json:"refTable,omitempty"`
+	RefColumns []string `json:"refColumns,omitempty"`
+	OnDelete   string   `json:"onDelete,omitempty"` // CASCADE, SET NULL, SET DEFAULT, RESTRICT; none is NO ACTION
+	OnUpdate   string   `json:"onUpdate,omitempty"`
+	Match      string   `json:"match,omitempty"` // FULL; none is SIMPLE
+	Deferrable bool     `json:"deferrable,omitempty"`
+	Deferred   bool     `json:"deferred,omitempty"`
+	NotValid   bool     `json:"notValid,omitempty"`
+	NoInherit  bool     `json:"noInherit,omitempty"`
+	Check      string   `json:"check,omitempty"`
+	// Editable: the parts above say all of it, so writing it again loses nothing.
+	Editable bool `json:"editable,omitempty"`
+}
+
+// keyExtras are what a key's definition can hold that ConstraintInfo has no
+// part for. A key with one is renamed and dropped, but not rewritten.
+var keyExtras = []string{" INCLUDE (", " NULLS NOT DISTINCT", " WITH (", " USING INDEX TABLESPACE ", " WITHOUT OVERLAPS", "PERIOD ", " SET NULL (", " SET DEFAULT ("}
+
+var fkActions = map[string]string{"r": "RESTRICT", "c": "CASCADE", "n": "SET NULL", "d": "SET DEFAULT"}
+
+// constraintInfo reads a pg_constraint row. local is false for a constraint
+// inherited from a parent, which only the parent can change.
+func constraintInfo(contype, def, onDelete, onUpdate, match string, local bool) *ConstraintInfo {
+	k := &ConstraintInfo{
+		Type:     map[string]string{"p": "primary", "u": "unique", "f": "foreign", "c": "check", "x": "exclusion"}[contype],
+		OnDelete: fkActions[onDelete], OnUpdate: fkActions[onUpdate],
+	}
+	if match == "f" {
+		k.Match = "FULL"
+	}
+	k.Editable = local && k.Type != "" && k.Type != "exclusion" && !strings.HasSuffix(def, " NOT ENFORCED")
+	if k.Type != "check" {
+		for _, x := range keyExtras {
+			if strings.Contains(def, x) {
+				k.Editable = false
+			}
+		}
+	}
+	return k
 }
 
 // TriggerInfo is a trigger, part by part.
@@ -487,20 +535,37 @@ func readRelation(ctx context.Context, tx pgx.Tx, d *ObjectDetail) error {
 		}
 		return nil
 	}
-	rows, err := tx.Query(ctx, `SELECT conname, contype::text, pg_get_constraintdef(oid, true) FROM pg_constraint
-		WHERE conrelid = $1::oid AND contype <> 'n'
-		ORDER BY array_position(ARRAY['p','u','f','c','x'], contype::text), conname`, d.OID)
+	rows, err := tx.Query(ctx, `SELECT c.conname, c.contype::text, pg_get_constraintdef(c.oid, true),
+		  c.confdeltype::text, c.confupdtype::text, c.confmatchtype::text, c.conislocal AND c.conparentid = 0,
+		  ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n, o)
+		        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.n ORDER BY k.o),
+		  ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n, o)
+		        JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.n ORDER BY k.o),
+		  coalesce(fn.nspname::text, ''), coalesce(f.relname::text, ''),
+		  c.condeferrable, c.condeferred, NOT c.convalidated, c.connoinherit,
+		  coalesce(CASE WHEN c.contype = 'c' THEN pg_get_expr(c.conbin, c.conrelid, true) END, '')
+		FROM pg_constraint c
+		LEFT JOIN pg_class f ON f.oid = c.confrelid
+		LEFT JOIN pg_namespace fn ON fn.oid = f.relnamespace
+		WHERE c.conrelid = $1::oid AND c.contype <> 'n'
+		ORDER BY array_position(ARRAY['p','u','f','c','x'], c.contype::text), c.conname`, d.OID)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var p CatalogPart
-		var k string
-		if err := rows.Scan(&p.Name, &k, &p.Def); err != nil {
+		var k, del, upd, match string
+		var local bool
+		var key ConstraintInfo
+		if err := rows.Scan(&p.Name, &k, &p.Def, &del, &upd, &match, &local, &key.Columns, &key.RefColumns, &key.RefSchema, &key.RefTable,
+			&key.Deferrable, &key.Deferred, &key.NotValid, &key.NoInherit, &key.Check); err != nil {
 			rows.Close()
 			return err
 		}
 		p.Kind = map[string]string{"p": "primary key", "u": "unique", "f": "foreign key", "c": "check", "x": "exclusion"}[k]
+		info := constraintInfo(k, p.Def, del, upd, match, local)
+		key.Type, key.OnDelete, key.OnUpdate, key.Match, key.Editable = info.Type, info.OnDelete, info.OnUpdate, info.Match, info.Editable
+		p.Key = &key
 		d.Constraints = append(d.Constraints, p)
 	}
 	rows.Close()

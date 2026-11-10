@@ -671,7 +671,8 @@ paths:
         procedure params, each argument's name, type, mode (in, out, inout,
         variadic, table) and whether it has a default, for the console's Run
         form (point 12.4), and routine, its attributes for the Edit dialog, and
-        for each of a table's triggers trigger, its parts (point 12.3); a
+        for each of a table's triggers trigger, its parts, and for each of its
+        constraints key, its parts (point 12.3); a
         sequence's range; a
         type's values or fields; what an extension installed. ddl is what it
         would take to make the object again, without grants or ownership. An

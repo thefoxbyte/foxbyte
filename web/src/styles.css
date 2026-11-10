@@ -1331,3 +1331,12 @@ td button.sm { padding: 2px 10px; font-size: 12px; }
 .ddl-field input, .ddl-field select, .ddl-field textarea { width: 100%; }
 .ddl-dialog .ddl-text { max-height: 180px; overflow: auto; margin-top: 10px; }
 .obj-new { margin: 6px 8px; }
+.ddl-cols { display: flex; flex-direction: column; gap: 6px; }
+.ddl-col { display: grid; grid-template-columns: 1.1fr 1.1fr 1fr auto auto auto; gap: 6px; align-items: center; font-size: 12px; }
+.ddl-col input[type='text'] { width: 100%; min-width: 0; }
+.ddl-col label { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.ddl-pick { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; }
+.ddl-pick label { display: inline-flex; align-items: center; gap: 4px; }
+.ddl-pick .n { color: var(--muted, #667); font-size: 11px; }
+.table-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+@media (max-width: 560px) { .ddl-col { grid-template-columns: 1fr 1fr; } }
