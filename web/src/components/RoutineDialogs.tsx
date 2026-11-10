@@ -16,7 +16,7 @@ export async function runDDL(branch: string, sql: string): Promise<string> {
   } catch (e) { return (e as Error).message }
 }
 
-function Shell({ title, sql, error, busy, save, onClose, onOpenSql, children }: {
+export function Shell({ title, sql, error, busy, save, onClose, onOpenSql, children }: {
   title: string; sql?: string; error: string; busy: boolean; save: string
   onClose: () => void; onOpenSql: (sql: string) => void; children: ReactNode
 }) {
@@ -40,7 +40,7 @@ function Shell({ title, sql, error, busy, save, onClose, onOpenSql, children }: 
   )
 }
 
-const Field = ({ label, children }: { label: string; children: ReactNode }) => <label className="field ddl-field">{label}{children}</label>
+export const Field = ({ label, children }: { label: string; children: ReactNode }) => <label className="field ddl-field">{label}{children}</label>
 
 type Kind = 'function' | 'procedure' | 'trigger'
 
@@ -202,7 +202,7 @@ export function TriggerDialog({ branch, schema, table, functions, edit, onClose,
 /** RenameDialog asks for a new name. */
 export function RenameDialog({ title, current, build, branch, onClose, onDone, onOpenSql }: {
   title: string; current: string; build: (to: string) => string; branch: string
-  onClose: () => void; onDone: () => void; onOpenSql: (sql: string) => void
+  onClose: () => void; onDone: (to: string) => void; onOpenSql: (sql: string) => void
 }) {
   const [to, setTo] = useState(current)
   const [err, setErr] = useState('')
@@ -213,7 +213,7 @@ export function RenameDialog({ title, current, build, branch, onClose, onDone, o
     setBusy(true); setErr('')
     const e = await runDDL(branch, sql)
     setBusy(false)
-    if (e) setErr(e); else onDone()
+    if (e) setErr(e); else onDone(to.trim())
   }
   return (
     <Shell title={title} sql={sql} error={err} busy={busy} save="Rename" onClose={onClose} onOpenSql={onOpenSql}>

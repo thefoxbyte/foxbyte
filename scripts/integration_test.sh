@@ -3979,6 +3979,84 @@ assert_eq "a trigger renamed and dropped, as written; the drop in the Blackbox b
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS rd_items CASCADE; DROP FUNCTION IF EXISTS rd_full2(integer), rd_atomic(), rd_tf(), rd_admin(integer)" >/dev/null
 $S user delete dlg-other@foxbyte.dev >/dev/null 2>&1
 
+echo "### 11aq. create and edit dialogs for tables, columns and keys (point 12.3)"
+# As in 11ap: what the dialogs write is run here and what the engine gives an
+# edit dialog is checked; the dialogs themselves are tables.spec.ts.
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS kt_child, kt_parent, kt_ex, kt_renamed, kt_inc CASCADE" >/dev/null
+assert_eq "what the New table dialog writes makes it: columns, not null, a default and a primary key of two" \
+  "$(rd 'CREATE TABLE "public"."kt_parent" (
+  "id" integer,
+  "sub" integer,
+  "label" text NOT NULL DEFAULT '"'"'x'"'"',
+  PRIMARY KEY ("id", "sub")
+)' | rderr)|$(pg pg-main "SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute WHERE attrelid = 'kt_parent'::regclass AND attnum > 0")|$(pg pg-main "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'kt_parent'::regclass AND contype = 'p'")" \
+  "|id,sub,label|PRIMARY KEY (id, sub)"
+rd 'CREATE TABLE "public"."kt_child" (id bigserial PRIMARY KEY, pid integer, psub integer, qty integer DEFAULT 1, note text)' >/dev/null
+pg pg-main "INSERT INTO kt_parent VALUES (1, 1, 'a')" >/dev/null
+pg pg-main "INSERT INTO kt_child (pid, psub, qty) VALUES (1, 1, 5)" >/dev/null
+kcat() { RCAT="$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/schema)"; }
+kcat
+assert_eq "what the Add column dialog writes adds it" \
+  "$(rd 'ALTER TABLE "public"."kt_child" ADD COLUMN "extra" text NOT NULL DEFAULT '"'"'y'"'"'' | rderr)|$(pg pg-main "SELECT extra FROM kt_child")" "|y"
+assert_eq "what the Edit column dialog writes changes the type with its conversion, not null, the default and the name, together" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  ALTER COLUMN "qty" TYPE text USING qty::text || '"'"'!'"'"',
+  ALTER COLUMN "qty" SET NOT NULL,
+  ALTER COLUMN "qty" SET DEFAULT '"'"'0'"'"';
+ALTER TABLE "public"."kt_child" RENAME COLUMN "qty" TO "amount"' | rderr)|$(pg pg-main "SELECT amount FROM kt_child")|$(rout kt_child table | hjson "c=[x for x in d['columns'] if x['name']=='amount'][0]; print(c['type'], c.get('not_null'), c['default'])")" \
+  "|5!|text True '0'::text"
+assert_contains "…and a rename that cannot be done leaves the rest undone" \
+  "$(rd 'ALTER TABLE "public"."kt_child" ALTER COLUMN "note" SET DEFAULT '"'"'n'"'"';
+ALTER TABLE "public"."kt_child" RENAME COLUMN "note" TO "amount"' | rderr)" "already exists"
+assert_eq "…the column's default not applied" "$(pg pg-main "SELECT atthasdef FROM pg_attribute WHERE attrelid = 'kt_child'::regclass AND attname = 'note'")" "f"
+assert_eq "a column dropped, as written, in the Blackbox as an ALTER TABLE" \
+  "$(rd 'ALTER TABLE "public"."kt_child" DROP COLUMN "extra"' | rderr)|$(pg pg-main "SELECT count(*) FROM pg_attribute WHERE attrelid = 'kt_child'::regclass AND attname = 'extra' AND NOT attisdropped")|$(pg pg-main "SELECT count(*) > 0 FROM bb.schema_ledger WHERE command_tag = 'ALTER TABLE' AND statement LIKE '%kt_child%DROP COLUMN%'")" "|0|t"
+assert_eq "what the Add key dialog writes: unique, named or left to Postgres, foreign and check" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  ADD CONSTRAINT "kt_note_u" UNIQUE ("note") DEFERRABLE INITIALLY DEFERRED' | rderr)|$(rd 'ALTER TABLE "public"."kt_child"
+  ADD UNIQUE ("psub", "pid")' | rderr)|$(rd 'ALTER TABLE "public"."kt_child"
+  ADD CONSTRAINT "kt_fk" FOREIGN KEY ("pid", "psub") REFERENCES "public"."kt_parent" ("id", "sub") ON UPDATE RESTRICT ON DELETE CASCADE' | rderr)|$(rd 'ALTER TABLE "public"."kt_child"
+  ADD CONSTRAINT "kt_ck" CHECK (id > 0)' | rderr)|$(pg pg-main "SELECT string_agg(conname, ',' ORDER BY conname) FROM pg_constraint WHERE conrelid = 'kt_child'::regclass AND contype <> 'n'")" \
+  "||||kt_child_pkey,kt_child_psub_pid_key,kt_ck,kt_fk,kt_note_u"
+kparts() { rout kt_child table | hjson "print({x['name']: (x['key']['type'], x['key'].get('columns'), x['key'].get('refSchema'), x['key'].get('refTable'), x['key'].get('refColumns'), x['key'].get('onDelete'), x['key'].get('onUpdate'), x['key'].get('deferrable'), x['key'].get('deferred'), x['key'].get('check'), x['key'].get('editable')) for x in d['constraints']}['$1'])"; }
+assert_eq "an edit dialog is given a foreign key, part by part, its columns in the key's order" \
+  "$(kparts kt_fk)" "('foreign', ['pid', 'psub'], 'public', 'kt_parent', ['id', 'sub'], 'CASCADE', 'RESTRICT', None, None, None, True)"
+assert_eq "…a unique key, deferred, and in the order it was written" \
+  "$(kparts kt_note_u)|$(kparts kt_child_psub_pid_key)" "('unique', ['note'], None, None, None, None, None, True, True, None, True)|('unique', ['psub', 'pid'], None, None, None, None, None, None, None, None, True)"
+assert_eq "…a primary key and a check" \
+  "$(kparts kt_child_pkey)|$(kparts kt_ck)" "('primary', ['id'], None, None, None, None, None, None, None, None, True)|('check', ['id'], None, None, None, None, None, None, None, 'id > 0', True)"
+assert_eq "what the Edit key dialog writes replaces it in one statement, under its name" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  DROP CONSTRAINT "kt_fk",
+  ADD CONSTRAINT "kt_fk" FOREIGN KEY ("pid", "psub") REFERENCES "public"."kt_parent" ("id", "sub") ON DELETE SET NULL' | rderr)|$(kparts kt_fk)" \
+  "|('foreign', ['pid', 'psub'], 'public', 'kt_parent', ['id', 'sub'], 'SET NULL', None, None, None, None, True)"
+assert_contains "…one that fails keeps the key as it was" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  DROP CONSTRAINT "kt_ck",
+  ADD CONSTRAINT "kt_ck" CHECK (id < 0)' | rderr)" "violated by some row"
+assert_eq "…the check still there" "$(kparts kt_ck)" "('check', ['id'], None, None, None, None, None, None, None, 'id > 0', True)"
+assert_eq "a primary key replaced under its name, a new order of its columns" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  DROP CONSTRAINT "kt_child_pkey",
+  ADD CONSTRAINT "kt_child_pkey" PRIMARY KEY ("pid", "id")' | rderr)|$(pg pg-main "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'kt_child_pkey'")" "|PRIMARY KEY (pid, id)"
+assert_contains "…one another table depends on is refused, and Postgres says why" \
+  "$(rd 'ALTER TABLE "public"."kt_parent"
+  DROP CONSTRAINT "kt_parent_pkey",
+  ADD CONSTRAINT "kt_parent_pkey" PRIMARY KEY ("sub", "id")' | rderr)" "depend on it"
+rd 'CREATE TABLE "public"."kt_ex" (id int, r int4range, b int, CONSTRAINT kt_ex_x EXCLUDE USING gist (r WITH &&), CONSTRAINT kt_ex_u UNIQUE (id) INCLUDE (b))' >/dev/null
+kcat
+assert_eq "what the key dialog cannot write again is not offered as an edit: an exclusion, and a key with INCLUDE" \
+  "$(rout kt_ex table | hjson "print(sorted((x['name'], x['key']['type'], bool(x['key'].get('editable'))) for x in d['constraints']))")" "[('kt_ex_u', 'unique', False), ('kt_ex_x', 'exclusion', False)]"
+assert_eq "a key renamed and dropped, as written" \
+  "$(rd 'ALTER TABLE "public"."kt_child" RENAME CONSTRAINT "kt_ck" TO "kt_ck2"' | rderr)|$(rd 'ALTER TABLE "public"."kt_child" DROP CONSTRAINT "kt_ck2"' | rderr)|$(pg pg-main "SELECT count(*) FROM pg_constraint WHERE conrelid = 'kt_child'::regclass AND conname LIKE 'kt_ck%'")" "||0"
+assert_eq "a table renamed, as written" \
+  "$(rd 'ALTER TABLE "public"."kt_ex" RENAME TO "kt_renamed"' | rderr)|$(pg pg-main "SELECT to_regclass('kt_ex') IS NULL, to_regclass('kt_renamed') IS NOT NULL")" "|t|t"
+assert_contains "DROP TABLE from its dialog meets the guardrail, as it does anywhere" \
+  "$(rd 'DROP TABLE "public"."kt_renamed"' | rderr)" "guardrail: DROP TABLE is blocked by policy"
+assert_eq "…and the table is still there; with the override, as the editor asks for it, it goes" \
+  "$(pg pg-main "SELECT to_regclass('kt_renamed') IS NOT NULL")|$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST -d '{"sql":"DROP TABLE \"public\".\"kt_renamed\"","allow_destructive":true}' https://localhost:8080/api/branches/main/query | rderr)|$(pg pg-main "SELECT to_regclass('kt_renamed') IS NULL")" "t||t"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS kt_child, kt_parent, kt_ex, kt_renamed CASCADE" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

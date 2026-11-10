@@ -61,3 +61,31 @@ func TestSetClauses(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+func TestConstraintInfo(t *testing.T) {
+	k := constraintInfo("f", "FOREIGN KEY (a) REFERENCES t(id) ON DELETE CASCADE", "c", "a", "f", true)
+	if k.Type != "foreign" || k.OnDelete != "CASCADE" || k.OnUpdate != "" || k.Match != "FULL" || !k.Editable {
+		t.Errorf("%+v", k)
+	}
+	for _, c := range []struct {
+		contype, def string
+		local, want  bool
+	}{
+		{"p", "PRIMARY KEY (id)", true, true},
+		{"u", "UNIQUE (a)", true, true},
+		{"c", "CHECK (a > 0)", true, true},
+		// A check's expression is the person's: its words are not clauses.
+		{"c", "CHECK (a <> ' INCLUDE (')", true, true},
+		{"c", "CHECK (a > 0) NOT ENFORCED", true, false},
+		{"p", "PRIMARY KEY (id) INCLUDE (b)", true, false},
+		{"u", "UNIQUE NULLS NOT DISTINCT (a)", true, false},
+		{"u", "UNIQUE (a) WITH (fillfactor='70')", true, false},
+		{"f", "FOREIGN KEY (a, b) REFERENCES t(a, b) ON DELETE SET NULL (b)", true, false},
+		{"x", "EXCLUDE USING gist (r WITH &&)", true, false},
+		{"p", "PRIMARY KEY (id)", false, false},
+	} {
+		if got := constraintInfo(c.contype, c.def, " ", " ", " ", c.local).Editable; got != c.want {
+			t.Errorf("%s: editable = %v, want %v", c.def, got, c.want)
+		}
+	}
+}
