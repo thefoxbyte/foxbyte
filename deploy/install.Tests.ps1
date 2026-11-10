@@ -86,6 +86,7 @@ Describe 'FoxByte release verification' {
     BeforeEach {
         $env:FOX_NO_VERIFY = $null
         Set-Variable -Name FoxSums -Scope Script -Value $script:listing
+        Set-Variable -Name FoxDistroSums -Scope Script -Value ''
     }
     AfterAll { $env:FOX_NO_VERIFY = $null }
 
@@ -95,6 +96,25 @@ Describe 'FoxByte release verification' {
 
     It 'accepts the binary-mode "*name" form' {
         Get-FoxChecksum 'foxbyte-distro.tar.gz' | Should -Be ('b' * 64)
+    }
+
+    It 'reads the distro image from its own listing' {
+        Set-Variable -Name FoxDistroSums -Scope Script -Value (('c' * 64) + "  foxbyte-distro.tar.zst`n")
+        Get-FoxChecksum 'foxbyte-distro.tar.zst' | Should -Be ('c' * 64)
+    }
+
+    It 'prefers the distro listing over an older entry in SHA256SUMS' {
+        Set-Variable -Name FoxDistroSums -Scope Script -Value (('c' * 64) + "  foxbyte-distro.tar.gz`n")
+        Get-FoxChecksum 'foxbyte-distro.tar.gz' | Should -Be ('c' * 64)
+    }
+
+    It 'never lets the distro listing answer for another file' {
+        Set-Variable -Name FoxDistroSums -Scope Script -Value (('c' * 64) + "  fox-windows-amd64.exe`n")
+        Get-FoxChecksum 'fox-windows-amd64.exe' | Should -Be ('a' * 64)
+    }
+
+    It 'refuses a distro image neither listing names' {
+        { Get-FoxChecksum 'foxbyte-distro.tar.zst' } | Should -Throw '*not listed in SHA256SUMS*'
     }
 
     It 'refuses an asset the listing does not name' {

@@ -280,7 +280,12 @@ function Assert-UpstreamChecksum([string]$Path, [string]$SumsUrl, [string]$Name)
 # download), not authorship -- signatures would be needed for that. The files
 # below are executed as root inside the distro, so an unverifiable one is not
 # installed. FOX_NO_VERIFY=1 skips the check deliberately.
+#
+# The distro image is built by its own workflow, on its own schedule, so its
+# checksum is in SHA256SUMS.distro. Releases made before that file existed list
+# the image in SHA256SUMS, which is why both are looked at for it, and only for it.
 $script:FoxSums = $null
+$script:FoxDistroSums = $null
 
 function Get-FoxSums {
     if ($env:FOX_NO_VERIFY -eq '1') { return $null }
@@ -295,16 +300,43 @@ function Get-FoxSums {
     return $script:FoxSums
 }
 
-# Get-FoxChecksum returns the expected SHA256 for a release asset, or $null when
-# verification is switched off.
-function Get-FoxChecksum([string]$Name) {
-    $sums = Get-FoxSums
-    if ($null -eq $sums) { return $null }
-    foreach ($line in ($sums -split "`n")) {
+# Get-FoxDistroSums returns the distro image's own listing, or '' for a release
+# without one (the distro workflow has not finished, or the release predates it).
+function Get-FoxDistroSums {
+    if ($null -ne $script:FoxDistroSums) { return $script:FoxDistroSums }
+    try {
+        $timeout = $script:WebTimeout
+        $body = (Invoke-WebRequest -UseBasicParsing -Uri (Get-FoxAsset 'SHA256SUMS.distro') @timeout).Content
+        $script:FoxDistroSums = if ($body -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($body) } else { [string]$body }
+    } catch {
+        $script:FoxDistroSums = ''
+    }
+    return $script:FoxDistroSums
+}
+
+# Find-FoxChecksum returns the SHA256 a listing gives for $Name, or $null.
+function Find-FoxChecksum([string]$Listing, [string]$Name) {
+    foreach ($line in ($Listing -split "`n")) {
         if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$' -and $Matches[2] -eq $Name) {
             return $Matches[1].ToLower()
         }
     }
+    return $null
+}
+
+# Get-FoxChecksum returns the expected SHA256 for a release asset, or $null when
+# verification is switched off. The distro's own listing goes first, so a distro
+# rebuilt for an older release is checked against its current hash; it can never
+# answer for any other file.
+function Get-FoxChecksum([string]$Name) {
+    $sums = Get-FoxSums
+    if ($null -eq $sums) { return $null }
+    if ($Name -like 'foxbyte-distro.*') {
+        $want = Find-FoxChecksum (Get-FoxDistroSums) $Name
+        if ($want) { return $want }
+    }
+    $want = Find-FoxChecksum $sums $Name
+    if ($want) { return $want }
     throw "$Name is not listed in SHA256SUMS for $Version -- nothing was installed.`nSet FOX_NO_VERIFY=1 to install without checking (not recommended)."
 }
 
