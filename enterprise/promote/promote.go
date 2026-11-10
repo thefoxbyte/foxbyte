@@ -10,8 +10,14 @@
 package promote
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
@@ -126,6 +132,9 @@ func build(source, target string, history []auth.ChangeRequest) (entries []branc
 		return nil, 0, fmt.Errorf("%w: %q has no schema change that %q does not already have",
 			branch.ErrNothingToPromote, source, target)
 	}
+	if err := checkReplayable(entries); err != nil {
+		return nil, 0, err
+	}
 	xids, err := runXids(source, forkAfterID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading %q's Blackbox: %w", source, err)
@@ -215,9 +224,22 @@ func checkPolicyFor(target string, entries []branch.RequestEntry) error {
 // and the approver is recorded beside it: the Blackbox entry's session says which
 // request applied it, and the request says who approved it. One transaction means
 // the target is never left half-merged — either every statement is in, or none is.
+//
+// It logs in as the shared client role, over pgx. Ownership is why that role:
+// applied as the superuser, a promoted table belongs to the admin role, and the
+// next `ALTER TABLE` through the gateway fails with "must be owner of table", so
+// running as what the gateway runs every client as (proxy.realUser) gives the
+// object exactly the owner it has on the source. Logging in as it, rather than
+// SET ROLE from a superuser's session, is why nothing in a statement can get back
+// out. The Blackbox's attribution is unaffected: for a session logged in as this
+// role it reads bb.actor, as it did for the superuser.
 func apply(requestID int64, target, approver string, entries []branch.RequestEntry) (int, error) {
 	if len(entries) == 0 {
 		return 0, branch.ErrNothingToPromote
+	}
+	// Again here: what is applied is a stored snapshot, and may predate this check.
+	if err := checkReplayable(entries); err != nil {
+		return 0, err
 	}
 	target, err := branch.ResolveBranch(target)
 	if err != nil {
@@ -226,42 +248,96 @@ func apply(requestID int64, target, approver string, entries []branch.RequestEnt
 	if _, err := branch.EnsureRunning(target); err != nil {
 		return 0, err
 	}
-	if err := branch.ExecScript(target, applyScript(requestID, approver, entries)); err != nil {
+	ctx := context.Background()
+	openCtx, cancel := context.WithTimeout(ctx, openTimeout)
+	defer cancel()
+	conn, err := branch.OpenClient(openCtx, target)
+	if err != nil {
 		return 0, fmt.Errorf("applying the request to %q (nothing was committed): %w", target, err)
+	}
+	defer conn.Close(ctx)
+
+	replayed := false
+	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		inTx := func() bool { return conn.PgConn().TxStatus() != 'I' }
+		if err := replay(ctx, tx, inTx, requestID, approver, entries); err != nil {
+			return err
+		}
+		replayed = true
+		return nil
+	})
+	if err != nil {
+		return 0, applyFailure(target, replayed, err)
 	}
 	return len(entries), nil
 }
 
-// applyScript is the one transaction a request is applied in.
-func applyScript(requestID int64, approver string, entries []branch.RequestEntry) string {
-	var b strings.Builder
-	b.WriteString("BEGIN;\n")
+// openTimeout bounds the login. The statements themselves have no limit: an ALTER
+// on a large table has always been allowed to take what it takes.
+const openTimeout = 30 * time.Second
+
+// errTransactionEnded is a statement having ended the transaction it was given,
+// which checkReplayable exists to prevent. If one ever gets past that, the apply
+// stops there and says so, rather than report a rollback that did not happen.
+var errTransactionEnded = errors.New("the statement ended the transaction it was applied in")
+
+// applyFailure says what a failed apply left behind. Every statement's error
+// comes before the commit and rolls the transaction back, and a commit the server
+// refused did too. Only a commit whose answer never arrived leaves it open.
+func applyFailure(target string, replayed bool, err error) error {
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.Is(err, errTransactionEnded):
+		return fmt.Errorf("applying the request to %q: part of it may be committed; compare the target with its Blackbox: %w", target, err)
+	case replayed && !errors.As(err, &pgErr) && !errors.Is(err, pgx.ErrTxCommitRollback):
+		return fmt.Errorf("applying the request to %q: every statement ran but the commit was not confirmed, so it may or may not be in; "+
+			"look for this request's session in the target's Blackbox: %w", target, err)
+	}
+	return fmt.Errorf("applying the request to %q (nothing was committed): %w", target, err)
+}
+
+// execer is the one call replay needs of a transaction.
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// replay runs a request's statements in tx, each under its own author. inTx says
+// whether the connection is still in that transaction.
+//
+// A statement goes to the server as its own message, exactly as recorded and with
+// no arguments, which pgx sends by the simple protocol: one message may hold
+// several statements, and nothing but the server reads it, so a :name or a
+// backslash in it is only text. The settings are bound values for the same
+// reason; set_config(…, true) is SET LOCAL.
+func replay(ctx context.Context, tx execer, inTx func() bool, requestID int64, approver string, entries []branch.RequestEntry) error {
 	// Set once for the whole transaction: which request this was, and that the
-	// engine applied it rather than a client.
-	fmt.Fprintf(&b, "SET LOCAL bb.session = %s;\n", branch.QuoteLiteral(fmt.Sprintf("request-%d", requestID)))
-	fmt.Fprintf(&b, "SET LOCAL application_name = %s;\n", branch.QuoteLiteral(brand.CLI+" request approve (by "+approver+")"))
-	// As the shared client role, which is what the gateway runs every client as
-	// (proxy.realUser). Ownership is the reason: applied as the superuser, a
-	// promoted table belongs to the admin role, and the next `ALTER TABLE` through
-	// the gateway fails with "must be owner of table" — the change arrives and then
-	// cannot be worked on. Running as the same role the gateway uses gives the
-	// object exactly the owner it has on the source.
-	//
-	// session_user stays the superuser, so the Blackbox's attribution — which reads
-	// session_user and falls back to bb.actor — is unaffected.
-	fmt.Fprintf(&b, "SET LOCAL ROLE %s;\n", branch.QuoteIdent(branch.ClientRole))
+	// engine applied it rather than a client. standard_conforming_strings because
+	// the check read the statements with it on, whatever the role's default is.
+	if _, err := tx.Exec(ctx, "SELECT set_config('standard_conforming_strings', 'on', true), "+
+		"set_config('bb.session', $1, true), set_config('application_name', $2, true)",
+		fmt.Sprintf("request-%d", requestID), brand.CLI+" request approve (by "+approver+")"); err != nil {
+		return fmt.Errorf("setting up the transaction: %w", err)
+	}
 	for _, e := range entries {
 		if e.SameRun != 0 {
 			continue // its statement ran with the entry it shares it with
 		}
 		// Per statement: the actor is whoever ran it on the source, so the target's
 		// record names them and not the approver.
-		fmt.Fprintf(&b, "SET LOCAL bb.actor = %s;\n", branch.QuoteLiteral(e.Actor))
-		if e.ActorKind != "" {
-			fmt.Fprintf(&b, "SET LOCAL bb.actor_kind = %s;\n", branch.QuoteLiteral(e.ActorKind))
+		if _, err := tx.Exec(ctx, "SELECT set_config('bb.actor', $1, true)", e.Actor); err != nil {
+			return fmt.Errorf("entry %d: %w", e.ID, err)
 		}
-		b.WriteString(strings.TrimRight(strings.TrimSpace(e.Statement), ";") + ";\n")
+		if e.ActorKind != "" {
+			if _, err := tx.Exec(ctx, "SELECT set_config('bb.actor_kind', $1, true)", e.ActorKind); err != nil {
+				return fmt.Errorf("entry %d: %w", e.ID, err)
+			}
+		}
+		if _, err := tx.Exec(ctx, strings.TrimSpace(e.Statement)); err != nil {
+			return fmt.Errorf("entry %d: %w", e.ID, err)
+		}
+		if !inTx() {
+			return fmt.Errorf("entry %d: %w", e.ID, errTransactionEnded)
+		}
 	}
-	b.WriteString("RESET ROLE;\nCOMMIT;\n")
-	return b.String()
+	return nil
 }

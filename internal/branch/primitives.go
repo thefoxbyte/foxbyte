@@ -109,8 +109,8 @@ func PolicyQuery(name, sql string) ([]string, error) { return policyLines(name, 
 func ResolveBranch(name string) (string, error) { return ledgerBranchName(name) }
 
 // ExecScript runs a multi-statement SQL script on a branch over stdin, aborting
-// at the first error. Applying a change request is several statements that must
-// stand or fall together, which ExecSQL's one statement at a time cannot do.
+// at the first error, as the superuser. For the engine's own scripts only: psql
+// reads its input as commands, so text a client wrote must not go through here.
 func ExecScript(target, sql string) error { return psqlStdin(target, sql) }
 
 // SetGuard enables or disables the Blackbox guardrail event trigger on a
@@ -150,6 +150,28 @@ func OpenAs(ctx context.Context, name, account string) (*pgx.Conn, error) {
 		return nil, err
 	}
 	cfg.User, cfg.Password = account, UserRolePassword(account)
+	return pgx.ConnectConfig(ctx, cfg)
+}
+
+// OpenClient connects to the branch's database as the shared client role itself:
+// what a change request is applied over. db_client owns what clients make, is no
+// superuser and is a member of nothing, and the Blackbox takes its actor from
+// bb.actor for a session logged in as it, so replayed statements have only a
+// client's rights and are still recorded under whoever wrote them.
+func OpenClient(ctx context.Context, name string) (*pgx.Conn, error) {
+	target := ServingBranch(name)
+	if err := EnsureAppRole(target); err != nil {
+		return nil, fmt.Errorf("setting %s's password on %s: %w", ClientRole, name, err)
+	}
+	ip, err := containerIP(container(target))
+	if err != nil {
+		return nil, fmt.Errorf("finding %s: %w", name, err)
+	}
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s:5432/%s", ip, pgDatabase))
+	if err != nil {
+		return nil, err
+	}
+	cfg.User, cfg.Password = ClientRole, ClientRolePassword()
 	return pgx.ConnectConfig(ctx, cfg)
 }
 
