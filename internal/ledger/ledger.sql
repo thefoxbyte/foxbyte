@@ -568,6 +568,33 @@ LANGUAGE sql STABLE AS $$
       AND ((classid::bigint << 32) | objid::bigint) = hashtext('bb.schema_ledger')::bigint);
 $$;
 
+-- The second connection a blocked attempt is recorded through. A wait inside it
+-- is one Postgres cannot see as part of any deadlock (the client's backend is
+-- waiting on a socket, not a lock), so nothing would ever break one: another
+-- transaction sitting on the Blackbox's append lock used to hang the refused
+-- client for as long as it stayed open. The timeouts are for that connection
+-- alone, and short: a refusal should come back at once, and it comes back
+-- whether or not the record could be written.
+CREATE OR REPLACE FUNCTION bb._blocked_conn() RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT 'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user
+      || $o$ options='-c lock_timeout=2s -c statement_timeout=5s'$o$;
+$$;
+
+-- Write a blocked attempt through that connection. Failing to record it is a
+-- WARNING and never the reason the statement stops: every caller raises its
+-- own refusal next, and a refusal must not turn into a hang or another error.
+-- Not SECURITY DEFINER, and a client can't reach dblink: it is only of use from
+-- the triggers, which run as the owner.
+CREATE OR REPLACE FUNCTION bb._record_blocked(stmt text) RETURNS void
+LANGUAGE plpgsql SET search_path = pg_catalog, public, bb AS $$
+BEGIN
+  PERFORM dblink_exec(bb._blocked_conn(), stmt);
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox: %', SQLERRM;
+END;
+$$;
+
 -- ddl_command_start: enforce guardrails BEFORE the command runs.
 -- SECURITY DEFINER: the ledger's triggers record history with the owner's
 -- privileges, so a non-superuser client can trigger them (by running DDL) without
@@ -590,9 +617,7 @@ BEGIN
   IF bb._holds_chain_lock() THEN
     RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
   ELSE
-    PERFORM dblink_exec(
-      'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user,
-      format($f$INSERT INTO bb.schema_ledger
+    PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
               (actor,actor_kind,tool,session,branch,command_tag,statement,status,risk)
               VALUES (%L,%L,%L,%L,%L,%L,%L,'BLOCKED','policy')$f$,
         c.actor, c.actor_kind, c.tool, c.session, c.branch, TG_TAG, current_query()));
@@ -792,6 +817,33 @@ BEGIN
   END IF;
 END $$;
 ALTER ROLE db_agent SET role = db_client;
+
+-- Defaults for client logins, for what the append lock does to everyone else. A
+-- transaction that has recorded something holds that lock until it ends, and
+-- every other session's DDL (and every agent write) queues behind it, so one
+-- left open in a client stopped the database's history without an error.
+--   idle_in_transaction_session_timeout = 10min  the value the hardening check
+--     recommends (conn.idle); it ends only a session that sat idle mid-transaction
+--   lock_timeout = 60s  a queued client gets an error, not an endless wait
+-- No statement_timeout: long queries and migrations are legitimate work. These
+-- are defaults a session can SET for itself. Set once for each role, so a value
+-- an administrator chose stays; a role made since the last start has it from the
+-- next one. The engine's own superuser logins are left without them.
+DO $$
+DECLARE r record; s text;
+BEGIN
+  FOR r IN SELECT oid, rolname FROM pg_roles
+            WHERE rolcanlogin AND NOT rolsuper
+              AND (rolname IN ('db_client', 'db_agent') OR pg_has_role(oid, 'db_client', 'MEMBER')) LOOP
+    FOREACH s IN ARRAY ARRAY['lock_timeout=60s', 'idle_in_transaction_session_timeout=10min'] LOOP
+      IF NOT EXISTS (SELECT 1 FROM pg_db_role_setting d, unnest(d.setconfig) c
+                      WHERE d.setrole = r.oid AND d.setdatabase = 0
+                        AND split_part(c, '=', 1) = split_part(s, '=', 1)) THEN
+        EXECUTE format('ALTER ROLE %I SET %I = %L', r.rolname, split_part(s, '=', 1), split_part(s, '=', 2));
+      END IF;
+    END LOOP;
+  END LOOP;
+END $$;
 
 -- Full access to application data (it owns what it creates; these cover what the
 -- superuser created, e.g. imported tables, now and in future).

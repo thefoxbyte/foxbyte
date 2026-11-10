@@ -66,9 +66,7 @@ BEGIN
       IF bb._holds_chain_lock() THEN
         RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
       ELSE
-        PERFORM dblink_exec(
-          'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user,
-          format($f$INSERT INTO bb.schema_ledger
+        PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
                   (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
                   VALUES (%L,%L,%L,%L,%L,'TRUNCATE','table',%L,%L,'BLOCKED','policy')$f$,
             c.actor, c.actor_kind, c.tool, c.session, c.branch, obj, current_query()));
@@ -125,9 +123,7 @@ BEGIN
   IF bb._holds_chain_lock() THEN
     RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
   ELSE
-    PERFORM dblink_exec(
-      'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user,
-      format($f$INSERT INTO bb.schema_ledger
+    PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
               (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
               VALUES (%L,%L,%L,%L,%L,%L,'table',%L,%L,'BLOCKED','unqualified')$f$,
         c.actor, c.actor_kind, c.tool, c.session, c.branch, TG_OP, obj, q));
@@ -308,9 +304,7 @@ BEGIN
   ELSIF bb._holds_chain_lock() THEN
     RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
   ELSE
-    PERFORM dblink_exec(
-      'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user,
-      format($f$INSERT INTO bb.schema_ledger
+    PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
               (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
               VALUES (%L,%L,%L,%L,%L,%L,'table',%L,%L,'BLOCKED',%L)$f$,
         c.actor, c.actor_kind, c.tool, c.session, c.branch, op, obj, current_query(), risk));

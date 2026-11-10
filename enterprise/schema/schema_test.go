@@ -97,6 +97,11 @@ func TestTheGateChecksTheChainLockBeforeWriting(t *testing.T) {
 	if blocked := strings.Index(schemaPolicy[lock:], "'BLOCKED','policy'"); blocked < 0 {
 		t.Error("policy.sql (gate): no BLOCKED write follows the lock check")
 	}
+	// And through the connection with timeouts, so no wait there can hang the
+	// statement being refused.
+	if !strings.Contains(schemaPolicy, "conn := bb._blocked_conn();") {
+		t.Error("policy.sql (gate): the blocked attempt must use bb._blocked_conn")
+	}
 }
 
 // Rules match the statement that runs, not everything a client sent with it.
