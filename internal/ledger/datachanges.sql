@@ -515,11 +515,10 @@ BEGIN
 END;
 $$;
 
--- No REVOKE here: ledger.sql grants every bb function to db_client on each
--- start, so a REVOKE would have to run on each start too, and a privilege
--- change after the event triggers are on is recorded as an unattributed
--- change (integration-v2 §9). Calling bb._attach_data_triggers only adds
--- these protective triggers, which is harmless.
+-- No REVOKE here: a privilege change after the event triggers are on is
+-- recorded as an unattributed change (integration-v2 §9). None is needed:
+-- bb.seal_new_functions (ledger.sql) takes EXECUTE from clients on each
+-- SECURITY DEFINER function here as it is made.
 
 -- Every existing table, now. (Creating these triggers is DDL; ledger.sql's
 -- recorder skips the Blackbox's own triggers, so a start records nothing.)

@@ -17,6 +17,7 @@
 DROP EVENT TRIGGER IF EXISTS bb_guard_start;
 DROP EVENT TRIGGER IF EXISTS bb_log_end;
 DROP EVENT TRIGGER IF EXISTS bb_log_drop;
+DROP EVENT TRIGGER IF EXISTS bb_seal_functions;
 
 CREATE EXTENSION IF NOT EXISTS dblink;
 CREATE SCHEMA IF NOT EXISTS bb;
@@ -858,11 +859,79 @@ ALTER DEFAULT PRIVILEGES FOR ROLE dbadmin IN SCHEMA public GRANT ALL ON SEQUENCE
 -- INSERT/UPDATE/DELETE on the table at all — it cannot forge or rewrite entries.
 GRANT USAGE ON SCHEMA bb TO db_client;
 GRANT SELECT ON bb.schema_ledger, bb.policy, bb.policy_history TO db_client;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA bb TO db_client;
--- …except the one that advances a run's statement position: a client calling it
--- could line a blocked statement up with a harmless one's text.
-REVOKE EXECUTE ON FUNCTION bb._statement_texts(text, text, text) FROM PUBLIC, db_client;
--- …and dblink, wherever it lives. Only the Blackbox's SECURITY DEFINER triggers
+
+-- Functions. A SECURITY DEFINER function runs as the Blackbox's owner, so being
+-- able to call one is being able to do what it does: bb._record_impact takes its
+-- actor as arguments and writes a chained entry, bb._statement_texts moves a
+-- run's statement position so a blocked statement matches a harmless one's text.
+-- Postgres gives every new function to PUBLIC, and everything in bb used to be
+-- granted to db_client on top, so all of them were callable.
+--
+-- So: no client may call a SECURITY DEFINER function here unless it is listed.
+-- The list is every function a client, the gateway or the console calls itself,
+-- SECURITY DEFINER or not (bb.act_for is the only one that is today); nothing
+-- else a client reaches needs its own grant. Trigger and event-trigger functions
+-- are not on it: Postgres checks EXECUTE only when a trigger is made, and they
+-- are made here, by the owner, so they fire for any client. So are the nested
+-- calls among these functions: the inner call is checked against the owner.
+-- SECURITY INVOKER helpers keep what they have; they can do no more than their caller.
+CREATE OR REPLACE FUNCTION bb._client_callable() RETURNS name[]
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT ARRAY[
+    'act_for', 'app_actor', 'app_actor_label', 'app_identity_mode',  -- application identity
+    '_ledger_hash', '_ext_hash',                                     -- verifying the record
+    'track_table', 'untrack_table', 'tracked_tables', 'track_row',   -- row tracking, by a table's owner
+    'policy_check', 'blast_radius',                                  -- previews in the console and MCP
+    'ledger_v2_version', 'blackbox_provenance_version',
+    'blackbox_policy_version', 'blackbox_impact_version'
+  ]::name[];
+$$;
+
+-- Take EXECUTE from clients on one function, unless it is listed above.
+-- session_replication_role: the REVOKE is the Blackbox's own plumbing, not a
+-- change anybody made.
+CREATE OR REPLACE FUNCTION bb._seal_function(f oid) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog SET session_replication_role = replica AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = f AND p.prosecdef AND NOT p.proname = ANY (bb._client_callable())) THEN
+    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, db_client', f::regprocedure);
+  END IF;
+END;
+$$;
+
+-- A function added later, by any of the schema files that run after this one
+-- or by a future release, is sealed as it is made. The files that come after
+-- are run with session_replication_role = replica or must not REVOKE at all
+-- (see datachanges.sql), so the event trigger below is what covers a new
+-- install, where those functions do not exist yet at this point in the file.
+CREATE OR REPLACE FUNCTION bb.seal_new_functions() RETURNS event_trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT objid FROM pg_event_trigger_ddl_commands()
+            WHERE object_type IN ('function', 'procedure') AND schema_name = 'bb' LOOP
+    PERFORM bb._seal_function(r.objid);
+  END LOOP;
+END;
+$$;
+
+-- And every function already here, on every start: this is what closes an
+-- existing install. A CREATE OR REPLACE keeps a function's privileges, so what
+-- is sealed stays sealed.
+DO $seal$
+DECLARE p record;
+BEGIN
+  FOR p IN SELECT f.oid, f.proname FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
+            WHERE n.nspname = 'bb' AND f.prokind IN ('f', 'p') LOOP
+    IF p.proname = ANY (bb._client_callable()) THEN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO db_client', p.oid::regprocedure);
+    ELSE
+      PERFORM bb._seal_function(p.oid);
+    END IF;
+  END LOOP;
+END $seal$;
+
+-- dblink, too, wherever it lives. Only the Blackbox's SECURITY DEFINER triggers
 -- call it, and they run as the owner. A client holding it could open
 -- connections from inside the database to anywhere the container can reach,
 -- with any credentials it has or has learned (audit GW-1).
@@ -892,3 +961,9 @@ CREATE EVENT TRIGGER bb_log_end ON ddl_command_end
   EXECUTE FUNCTION bb.log_ddl_end();
 CREATE EVENT TRIGGER bb_log_drop ON sql_drop
   EXECUTE FUNCTION bb.log_ddl_drop();
+-- ALWAYS: most of the schema files that follow run with session_replication_role
+-- = replica, and a function they make must be sealed all the same.
+CREATE EVENT TRIGGER bb_seal_functions ON ddl_command_end
+  WHEN TAG IN ('CREATE FUNCTION', 'ALTER FUNCTION', 'CREATE PROCEDURE', 'ALTER PROCEDURE', 'ALTER ROUTINE')
+  EXECUTE FUNCTION bb.seal_new_functions();
+ALTER EVENT TRIGGER bb_seal_functions ENABLE ALWAYS;
