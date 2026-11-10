@@ -106,11 +106,9 @@ func validateBeforeName(name string) error {
 	if !beforeNameRe.MatchString(name) {
 		return fmt.Errorf("%w: invalid branch name %q (use lowercase letters, digits, dashes)", ErrInvalidRequest, name)
 	}
-	switch {
-	case name == "main" || name == "restore" || name == "standby":
+	// Not CheckNewName: a name ending in -before-<id> is exactly what this makes.
+	if engineName(name) {
 		return fmt.Errorf("%w: %q is a reserved branch name", ErrInvalidRequest, name)
-	case strings.HasPrefix(name, "agent-"):
-		return fmt.Errorf("%w: names starting with agent- are reserved for agent branches", ErrInvalidRequest)
 	}
 	return nil
 }

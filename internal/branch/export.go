@@ -458,6 +458,9 @@ func RestoreExport(archive, from, into string) error {
 	if store.exists(into) {
 		return fmt.Errorf("branch %q already exists — restore into a new name", into)
 	}
+	if err := checkNoContainer(into, ContainerState(into)); err != nil {
+		return err
+	}
 	dir, err := os.MkdirTemp("", "fox-restore-")
 	if err != nil {
 		return err

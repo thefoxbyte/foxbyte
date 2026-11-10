@@ -784,6 +784,7 @@ func branchCmd(args []string) {
 			fmt.Println("usage: fox branch create <name> [--from <branch>] [--masked]")
 			os.Exit(2)
 		}
+		must(branch.CheckNewName(name))
 		started := time.Now()
 		if hasFlag(args[1:], "--masked") {
 			maskedBranchCreate(name, optValue(args[1:], "--from"), started)

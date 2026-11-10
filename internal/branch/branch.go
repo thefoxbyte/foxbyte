@@ -878,6 +878,9 @@ func Create(name, parent string) error {
 	if activeStorage().exists(name) {
 		return fmt.Errorf("branch %q already exists", name)
 	}
+	if err := checkNoContainer(name, ContainerState(name)); err != nil {
+		return err
+	}
 	// A masked branch being made, or one that failed, is copied by nobody;
 	// a copy of an open one is masked too (maskedbranch.go).
 	if err := inheritMasked(name, parent); err != nil {
@@ -1279,8 +1282,8 @@ func agentBranch(id string) string { return "agent-" + id }
 var ErrBadName = errors.New("invalid name: use letters, digits, '.', '-' and '_' (at most 63, starting with a letter or digit)")
 
 // safeNameRe is every name the engine passes to Docker, ZFS or btrfs. Stricter
-// rules for new names live where names are made (the control plane's nameRe);
-// this is the floor under every path that acts on an existing one. A '/' would
+// rules for new names live where names are made (the control plane's nameRe,
+// and CheckNewName); this is the floor under every path that acts on an existing one. A '/' would
 // walk out of the branch directory on btrfs (filepath.Join), '@' would name a
 // ZFS snapshot of another dataset, and "..", a space or a leading '-' mean
 // something to one tool or another.
@@ -1291,6 +1294,49 @@ func checkName(name string) error {
 		return fmt.Errorf("%w (got %q)", ErrBadName, name)
 	}
 	return nil
+}
+
+// ErrReservedName is returned for a new branch named like one the engine makes
+// for itself.
+var ErrReservedName = errors.New("reserved branch name")
+
+// engineName reports whether name is one the engine's own containers and
+// branches use: the primary, the HA standby, the two restores, an agent's.
+func engineName(name string) bool {
+	switch name {
+	case "main", "standby", "restore", restoreCheckContainer:
+		return true
+	}
+	return strings.HasPrefix(name, "agent-")
+}
+
+// CheckNewName is the rule for a name a person or an account picks. A branch's
+// container is named after it and creating one starts by removing whatever
+// holds that name, so a branch called "standby" used to kill the live HA
+// standby. The engine makes these names itself by calling Create directly, and
+// checkName must go on accepting them, so the refusal belongs here, where names
+// come in from outside. Compared in lower case: an import target is not held to
+// the control plane's lower-case nameRe, and Agent-x is still an agent's name
+// to anyone reading it.
+func CheckNewName(name string) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
+	if n := strings.ToLower(name); engineName(n) || strings.Contains(n, "-before-") {
+		return fmt.Errorf("%w: %q is kept for the engine (main, standby, restore, restore-check, agent-*, *-before-*), choose another name", ErrReservedName, name)
+	}
+	return nil
+}
+
+// checkNoContainer refuses a new branch whose container name is already taken,
+// given that container's state: the storage check cannot see a container that
+// has no branch behind it, like the standby's or a restore's, and starting the
+// new one would remove it.
+func checkNoContainer(name, state string) error {
+	if state == "absent" {
+		return nil
+	}
+	return fmt.Errorf("%w: a container named %s is already there (%s), and making this branch would remove it", ErrBranchExists, container(name), state)
 }
 
 // Exists reports whether a branch's data exists, running or not.

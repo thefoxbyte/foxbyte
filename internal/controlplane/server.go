@@ -39,6 +39,14 @@ import (
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
 
+// checkNewBranchName is the rule for a branch name an account picks.
+func checkNewBranchName(name string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("invalid name (use lowercase letters, digits, dashes)")
+	}
+	return branch.CheckNewName(name)
+}
+
 // ruleIDRe matches a Blackbox policy rule id (bb.policy_rules.rule_id).
 var ruleIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
@@ -298,8 +306,8 @@ func registerAPI(mux *http.ServeMux) {
 			Masked bool   `json:"masked"` // a masked branch (masking step 5): made in the background
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !nameRe.MatchString(body.Name) {
-			writeErr(w, 400, fmt.Errorf("invalid name (use lowercase letters, digits, dashes)"))
+		if err := checkNewBranchName(body.Name); err != nil {
+			writeErr(w, 400, err)
 			return
 		}
 		if body.From != "" && !nameRe.MatchString(body.From) {
@@ -1236,6 +1244,13 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 			return
 		}
 		target := pipelineBranch(pl)
+		// Here as well as in the engine: a run that got as far as the engine
+		// has already claimed the name, and is recorded as owning it even when
+		// it fails.
+		if err := branch.CheckNewName(target); err != nil {
+			send("error", map[string]string{"message": fmt.Sprintf("rename the pipeline: %v", err)})
+			return
+		}
 		// A spec saved before sources were checked may still name a file.
 		if err := checkPipelineSource(spec.Source); err != nil {
 			send("error", map[string]string{"message": err.Error()})
