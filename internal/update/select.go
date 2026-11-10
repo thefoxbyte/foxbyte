@@ -5,6 +5,7 @@ package update
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -173,7 +174,8 @@ func Candidates(rels []Release, current Version, t Target, pin string) ([]Releas
 //
 // tag is a release tag, or "" / "latest" for the newest published release that
 // has every file this target needs. The returned Offer carries the release's
-// SHA256SUMS, so Download verifies what it fetches.
+// SHA256SUMS, checked against the release signature, so Download verifies what
+// it fetches. There is no unsigned path: a missing or bad signature is an error.
 func (c *Client) Release(ctx context.Context, tag string, t Target) (*Offer, error) {
 	rels, err := c.ListReleases(ctx)
 	if err != nil {
@@ -222,14 +224,9 @@ func (c *Client) Release(ctx context.Context, tag string, t Target) (*Offer, err
 	}
 
 	r := usable[0]
-	sa, _ := r.Asset(SumsAsset)
-	body, err := c.fetchSmall(ctx, sa.URL, 1<<20)
+	sums, err := c.verifiedSums(ctx, r)
 	if err != nil {
-		return nil, fmt.Errorf("%s: fetching %s: %w", r.Tag, SumsAsset, err)
-	}
-	sums, err := ParseChecksums(bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.Tag, err)
+		return nil, err
 	}
 	for _, name := range required {
 		if _, ok := sums[name]; !ok {
@@ -238,6 +235,42 @@ func (c *Client) Release(ctx context.Context, tag string, t Target) (*Offer, err
 	}
 	v, _ := ParseVersion(r.Tag)
 	return &Offer{Release: r, Version: v, Sums: sums, Required: required}, nil
+}
+
+// signatureError is a release whose SHA256SUMS failed its signature check, as
+// opposed to one that could not be fetched.
+type signatureError struct{ error }
+
+func (e signatureError) Unwrap() error { return e.error }
+
+// verifiedSums is the only way a release's checksums are read: it fetches
+// SHA256SUMS and its signature, and parses the list only once the signature
+// checks out, because nothing in SHA256SUMS is trusted before that.
+func (c *Client) verifiedSums(ctx context.Context, r Release) (Checksums, error) {
+	sa, ok := r.Asset(SumsAsset)
+	if !ok {
+		return nil, fmt.Errorf("release %s has no %s", r.Tag, SumsAsset)
+	}
+	sigAsset, ok := r.Asset(SigAsset)
+	if !ok {
+		return nil, fmt.Errorf("release %s has no %s, so it cannot be verified", r.Tag, SigAsset)
+	}
+	body, err := c.fetchSmall(ctx, sa.URL, 1<<20)
+	if err != nil {
+		return nil, fmt.Errorf("%s: fetching %s: %w", r.Tag, SumsAsset, err)
+	}
+	sig, err := c.fetchSmall(ctx, sigAsset.URL, 1024)
+	if err != nil {
+		return nil, fmt.Errorf("%s: fetching %s: %w", r.Tag, SigAsset, err)
+	}
+	if err := VerifySums(body, sig); err != nil {
+		return nil, signatureError{fmt.Errorf("release %s: %w", r.Tag, err)}
+	}
+	sums, err := ParseChecksums(bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", r.Tag, err)
+	}
+	return sums, nil
 }
 
 // Available is the check `fox start` makes: the newest release worth telling the
@@ -293,29 +326,14 @@ func (c *Client) Resolve(ctx context.Context, current Version, t Target, pin str
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		sa, _ := r.Asset(SumsAsset)
-		body, err := c.fetchSmall(ctx, sa.URL, 1<<20)
+		sums, err := c.verifiedSums(ctx, r)
 		if err != nil {
-			lastErr = err
-			continue
-		}
-		// Nothing in SHA256SUMS is trusted until its signature checks out.
-		sigAsset, _ := r.Asset(SigAsset)
-		sig, err := c.fetchSmall(ctx, sigAsset.URL, 1024)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if err := VerifySums(body, sig); err != nil {
 			// Not "nothing new": a release that exists and does not verify is
 			// either forged or broken, and saying "up to date" would hide it.
-			sigErr = fmt.Errorf("release %s: %w", r.Tag, err)
-			lastErr = sigErr
-			continue
-		}
-		sums, err := ParseChecksums(bytes.NewReader(body))
-		if err != nil {
-			lastErr = fmt.Errorf("%s: %w", r.Tag, err)
+			if errors.As(err, new(signatureError)) {
+				sigErr = err
+			}
+			lastErr = err
 			continue
 		}
 		var unlisted []string

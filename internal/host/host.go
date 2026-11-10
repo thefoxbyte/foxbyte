@@ -266,8 +266,10 @@ func refreshEngineBinary(arch string) string {
 	}
 
 	// The engine is installed into the VM and run as root, so it is downloaded
-	// through the same verified path as `fox update`: the release's SHA256SUMS
-	// decides, and a file that doesn't match is never kept.
+	// through the same verified path as `fox update`: the release's signed
+	// SHA256SUMS decides, and a file that doesn't match is never kept. A release
+	// that doesn't verify (or a build with no release key) lands in keep below,
+	// so setup carries on with the installer's engine; it never goes unchecked.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	c := update.NewClient(os.Getenv, filepath.Join(cacheDir(), "update-check.json"))
@@ -291,7 +293,7 @@ func refreshEngineBinary(arch string) string {
 		_ = os.Remove(path)
 		return keep("%s in release %s is not a Linux binary", asset, offer.Release.Tag)
 	}
-	fmt.Printf("Engine %s from %s verified against SHA256SUMS.\n", asset, offer.Release.Tag)
+	fmt.Printf("Engine %s from %s verified against the signed SHA256SUMS.\n", asset, offer.Release.Tag)
 	return path
 }
 
