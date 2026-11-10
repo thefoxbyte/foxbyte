@@ -32,11 +32,10 @@ func TestSchemaStatementMatching(t *testing.T) {
 	}
 
 	// A client that could call the position function could line a blocked statement
-	// up with a harmless one's text. The revoke must come after the blanket grant.
-	grant := strings.Index(ledgerSQL, "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA bb TO db_client;")
-	revoke := strings.Index(ledgerSQL, "REVOKE EXECUTE ON FUNCTION bb._statement_texts(text, text, text) FROM PUBLIC, db_client;")
-	if grant < 0 || revoke < 0 || revoke < grant {
-		t.Errorf("_statement_texts must be revoked from clients after the blanket grant (grant at %d, revoke at %d)", grant, revoke)
+	// up with a harmless one's text. It is SECURITY DEFINER and not on the list of
+	// what clients may call, which is what seals it (sealing_test.go).
+	if strings.Contains(ledgerSQL, "'_statement_texts'") {
+		t.Error("_statement_texts must not be client-callable")
 	}
 	if regexp.MustCompile(`(?i)grant[^;]*bb\.statement_cursor[^;]*to`).MatchString(ledgerSQL) {
 		t.Error("clients must not be granted anything on bb.statement_cursor")

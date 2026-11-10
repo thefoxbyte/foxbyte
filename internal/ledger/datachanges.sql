@@ -24,8 +24,8 @@
 -- transition tables, which would copy every changed row of every statement.
 --
 -- The triggers are attached to every existing table here, and to each new one
--- by an event trigger (bb_data_attach). Dropping, disabling or renaming one is
--- refused unless the guardrail override is in force (a superuser or a db_admin
+-- by an event trigger (bb_data_attach). Dropping, disabling, renaming or replacing
+-- one is refused unless the guardrail override is in force (a superuser or a db_admin
 -- member with bb.allow_destructive=on). A superuser can still switch triggers
 -- off for a session; the Blackbox has always had that limit.
 
@@ -66,9 +66,7 @@ BEGIN
       IF bb._holds_chain_lock() THEN
         RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
       ELSE
-        PERFORM dblink_exec(
-          'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user,
-          format($f$INSERT INTO bb.schema_ledger
+        PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
                   (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
                   VALUES (%L,%L,%L,%L,%L,'TRUNCATE','table',%L,%L,'BLOCKED','policy')$f$,
             c.actor, c.actor_kind, c.tool, c.session, c.branch, obj, current_query()));
@@ -125,9 +123,7 @@ BEGIN
   IF bb._holds_chain_lock() THEN
     RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
   ELSE
-    PERFORM dblink_exec(
-      'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user,
-      format($f$INSERT INTO bb.schema_ledger
+    PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
               (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
               VALUES (%L,%L,%L,%L,%L,%L,'table',%L,%L,'BLOCKED','unqualified')$f$,
         c.actor, c.actor_kind, c.tool, c.session, c.branch, TG_OP, obj, q));
@@ -308,9 +304,7 @@ BEGIN
   ELSIF bb._holds_chain_lock() THEN
     RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
   ELSE
-    PERFORM dblink_exec(
-      'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user,
-      format($f$INSERT INTO bb.schema_ledger
+    PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
               (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
               VALUES (%L,%L,%L,%L,%L,%L,'table',%L,%L,'BLOCKED',%L)$f$,
         c.actor, c.actor_kind, c.tool, c.session, c.branch, op, obj, current_query(), risk));
@@ -472,7 +466,7 @@ $$;
 -- the table's owner may set it without being a superuser.
 CREATE OR REPLACE FUNCTION bb.data_protect_end() RETURNS event_trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, bb AS $$
-DECLARE r record; bad text;
+DECLARE r record; bad text; c record;
 BEGIN
   FOR r IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
     IF r.object_type NOT IN ('table','trigger') OR r.schema_name IN ('bb','bb_f1','pg_catalog','information_schema')
@@ -482,6 +476,31 @@ BEGIN
     IF r.object_type = 'table' AND r.command_tag IN ('CREATE TABLE','CREATE TABLE AS','SELECT INTO') THEN
       IF EXISTS (SELECT 1 FROM bb._data_tables() t WHERE t = r.objid::regclass) THEN
         PERFORM bb._attach_data_triggers(r.objid::regclass);
+      END IF;
+    END IF;
+    -- A trigger named bb_something on a user's table, in any form but the one
+    -- the Blackbox installs. CREATE OR REPLACE TRIGGER is how a guard gets
+    -- replaced while it keeps its name, and whoever holds TRIGGER on a table
+    -- may run it. Recorded like any other refusal, so the attempt outlives the
+    -- rollback. The engine's own install matches the definition and passes.
+    IF r.command_tag = 'CREATE TRIGGER' AND r.object_type = 'trigger' AND NOT bb._override_in_force() THEN
+      SELECT r.object_identity INTO bad
+      FROM pg_trigger t JOIN pg_class k ON k.oid = t.tgrelid JOIN pg_namespace n ON n.oid = k.relnamespace
+      WHERE t.oid = r.objid AND t.tgname LIKE 'bb\_%' AND n.nspname NOT IN ('bb','bb_f1')
+        AND NOT bb._is_own_trigger(t.oid);
+      IF bad IS NOT NULL THEN
+        SELECT * INTO c FROM bb._ctx();
+        IF bb._holds_chain_lock() THEN
+          RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
+        ELSE
+          PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
+                  (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
+                  VALUES (%L,%L,%L,%L,%L,'CREATE TRIGGER','trigger',%L,%L,'BLOCKED','policy')$f$,
+            c.actor, c.actor_kind, c.tool, c.session, c.branch, bad, current_query()));
+        END IF;
+        RAISE EXCEPTION 'guardrail: bb_ trigger names are the Blackbox''s own, and % cannot be created or replaced in this form', bad
+          USING ERRCODE = 'insufficient_privilege',
+                HINT = 'Name the trigger something else. Only superusers and members of db_admin may, with bb.allow_destructive=on.';
       END IF;
     END IF;
     -- ALTER TABLE … DISABLE TRIGGER or ENABLE REPLICA TRIGGER, or ALTER
@@ -521,11 +540,10 @@ BEGIN
 END;
 $$;
 
--- No REVOKE here: ledger.sql grants every bb function to db_client on each
--- start, so a REVOKE would have to run on each start too, and a privilege
--- change after the event triggers are on is recorded as an unattributed
--- change (integration-v2 §9). Calling bb._attach_data_triggers only adds
--- these protective triggers, which is harmless.
+-- No REVOKE here: a privilege change after the event triggers are on is
+-- recorded as an unattributed change (integration-v2 §9). None is needed:
+-- bb.seal_new_functions (ledger.sql) takes EXECUTE from clients on each
+-- SECURITY DEFINER function here as it is made.
 
 -- Every existing table, now. (Creating these triggers is DDL; ledger.sql's
 -- recorder skips the Blackbox's own triggers, so a start records nothing.)

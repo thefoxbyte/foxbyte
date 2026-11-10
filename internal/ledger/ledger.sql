@@ -17,6 +17,7 @@
 DROP EVENT TRIGGER IF EXISTS bb_guard_start;
 DROP EVENT TRIGGER IF EXISTS bb_log_end;
 DROP EVENT TRIGGER IF EXISTS bb_log_drop;
+DROP EVENT TRIGGER IF EXISTS bb_seal_functions;
 
 CREATE EXTENSION IF NOT EXISTS dblink;
 CREATE SCHEMA IF NOT EXISTS bb;
@@ -568,6 +569,33 @@ LANGUAGE sql STABLE AS $$
       AND ((classid::bigint << 32) | objid::bigint) = hashtext('bb.schema_ledger')::bigint);
 $$;
 
+-- The second connection a blocked attempt is recorded through. A wait inside it
+-- is one Postgres cannot see as part of any deadlock (the client's backend is
+-- waiting on a socket, not a lock), so nothing would ever break one: another
+-- transaction sitting on the Blackbox's append lock used to hang the refused
+-- client for as long as it stayed open. The timeouts are for that connection
+-- alone, and short: a refusal should come back at once, and it comes back
+-- whether or not the record could be written.
+CREATE OR REPLACE FUNCTION bb._blocked_conn() RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT 'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user
+      || $o$ options='-c lock_timeout=2s -c statement_timeout=5s'$o$;
+$$;
+
+-- Write a blocked attempt through that connection. Failing to record it is a
+-- WARNING and never the reason the statement stops: every caller raises its
+-- own refusal next, and a refusal must not turn into a hang or another error.
+-- Not SECURITY DEFINER, and a client can't reach dblink: it is only of use from
+-- the triggers, which run as the owner.
+CREATE OR REPLACE FUNCTION bb._record_blocked(stmt text) RETURNS void
+LANGUAGE plpgsql SET search_path = pg_catalog, public, bb AS $$
+BEGIN
+  PERFORM dblink_exec(bb._blocked_conn(), stmt);
+EXCEPTION WHEN OTHERS THEN
+  RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox: %', SQLERRM;
+END;
+$$;
+
 -- ddl_command_start: enforce guardrails BEFORE the command runs.
 -- SECURITY DEFINER: the ledger's triggers record history with the owner's
 -- privileges, so a non-superuser client can trigger them (by running DDL) without
@@ -590,9 +618,7 @@ BEGIN
   IF bb._holds_chain_lock() THEN
     RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
   ELSE
-    PERFORM dblink_exec(
-      'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user,
-      format($f$INSERT INTO bb.schema_ledger
+    PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
               (actor,actor_kind,tool,session,branch,command_tag,statement,status,risk)
               VALUES (%L,%L,%L,%L,%L,%L,%L,'BLOCKED','policy')$f$,
         c.actor, c.actor_kind, c.tool, c.session, c.branch, TG_TAG, current_query()));
@@ -600,6 +626,59 @@ BEGIN
   RAISE EXCEPTION 'guardrail: % is blocked by policy (set bb.allow_destructive=on to override)', TG_TAG
     USING ERRCODE = 'insufficient_privilege',
           HINT = 'Only superusers and members of db_admin may override. Grant it with: fox admin grant <email>';
+END;
+$$;
+
+-- Is this trigger, named bb_something, exactly what the Blackbox installs under
+-- that name? A trigger's name is all the recorder's skip list and the data
+-- guards go by, and CREATE OR REPLACE TRIGGER keeps the name while changing what
+-- it does, so the definition is compared instead: the function, when it fires
+-- (tgtype), no column list (tgattr), and the WHEN clause (tgqual). The WHEN is
+-- compared as Postgres prints it, with parentheses, casts and spaces taken
+-- away from both sides, since the same expression prints differently between
+-- major versions.
+CREATE OR REPLACE FUNCTION bb._normal_when(e text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT regexp_replace(lower(e), '::[a-z_ ]+(\[\])?|[()[:space:]]', '', 'g');
+$$;
+
+CREATE OR REPLACE FUNCTION bb._is_own_trigger(t oid) RETURNS boolean
+LANGUAGE plpgsql STABLE SET search_path = pg_catalog, public, bb AS $$
+DECLARE g pg_trigger; a text[];
+BEGIN
+  SELECT * INTO g FROM pg_trigger WHERE oid = t;
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
+  -- UPDATE OF a column nobody writes, a transition table, or a constraint trigger.
+  IF g.tgattr::text <> '' OR g.tgconstraint <> 0 OR g.tgdeferrable
+     OR g.tgoldtable IS NOT NULL OR g.tgnewtable IS NOT NULL THEN
+    RETURN false;
+  END IF;
+  CASE g.tgname
+    WHEN 'bb_guard_truncate' THEN  -- BEFORE TRUNCATE, per statement
+      RETURN g.tgfoid = to_regprocedure('bb.guard_truncate()') AND g.tgtype = 34 AND g.tgqual IS NULL AND g.tgnargs = 0;
+    WHEN 'bb_record_dml' THEN      -- AFTER UPDATE OR DELETE, per statement
+      RETURN g.tgfoid = to_regprocedure('bb.record_dml()') AND g.tgtype = 24 AND g.tgqual IS NULL AND g.tgnargs = 0;
+    WHEN 'bb_guard_dml' THEN       -- BEFORE UPDATE OR DELETE, per statement
+      RETURN g.tgfoid = to_regprocedure('bb.guard_dml()') AND g.tgtype = 26 AND g.tgqual IS NULL AND g.tgnargs = 0;
+    WHEN 'bb_guard_impact' THEN    -- BEFORE UPDATE OR DELETE, per row, with bb._impact_when
+      RETURN g.tgfoid = to_regprocedure('bb.guard_impact()') AND g.tgtype = 27 AND g.tgnargs = 0
+         AND bb._normal_when(substring(pg_get_triggerdef(t) FROM ' WHEN \((.*)\) EXECUTE ')) = bb._normal_when(bb._impact_when());
+    WHEN 'bb_track' THEN           -- BEFORE INSERT OR UPDATE, per row
+      IF NOT (g.tgfoid = to_regprocedure('bb.track_row()') AND g.tgtype = 23 AND g.tgqual IS NULL AND g.tgnargs IN (3, 4)) THEN
+        RETURN false;
+      END IF;
+      -- Which columns are the owner's choice, but they must be columns:
+      -- arguments naming nothing would leave a tracking trigger that writes nothing.
+      a := string_to_array(encode(g.tgargs, 'escape'), '\000');
+      RETURN EXISTS (SELECT 1 FROM unnest(a) x WHERE x <> '')
+         AND NOT EXISTS (SELECT 1 FROM unnest(a) x WHERE x <> ''
+                           AND NOT EXISTS (SELECT 1 FROM pg_attribute
+                                            WHERE attrelid = g.tgrelid AND attname = x AND attnum > 0 AND NOT attisdropped));
+    ELSE
+      RETURN false;
+  END CASE;
 END;
 $$;
 
@@ -626,8 +705,10 @@ BEGIN
     IF r.command_tag IN ('CREATE SEQUENCE','ALTER SEQUENCE') THEN CONTINUE; END IF;
     IF r.command_tag = 'CREATE INDEX' AND r.object_identity ~ '_pkey$' THEN CONTINUE; END IF;
     -- The Blackbox's own data-change triggers (datachanges.sql), attached to
-    -- every table: plumbing, like the objects in schema bb.
-    IF r.command_tag = 'CREATE TRIGGER' AND r.object_identity ~ '^bb_(guard_truncate|record_dml|guard_dml|guard_impact) on ' THEN CONTINUE; END IF;
+    -- every table: plumbing, like the objects in schema bb. Only as installed:
+    -- one replaced under the override is a change, and is recorded.
+    IF r.command_tag = 'CREATE TRIGGER' AND r.object_identity ~ '^bb_(guard_truncate|record_dml|guard_dml|guard_impact) on '
+       AND bb._is_own_trigger(r.objid) THEN CONTINUE; END IF;
     st := 'APPLIED'; rk := NULL;
     IF r.command_tag = 'ALTER TABLE' AND EXISTS (SELECT 1 FROM unnest(t) x WHERE x ~* '\malter\M[^;]*\mtype\M') THEN
       st := 'FLAGGED'; rk := 'type-change';
@@ -696,20 +777,65 @@ LANGUAGE sql IMMUTABLE AS $$
     coalesce(r.risk,''), 'UTF8')), 'hex');
 $$;
 
+-- The head of the chain, one row: the last id handed out and its row_hash. The
+-- tail used to be read with SELECT … ORDER BY id DESC, under whatever snapshot
+-- the transaction had, and in REPEATABLE READ or SERIALIZABLE that snapshot can
+-- be older than the lock: two rows chained off one parent, and verify called it
+-- tampering. An UPDATE of a row changed since the snapshot fails with a
+-- serialization error instead, so a stale writer retries rather than forks.
+--
+-- One transaction, under the lock appends take: an append by the previous
+-- bb.chain_row must not fall between reading the tail here and the new one
+-- going in. Seeded from the tail on an existing ledger; nothing written so far
+-- changes. The head only ever moves forward here: a tail ahead of it was
+-- written by an older engine, and a tail behind it has lost rows, which the
+-- next entry's link should go on showing.
+BEGIN;
+DO $$ BEGIN PERFORM pg_advisory_xact_lock(hashtext('bb.schema_ledger')); END $$;
+CREATE TABLE IF NOT EXISTS bb.ledger_head (
+  id        boolean PRIMARY KEY DEFAULT true CHECK (id),
+  last_id   bigint NOT NULL,
+  last_hash text   NOT NULL
+);
+INSERT INTO bb.ledger_head (last_id, last_hash)
+SELECT coalesce(t.id, 0), coalesce(t.row_hash, '')
+FROM (SELECT 1) one LEFT JOIN LATERAL
+     (SELECT id, row_hash FROM bb.schema_ledger ORDER BY id DESC LIMIT 1) t ON true
+ON CONFLICT (id) DO UPDATE SET last_id = EXCLUDED.last_id, last_hash = EXCLUDED.last_hash
+  WHERE EXCLUDED.last_id > bb.ledger_head.last_id;
+
+-- The id comes from the head too, after the lock, so id order is chain order
+-- (the column's default is taken before the lock, by whoever got there first)
+-- and a rolled-back entry leaves no gap. The default stays: it costs a sequence
+-- value and keeps the sequence ahead of every id, should an older engine ever
+-- write here again.
+--
+-- A ledger emptied by the engine (a masked branch starts with a fresh one) starts
+-- a new chain, with ids carrying on. Reading it is safe at this point: the UPDATE
+-- above has proved this snapshot saw the head's latest change, and with it the
+-- last entry.
 CREATE OR REPLACE FUNCTION bb.chain_row() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE prev text;
 BEGIN
   -- Serialize appends so two concurrent inserts can't chain off the same row.
   PERFORM pg_advisory_xact_lock(hashtext('bb.schema_ledger'));
-  SELECT row_hash INTO prev FROM bb.schema_ledger ORDER BY id DESC LIMIT 1;
+  UPDATE bb.ledger_head SET last_id = last_id + 1 RETURNING last_id, last_hash INTO NEW.id, prev;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'bb.ledger_head has no row: restart the engine to restore it';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM bb.schema_ledger) THEN
+    prev := '';
+  END IF;
   NEW.prev_hash := coalesce(prev, '');
   NEW.row_hash  := bb._ledger_hash(NEW);
+  UPDATE bb.ledger_head SET last_hash = NEW.row_hash;
   RETURN NEW;
 END;
 $$;
 CREATE OR REPLACE TRIGGER bb_chain BEFORE INSERT ON bb.schema_ledger
   FOR EACH ROW EXECUTE FUNCTION bb.chain_row();
+COMMIT;
 
 -- Append-only: the ledger records history, so history cannot be rewritten.
 CREATE OR REPLACE FUNCTION bb.deny_change() RETURNS trigger
@@ -748,6 +874,33 @@ BEGIN
 END $$;
 ALTER ROLE db_agent SET role = db_client;
 
+-- Defaults for client logins, for what the append lock does to everyone else. A
+-- transaction that has recorded something holds that lock until it ends, and
+-- every other session's DDL (and every agent write) queues behind it, so one
+-- left open in a client stopped the database's history without an error.
+--   idle_in_transaction_session_timeout = 10min  the value the hardening check
+--     recommends (conn.idle); it ends only a session that sat idle mid-transaction
+--   lock_timeout = 60s  a queued client gets an error, not an endless wait
+-- No statement_timeout: long queries and migrations are legitimate work. These
+-- are defaults a session can SET for itself. Set once for each role, so a value
+-- an administrator chose stays; a role made since the last start has it from the
+-- next one. The engine's own superuser logins are left without them.
+DO $$
+DECLARE r record; s text;
+BEGIN
+  FOR r IN SELECT oid, rolname FROM pg_roles
+            WHERE rolcanlogin AND NOT rolsuper
+              AND (rolname IN ('db_client', 'db_agent') OR pg_has_role(oid, 'db_client', 'MEMBER')) LOOP
+    FOREACH s IN ARRAY ARRAY['lock_timeout=60s', 'idle_in_transaction_session_timeout=10min'] LOOP
+      IF NOT EXISTS (SELECT 1 FROM pg_db_role_setting d, unnest(d.setconfig) c
+                      WHERE d.setrole = r.oid AND d.setdatabase = 0
+                        AND split_part(c, '=', 1) = split_part(s, '=', 1)) THEN
+        EXECUTE format('ALTER ROLE %I SET %I = %L', r.rolname, split_part(s, '=', 1), split_part(s, '=', 2));
+      END IF;
+    END LOOP;
+  END LOOP;
+END $$;
+
 -- Full access to application data (it owns what it creates; these cover what the
 -- superuser created, e.g. imported tables, now and in future).
 GRANT USAGE, CREATE ON SCHEMA public TO db_client;
@@ -761,11 +914,79 @@ ALTER DEFAULT PRIVILEGES FOR ROLE dbadmin IN SCHEMA public GRANT ALL ON SEQUENCE
 -- INSERT/UPDATE/DELETE on the table at all — it cannot forge or rewrite entries.
 GRANT USAGE ON SCHEMA bb TO db_client;
 GRANT SELECT ON bb.schema_ledger, bb.policy, bb.policy_history TO db_client;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA bb TO db_client;
--- …except the one that advances a run's statement position: a client calling it
--- could line a blocked statement up with a harmless one's text.
-REVOKE EXECUTE ON FUNCTION bb._statement_texts(text, text, text) FROM PUBLIC, db_client;
--- …and dblink, wherever it lives. Only the Blackbox's SECURITY DEFINER triggers
+
+-- Functions. A SECURITY DEFINER function runs as the Blackbox's owner, so being
+-- able to call one is being able to do what it does: bb._record_impact takes its
+-- actor as arguments and writes a chained entry, bb._statement_texts moves a
+-- run's statement position so a blocked statement matches a harmless one's text.
+-- Postgres gives every new function to PUBLIC, and everything in bb used to be
+-- granted to db_client on top, so all of them were callable.
+--
+-- So: no client may call a SECURITY DEFINER function here unless it is listed.
+-- The list is every function a client, the gateway or the console calls itself,
+-- SECURITY DEFINER or not (bb.act_for is the only one that is today); nothing
+-- else a client reaches needs its own grant. Trigger and event-trigger functions
+-- are not on it: Postgres checks EXECUTE only when a trigger is made, and they
+-- are made here, by the owner, so they fire for any client. So are the nested
+-- calls among these functions: the inner call is checked against the owner.
+-- SECURITY INVOKER helpers keep what they have; they can do no more than their caller.
+CREATE OR REPLACE FUNCTION bb._client_callable() RETURNS name[]
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT ARRAY[
+    'act_for', 'app_actor', 'app_actor_label', 'app_identity_mode',  -- application identity
+    '_ledger_hash', '_ext_hash',                                     -- verifying the record
+    'track_table', 'untrack_table', 'tracked_tables', 'track_row',   -- row tracking, by a table's owner
+    'policy_check', 'blast_radius',                                  -- previews in the console and MCP
+    'ledger_v2_version', 'blackbox_provenance_version',
+    'blackbox_policy_version', 'blackbox_impact_version'
+  ]::name[];
+$$;
+
+-- Take EXECUTE from clients on one function, unless it is listed above.
+-- session_replication_role: the REVOKE is the Blackbox's own plumbing, not a
+-- change anybody made.
+CREATE OR REPLACE FUNCTION bb._seal_function(f oid) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog SET session_replication_role = replica AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = f AND p.prosecdef AND NOT p.proname = ANY (bb._client_callable())) THEN
+    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, db_client', f::regprocedure);
+  END IF;
+END;
+$$;
+
+-- A function added later, by any of the schema files that run after this one
+-- or by a future release, is sealed as it is made. The files that come after
+-- are run with session_replication_role = replica or must not REVOKE at all
+-- (see datachanges.sql), so the event trigger below is what covers a new
+-- install, where those functions do not exist yet at this point in the file.
+CREATE OR REPLACE FUNCTION bb.seal_new_functions() RETURNS event_trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT objid FROM pg_event_trigger_ddl_commands()
+            WHERE object_type IN ('function', 'procedure') AND schema_name = 'bb' LOOP
+    PERFORM bb._seal_function(r.objid);
+  END LOOP;
+END;
+$$;
+
+-- And every function already here, on every start: this is what closes an
+-- existing install. A CREATE OR REPLACE keeps a function's privileges, so what
+-- is sealed stays sealed.
+DO $seal$
+DECLARE p record;
+BEGIN
+  FOR p IN SELECT f.oid, f.proname FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
+            WHERE n.nspname = 'bb' AND f.prokind IN ('f', 'p') LOOP
+    IF p.proname = ANY (bb._client_callable()) THEN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO db_client', p.oid::regprocedure);
+    ELSE
+      PERFORM bb._seal_function(p.oid);
+    END IF;
+  END LOOP;
+END $seal$;
+
+-- dblink, too, wherever it lives. Only the Blackbox's SECURITY DEFINER triggers
 -- call it, and they run as the owner. A client holding it could open
 -- connections from inside the database to anywhere the container can reach,
 -- with any credentials it has or has learned (audit GW-1).
@@ -795,3 +1016,9 @@ CREATE EVENT TRIGGER bb_log_end ON ddl_command_end
   EXECUTE FUNCTION bb.log_ddl_end();
 CREATE EVENT TRIGGER bb_log_drop ON sql_drop
   EXECUTE FUNCTION bb.log_ddl_drop();
+-- ALWAYS: most of the schema files that follow run with session_replication_role
+-- = replica, and a function they make must be sealed all the same.
+CREATE EVENT TRIGGER bb_seal_functions ON ddl_command_end
+  WHEN TAG IN ('CREATE FUNCTION', 'ALTER FUNCTION', 'CREATE PROCEDURE', 'ALTER PROCEDURE', 'ALTER ROUTINE')
+  EXECUTE FUNCTION bb.seal_new_functions();
+ALTER EVENT TRIGGER bb_seal_functions ENABLE ALWAYS;
