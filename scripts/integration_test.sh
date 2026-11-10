@@ -3834,6 +3834,65 @@ pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS s_orders CASCADE
 for u in ses-dev ses-other; do $S user delete "$u@foxbyte.dev" >/dev/null 2>&1; done
 rm -f /tmp/ses-cancel.out /tmp/ses-own.out /tmp/ses-end.out
 
+echo "### 11ao. run, toggle and plan (point 12.4)"
+# The console's Run form, trigger switches and Explain are SQL the person
+# runs, so what is checked here is what the engine gives the form (each
+# argument of a function and a procedure) and that what the form writes runs
+# as written; the console's own behaviour is runplan.spec.ts.
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS r_items CASCADE; DROP FUNCTION IF EXISTS r_add(integer, integer), r_series(integer), r_none(), r_sum(VARIADIC integer[]); DROP PROCEDURE IF EXISTS r_bump(integer, integer, text)" >/dev/null
+pg pg-main "CREATE FUNCTION r_add(a integer, b integer DEFAULT 10) RETURNS integer LANGUAGE sql AS \$\$ SELECT a + b \$\$;
+  CREATE FUNCTION r_series(n integer) RETURNS TABLE(i integer, sq integer) LANGUAGE sql AS \$\$ SELECT g, g * g FROM generate_series(1, n) g \$\$;
+  CREATE FUNCTION r_none() RETURNS text LANGUAGE sql AS \$\$ SELECT 'none' \$\$;
+  CREATE FUNCTION r_sum(VARIADIC xs integer[]) RETURNS integer LANGUAGE sql AS \$\$ SELECT sum(x)::int FROM unnest(xs) x \$\$;
+  CREATE PROCEDURE r_bump(IN a integer, INOUT b integer, OUT note text) LANGUAGE plpgsql AS \$\$ BEGIN b := a + b; note := 'bumped'; END \$\$" >/dev/null
+rq() { curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST -d "$(python3 -c 'import json,sys; print(json.dumps({"sql": sys.argv[1]}))' "$1")" https://localhost:8080/api/branches/main/query; }
+# Made through the console as the admin, so its role owns the table, as a
+# person owns what they make: only an owner switches a table's triggers.
+rq 'CREATE TABLE r_items (id int PRIMARY KEY, v text);
+  CREATE FUNCTION r_upper() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.v := upper(NEW.v); RETURN NEW; END $$;
+  CREATE TRIGGER r_items_up BEFORE INSERT ON r_items FOR EACH ROW EXECUTE FUNCTION r_upper()' >/dev/null
+CAT="$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/schema)"
+roid() { hjson "print([o['oid'] for o in d['objects'] if o['name']=='$1' and o['kind']=='$2'][0])" <<<"$CAT"; }
+params() { curl -sk -H "$AUTH" "https://localhost:8080/api/branches/main/schema/$2/$(roid "$1" "$2")" | hjson "print([(p.get('name',''), p['type'], p['mode'], p.get('default', False)) for p in d.get('params', [])])"; }
+assert_eq "a function's arguments, each with its name, type, mode and whether it has a default" \
+  "$(params r_add function)" "[('a', 'integer', 'in', False), ('b', 'integer', 'in', True)]"
+assert_eq "…a set-returning one's TABLE columns, one without arguments, a variadic one" \
+  "$(params r_series function)|$(params r_none function)|$(params r_sum function)" \
+  "[('n', 'integer', 'in', False), ('i', 'integer', 'table', False), ('sq', 'integer', 'table', False)]|[]|[('xs', 'integer[]', 'variadic', False)]"
+assert_eq "…and a procedure's IN, INOUT and OUT" \
+  "$(params r_bump procedure)" "[('a', 'integer', 'in', False), ('b', 'integer', 'inout', False), ('note', 'text', 'out', False)]"
+rows() { python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("results",[d])[-1]; print(r.get("error") or ";".join(",".join(str(c) for c in row) for row in r.get("rows") or []))'; }
+assert_eq "what the Run form writes runs: named, a default left out, a NULL of its type" \
+  "$(rq "SELECT * FROM \"public\".\"r_add\"(\"a\" => CAST('5' AS integer))" | rows)|$(rq "SELECT * FROM \"public\".\"r_add\"(\"a\" => CAST('5' AS integer), \"b\" => NULL::integer)" | rows)" "15|None"
+assert_eq "…a set-returning function's rows, a variadic one, and a procedure's INOUT and OUT values" \
+  "$(rq "SELECT * FROM \"public\".\"r_series\"(\"n\" => CAST('3' AS integer))" | rows)|$(rq "SELECT * FROM \"public\".\"r_sum\"(VARIADIC \"xs\" => CAST('{1,2,3}' AS integer[]))" | rows)|$(rq "CALL \"public\".\"r_bump\"(\"a\" => CAST('2' AS integer), \"b\" => CAST('3' AS integer), \"note\" => NULL)" | rows)" \
+  "1,1;2,4;3,9|6|5,bumped"
+# A trigger switched off and on, as the Triggers tab does.
+toid="$(roid r_items table)"
+trg() { curl -sk -H "$AUTH" "https://localhost:8080/api/branches/main/schema/table/$toid" | hjson "print([(t['name'], t.get('disabled', False), t.get('system', False)) for t in d.get('triggers', []) if not t.get('system')])"; }
+rq 'ALTER TABLE "public"."r_items" DISABLE TRIGGER "r_items_up"' >/dev/null
+assert_eq "a trigger disabled as the Triggers tab disables it: the catalog says so, and it no longer fires" \
+  "$(trg)|$(rq "INSERT INTO r_items VALUES (1, 'quiet'); SELECT v FROM r_items WHERE id = 1" | rows)" "[('r_items_up', True, False)]|quiet"
+rq 'ALTER TABLE "public"."r_items" ENABLE TRIGGER "r_items_up"' >/dev/null
+assert_eq "…enabled again, it fires; both changes are in the Blackbox" \
+  "$(trg)|$(rq "INSERT INTO r_items VALUES (2, 'loud'); SELECT v FROM r_items WHERE id = 2" | rows)|$(pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE statement ~ 'r_items.*(DISABLE|ENABLE) TRIGGER'")" "[('r_items_up', False, False)]|LOUD|2"
+$S track r_items >/dev/null 2>&1
+assert_eq "FoxByte's own trigger on a tracked table is marked its own, which the tab does not switch" \
+  "$(curl -sk -H "$AUTH" "https://localhost:8080/api/branches/main/schema/table/$toid" | hjson "print(any(t.get('system') for t in d.get('triggers', [])), [t['name'] for t in d.get('triggers', []) if not t.get('system')])")" "True ['r_items_up']"
+$S track r_items --off >/dev/null 2>&1
+# Explain, as the console sends it.
+EX="$(rq 'EXPLAIN (FORMAT JSON) SELECT * FROM r_items WHERE id = 1')"
+assert_eq "a jsonb array of objects comes back as JSON whole, not each object as text of its own" \
+  "$(rq "SELECT '[{\"a\": 1}, {\"b\": [2]}]'::jsonb AS j" | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("results",[d])[-1]; print(json.loads(r["rows"][0][0]))')" "[{'a': 1}, {'b': [2]}]"
+assert_eq "Explain returns the plan as JSON, which the console reads into a table" \
+  "$(python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("results",[d])[-1]; v=r["rows"][0][0]; doc=json.loads(v) if isinstance(v, str) else v; p=doc[0]["Plan"]; print(r["columns"], p["Node Type"] in ("Index Scan", "Seq Scan", "Bitmap Heap Scan"), p.get("Relation Name"))' <<<"$EX")" "['QUERY PLAN'] True r_items"
+EXA="$(rq "BEGIN;
+EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) DELETE FROM r_items;
+ROLLBACK;")"
+assert_eq "…with Analyse it runs, measured, inside a transaction rolled back: nothing deleted" \
+  "$(python3 -c 'import json,sys; d=json.load(sys.stdin); r=[x for x in d["results"] if x.get("columns")==["QUERY PLAN"]][0]; v=r["rows"][0][0]; doc=json.loads(v) if isinstance(v, str) else v; p=doc[0]; print(p["Plan"]["Node Type"], p["Plan"]["Actual Rows"], "Execution Time" in p)' <<<"$EXA")|$(pg pg-main "SELECT count(*) FROM r_items")" "ModifyTable 0 True|2"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS r_items CASCADE; DROP FUNCTION IF EXISTS r_add(integer, integer), r_series(integer), r_none(), r_sum(VARIADIC integer[]), r_upper(); DROP PROCEDURE IF EXISTS r_bump(integer, integer, text)" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

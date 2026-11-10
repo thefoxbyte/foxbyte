@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useEffect, useState } from 'react'
-import { getObject, type CatalogKind, type CatalogObject, type CatalogPart, type ObjectDetail } from '../api'
+import { getObject, runQuery, type CatalogKind, type CatalogObject, type CatalogPart, type FuncParam, type ObjectDetail } from '../api'
+import { useConfirm } from '../confirm'
+import { buildCall, inputsOf, quoteIdent, type ArgInput } from '../runcall'
 
 // The object browser (point 12.1). The schema rail already lists tables and
 // views; these are the rest of what a branch holds (functions, procedures,
 // sequences, types, schemas, extensions) and, for any object, what it is made
-// of and its CREATE script. Read-only: the engine reads the catalog as you.
+// of and its CREATE script. The engine reads the catalog as you. A function
+// or a procedure can be run from a form, and a table's own triggers switched
+// off and on (point 12.4): both as SQL the person runs, through the console.
 
 const GROUPS: { kind: CatalogKind; title: string; icon: string }[] = [
   { kind: 'function', title: 'Functions', icon: 'ƒ' },
@@ -66,14 +70,16 @@ export function CatalogGroups({ objects, filter, showSystem, active, onOpen }: {
 function useObject(branch: string, obj: CatalogObject | null) {
   const [d, setD] = useState<ObjectDetail | null>(null)
   const [err, setErr] = useState('')
+  const [tick, setTick] = useState(0)
   useEffect(() => {
     if (!obj) return
     let live = true
-    setD(null); setErr('')
+    if (tick === 0) setD(null)
+    setErr('')
     getObject(branch, obj.kind, obj.oid).then(x => { if (live) setD(x) }).catch(e => { if (live) setErr((e as Error).message) })
     return () => { live = false }
-  }, [branch, obj])
-  return { d, err }
+  }, [branch, obj, tick])
+  return { d, err, reload: () => setTick(t => t + 1) }
 }
 
 /** DDL is a CREATE script, with Copy and Open in editor. */
@@ -93,27 +99,65 @@ export function DDL({ text, onOpenSql }: { text: string; onOpenSql: (sql: string
   )
 }
 
-function Parts({ title, parts, empty }: { title: string; parts?: CatalogPart[]; empty: string }) {
+function Parts({ title, parts, empty, onToggle }: { title: string; parts?: CatalogPart[]; empty: string; onToggle?: (p: CatalogPart) => void }) {
   return (
     <section className="obj-parts" aria-label={title}>
       {!parts?.length ? <p className="muted">{empty}</p> : (
         <table className="obj-table">
-          <thead><tr><th>Name</th><th>Definition</th></tr></thead>
+          <thead><tr><th>Name</th><th>Definition</th>{onToggle && <th />}</tr></thead>
           <tbody>
             {parts.map(p => (
-              <tr key={p.name}>
+              <tr key={p.name} data-testid={`part-${p.name}`}>
                 <td className="mono">{p.name}
                   {p.kind && <span className="obj-sub">{p.kind}</span>}
                   {p.system && <span className="obj-sub" title="Installed by FoxByte on every table it records; left out of the CREATE script">FoxByte</span>}
                   {p.disabled && <span className="obj-sub">disabled</span>}
                 </td>
                 <td className="mono">{p.def}</td>
+                {onToggle && (
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {p.system
+                      ? <span className="muted" title="FoxByte keeps its records with it: it is not switched off here">FoxByte&rsquo;s own</span>
+                      : <button type="button" className="ghost sm" onClick={() => onToggle(p)}>{p.disabled ? 'Enable' : 'Disable…'}</button>}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
         </table>
       )}
     </section>
+  )
+}
+
+/** Triggers, each of the user's own switched off and on (point 12.4), as the person, through the console. */
+function TriggerParts({ branch, obj, d, reload }: { branch: string; obj: CatalogObject; d: ObjectDetail; reload: () => void }) {
+  const confirm = useConfirm()
+  const [err, setErr] = useState('')
+  const [note, setNote] = useState('')
+  const toggle = async (p: CatalogPart) => {
+    const on = p.disabled
+    if (!on && !await confirm({
+      title: 'Disable trigger',
+      message: <>While <code>{p.name}</code> is disabled it does not fire: rows written meanwhile are not seen by it. The change is recorded in the Blackbox.</>,
+      confirmText: 'Disable', danger: true,
+    })) return
+    setErr(''); setNote('')
+    const sql = `ALTER TABLE ${quoteIdent(obj.schema ?? 'public')}.${quoteIdent(obj.name)} ${on ? 'ENABLE' : 'DISABLE'} TRIGGER ${quoteIdent(p.name)}`
+    try {
+      const r = await runQuery(branch, sql)
+      const e = r.error ?? r.results?.find(x => x.error)?.error
+      if (e) { setErr(e); return }
+      setNote(`${p.name} ${on ? 'enabled' : 'disabled'}.`)
+      reload()
+    } catch (e) { setErr((e as Error).message) }
+  }
+  return (
+    <>
+      <Parts title="Triggers" parts={d.triggers} empty="No triggers." onToggle={toggle} />
+      {note && <div className="ok" role="status" data-testid="trigger-note">{note}</div>}
+      {err && <div className="err">{err}</div>}
+    </>
   )
 }
 
@@ -124,17 +168,19 @@ export function TableParts({ branch, obj, tab, onOpenSql }: {
   tab: 'constraints' | 'triggers' | 'ddl'
   onOpenSql: (sql: string) => void
 }) {
-  const { d, err } = useObject(branch, obj)
+  const { d, err, reload } = useObject(branch, obj)
   if (!obj) return <p className="muted">Not in this branch's catalog for you.</p>
   if (err) return <div className="err">{err}</div>
   if (!d) return <div className="muted">Loading…</div>
   if (tab === 'constraints') return <Parts title="Constraints" parts={d.constraints} empty="No constraints." />
-  if (tab === 'triggers') return <Parts title="Triggers" parts={d.triggers} empty="No triggers." />
+  if (tab === 'triggers') return <TriggerParts branch={branch} obj={obj} d={d} reload={reload} />
   return <DDL text={d.ddl} onOpenSql={onOpenSql} />
 }
 
 /** ObjectView is any object that is not a table or a view: what it is, and its CREATE script. */
-export function ObjectView({ branch, obj, onOpenSql }: { branch: string; obj: CatalogObject; onOpenSql: (sql: string) => void }) {
+export function ObjectView({ branch, obj, onOpenSql, onRunSql }: {
+  branch: string; obj: CatalogObject; onOpenSql: (sql: string) => void; onRunSql?: (sql: string) => void
+}) {
   const { d, err } = useObject(branch, obj)
   return (
     <section className="wb-pane wb-res obj-view" aria-label={`${obj.kind} ${objectLabel(obj)}`}>
@@ -159,6 +205,10 @@ export function ObjectView({ branch, obj, onOpenSql }: { branch: string; obj: Ca
             </tbody></table>
           )}
           {!!d.constraints?.length && <Parts title="Constraints" parts={d.constraints} empty="" />}
+          {(obj.kind === 'function' || obj.kind === 'procedure') && d.params && onRunSql && (
+            <RunForm key={`${obj.kind}${obj.oid}`} kind={obj.kind} schema={obj.schema ?? 'public'} name={obj.name}
+              params={d.params} onRun={onRunSql} onOpen={onOpenSql} />
+          )}
           {!!d.members?.length && (
             <details className="obj-members"><summary>Installed ({d.members.length})</summary>
               <ul>{d.members.map(m => <li key={m.Kind + m.Name} className="mono">{m.Name}</li>)}</ul>
@@ -168,5 +218,50 @@ export function ObjectView({ branch, obj, onOpenSql }: { branch: string; obj: Ca
         </div>
       )}
     </section>
+  )
+}
+
+/** RunForm calls a function or a procedure (point 12.4): one field per argument, the call shown as it is built. */
+function RunForm({ kind, schema, name, params, onRun, onOpen }: {
+  kind: 'function' | 'procedure'; schema: string; name: string; params: FuncParam[]
+  onRun: (sql: string) => void; onOpen: (sql: string) => void
+}) {
+  const ins = inputsOf(params)
+  const [vals, setVals] = useState<ArgInput[]>(() => ins.map(p => ({ value: '', isNull: false, useDefault: !!p.default })))
+  const set = (i: number, v: Partial<ArgInput>) => setVals(vs => vs.map((x, j) => (j === i ? { ...x, ...v } : x)))
+  const call = buildCall(kind, schema, name, params, vals)
+  const returns = params.filter(p => p.mode === 'out' || p.mode === 'table' || (kind === 'procedure' && p.mode === 'inout'))
+  return (
+    <form className="run-form" aria-label={`Run ${name}`} onSubmit={e => { e.preventDefault(); if (call.sql) onRun(call.sql) }}>
+      <div className="pane-t">Run {kind === 'procedure' ? 'the procedure' : 'the function'}</div>
+      {ins.length === 0 && <p className="muted">It takes no arguments.</p>}
+      {ins.map((p, i) => (
+        <div className="row" key={i} style={{ gap: 8, alignItems: 'center', marginTop: 6 }}>
+          <label className="field-inline" style={{ minWidth: 220 }}>
+            <span className="mono">{p.name || `$${i + 1}`}{p.mode !== 'in' && <span className="muted"> {p.mode}</span>}</span>
+            <input aria-label={`Value of ${p.name || `$${i + 1}`}`} value={vals[i].value} placeholder={p.type}
+              disabled={vals[i].isNull || (vals[i].useDefault && !!p.default)} onChange={e => set(i, { value: e.target.value })} />
+          </label>
+          <label className="muted" style={{ fontSize: 13 }}>
+            <input type="checkbox" checked={vals[i].isNull} onChange={e => set(i, { isNull: e.target.checked })} /> NULL
+          </label>
+          {p.default && (
+            <label className="muted" style={{ fontSize: 13 }}>
+              <input type="checkbox" checked={vals[i].useDefault} onChange={e => set(i, { useDefault: e.target.checked })} /> its default
+            </label>
+          )}
+        </div>
+      ))}
+      {returns.length > 0 && (
+        <p className="muted" style={{ fontSize: 13 }}>Returns {returns.map(p => `${p.name || '?'} ${p.type}`).join(', ')}.</p>
+      )}
+      {call.sql && <pre className="ddl-text" data-testid="run-sql"><code>{call.sql}</code></pre>}
+      {call.error && <div className="err">{call.error}</div>}
+      <div className="row" style={{ gap: 8 }}>
+        <button type="submit" className="primary" disabled={!call.sql}>Run</button>
+        <button type="button" className="ghost" disabled={!call.sql} onClick={() => call.sql && onOpen(call.sql)}>Put the call in the editor</button>
+      </div>
+      <p className="muted" style={{ fontSize: 13 }}>It runs as you, in the Console, like anything you write there.</p>
+    </form>
   )
 }

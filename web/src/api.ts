@@ -445,7 +445,10 @@ export type CatalogCol = { name: string; type: string; not_null?: boolean; defau
 export type ObjectDetail = CatalogObject & {
   comment?: string; columns?: CatalogCol[]; constraints?: CatalogPart[]; indexes?: CatalogPart[]; triggers?: CatalogPart[]
   facts?: [string, string][]; values?: string[]; members?: { Kind: string; Name: string }[]; ddl: string
+  // A function's or a procedure's arguments, in order (point 12.4).
+  params?: FuncParam[]
 }
+export type FuncParam = { name?: string; type: string; mode: 'in' | 'out' | 'inout' | 'variadic' | 'table'; default?: boolean }
 export const getCatalog = (branch: string) =>
   req('GET', `${API}/api/branches/${branch}/schema`) as Promise<{ objects: CatalogObject[] | null }>
 export const getObject = (branch: string, kind: CatalogKind, oid: number) =>
