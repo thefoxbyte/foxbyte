@@ -25,7 +25,9 @@ import (
 // SQLite triggers refuse UPDATE and DELETE, and the checkpointer anchors the
 // chain's head in a signed file outside the store (branch.CheckpointSecurityLog),
 // so rewriting history — even recomputing every hash — breaks either the chain
-// or an anchor. `fox audit verify` checks both.
+// or an anchor. `fox audit verify` checks both over every event; a checkpoint
+// checks only what has been added since the last anchor (see
+// branch.CheckpointSecurityLog for exactly what that does and does not cover).
 
 // Event kinds.
 const (
@@ -435,8 +437,13 @@ func (s *Store) LastLicenseEvent() (kind, subject string, ok bool, err error) {
 // CheckEventChain recomputes the chain. It returns the id of the first event
 // that does not match, or 0 when all do.
 func CheckEventChain(evs []SecurityEvent) (int64, string) {
-	prev := ""
-	var lastID int64
+	return CheckEventChainFrom(evs, 0, "")
+}
+
+// CheckEventChainFrom recomputes the chain over evs, taking them to follow the
+// event lastID, whose row hash is prev. Like CheckEventChain, it returns the id
+// of the first event that does not match, or 0 when all do.
+func CheckEventChainFrom(evs []SecurityEvent, lastID int64, prev string) (int64, string) {
 	for _, e := range evs {
 		switch {
 		case e.ID != lastID+1:
