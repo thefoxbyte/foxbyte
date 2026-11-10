@@ -16,6 +16,8 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -191,5 +193,157 @@ func TestSendError(t *testing.T) {
 	}
 	if !bytes.Contains(got, []byte("3D000")) {
 		t.Errorf("ErrorResponse missing SQLSTATE code: %q", got)
+	}
+}
+
+// readErrorResponse reads one ErrorResponse and returns its fields as text.
+func readErrorResponse(t *testing.T, c net.Conn) string {
+	t.Helper()
+	h := make([]byte, 5)
+	if _, err := io.ReadFull(c, h); err != nil {
+		t.Fatalf("reading the error: %v", err)
+	}
+	if h[0] != 'E' {
+		t.Fatalf("expected an ErrorResponse, got %q", h[0])
+	}
+	body := make([]byte, binary.BigEndian.Uint32(h[1:])-4)
+	if _, err := io.ReadFull(c, body); err != nil {
+		t.Fatalf("reading the error body: %v", err)
+	}
+	return string(body)
+}
+
+// A startup packet that claims too much is refused on its header alone: the
+// test never sends the body, so a reader that waited for it would time out.
+func TestReadStartupRefusesOversizedPacket(t *testing.T) {
+	for _, n := range []uint32{maxStartupPacket + 1, 1 << 20, 1<<32 - 1, 4} {
+		client, server := net.Pipe()
+		_ = server.SetDeadline(time.Now().Add(3 * time.Second))
+		_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+		go func() {
+			h := make([]byte, 4)
+			binary.BigEndian.PutUint32(h, n)
+			_, _ = client.Write(h)
+		}()
+		errc := make(chan error, 1)
+		go func() { _, _, err := readStartup(server); errc <- err }()
+		if got := readErrorResponse(t, client); !bytes.Contains([]byte(got), []byte("08P01")) {
+			t.Errorf("length %d: error %q, want SQLSTATE 08P01", n, got)
+		}
+		if err := <-errc; err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Errorf("length %d: readStartup = %v", n, err)
+		}
+		client.Close()
+		server.Close()
+	}
+}
+
+// The largest packet Postgres itself would take still gets through.
+func TestReadStartupAcceptsLargestPacket(t *testing.T) {
+	params := map[string]string{"user": "u", "database": "main"}
+	params["options"] = strings.Repeat("x", maxStartupPacket-len(buildStartup(params))-len("options")-2)
+	pkt := buildStartup(params)
+	if len(pkt) != maxStartupPacket {
+		t.Fatalf("test packet is %d bytes, want %d", len(pkt), maxStartupPacket)
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() { _, _ = client.Write(pkt) }()
+	_ = server.SetDeadline(time.Now().Add(3 * time.Second))
+	_, got, err := readStartup(server)
+	if err != nil {
+		t.Fatalf("readStartup: %v", err)
+	}
+	if got["database"] != "main" {
+		t.Errorf("database = %q", got["database"])
+	}
+}
+
+// startPasswordRead runs requestClientPassword against a pipe and consumes the
+// AuthenticationCleartextPassword request it sends first.
+func startPasswordRead(t *testing.T) (net.Conn, chan error, *string) {
+	t.Helper()
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+	_ = server.SetDeadline(time.Now().Add(3 * time.Second))
+	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+	errc := make(chan error, 1)
+	got := new(string)
+	go func() {
+		var err error
+		*got, err = requestClientPassword(server)
+		errc <- err
+	}()
+	if _, err := io.ReadFull(client, make([]byte, 9)); err != nil {
+		t.Fatalf("reading the auth request: %v", err)
+	}
+	return client, errc, got
+}
+
+// A client that has not authenticated is held to a small password message, on
+// the header alone (no body is ever sent here) and with a real protocol error.
+func TestPasswordMessageIsCapped(t *testing.T) {
+	for _, n := range []uint32{maxPasswordMessage + 1, 1 << 24, 3} {
+		client, errc, _ := startPasswordRead(t)
+		h := []byte{'p', 0, 0, 0, 0}
+		binary.BigEndian.PutUint32(h[1:], n)
+		if _, err := client.Write(h); err != nil {
+			t.Fatal(err)
+		}
+		if got := readErrorResponse(t, client); !bytes.Contains([]byte(got), []byte("08P01")) {
+			t.Errorf("length %d: error %q, want SQLSTATE 08P01", n, got)
+		}
+		if err := <-errc; !errors.Is(err, errBadMsgLength) {
+			t.Errorf("length %d: %v, want errBadMsgLength", n, err)
+		}
+	}
+}
+
+// An API key, and anything up to the limit, is still read.
+func TestPasswordMessageWithinLimit(t *testing.T) {
+	for _, secret := range []string{"key_" + strings.Repeat("a", 64), strings.Repeat("k", maxPasswordMessage-5)} {
+		client, errc, got := startPasswordRead(t)
+		if err := writeMsg(client, 'p', append([]byte(secret), 0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-errc; err != nil {
+			t.Fatalf("%d-byte secret: %v", len(secret), err)
+		}
+		if *got != secret {
+			t.Errorf("read %q, want %q", *got, secret)
+		}
+	}
+}
+
+// The limit is the client's alone: a backend may send much larger messages.
+func TestBackendMessagesKeepTheirLimit(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	body := make([]byte, maxStartupPacket*4)
+	go func() { _ = writeMsg(client, 'S', body) }()
+	_ = server.SetDeadline(time.Now().Add(3 * time.Second))
+	typ, got, err := readMsg(server)
+	if err != nil || typ != 'S' || len(got) != len(body) {
+		t.Fatalf("readMsg: %q, %d bytes, %v", typ, len(got), err)
+	}
+}
+
+// A SASLContinue too short to hold its code used to index out of range.
+func TestScramRefusesShortSASLContinue(t *testing.T) {
+	for _, short := range [][]byte{{}, {0, 0, 11}} {
+		gateway, backend := net.Pipe()
+		_ = gateway.SetDeadline(time.Now().Add(3 * time.Second))
+		_ = backend.SetDeadline(time.Now().Add(3 * time.Second))
+		go func() {
+			_, _, _ = readMsg(backend) // SASLInitialResponse
+			_ = writeMsg(backend, 'R', short)
+		}()
+		if err := scramSHA256(gateway, []byte("SCRAM-SHA-256\x00\x00"), "pw"); err == nil {
+			t.Errorf("a %d-byte SASLContinue was accepted", len(short))
+		}
+		gateway.Close()
+		backend.Close()
 	}
 }

@@ -144,6 +144,10 @@ func importInstance(p *Progress, target, defName, desc string, a As, load func(s
 	if target == "" {
 		target = defName
 	}
+	// After the default is filled in: it comes from the source's name.
+	if err := CheckNewName(target); err != nil {
+		return "", err
+	}
 	p.Logf("Creating instance %q…\n", target)
 	if err := Create(target, "main"); err != nil {
 		return "", fmt.Errorf("create target instance %q: %w", target, err)
@@ -202,6 +206,9 @@ func ImportContinuousToAs(p *Progress, source, target string, a As) (string, err
 	}
 	if target == "" {
 		target = defaultTargetName(source)
+	}
+	if err := CheckNewName(target); err != nil {
+		return "", err
 	}
 	// Every client below, and the subscription's walreceiver, is given the
 	// source's own password or an empty one, never the container's (GW-1).

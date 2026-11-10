@@ -696,6 +696,12 @@ func pipelineCmd(args []string) {
 	if target == "" {
 		target = "pl-" + strings.TrimSuffix(filepath.Base(specPath), filepath.Ext(specPath))
 	}
+	must(branch.CheckNewName(target))
+	// A run deletes and re-creates its target. A branch an account owns is not
+	// this command's to replace; deleting it first is a decision made out loud.
+	if branch.Exists(target) && accountOwnsBranch(target) {
+		must(fmt.Errorf("the branch %q belongs to an account: delete it first, or choose another name with --as", target))
+	}
 	res, err := branch.RunPipeline(&branch.Progress{Log: os.Stdout}, spec, target)
 	must(err)
 	if res.Failed {
@@ -784,6 +790,7 @@ func branchCmd(args []string) {
 			fmt.Println("usage: fox branch create <name> [--from <branch>] [--masked]")
 			os.Exit(2)
 		}
+		must(branch.CheckNewName(name))
 		started := time.Now()
 		if hasFlag(args[1:], "--masked") {
 			maskedBranchCreate(name, optValue(args[1:], "--from"), started)
@@ -1480,6 +1487,18 @@ func forgetOwner(name string) {
 		_ = s.ForgetBranch(name)
 		s.Close()
 	}
+}
+
+// accountOwnsBranch reports whether an account is recorded as a branch's owner.
+// Best-effort, like forgetOwner: with no store there are no accounts.
+func accountOwnsBranch(name string) bool {
+	s, err := auth.OpenFromEnv()
+	if err != nil {
+		return false
+	}
+	defer s.Close()
+	_, owned := s.BranchOwner(name)
+	return owned
 }
 
 // userCmd is `fox user`: accounts, for whoever runs the engine (audit v2 G16).

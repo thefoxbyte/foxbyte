@@ -39,6 +39,14 @@ import (
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
 
+// checkNewBranchName is the rule for a branch name an account picks.
+func checkNewBranchName(name string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("invalid name (use lowercase letters, digits, dashes)")
+	}
+	return branch.CheckNewName(name)
+}
+
 // ruleIDRe matches a Blackbox policy rule id (bb.policy_rules.rule_id).
 var ruleIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
@@ -298,8 +306,8 @@ func registerAPI(mux *http.ServeMux) {
 			Masked bool   `json:"masked"` // a masked branch (masking step 5): made in the background
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !nameRe.MatchString(body.Name) {
-			writeErr(w, 400, fmt.Errorf("invalid name (use lowercase letters, digits, dashes)"))
+		if err := checkNewBranchName(body.Name); err != nil {
+			writeErr(w, 400, err)
 			return
 		}
 		if body.From != "" && !nameRe.MatchString(body.From) {
@@ -1236,14 +1244,20 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 			return
 		}
 		target := pipelineBranch(pl)
+		// Before anything else: the engine begins by deleting whatever has this
+		// name, and a run is recorded as owning its target even when it fails.
+		if err := branch.CheckNewName(target); err != nil {
+			send("error", map[string]string{"message": fmt.Sprintf("rename the pipeline: %v", err)})
+			return
+		}
 		// A spec saved before sources were checked may still name a file.
 		if err := checkPipelineSource(spec.Source); err != nil {
 			send("error", map[string]string{"message": err.Error()})
 			return
 		}
 		// A run deletes and re-creates its target, so it may only do that to
-		// a branch this pipeline made.
-		if branch.Exists(target) && !store.PipelineOwnsTarget(pl.ID, target) {
+		// a branch this pipeline made and this account still owns.
+		if branch.Exists(target) && !store.PipelineMayReplace(pl.ID, u.ID, target) {
 			send("error", map[string]string{"message": fmt.Sprintf(
 				"a branch named %q already exists and was not made by this pipeline — rename the pipeline, or delete that branch first", target)})
 			return

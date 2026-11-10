@@ -4,6 +4,7 @@ package branch
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -65,5 +66,72 @@ func TestPublishedPortsAreLoopback(t *testing.T) {
 		if a == "-p" {
 			t.Error("the standby publishes a host port; the Gateway reaches it over the docker network")
 		}
+	}
+}
+
+// Any account could name a branch "standby", and making it began by removing
+// the live HA standby's container.
+func TestCheckNewNameRefusesEngineNames(t *testing.T) {
+	for _, n := range []string{"main", "standby", "restore", "restore-check", "agent-zz", "agent-",
+		"main-before-606", "x-before-y", "Standby", "AGENT-zz", "X-Before-1"} {
+		if err := CheckNewName(n); !errors.Is(err, ErrReservedName) {
+			t.Errorf("CheckNewName(%q) = %v, want ErrReservedName", n, err)
+		}
+	}
+	for _, n := range []string{"qa", "feature-123", "import-db", "agents", "mainline", "standby2", "restored", "before", "x-before"} {
+		if err := CheckNewName(n); err != nil {
+			t.Errorf("CheckNewName(%q) = %v, want ok", n, err)
+		}
+	}
+	if err := CheckNewName("x/../main"); !errors.Is(err, ErrBadName) {
+		t.Errorf("a bad name: %v, want ErrBadName", err)
+	}
+	// The floor under the engine's own names is not raised.
+	for _, n := range []string{"main", "standby", "restore", "restore-check", "agent-zz", "main-before-606"} {
+		if err := checkName(n); err != nil {
+			t.Errorf("checkName(%q) = %v: the engine uses this name", n, err)
+		}
+	}
+}
+
+// Each way a name comes in from outside is refused before anything is run, so
+// these need no Docker.
+func TestNewNameEntryPointsRefuseEngineNames(t *testing.T) {
+	p := &Progress{}
+	check := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrReservedName) {
+			t.Errorf("%s: %v, want ErrReservedName", what, err)
+		}
+	}
+	_, err := ImportToAs(p, "postgres://h/d", "standby", As{})
+	check("import target", err)
+	_, err = ImportToAs(p, "mongodb://h/d", "main-before-3", As{})
+	check("mongodb target", err)
+	_, err = ImportReaderToAs(p, strings.NewReader(""), srcSQL, "x.sql", "agent-zz", As{})
+	check("upload target", err)
+	_, err = ImportContinuousToAs(p, "postgres://h/d", "restore-check", As{})
+	check("continuous target", err)
+}
+
+func TestCheckNoContainer(t *testing.T) {
+	if err := checkNoContainer("qa", "absent"); err != nil {
+		t.Errorf("no container: %v", err)
+	}
+	for _, state := range []string{"running", "exited", "created"} {
+		if err := checkNoContainer("standby", state); !errors.Is(err, ErrBranchExists) {
+			t.Errorf("a %s container: %v, want ErrBranchExists", state, err)
+		}
+	}
+}
+
+// branch-before makes the *-before-* names, so it must keep accepting them,
+// and it now refuses the name it had missed.
+func TestBeforeNameFollowsEngineNames(t *testing.T) {
+	if err := validateBeforeName("restore-check"); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("restore-check: %v", err)
+	}
+	if err := validateBeforeName("main-before-12"); err != nil {
+		t.Errorf("main-before-12: %v", err)
 	}
 }
