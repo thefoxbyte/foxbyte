@@ -57,6 +57,7 @@ type Store struct {
 	db       *sql.DB
 	cfg      Config
 	throttle *throttle
+	gateway  *gatewayGuard
 	// historyTrimmed is when query history was last trimmed to its retention,
 	// in Unix nanoseconds (history.go).
 	historyTrimmed atomic.Int64
@@ -142,7 +143,9 @@ func Open(cfg Config) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, cfg: cfg, throttle: newThrottle(loginMaxFails, loginWindow)}, nil
+	s := &Store{db: db, cfg: cfg, throttle: newThrottle(loginMaxFails, loginWindow)}
+	s.gateway = newGatewayGuard(s)
+	return s, nil
 }
 
 // initSchema creates and migrates the store.
@@ -282,6 +285,9 @@ func hasColumn(ctx context.Context, db *sql.Conn, table, column string) (bool, e
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
+	}
+	if s.gateway != nil {
+		s.gateway.close()
 	}
 	return s.db.Close()
 }

@@ -230,6 +230,26 @@ func (h *Hub) Stats() (subscribers int, delivered int64, peak int) {
 	return len(h.subs), h.delivered, h.peak
 }
 
+// Drained reports whether somebody is attached and has been given everything
+// published so far: no buffer holds an event, and nobody is waiting to be told
+// their stream is over.
+//
+// False with no subscribers at all. Nobody has been delivered anything then,
+// and the decoder is either about to stop or about to be subscribed to.
+func (h *Hub) Drained() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.subs) == 0 {
+		return false
+	}
+	for _, s := range h.subs {
+		if len(s.ch) > 0 || s.isPending() {
+			return false
+		}
+	}
+	return true
+}
+
 // Publish sends to every subscriber without blocking on any of them.
 func (h *Hub) Publish(ev any) {
 	done := false // a transaction finished in this call

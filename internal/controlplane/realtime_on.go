@@ -235,6 +235,8 @@ func resumeFor(name string, since pglogrepl.LSN) (*realtime.Hub, realtime.Resume
 		floor := w.Confirmed
 		if !w.HaveSlot {
 			floor = w.WALEnd
+		} else if w.QuietFrom != 0 && w.QuietFrom < floor {
+			floor = w.QuietFrom // nothing was published between there and the slot
 		}
 		h, _ := startHub(name, 0, floor)
 		return h, realtime.ResumeLive, nil
@@ -306,6 +308,9 @@ func resumeWindow(name string) (realtime.Window, error) {
 	if lsn, err := pglogrepl.ParseLSN(rw.WALEnd); err == nil {
 		w.WALEnd = lsn
 	}
+	// What the slot moved past on keepalives, with nothing published: a position
+	// in there has missed nothing, however far the slot has gone since.
+	w.QuietFrom, w.QuietTo = realtime.QuietSpan(branch.SlotName(name, "stream"), w.Confirmed, w.HaveSlot)
 	return w, nil
 }
 

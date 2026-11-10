@@ -48,9 +48,10 @@ type Decoder struct {
 	// streaming sends only complete transactions, in commit order, so there is
 	// exactly one of these at a time and no interleaving to untangle.
 	tx txState
-	// acked is the last position every subscriber has been given. Only this is
-	// reported to Postgres, so WAL behind it stays reclaimable and WAL ahead of
-	// it stays available for a subscriber that reconnects.
+	// acked is the last position every subscriber has been given, or the
+	// server's own position once nothing is owed to anyone (advanceIfQuiet).
+	// Only this is reported to Postgres, so WAL behind it stays reclaimable and
+	// WAL ahead of it stays available for a subscriber that reconnects.
 	acked pglogrepl.LSN
 }
 
@@ -134,6 +135,7 @@ func (d *Decoder) Run(ctx context.Context, since pglogrepl.LSN) error {
 		}
 	}
 	d.acked = since
+	noteQuietStart(d.slot, since, d.hub.Floor())
 	if err := pglogrepl.StartReplication(ctx, d.conn, d.slot, since,
 		pglogrepl.StartReplicationOptions{PluginArgs: []string{
 			"proto_version '1'", "publication_names '" + d.publication + "'",
@@ -166,39 +168,79 @@ func (d *Decoder) Run(ctx context.Context, since pglogrepl.LSN) error {
 		if !ok {
 			continue // a notice or similar; nothing to decode
 		}
-		switch cd.Data[0] {
-		case pglogrepl.PrimaryKeepaliveMessageByteID:
-			ka, err := pglogrepl.ParsePrimaryKeepaliveMessage(cd.Data[1:])
-			if err != nil {
-				return err
+		reply, err := d.handleCopyData(cd.Data)
+		if err != nil {
+			return err
+		}
+		if reply {
+			next = time.Now() // answer on the next turn of the loop
+		}
+		// A subscriber overflowed inside the transaction that has just
+		// finished, and is still attached for exactly this moment: report
+		// the position before it goes, because the last subscriber leaving
+		// is what stops this decoder, and a transaction nobody could be
+		// given has to be behind us when that happens. Otherwise the next
+		// subscriber starts in front of it and overflows in the same place.
+		if d.hub.Releasable() {
+			if err := pglogrepl.SendStandbyStatusUpdate(ctx, d.conn,
+				pglogrepl.StandbyStatusUpdate{WALWritePosition: d.acked}); err != nil {
+				return fmt.Errorf("reporting the position of a transaction that could not be delivered: %w", err)
 			}
-			if ka.ReplyRequested {
-				next = time.Now() // answer on the next turn of the loop
-			}
-		case pglogrepl.XLogDataByteID:
-			xld, err := pglogrepl.ParseXLogData(cd.Data[1:])
-			if err != nil {
-				return err
-			}
-			if err := d.handle(xld); err != nil {
-				return err
-			}
-			// A subscriber overflowed inside the transaction that has just
-			// finished, and is still attached for exactly this moment: report
-			// the position before it goes, because the last subscriber leaving
-			// is what stops this decoder, and a transaction nobody could be
-			// given has to be behind us when that happens. Otherwise the next
-			// subscriber starts in front of it and overflows in the same place.
-			if d.hub.Releasable() {
-				if err := pglogrepl.SendStandbyStatusUpdate(ctx, d.conn,
-					pglogrepl.StandbyStatusUpdate{WALWritePosition: d.acked}); err != nil {
-					return fmt.Errorf("reporting the position of a transaction that could not be delivered: %w", err)
-				}
-				next = time.Now().Add(StandbyInterval)
-				d.hub.ReleasePending()
-			}
+			next = time.Now().Add(StandbyInterval)
+			d.hub.ReleasePending()
 		}
 	}
+}
+
+// handleCopyData takes in one message from the replication stream and reports
+// whether Postgres asked for an answer straight away.
+func (d *Decoder) handleCopyData(data []byte) (bool, error) {
+	if len(data) == 0 {
+		return false, nil // nothing a walsender sends, and nothing to index
+	}
+	switch data[0] {
+	case pglogrepl.PrimaryKeepaliveMessageByteID:
+		ka, err := pglogrepl.ParsePrimaryKeepaliveMessage(data[1:])
+		if err != nil {
+			return false, err
+		}
+		d.advanceIfQuiet(ka.ServerWALEnd)
+		return ka.ReplyRequested, nil
+	case pglogrepl.XLogDataByteID:
+		xld, err := pglogrepl.ParseXLogData(data[1:])
+		if err != nil {
+			return false, err
+		}
+		if err := d.handle(xld); err != nil {
+			return false, err
+		}
+		d.advanceIfQuiet(xld.ServerWALEnd)
+	}
+	return false, nil
+}
+
+// advanceIfQuiet acknowledges a position the server has reported, when that
+// is safe to do.
+//
+// A table nobody writes to produces no commits here, so without this the
+// position stands still while the rest of the database keeps writing, the WAL
+// behind it cannot be reclaimed, and max_slot_wal_keep_size eventually
+// invalidates the slot. Nobody could be told what happened: there was nothing
+// to deliver.
+//
+// The server only sends a position once everything committing before it has
+// been written to this connection, and a message arrives after the ones sent
+// before it. So once no transaction is open here, and everything handed to
+// subscribers has left their buffers, nothing before that position is still
+// owed to anyone. Transactions not yet committed at that position are not
+// affected: they are sent when they commit, and Postgres keeps their WAL for
+// that whatever is acknowledged here.
+func (d *Decoder) advanceIfQuiet(end pglogrepl.LSN) {
+	if d.tx.commitLSN != "" || end <= d.acked || !d.hub.Drained() {
+		return
+	}
+	d.acked = end
+	noteQuietAcked(d.slot, end)
 }
 
 // Close ends the replication connection. The slot stays: it is what a
@@ -284,10 +326,16 @@ func (d *Decoder) handleMessage(m pglogrepl.Message, lsn string) error {
 				At:        msg.CommitTime.UTC().Format(time.RFC3339Nano),
 				Changes:   d.tx.changes})
 		}
-		d.tx = txState{}
 		// Everything in this transaction has been handed to the hub, so the
 		// position is now safe to acknowledge.
+		published := d.tx.begun
+		d.tx = txState{}
 		d.acked = msg.CommitLSN
+		if published {
+			noteQuietPublished(d.slot, msg.CommitLSN)
+		} else {
+			noteQuietAcked(d.slot, msg.CommitLSN)
+		}
 	}
 	return nil
 }

@@ -207,31 +207,40 @@ func appendDay(day string, recs []AuditRecord) (int64, error) {
 	return st.Size(), nil
 }
 
-// readDay reads a day's records.
+// readDay reads a day's records. On an error it returns those it got to, which
+// is how verify says how far a damaged file still reads.
 func readDay(day string) ([]AuditRecord, error) {
+	var out []AuditRecord
+	err := scanDay(day, func(r AuditRecord) { out = append(out, r) })
+	return out, err
+}
+
+// scanDay hands a day's records to fn in file order, one at a time, so a reader
+// that does not need them all does not hold them. A variable so a test can
+// count what a read costs.
+var scanDay = func(day string, fn func(AuditRecord)) error {
 	f, err := os.Open(dayPath(day))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer f.Close()
 	zr, err := gzip.NewReader(f)
 	if err != nil {
 		if err == io.EOF {
-			return nil, nil
+			return nil
 		}
-		return nil, err
+		return err
 	}
 	defer zr.Close()
-	var out []AuditRecord
 	dec := json.NewDecoder(zr)
 	for {
 		var r AuditRecord
 		if err := dec.Decode(&r); err == io.EOF {
-			return out, nil
+			return nil
 		} else if err != nil {
-			return out, fmt.Errorf("%s: %w", day, err)
+			return fmt.Errorf("%s: %w", day, err)
 		}
-		out = append(out, r)
+		fn(r)
 	}
 }
 
@@ -524,26 +533,76 @@ type AuditEntry struct {
 // ReadAudit reads the newest records that match, newest first: statements
 // joined to their transaction's outcome and whom it was for, and the
 // outcome records of errors outside any audited statement.
+//
+// Two passes over the days, each a day at a time, so the work grows with the
+// records read and what is held with Limit, however far back a rare match
+// makes it look. The first walks back from the newest day choosing the
+// records to show and stops once it has Limit of them. The second reads those
+// same days again for the transactions and errors of the statements chosen.
+//
+// The second pass, and not a window carried across day boundaries, because a
+// statement's transaction can be filed on any day the walk read, in either
+// direction: a transaction can run for days, and a late raw file can file a
+// statement after the transaction that closed it. A window of any fixed width
+// would give a different answer for those. Knowing the statements first means
+// only their keys are looked for, at most Limit of them.
 func ReadAudit(q AuditQuery) ([]AuditEntry, error) {
 	if q.Limit <= 0 {
 		q.Limit = 100
 	}
+	match := q.matcher()
 	days := storedDays()
-	var all []AuditRecord
-	var out []AuditEntry
-	for i := len(days) - 1; i >= 0 && len(out) < q.Limit; i-- {
+	var picked []AuditRecord // newest first, at most Limit
+	oldest := len(days)
+	for i := len(days) - 1; i >= 0 && len(picked) < q.Limit; i-- {
 		if !q.Since.IsZero() && days[i] < q.Since.UTC().Format("2006-01-02") {
 			break
 		}
-		recs, err := readDay(days[i])
+		// A day is walked backwards, so only its last matches can be shown.
+		need := q.Limit - len(picked)
+		var day []AuditRecord
+		err := scanDay(days[i], func(r AuditRecord) {
+			if !match(r) {
+				return
+			}
+			if len(day) == 2*need {
+				day = day[:copy(day, day[need:])]
+			}
+			day = append(day, r)
+		})
 		if err != nil {
 			return nil, err
 		}
-		all = append(recs, all...)
-		out = joinAudit(all, q)
+		if len(day) > need {
+			day = day[len(day)-need:]
+		}
+		for j := len(day) - 1; j >= 0; j-- {
+			picked = append(picked, day[j])
+		}
+		oldest = i
 	}
-	if len(out) > q.Limit {
-		out = out[:q.Limit]
+	join := newAuditJoin()
+	statements := map[auditKey]bool{}
+	for _, r := range picked {
+		if r.Kind == "statement" {
+			statements[keyOf(r)] = true
+		}
+	}
+	if len(statements) > 0 {
+		for _, day := range days[oldest:] { // oldest first: the last record of a key wins
+			err := scanDay(day, func(r AuditRecord) {
+				if statements[keyOf(r)] {
+					join.add(r)
+				}
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	var out []AuditEntry
+	for _, r := range picked {
+		out = append(out, join.entry(r))
 	}
 	attachTexts(out)
 	return out, nil
@@ -551,56 +610,87 @@ func ReadAudit(q AuditQuery) ([]AuditEntry, error) {
 
 // joinAudit is ReadAudit's work on records in hand, pure so it is tested.
 func joinAudit(recs []AuditRecord, q AuditQuery) []AuditEntry {
-	type key struct{ session, vxid string }
-	txn := map[key]AuditRecord{}
-	errs := map[key]string{}
+	join := newAuditJoin()
 	for _, r := range recs {
-		k := key{r.Session, r.VXID}
-		switch {
-		case r.Kind == "transaction" && r.Outcome != "SUBROLLBACK":
-			txn[k] = r
-		case r.Kind == "outcome" && r.SQLState != "":
-			errs[k] = r.SQLState
+		join.add(r)
+	}
+	match := q.matcher()
+	var out []AuditEntry
+	for i := len(recs) - 1; i >= 0; i-- {
+		if match(recs[i]) {
+			out = append(out, join.entry(recs[i]))
 		}
 	}
+	return out
+}
+
+// auditKey is what joins a statement to its transaction's records.
+type auditKey struct{ session, vxid string }
+
+func keyOf(r AuditRecord) auditKey { return auditKey{r.Session, r.VXID} }
+
+// auditJoin is how each transaction ended and which error it hit, by key.
+type auditJoin struct {
+	txn  map[auditKey]AuditRecord
+	errs map[auditKey]string
+}
+
+func newAuditJoin() auditJoin {
+	return auditJoin{txn: map[auditKey]AuditRecord{}, errs: map[auditKey]string{}}
+}
+
+// add takes in a record, if it says how a transaction went.
+func (j auditJoin) add(r AuditRecord) {
+	switch {
+	case r.Kind == "transaction" && r.Outcome != "SUBROLLBACK":
+		j.txn[keyOf(r)] = r
+	case r.Kind == "outcome" && r.SQLState != "":
+		j.errs[keyOf(r)] = r.SQLState
+	}
+}
+
+// entry is a record as people read it, joined to what was added.
+func (j auditJoin) entry(r AuditRecord) AuditEntry {
+	e := AuditEntry{AuditRecord: r}
+	if r.Kind == "statement" {
+		if t, ok := j.txn[keyOf(r)]; ok {
+			e.TxnOutcome, e.TxnFor = t.Outcome, t.For
+		}
+		e.Error = j.errs[keyOf(r)]
+	}
+	return e
+}
+
+// matcher is the query's filter over one record.
+func (q AuditQuery) matcher() func(AuditRecord) bool {
 	want := map[string]bool{}
 	for _, k := range q.Kinds {
 		want[k] = true
 	}
-	var out []AuditEntry
-	for i := len(recs) - 1; i >= 0; i-- {
-		r := recs[i]
+	return func(r AuditRecord) bool {
 		if len(want) > 0 && !want[r.Kind] {
-			continue
+			return false
 		}
 		if len(want) == 0 && (r.Kind == "transaction" || r.Kind == "heartbeat") {
-			continue // transactions are shown on the statements they close; heartbeats are the engine's
+			return false // transactions are shown on the statements they close; heartbeats are the engine's
 		}
 		if q.Branch != "" && r.Branch != q.Branch {
-			continue
+			return false
 		}
 		if q.Login != "" && r.Login != q.Login {
-			continue
+			return false
 		}
 		if q.Table != "" && !tableMatches(r.Object, q.Table) {
-			continue
+			return false
 		}
 		if !q.Since.IsZero() {
 			// Parsed: as text, "…01.5Z" sorts after "…01.55Z".
 			if at, err := time.Parse(time.RFC3339Nano, r.Time); err == nil && at.Before(q.Since) {
-				continue
+				return false
 			}
 		}
-		e := AuditEntry{AuditRecord: r}
-		if t, ok := txn[key{r.Session, r.VXID}]; ok && r.Kind == "statement" {
-			e.TxnOutcome, e.TxnFor = t.Outcome, t.For
-		}
-		if r.Kind == "statement" {
-			e.Error = errs[key{r.Session, r.VXID}]
-		}
-		out = append(out, e)
+		return true
 	}
-	return out
 }
 
 // attachTexts gives each forensic record its statement text, while it is

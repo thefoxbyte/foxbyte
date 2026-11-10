@@ -72,6 +72,15 @@ type Window struct {
 	// changes are published to the subscribers already attached. Meaningless
 	// unless Live.
 	Floor pglogrepl.LSN
+	// QuietFrom and QuietTo are the span the slot has been acknowledged across
+	// with nothing published (QuietSpan), or zero when that is not known.
+	QuietFrom, QuietTo pglogrepl.LSN
+}
+
+// quiet reports whether a position lies in the span acknowledged with nothing
+// published, and that span reaches as far as the slot has.
+func (w Window) quiet(since pglogrepl.LSN) bool {
+	return w.QuietFrom != 0 && since >= w.QuietFrom && w.Confirmed <= w.QuietTo
 }
 
 // JudgeResume decides what to do with a subscriber's ?since=.
@@ -109,7 +118,12 @@ func JudgeResume(since pglogrepl.LSN, w Window) ResumeVerdict {
 	// Postgres will not go back further than the slot has been acknowledged to,
 	// and it does not say so. Asking for an older position there is how the
 	// stream silently became "from the slot" instead.
-	if !w.HaveSlot || since < w.Confirmed {
+	//
+	// Older than the slot is still fine when the slot only moved past it on
+	// keepalives: nothing was published in between, so the position has missed
+	// nothing, and starting from the confirmed position is starting in the
+	// right place. Quiet is what says so; see quiet.go.
+	if !w.HaveSlot || (since < w.Confirmed && !w.quiet(since)) {
 		return ResumeExpired
 	}
 	return ResumeFrom

@@ -299,6 +299,12 @@ func handle(client net.Conn) {
 	var agentKey bool
 	var account auth.User
 	if authStore != nil {
+		// Before the password is even asked for: an address that has used up
+		// its invalid keys costs no key lookup and no row in the security log.
+		if held, wait := authStore.GatewayThrottled(params["database"], remoteHost(client)); held {
+			sendError(client, "28000", fmt.Sprintf("too many invalid API keys from this address — try again in %s", wait.Round(time.Second)))
+			return
+		}
 		key, err := requestClientPassword(client)
 		if err != nil {
 			log.Printf("gateway auth: %v", err)
@@ -306,7 +312,7 @@ func handle(client net.Conn) {
 		}
 		u, scope, kind, ok := authStore.VerifyKeyKind(key)
 		if !ok {
-			authStore.Audit(auth.EvGatewayRefused, "", params["database"], remoteHost(client), "invalid API key")
+			authStore.GatewayInvalidKey(params["database"], remoteHost(client))
 			sendError(client, "28P01", "invalid API key — use a key_ key as the password")
 			return
 		}
@@ -317,7 +323,7 @@ func handle(client net.Conn) {
 		// Refused before the branch is resolved, so such a key cannot even
 		// wake one.
 		if kind == auth.KindRealtime {
-			authStore.Audit(auth.EvGatewayRefused, u.Email, params["database"], remoteHost(client), "realtime key at the gateway")
+			authStore.GatewayRefused(auth.EvGatewayRefused, u.Email, params["database"], remoteHost(client), "realtime key at the gateway")
 			sendError(client, "28P01", "this is a realtime key: it subscribes to the change feed and cannot run SQL — use a key_ key as the password")
 			return
 		}
@@ -348,7 +354,7 @@ func handle(client net.Conn) {
 		}
 		actor = keyScope
 	} else if gatewayACL != nil && !gatewayACL.Can(account, target, access.Use) {
-		authStore.Audit(auth.EvDenied, account.Email, target, remoteHost(client), "gateway")
+		authStore.GatewayRefused(auth.EvDenied, account.Email, target, remoteHost(client), "gateway")
 		// Answered like a branch that does not exist, so a name is not
 		// confirmed to someone who may not open it — and checked before the
 		// branch is woken.

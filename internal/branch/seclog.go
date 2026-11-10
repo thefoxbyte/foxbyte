@@ -38,8 +38,30 @@ const (
 	secAnchorAlgorithm = "sha256-chain-v1" // LastRowHash is the head of auth.EventHash's chain
 )
 
+// secLogCheckPageSize is how many events a checkpoint holds at once. A variable
+// so a test can reach a page boundary without writing thousands of events.
+var secLogCheckPageSize = 5000
+
 // CheckpointSecurityLog anchors the security log's events added since its last
 // anchor. It returns nil when there is nothing new.
+//
+// It verifies incrementally, so its cost follows what is new rather than how
+// long the log has grown. Before anchoring it checks:
+//   - that the last anchored event is still there, is unchanged, and has the
+//     hash the anchor signed;
+//   - that every event since chains from that hash, with no id missing and no
+//     event changed.
+//
+// So it catches any edit after the last anchor, and any rewrite of older
+// events that was re-hashed through to the present, because that changes the
+// hash the new events chain from.
+//
+// It does not re-read events before the last anchored one. An older event
+// edited in place, with the rows after it left alone, is not noticed here and
+// this will go on anchoring; nor are the older anchors or any signature looked
+// at. `fox audit verify` (VerifySecurityLog) checks every event against every
+// anchor and is what catches those: this is a guard against anchoring a log
+// already known to be bad, and passing it says nothing about the older rows.
 func CheckpointSecurityLog(store *auth.Store) (*ledger.Anchor, error) {
 	dir := SecurityLogAnchorDir()
 	anchors, err := ledger.LoadAnchors(dir)
@@ -53,21 +75,46 @@ func CheckpointSecurityLog(store *auth.Store) (*ledger.Anchor, error) {
 			lastTo, prev = a.ToID, a.LastRowHash
 		}
 	}
-	fresh, err := store.SecurityEvents(lastTo, 0)
-	if err != nil || len(fresh) == 0 {
+	page, err := store.SecurityEvents(lastTo, secLogCheckPageSize)
+	if err != nil || len(page) == 0 {
 		return nil, err
 	}
 	// Refuse to anchor a log that no longer chains: that would bless it.
-	all, err := store.SecurityEvents(0, 0)
-	if err != nil {
-		return nil, err
-	}
-	if id, why := auth.CheckEventChain(all); id != 0 {
+	refuse := func(why string) (*ledger.Anchor, error) {
 		return nil, fmt.Errorf("not anchoring the security log: %s — inspect with: %s audit verify", why, brand.CLI)
 	}
-	head := fresh[len(fresh)-1]
+	if lastTo > 0 {
+		anchored, err := store.SecurityEvents(lastTo-1, 1)
+		if err != nil {
+			return nil, err
+		}
+		if len(anchored) != 1 || anchored[0].ID != lastTo {
+			return refuse(fmt.Sprintf("event %d, the last one anchored, is gone", lastTo))
+		}
+		if e := anchored[0]; e.RowHash != prev || auth.EventHash(e) != e.RowHash {
+			return refuse(fmt.Sprintf("event %d no longer matches its anchor", lastTo))
+		}
+	}
+	var head auth.SecurityEvent
+	n, after, hash := 0, lastTo, prev
+	for {
+		if id, why := auth.CheckEventChainFrom(page, after, hash); id != 0 {
+			return refuse(why)
+		}
+		head = page[len(page)-1]
+		n, after, hash = n+len(page), head.ID, head.RowHash
+		if len(page) < secLogCheckPageSize {
+			break
+		}
+		if page, err = store.SecurityEvents(after, secLogCheckPageSize); err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+	}
 	a := ledger.Anchor{Format: secAnchorFormat, Algorithm: secAnchorAlgorithm, Branch: secLogAnchorDir,
-		CheckpointID: head.ID, FromID: lastTo + 1, ToID: head.ID, EntryCount: len(fresh),
+		CheckpointID: head.ID, FromID: lastTo + 1, ToID: head.ID, EntryCount: n,
 		LastRowHash: head.RowHash, MerkleRoot: head.RowHash, PrevRoot: prev, CreatedAt: time.Now().UTC()}
 	key, err := ledger.LoadOrCreateSigningKey(AnchorKeyPath())
 	if err != nil {
