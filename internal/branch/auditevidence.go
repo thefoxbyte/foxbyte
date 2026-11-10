@@ -143,6 +143,7 @@ var (
 		"SECURITY DEFINER functions are found by a word match on their source: it can name too many, and misses a table name built at run time.",
 		"A record says who and what, and never what a statement held; in forensic mode its text is kept apart from the chain and expires.",
 		"The anchors prove the records against an edit made after they were anchored; records collected since the last anchor rest on the chain alone.",
+		"A record of the period collected more than a week after it ended, and after a whole later day of newer records had been collected, is not counted here. The chain was still verified over it.",
 	}
 )
 
@@ -182,32 +183,104 @@ func EvidenceSummary(ev AuditEvidence) string {
 	return s
 }
 
+// auditCollectedLateDays is how many days past a period's end its records are
+// still looked for, however little those days hold of it. A day file holds what
+// was collected that day, and that can be days after a record happened.
+const auditCollectedLateDays = 7
+
 // AuditRecordsBetween reads the records collected in [since, until), in
 // order, without statement text.
 func AuditRecordsBetween(since, until time.Time) ([]AuditRecord, error) {
 	var out []AuditRecord
+	err := ScanAuditRecordsBetween(since, until, func(r AuditRecord) { out = append(out, r) })
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ScanAuditRecordsBetween hands the records in [since, until) to fn in order,
+// without statement text, holding one day at a time at most and none of it
+// once fn has been called.
+//
+// It stops once the period's end is well behind: past auditCollectedLateDays,
+// at the first day file with nothing from before until in it. A week is a wide
+// margin for a collector that was stopped, and the rule extends itself past
+// that when a collector has been down for longer, because the first day it
+// runs again still holds records of the period. What it cannot find is a
+// record that arrives after a whole later day of newer ones; EvidenceLimits
+// says so.
+func ScanAuditRecordsBetween(since, until time.Time, fn func(AuditRecord)) error {
+	first := since.UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	carry := until.UTC().AddDate(0, 0, auditCollectedLateDays).Format("2006-01-02")
 	for _, day := range storedDays() {
 		// A day file holds what was collected that day, so one before the
 		// period's first day holds nothing in it.
-		if day < since.UTC().AddDate(0, 0, -1).Format("2006-01-02") {
+		if day < first {
 			continue
 		}
-		recs, err := readDay(day)
-		if err != nil {
-			return nil, fmt.Errorf("the records of %s cannot all be read (%v)", day, err)
-		}
-		for _, r := range recs {
+		before := false
+		err := scanDay(day, func(r AuditRecord) {
 			// Parsed, not compared as text: RFC 3339 drops trailing zeros,
 			// so "…01.5Z" sorts after "…01.55Z".
 			at, err := time.Parse(time.RFC3339Nano, r.Time)
-			if err != nil || at.Before(since) || !at.Before(until) {
-				continue
+			if err != nil {
+				return
 			}
-			r.Text = ""
-			out = append(out, r)
+			if at.Before(until) {
+				before = true
+				if !at.Before(since) {
+					r.Text = ""
+					fn(r)
+				}
+			}
+		})
+		if err != nil {
+			return fmt.Errorf("the records of %s cannot all be read (%v)", day, err)
+		}
+		if day > carry && !before {
+			break
 		}
 	}
-	return out, nil
+	return nil
+}
+
+// TallyAuditActivity adds one record to a period's counts.
+func TallyAuditActivity(a *EvidenceActivity, r AuditRecord) {
+	a.Records++
+	a.ByKind[r.Kind]++
+	a.ByBranch[r.Branch]++
+	switch r.Kind {
+	case "outcome":
+		a.Errors++
+	case "heartbeat":
+		a.Heartbeats++
+	case "gap":
+		a.Gaps = append(a.Gaps, r)
+	}
+}
+
+// NewAuditActivity is an empty EvidenceActivity, every part present.
+func NewAuditActivity() EvidenceActivity {
+	return EvidenceActivity{ByKind: map[string]int{}, ByBranch: map[string]int{}, Gaps: []AuditRecord{}}
+}
+
+// AuditActivityBetween counts the period's records in one streaming pass, and
+// returns the records themselves only when asked for them: a period's counts
+// cost what the counts hold, not what the records do.
+func AuditActivityBetween(since, until time.Time, records bool) (EvidenceActivity, []AuditRecord, error) {
+	a := NewAuditActivity()
+	var out []AuditRecord
+	err := ScanAuditRecordsBetween(since, until, func(r AuditRecord) {
+		TallyAuditActivity(&a, r)
+		if records {
+			out = append(out, r)
+		}
+	})
+	if err != nil {
+		return EvidenceActivity{}, nil, err
+	}
+	return a, out, nil
 }
 
 // AuditBranchCoverage reads a running branch's marks, the definer functions

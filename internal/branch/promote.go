@@ -85,6 +85,13 @@ var ErrConflict = errors.New("both branches changed the same object since they s
 // target in a state that is neither the old schema nor the source's.
 var ErrBlockedByPolicy = errors.New("the policy gate blocks a statement in this request")
 
+// ErrNotReplayable is returned when a statement in the request carries
+// transaction control or changes who the rest runs or is recorded as: an entry
+// holds its author's whole message, and such a statement in it would break the
+// one unprivileged transaction a request is applied in. Refused when the request
+// is made and again when it is applied.
+var ErrNotReplayable = errors.New("a statement in this request cannot be replayed safely")
+
 // MarshalEntries is the snapshot stored with a request.
 func MarshalEntries(entries []RequestEntry) (string, error) {
 	b, err := json.Marshal(entries)

@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,14 +27,35 @@ import (
 
 // --- low-level message framing (post-startup Postgres protocol) ---
 
+const (
+	// maxBackendMessage bounds a message from a branch's own Postgres.
+	maxBackendMessage = 1 << 24
+
+	// maxPasswordMessage bounds the one message read from a client before it has
+	// authenticated, length field included. It is sent in the clear-text form
+	// only, and holds an API key of well under 100 bytes; SCRAM is spoken to the
+	// backend, never to a client. Without this, each connection anyone opened
+	// could have the gateway allocate 16 MiB by claiming to send that much.
+	maxPasswordMessage = 1024
+)
+
+// errBadMsgLength is a message whose length field is out of bounds.
+var errBadMsgLength = errors.New("bad message length")
+
 func readMsg(c net.Conn) (byte, []byte, error) {
+	return readMsgMax(c, maxBackendMessage)
+}
+
+// readMsgMax is readMsg for a peer held to a smaller limit, checked before
+// anything is allocated for the body.
+func readMsgMax(c net.Conn, limit uint32) (byte, []byte, error) {
 	h := make([]byte, 5)
 	if _, err := io.ReadFull(c, h); err != nil {
 		return 0, nil, err
 	}
 	n := binary.BigEndian.Uint32(h[1:5])
-	if n < 4 || n > 1<<24 {
-		return 0, nil, fmt.Errorf("bad message length %d", n)
+	if n < 4 || n > limit {
+		return 0, nil, fmt.Errorf("%w: %d", errBadMsgLength, n)
 	}
 	body := make([]byte, n-4)
 	if _, err := io.ReadFull(c, body); err != nil {
@@ -61,8 +83,11 @@ func requestClientPassword(client net.Conn) (string, error) {
 	if err := writeMsg(client, 'R', req); err != nil {
 		return "", err
 	}
-	typ, body, err := readMsg(client)
+	typ, body, err := readMsgMax(client, maxPasswordMessage)
 	if err != nil {
+		if errors.Is(err, errBadMsgLength) {
+			sendError(client, "08P01", "invalid password message length") // protocol_violation
+		}
 		return "", err
 	}
 	if typ != 'p' {
@@ -172,7 +197,7 @@ func scramSHA256(backend net.Conn, mechanisms []byte, password string) error {
 	if err != nil {
 		return err
 	}
-	if typ != 'R' || binary.BigEndian.Uint32(body[:4]) != 11 {
+	if typ != 'R' || len(body) < 4 || binary.BigEndian.Uint32(body[:4]) != 11 {
 		return fmt.Errorf("expected SASLContinue")
 	}
 	serverFirst := string(body[4:])

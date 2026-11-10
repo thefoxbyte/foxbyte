@@ -1,41 +1,42 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Publish this job's checksums into a GitHub release's SHA256SUMS without dropping
-# anyone else's.
+# Sign and publish the checksums of the files this job built, under a name only
+# this job writes.
 #
-#   release-checksums.sh <tag> <file>...
+#   release-checksums.sh <tag> <asset> <file>...
 #
-# Two workflows attach assets to the same release: release.yml (the fox and
-# fox-verify binaries, the Docker context) and wsl-distro.yml (the Windows distro
-# image). Both start from the same tag push and either can finish first. The
-# installers verify every download against SHA256SUMS and silently skip any file
-# that isn't listed, so a job that replaces the whole file with only its own
-# entries quietly turns verification off for the other job's assets. That
-# happened with v0.8.1.
+# Two workflows attach assets to the same release, on their own schedules:
+# release.yml (the fox and fox-verify binaries, the Docker context) publishes
+# SHA256SUMS, and wsl-distro.yml (the Windows distro image) publishes
+# SHA256SUMS.distro. Each file has its own signature, <asset>.sig.
 #
-# So each job:
-#   1. downloads the published SHA256SUMS (if any),
-#   2. keeps every entry except those for the files it is publishing (matched by
-#      exact file name, not substring),
-#   3. adds its own entries and uploads the result,
-#   4. waits a moment, downloads again and checks its entries are still there —
-#      if the other job uploaded in between, it merges again (up to 3 times).
+# This used to merge every job's entries into one SHA256SUMS: download the
+# published file, add this job's lines, sign the result. That made the job a
+# signing oracle, because anyone able to upload a release asset could put a line
+# in the published file and have the release key sign it. So nothing read back
+# from a release is ever signed here: the entries are hashed from the local
+# files, which are this job's own build outputs, and a re-run simply replaces
+# them.
 #
-# Signing (audit v2 G22): with RELEASE_SIGN set to the releasesign tool
-# (cmd/releasesign, which reads FOX_RELEASE_SIGNING_KEY), each upload of the
-# merged SHA256SUMS goes with its signature, SHA256SUMS.sig, and step 4 also
-# checks the published signature matches the published file. The two jobs can
-# interleave (A's file, B's file, B's signature, A's signature), so a mismatch
-# there is merged and signed again like any other race.
+# The read-back afterwards only confirms what was uploaded is what is published
+# (the release API can lag just behind an upload); it feeds nothing back in.
+#
+# RELEASE_SIGN is the releasesign tool (cmd/releasesign, which reads
+# FOX_RELEASE_SIGNING_KEY). It is required: clients refuse an unsigned
+# SHA256SUMS, so publishing one would only break the release.
 #
 # Needs gh (GH_TOKEN set) and sha256sum or shasum. Files may be given with a
 # directory; entries use the base name, as the installers expect.
 set -euo pipefail
 
 tag="${1:-}"
-[ -n "$tag" ] && [ "$#" -ge 2 ] || { echo "usage: $0 <tag> <file>..." >&2; exit 2; }
-shift
+asset="${2:-}"
+[ -n "$tag" ] && [ -n "$asset" ] && [ "$#" -ge 3 ] || { echo "usage: $0 <tag> <asset> <file>..." >&2; exit 2; }
+shift 2
+
+sign="${RELEASE_SIGN:-}"
+[ -n "$sign" ] || { echo "error: RELEASE_SIGN is not set; a release's checksums must be signed" >&2; exit 2; }
 
 if command -v sha256sum >/dev/null 2>&1; then
 	checksum() { sha256sum "$@"; }
@@ -46,48 +47,26 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# Our entries: "<hash>  <basename>".
-checksum "$@" | awk '{ name = $2; sub(/.*\//, "", name); print $1 "  " name }' > "$work/mine"
+# Our entries, and nothing else: "<hash>  <basename>".
+checksum "$@" | awk '{ name = $2; sub(/^\*/, "", name); sub(/.*\//, "", name); print $1 "  " name }' | sort -k2 > "$work/$asset"
 
-sign="${RELEASE_SIGN:-}"
+"$sign" sign "$work/$asset" "$work/$asset.sig"
+gh release upload "$tag" "$work/$asset" "$work/$asset.sig" --clobber
+
 attempts="${CHECKSUM_ATTEMPTS:-3}"
 settle="${CHECKSUM_SETTLE_SECONDS:-10}"
-
+mkdir "$work/published"
 for attempt in $(seq 1 "$attempts"); do
-	# A release without SHA256SUMS yet starts from empty.
-	if ! gh release download "$tag" -p SHA256SUMS -O "$work/existing" --clobber >/dev/null 2>&1; then
-		: > "$work/existing"
-	fi
-	# Every published entry whose file we aren't publishing, then ours.
-	awk 'NR == FNR { mine[$2] = 1; next } NF >= 2 && !($2 in mine)' "$work/mine" "$work/existing" > "$work/SHA256SUMS"
-	cat "$work/mine" >> "$work/SHA256SUMS"
-	sort -k2 -o "$work/SHA256SUMS" "$work/SHA256SUMS"
-
-	if [ -n "$sign" ]; then
-		"$sign" sign "$work/SHA256SUMS" "$work/SHA256SUMS.sig"
-		gh release upload "$tag" "$work/SHA256SUMS" "$work/SHA256SUMS.sig" --clobber
-	else
-		gh release upload "$tag" "$work/SHA256SUMS" --clobber
-	fi
-
 	sleep "$settle"
-	gh release download "$tag" -p SHA256SUMS -O "$work/published" --clobber
-	signed_ok=1
-	if [ -n "$sign" ]; then
-		signed_ok=0
-		if gh release download "$tag" -p SHA256SUMS.sig -O "$work/published.sig" --clobber >/dev/null 2>&1 &&
-			"$sign" verify "$work/published" "$work/published.sig" >/dev/null 2>&1; then
-			signed_ok=1
-		fi
-	fi
-	if [ "$signed_ok" = 1 ] && awk 'NR == FNR { want[$1 "  " $2] = 1; total++; next }
-	        (($1 "  " $2) in want) && !seen[$1 "  " $2]++ { found++ }
-	        END { exit (found == total) ? 0 : 1 }' "$work/mine" "$work/published"; then
-		cat "$work/published"
+	if gh release download "$tag" -p "$asset" -O "$work/published/$asset" --clobber >/dev/null 2>&1 &&
+		gh release download "$tag" -p "$asset.sig" -O "$work/published/$asset.sig" --clobber >/dev/null 2>&1 &&
+		cmp -s "$work/$asset" "$work/published/$asset" &&
+		cmp -s "$work/$asset.sig" "$work/published/$asset.sig"; then
+		cat "$work/$asset"
 		exit 0
 	fi
-	echo "SHA256SUMS changed while publishing (another job uploaded at the same time); merging again ($attempt/$attempts)" >&2
+	echo "$asset of $tag is not what was uploaded yet ($attempt/$attempts)" >&2
 done
 
-echo "error: could not publish checksums for: $*" >&2
+echo "error: $asset of $tag does not match what this job uploaded: another writer, or the upload failed" >&2
 exit 1

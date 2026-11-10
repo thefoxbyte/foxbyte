@@ -287,7 +287,9 @@ Every release's `SHA256SUMS` is signed with the FoxByte release key
 it carries — which comes from this repository, not from the release — wherever
 `openssl` can do Ed25519 (OpenSSL 3; macOS's LibreSSL cannot, and the installer
 says so; `FOX_REQUIRE_SIGNATURE=1` refuses instead). `fox update` checks it on
-every update and never installs a release that fails. Each file also has a
+every update, `fox setup` on the engine it downloads, and neither installs a
+release that fails. The Windows distro image, built by its own workflow, has
+its own signed `SHA256SUMS.distro`. Each file also has a
 GitHub build attestation and the release an SBOM (`foxbyte-sbom.spdx.json`):
 
 ```bash

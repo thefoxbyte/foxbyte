@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
 	"github.com/thefoxbyte/foxbyte/internal/secrets"
 )
@@ -173,8 +174,13 @@ func sudoCmd(d time.Duration, name string, args ...string) (*exec.Cmd, context.C
 	ctx, cancel := context.WithTimeout(context.Background(), t)
 	cmd := exec.CommandContext(ctx, "sudo", full...)
 	// Without this, a killed child that leaves a pipe open keeps Wait blocked —
-	// the hang this is meant to end, one level down.
+	// the hang this is meant to end, one level down. Killing sudo does not kill
+	// the docker client under it, so a hung dockerd reaches this every time, and
+	// a probe measured in seconds must not then wait ten more.
 	cmd.WaitDelay = 10 * time.Second
+	if t <= execProbe {
+		cmd.WaitDelay = time.Second
+	}
 	return cmd, ctx, cancel
 }
 
@@ -189,6 +195,7 @@ func execErr(ctx context.Context, d time.Duration, name string, err error) error
 
 // run executes a privileged command and streams output to the terminal.
 func run(name string, args ...string) error {
+	defer noteIfChange(name, args)
 	cmd, ctx, cancel := sudoCmd(execLong, name, args...)
 	defer cancel()
 	cmd.Stdout = os.Stdout
@@ -199,6 +206,7 @@ func run(name string, args ...string) error {
 // quiet executes a privileged command, discarding output and errors. Used for
 // best-effort cleanup where "not found" is not a failure.
 func quiet(name string, args ...string) {
+	defer noteIfChange(name, args)
 	cmd, _, cancel := sudoCmd(execClean, name, args...)
 	defer cancel()
 	_ = cmd.Run()
@@ -228,6 +236,7 @@ func execSudo(name string, args ...string) *exec.Cmd {
 // text, which is what it echoes on failure, carries no secret. Checked rather
 // than assumed: no capture call passes a password, a conninfo or a secret.
 func capture(name string, args ...string) (string, error) {
+	defer noteIfChange(name, args)
 	cmd, ctx, cancel := sudoCmd(execQuick, name, args...)
 	defer cancel()
 	out, err := cmd.Output()
@@ -819,6 +828,7 @@ func LedgerVerify(name string) (string, error) {
 // captureCombined runs a privileged command and returns its combined
 // stdout+stderr, so a failing psql includes the server's error text.
 func captureCombined(name string, args ...string) (string, error) {
+	defer noteIfChange(name, args)
 	cmd, ctx, cancel := sudoCmd(execQuick, name, args...)
 	defer cancel()
 	out, err := cmd.CombinedOutput()
@@ -868,6 +878,9 @@ func Create(name, parent string) error {
 	if err := checkName(parent); err != nil {
 		return err
 	}
+	// Last, as well as at each docker command: the dataset is part of what the
+	// console lists.
+	defer noteStateChange()
 	forgetBranchRoles(name)
 	forgetCatalogScan(name)
 	// Cloning a branch that doesn't exist fails deep in the storage layer with a
@@ -877,6 +890,9 @@ func Create(name, parent string) error {
 	}
 	if activeStorage().exists(name) {
 		return fmt.Errorf("branch %q already exists", name)
+	}
+	if err := checkNoContainer(name, ContainerState(name)); err != nil {
+		return err
 	}
 	// A masked branch being made, or one that failed, is copied by nobody;
 	// a copy of an open one is masked too (maskedbranch.go).
@@ -918,6 +934,7 @@ func Delete(name string) error {
 	if name == "main" {
 		return fmt.Errorf("refusing to delete the primary branch 'main'")
 	}
+	defer noteStateChange() // after the dataset goes, which the console lists
 	forgetBranchRoles(name)
 	forgetCatalogScan(name)
 	forgetBranchUnmasks(name)
@@ -1279,8 +1296,8 @@ func agentBranch(id string) string { return "agent-" + id }
 var ErrBadName = errors.New("invalid name: use letters, digits, '.', '-' and '_' (at most 63, starting with a letter or digit)")
 
 // safeNameRe is every name the engine passes to Docker, ZFS or btrfs. Stricter
-// rules for new names live where names are made (the control plane's nameRe);
-// this is the floor under every path that acts on an existing one. A '/' would
+// rules for new names live where names are made (the control plane's nameRe,
+// and CheckNewName); this is the floor under every path that acts on an existing one. A '/' would
 // walk out of the branch directory on btrfs (filepath.Join), '@' would name a
 // ZFS snapshot of another dataset, and "..", a space or a leading '-' mean
 // something to one tool or another.
@@ -1291,6 +1308,49 @@ func checkName(name string) error {
 		return fmt.Errorf("%w (got %q)", ErrBadName, name)
 	}
 	return nil
+}
+
+// ErrReservedName is returned for a new branch named like one the engine makes
+// for itself.
+var ErrReservedName = errors.New("reserved branch name")
+
+// engineName reports whether name is one the engine's own containers and
+// branches use: the primary, the HA standby, the two restores, an agent's.
+func engineName(name string) bool {
+	switch name {
+	case "main", "standby", "restore", restoreCheckContainer:
+		return true
+	}
+	return strings.HasPrefix(name, "agent-")
+}
+
+// CheckNewName is the rule for a name a person or an account picks. A branch's
+// container is named after it and creating one starts by removing whatever
+// holds that name, so a branch called "standby" used to kill the live HA
+// standby. The engine makes these names itself by calling Create directly, and
+// checkName must go on accepting them, so the refusal belongs here, where names
+// come in from outside. Compared in lower case: an import target is not held to
+// the control plane's lower-case nameRe, and Agent-x is still an agent's name
+// to anyone reading it.
+func CheckNewName(name string) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
+	if n := strings.ToLower(name); engineName(n) || strings.Contains(n, "-before-") {
+		return fmt.Errorf("%w: %q is kept for the engine (main, standby, restore, restore-check, agent-*, *-before-*), choose another name", ErrReservedName, name)
+	}
+	return nil
+}
+
+// checkNoContainer refuses a new branch whose container name is already taken,
+// given that container's state: the storage check cannot see a container that
+// has no branch behind it, like the standby's or a restore's, and starting the
+// new one would remove it.
+func checkNoContainer(name, state string) error {
+	if state == "absent" {
+		return nil
+	}
+	return fmt.Errorf("%w: a container named %s is already there (%s), and making this branch would remove it", ErrBranchExists, container(name), state)
 }
 
 // Exists reports whether a branch's data exists, running or not.
@@ -1440,6 +1500,9 @@ func DeleteAgentBranch(agentID string) error {
 // BackendAddr returns host:port where a branch's Postgres is reachable, used by
 // the wire-protocol proxy to route connections. For "main" it resolves the
 // container currently serving as primary (which changes after an HA failover).
+//
+// PrimaryContainer is read each time and the memory is per container, so a
+// failover run by another process moves "main" at once.
 func BackendAddr(name string) (string, error) {
 	if name == "" {
 		name = "main"
@@ -1448,11 +1511,14 @@ func BackendAddr(name string) (string, error) {
 	if name == "main" {
 		cont = PrimaryContainer()
 	}
-	ip, err := containerIP(cont)
+	f, err := containers.lookup(cont)
 	if err != nil {
 		return "", err
 	}
-	return ip + ":5432", nil
+	if f.ip == "" {
+		return "", fmt.Errorf("container %q has no IP on the %q network", cont, network)
+	}
+	return f.addr(), nil
 }
 
 // primaryFile records which branch container currently serves as the "main"
@@ -1477,6 +1543,7 @@ func primaryBranch() string {
 
 // setPrimary records the branch name now serving as primary.
 func setPrimary(name string) error {
+	defer noteStateChange()
 	_ = os.MkdirAll(filepath.Dir(primaryFile()), 0o755)
 	return os.WriteFile(primaryFile(), []byte(name), 0o644)
 }
@@ -1498,35 +1565,92 @@ type BranchInfo struct {
 
 // Branches returns structured info for every branch (including main), enriched
 // with container state, connections, and copy-on-write size.
+//
+// One docker inspect for every branch's state and address, then each running
+// branch's connection count, several at a time. A docker that does not answer
+// shows every branch as absent, as it always did: this is a report, and nothing
+// that removes a container reads it.
 func Branches() ([]BranchInfo, error) {
-	usages, err := activeStorage().usage()
+	usages, err := branchUsages()
 	if err != nil {
 		return nil, err
 	}
 	var infos []BranchInfo
+	var conts []string
 	for _, u := range usages {
 		name := u.Name
 		if strings.Contains(name, "/") {
 			continue // only direct children
 		}
-		bi := BranchInfo{
+		infos = append(infos, BranchInfo{
 			Masked:  maskedStateOf(name),
 			Name:    name,
 			Used:    u.Used,
 			Refer:   u.Refer,
 			Primary: name == "main",
 			Agent:   strings.HasPrefix(name, "agent-"),
-			State:   ContainerState(name),
+			State:   "absent",
+		})
+		conts = append(conts, container(name))
+	}
+	if len(conts) == 0 {
+		return infos, nil
+	}
+	out, _ := inspectContainers(execProbe, conts) // what it found, whatever else it says
+	facts := parseFacts(out)
+	forEachBounded(len(infos), func(i int) {
+		f, ok := facts[conts[i]]
+		if !ok {
+			return
 		}
-		if bi.State == "running" {
-			bi.Port = "5432" // in-container port; branches are reached via the gateway
-			if c, err := ActiveConnections(name); err == nil {
-				bi.Connections = c
+		infos[i].State = f.state
+		if f.state == "running" {
+			infos[i].Port = "5432" // in-container port; branches are reached via the gateway
+			if c, err := countConnections(infos[i].Name, f.ip); err == nil {
+				infos[i].Connections = c
 			}
 		}
-		infos = append(infos, bi)
-	}
+	})
 	return infos, nil
+}
+
+// branchUsages and countConnections are Branches' other two sources, variables
+// so a test can count them.
+var (
+	branchUsages = func() ([]branchUsage, error) { return activeStorage().usage() }
+
+	countConnections = func(name, ip string) (int, error) {
+		if ip != "" {
+			if n, err := connectionsOver(ip); err == nil {
+				return n, nil
+			}
+		}
+		return activeConnectionsWithin(execProbe, name)
+	}
+)
+
+// connectionsOver reads a branch's connection count over the docker network,
+// which stateConn already does as this role: no sudo, docker or psql process for
+// a number the dashboard wants for every branch every few seconds. Its callers
+// fall back to the exec, so a branch this cannot reach is no worse off.
+func connectionsOver(ip string) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s@%s:5432/%s", pgUser, ip, pgDatabase))
+	if err != nil {
+		return 0, err
+	}
+	cfg.Password = pgPass()
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close(context.Background())
+	var n int
+	if err := conn.QueryRow(ctx, activeConnectionsSQL).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // Storage summarises pool usage for the dashboard.
@@ -1547,8 +1671,14 @@ func StorageInfo() Storage {
 // --- auto-suspend / auto-resume ---
 
 // ContainerState returns "running", "exited"/"created", or "absent".
-func ContainerState(name string) string {
-	out, err := capture("docker", "inspect", "-f", "{{.State.Status}}", container(name))
+//
+// Always asks docker: the engine's own decisions are made on this, and
+// statecache.go's memory is only for routing a connection.
+func ContainerState(name string) string { return containerStateWithin(execQuick, name) }
+
+// containerStateWithin is ContainerState bounded by d.
+func containerStateWithin(d time.Duration, name string) string {
+	out, err := captureWithin(d, "docker", "inspect", "-f", "{{.State.Status}}", container(name))
 	if err != nil {
 		return "absent"
 	}
@@ -1615,6 +1745,39 @@ func Resume(name string) error {
 // idle one.
 var OnUse func(name string)
 
+// OnWake, when set, is told a suspended branch is about to be resumed, and what
+// state it was in. The gateway logs it.
+var OnWake func(name, state string)
+
+// recreateBranch and resumeBranch are EnsureRunning's two ways of bringing a
+// branch up, and branchExists the check before the first: variables so a test
+// can see that a stale or missing answer never reaches them.
+var (
+	branchExists = func(name string) bool { return activeStorage().exists(name) }
+
+	recreateBranch = func(name string) error {
+		if err := startContainer(name, name == "main"); err != nil {
+			return err
+		}
+		if err := waitReady(name); err != nil {
+			return err
+		}
+		// A new container, perhaps from a newer image: the SQL too.
+		syncIdentityBestEffort(name, true)
+		applyAuditBestEffort(name)
+		reconcileGuard(name)
+		return nil
+	}
+
+	resumeBranch = func(name string) error {
+		if err := Resume(name); err != nil {
+			return err
+		}
+		reconcileGuard(name)
+		return nil
+	}
+)
+
 func EnsureRunning(name string) (string, error) {
 	if err := checkName(name); err != nil {
 		return "", err
@@ -1634,30 +1797,38 @@ func EnsureRunning(name string) (string, error) {
 		// and cause split-brain. Just route to the current primary.
 		return BackendAddr("main")
 	}
-	switch ContainerState(name) {
+	cont := container(name)
+	// The ordinary case, and the only one remembered answers can settle: it was
+	// serving a moment ago, and if that has stopped being true the dial fails
+	// and the caller comes back through here.
+	if f, err := containers.lookup(cont); err == nil && f.serving() {
+		return f.addr(), nil
+	}
+	// Anything else may start or recreate a container, so it stands on an
+	// answer asked for here and now.
+	f, err := probeContainer(cont)
+	if err != nil {
+		return "", fmt.Errorf("branch %q: %w", name, err)
+	}
+	switch f.state {
 	case "running":
 		// already up
 	case "absent":
 		// No container. If the dataset survives (e.g. after a full stop),
 		// recreate the container on it; otherwise the branch truly doesn't exist.
-		if !activeStorage().exists(name) {
+		if !branchExists(name) {
 			return "", fmt.Errorf("branch %q does not exist", name)
 		}
-		if err := startContainer(name, name == "main"); err != nil {
+		if err := recreateBranch(name); err != nil {
 			return "", err
 		}
-		if err := waitReady(name); err != nil {
-			return "", err
-		}
-		// A new container, perhaps from a newer image: the SQL too.
-		syncIdentityBestEffort(name, true)
-		applyAuditBestEffort(name)
-		reconcileGuard(name)
 	default: // exited, created, paused, ...
-		if err := Resume(name); err != nil {
+		if OnWake != nil {
+			OnWake(name, f.state)
+		}
+		if err := resumeBranch(name); err != nil {
 			return "", err
 		}
-		reconcileGuard(name)
 	}
 	return BackendAddr(name)
 }
@@ -1670,10 +1841,14 @@ func Wake(name string) error {
 
 // ActiveConnections returns the number of client connections currently open to a
 // branch (used to avoid suspending a branch that is in use).
-func ActiveConnections(name string) (int, error) {
-	out, err := capture("docker", "exec", "--env-file", pgEnvFile(), container(name),
-		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc",
-		"SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid();")
+func ActiveConnections(name string) (int, error) { return activeConnectionsWithin(execQuick, name) }
+
+const activeConnectionsSQL = "SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid();"
+
+// activeConnectionsWithin is ActiveConnections bounded by d.
+func activeConnectionsWithin(d time.Duration, name string) (int, error) {
+	out, err := captureWithin(d, "docker", "exec", "--env-file", pgEnvFile(), container(name),
+		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc", activeConnectionsSQL)
 	if err != nil {
 		return 0, err
 	}

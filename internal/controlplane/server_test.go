@@ -3,12 +3,14 @@
 package controlplane
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
 
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/httpx"
 )
 
@@ -106,5 +108,22 @@ func TestTheConsolePageCarriesItsPolicy(t *testing.T) {
 		if got := w.Header().Get("Content-Security-Policy"); got != want {
 			t.Errorf("%s: Content-Security-Policy %q, want %q", path, got, want)
 		}
+	}
+}
+
+// POST /api/branches: the shape rule and the engine's names are both refused.
+func TestCheckNewBranchName(t *testing.T) {
+	for _, n := range []string{"qa", "feature-123"} {
+		if err := checkNewBranchName(n); err != nil {
+			t.Errorf("%q: %v", n, err)
+		}
+	}
+	for _, n := range []string{"main", "standby", "restore", "restore-check", "agent-zz", "main-before-1"} {
+		if err := checkNewBranchName(n); !errors.Is(err, branch.ErrReservedName) {
+			t.Errorf("%q: %v, want ErrReservedName", n, err)
+		}
+	}
+	if err := checkNewBranchName("Bad"); err == nil || errors.Is(err, branch.ErrReservedName) {
+		t.Errorf("Bad: %v", err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -38,6 +39,14 @@ import (
 )
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
+
+// checkNewBranchName is the rule for a branch name an account picks.
+func checkNewBranchName(name string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("invalid name (use lowercase letters, digits, dashes)")
+	}
+	return branch.CheckNewName(name)
+}
 
 // ruleIDRe matches a Blackbox policy rule id (bb.policy_rules.rule_id).
 var ruleIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -203,8 +212,8 @@ func checkBranchName(next http.Handler) http.Handler {
 	})
 }
 
-// backupHealth caches branch.CurrentBackupHealth for a minute: reading it lists
-// the backups from a container, and the dashboard polls /api/status.
+// backupHealth caches the backup judgement for a minute: reading it lists the
+// backups from a container, and the dashboard polls /api/status.
 var backupHealth struct {
 	sync.Mutex
 	at time.Time
@@ -215,9 +224,37 @@ func cachedBackupHealth() branch.BackupHealth {
 	backupHealth.Lock()
 	defer backupHealth.Unlock()
 	if time.Since(backupHealth.at) > time.Minute {
-		backupHealth.h, backupHealth.at = branch.CurrentBackupHealth(), time.Now()
+		// Listing can start a container, so it gets more than a probe; still
+		// seconds, because this is answering a page. "Could not tell" is a
+		// verdict the dashboard already knows how to show.
+		backupHealth.h, backupHealth.at = branch.CurrentBackupHealthProbe(30*time.Second), time.Now()
 	}
 	return backupHealth.h
+}
+
+// The console's polling reads these rather than walking the branches itself
+// (branch/snapshot.go): variables so a test can count what is behind them.
+var (
+	listBranches    = branch.BranchesSnapshot
+	listReplicating = branch.ReplicatingSnapshot
+)
+
+// statusFacts is the engine's part of /api/status, the same for every caller.
+type statusFacts struct {
+	branches []branch.BranchInfo
+	ha       branch.HAState
+	backup   branch.BackupHealth
+	storage  branch.Storage
+}
+
+var statusSnapshot = branch.NewSnapshot(branch.SnapshotTTL, branch.SnapshotWait, readStatusFacts)
+
+func readStatusFacts() (statusFacts, error) {
+	bs, err := listBranches()
+	if err != nil {
+		return statusFacts{}, err
+	}
+	return statusFacts{branches: bs, ha: branch.HAInfoProbe(), backup: cachedBackupHealth(), storage: branch.StorageInfo()}, nil
 }
 
 // isUpload is the one route whose body is a file rather than JSON; it has its
@@ -236,14 +273,14 @@ func maxUpload() int64 {
 
 func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		bs, err := branch.Branches()
+		st, err := statusSnapshot.Get()
 		if err != nil {
 			writeErr(w, 500, err)
 			return
 		}
 		var nBranch, nAgent int
 		mainReady := false
-		for _, b := range bs {
+		for _, b := range st.branches {
 			switch {
 			case b.Primary:
 				mainReady = b.State == "running"
@@ -263,9 +300,9 @@ func registerAPI(mux *http.ServeMux) {
 			// and so does an Enterprise build with no licence.
 			"edition":  edition.Name(),
 			"features": featureNames(),
-			"ha":       branch.HAInfo(),
-			"backup":   cachedBackupHealth(),
-			"storage":  branch.StorageInfo(),
+			"ha":       st.ha,
+			"backup":   st.backup,
+			"storage":  st.storage,
 			"servers": map[string]bool{
 				"gateway": daemon.Alive("gateway"),
 				"api":     daemon.Alive("api"),
@@ -274,13 +311,14 @@ func registerAPI(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("GET /api/branches", func(w http.ResponseWriter, r *http.Request) {
-		bs, err := branch.Branches()
+		bs, err := listBranches()
 		if err != nil {
 			writeErr(w, 500, err)
 			return
 		}
 		// Only the branches the caller may reach: main, their own, and — for
-		// an admin — all of them.
+		// an admin — all of them. Here, per request, and never in the shared
+		// list above, which is the same for everybody.
 		u, _ := auth.UserFrom(r.Context())
 		visible := []branch.BranchInfo{}
 		for _, b := range bs {
@@ -298,8 +336,8 @@ func registerAPI(mux *http.ServeMux) {
 			Masked bool   `json:"masked"` // a masked branch (masking step 5): made in the background
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !nameRe.MatchString(body.Name) {
-			writeErr(w, 400, fmt.Errorf("invalid name (use lowercase letters, digits, dashes)"))
+		if err := checkNewBranchName(body.Name); err != nil {
+			writeErr(w, 400, err)
 			return
 		}
 		if body.From != "" && !nameRe.MatchString(body.From) {
@@ -497,7 +535,7 @@ func registerAPI(mux *http.ServeMux) {
 	// Continuous imports (logical replication into a branch): where each stands,
 	// and the cutover that turns one into a standalone branch.
 	mux.HandleFunc("GET /api/replication", func(w http.ResponseWriter, r *http.Request) {
-		list, err := branch.Replicating()
+		list, err := listReplicating()
 		if err != nil {
 			writeErr(w, 500, err)
 			return
@@ -611,6 +649,42 @@ func registerAPI(mux *http.ServeMux) {
 // maskedStatementSQL is what a masked account reads for a Blackbox entry's
 // statement.
 const maskedStatementSQL = `'(hidden from masked accounts: a statement can hold real values)'::text`
+
+// The console's way out to a branch, variables so a test can stand in for one
+// that moved.
+var (
+	pgConnect    = pgx.ConnectConfig
+	sessionRoute = branch.EnsureRunning
+)
+
+// connectSession connects, and if the address could not be dialled, forgets it,
+// routes the branch again and tries once more. The address may be seconds old
+// (branch/statecache.go), and a suspend run by the gateway's idle reaper leaves
+// it behind without this process hearing about it. Only for a failure to reach
+// the address: a refused password or a full server is an answer from a backend
+// that is there.
+func connectSession(ctx context.Context, cfg *pgx.ConnConfig, name string) (*pgx.Conn, error) {
+	conn, err := pgConnect(ctx, cfg)
+	if err == nil || name == "" || !isDialFailure(err) {
+		return conn, err
+	}
+	branch.ForgetBackends()
+	addr, rerr := sessionRoute(name)
+	if rerr != nil {
+		return nil, err
+	}
+	again, perr := pgx.ParseConfig(fmt.Sprintf("postgres://%s/%s", addr, branch.Database))
+	if perr != nil {
+		return nil, err
+	}
+	again.User, again.Password = cfg.User, cfg.Password
+	return pgConnect(ctx, again)
+}
+
+func isDialFailure(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
+}
 
 func sqlEsc(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
@@ -867,7 +941,7 @@ func openSession(ctx context.Context, addr string, as queryAs) (*pgx.Conn, error
 		}
 		cfg.User, cfg.Password = as.Actor, branch.UserRolePassword(as.Actor)
 	}
-	conn, err := pgx.ConnectConfig(ctx, cfg)
+	conn, err := connectSession(ctx, cfg, as.Branch)
 	if err != nil {
 		return nil, err
 	}
@@ -1236,14 +1310,20 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 			return
 		}
 		target := pipelineBranch(pl)
+		// Before anything else: the engine begins by deleting whatever has this
+		// name, and a run is recorded as owning its target even when it fails.
+		if err := branch.CheckNewName(target); err != nil {
+			send("error", map[string]string{"message": fmt.Sprintf("rename the pipeline: %v", err)})
+			return
+		}
 		// A spec saved before sources were checked may still name a file.
 		if err := checkPipelineSource(spec.Source); err != nil {
 			send("error", map[string]string{"message": err.Error()})
 			return
 		}
 		// A run deletes and re-creates its target, so it may only do that to
-		// a branch this pipeline made.
-		if branch.Exists(target) && !store.PipelineOwnsTarget(pl.ID, target) {
+		// a branch this pipeline made and this account still owns.
+		if branch.Exists(target) && !store.PipelineMayReplace(pl.ID, u.ID, target) {
 			send("error", map[string]string{"message": fmt.Sprintf(
 				"a branch named %q already exists and was not made by this pipeline — rename the pipeline, or delete that branch first", target)})
 			return

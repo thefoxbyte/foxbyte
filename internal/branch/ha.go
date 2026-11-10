@@ -29,12 +29,18 @@ type HAState struct {
 }
 
 // HAInfo reports current HA status.
-func HAInfo() HAState {
+func HAInfo() HAState { return haInfoWithin(execQuick) }
+
+// HAInfoProbe is HAInfo for the console's status, which must answer whatever the
+// state of docker.
+func HAInfoProbe() HAState { return haInfoWithin(execProbe) }
+
+func haInfoWithin(d time.Duration) HAState {
 	st := HAState{Primary: "main", Sync: SyncOn()}
 	if PrimaryContainer() == container("standby") {
 		st.Primary = "standby"
 	}
-	cs := ContainerState("standby")
+	cs := containerStateWithin(d, "standby")
 	if cs == "absent" {
 		return st
 	}
@@ -43,7 +49,7 @@ func HAInfo() HAState {
 	// Both facts in one round trip, because this feeds the dashboard and the
 	// status API: a second `docker exec psql` per call would double what the
 	// page waits for to learn one extra bit.
-	out, _ := capture("docker", "exec", "--env-file", pgEnvFile(), PrimaryContainer(),
+	out, _ := captureWithin(d, "docker", "exec", "--env-file", pgEnvFile(), PrimaryContainer(),
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAc",
 		"SELECT (SELECT count(*) FROM pg_stat_replication WHERE state='streaming')::text"+
 			" || '|' || (current_setting('synchronous_standby_names') <> '')::text")

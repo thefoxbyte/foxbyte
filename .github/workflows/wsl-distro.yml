@@ -73,10 +73,9 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 ||
             gh release create "$TAG" --prerelease --generate-notes --title "$TAG"
 
-      # SHA256SUMS is signed with the release key (audit v2 G22): fox update and
-      # install.sh refuse a release whose signature does not check. A missing
-      # secret fails the release here, rather than publishing one nobody can
-      # install. (cmd/releasesign also refuses a key fox would not accept.)
+      # This job's checksums are signed with the release key (audit v2 G22). A
+      # missing secret fails the job here, rather than publishing an image with
+      # no signature. (cmd/releasesign also refuses a key fox would not accept.)
       - name: Build the release signer
         env:
           FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
@@ -84,11 +83,11 @@ jobs:
           test -n "$FOX_RELEASE_SIGNING_KEY" || { echo "::error::the FOX_RELEASE_SIGNING_KEY secret is not set (see cmd/releasesign)"; exit 1; }
           go build -o "$RUNNER_TEMP/releasesign" ./cmd/releasesign
 
-      # Merged, not replaced: release.yml publishes sums for the binaries into
-      # the same SHA256SUMS. Every asset the installer or setup downloads must be
-      # listed, or verification silently skips it. The shared script matches
-      # entries by exact name and re-checks after uploading, so whichever job
-      # finishes last keeps the other's entries.
+      # A signed file of this job's own, because this workflow can run at any
+      # time for an existing tag and release.yml owns SHA256SUMS. Only the hash
+      # of the image built above is signed; nothing is read back from the
+      # release. install.ps1 looks the image up here, then in SHA256SUMS for
+      # releases made before this file existed.
       - name: Publish checksums
         env:
           GH_TOKEN: ${{ github.token }}
@@ -97,7 +96,7 @@ jobs:
           FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
         run: |
           cd dist
-          bash ../scripts/release-checksums.sh "$TAG" foxbyte-distro.tar.zst
+          bash ../scripts/release-checksums.sh "$TAG" SHA256SUMS.distro foxbyte-distro.tar.zst
 
       - name: Attach the distro image
         env:

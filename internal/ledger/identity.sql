@@ -30,10 +30,10 @@
 SET session_replication_role = replica;
 
 -- ── The private half ────────────────────────────────────────────────────────
--- ledger.sql grants db_client EXECUTE on every function in schema bb, on every
--- start. The MAC and the secret must never be callable by a client (a client
--- that could compute a MAC could forge an actor), so they live in a schema no
--- one but its owner can use.
+-- The MAC and the secret must never be callable by a client (a client that
+-- could compute a MAC could forge an actor), so they live in a schema no one
+-- but its owner can use, rather than relying on bb's list of functions a
+-- client may call (ledger.sql, bb._client_callable).
 CREATE SCHEMA IF NOT EXISTS bb_f1;
 REVOKE ALL ON SCHEMA bb_f1 FROM PUBLIC;
 

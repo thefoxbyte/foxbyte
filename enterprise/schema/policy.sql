@@ -228,7 +228,7 @@ BEGIN
   -- the rollback the error below causes (the guardrail's mechanism).
   eval_id := NULL;
   BEGIN
-    conn := 'host=/var/run/postgresql dbname=' || current_database() || ' user=' || current_user;
+    conn := bb._blocked_conn();
     -- Not when this transaction already wrote to Blackbox: the second connection
     -- would wait for this one forever (bb._holds_chain_lock). The evaluation row
     -- below takes no such lock and is still recorded.

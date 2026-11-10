@@ -85,6 +85,11 @@ const (
 	codeSSL       = 80877103 // SSLRequest
 	codeGSS       = 80877104 // GSSENCRequest
 	codeCancel    = 80877102 // CancelRequest
+
+	// maxStartupPacket is the longest startup packet accepted, length field
+	// included: Postgres's own MAX_STARTUP_PACKET_LENGTH, so no client that
+	// works with Postgres is refused here.
+	maxStartupPacket = 10000
 )
 
 // errHandledCancel signals that readStartup already handled a CancelRequest, so
@@ -174,6 +179,7 @@ func relayStartupCaptureKey(client, backend net.Conn, addr string) (string, erro
 // auto-resuming suspended branches on connect and auto-suspending branches idle
 // for longer than idle (0 disables suspension).
 func Serve(addr string, idle time.Duration) error {
+	branch.OnWake = func(name, state string) { log.Printf("auto-resume: waking %s (was %s)", name, state) }
 	if gatewayNoAuth() {
 		log.Printf("gateway authentication DISABLED (FOX_GATEWAY_NOAUTH) — trusted/local mode")
 	} else {
@@ -293,6 +299,12 @@ func handle(client net.Conn) {
 	var agentKey bool
 	var account auth.User
 	if authStore != nil {
+		// Before the password is even asked for: an address that has used up
+		// its invalid keys costs no key lookup and no row in the security log.
+		if held, wait := authStore.GatewayThrottled(params["database"], remoteHost(client)); held {
+			sendError(client, "28000", fmt.Sprintf("too many invalid API keys from this address — try again in %s", wait.Round(time.Second)))
+			return
+		}
 		key, err := requestClientPassword(client)
 		if err != nil {
 			log.Printf("gateway auth: %v", err)
@@ -300,7 +312,7 @@ func handle(client net.Conn) {
 		}
 		u, scope, kind, ok := authStore.VerifyKeyKind(key)
 		if !ok {
-			authStore.Audit(auth.EvGatewayRefused, "", params["database"], remoteHost(client), "invalid API key")
+			authStore.GatewayInvalidKey(params["database"], remoteHost(client))
 			sendError(client, "28P01", "invalid API key — use a key_ key as the password")
 			return
 		}
@@ -311,7 +323,7 @@ func handle(client net.Conn) {
 		// Refused before the branch is resolved, so such a key cannot even
 		// wake one.
 		if kind == auth.KindRealtime {
-			authStore.Audit(auth.EvGatewayRefused, u.Email, params["database"], remoteHost(client), "realtime key at the gateway")
+			authStore.GatewayRefused(auth.EvGatewayRefused, u.Email, params["database"], remoteHost(client), "realtime key at the gateway")
 			sendError(client, "28P01", "this is a realtime key: it subscribes to the change feed and cannot run SQL — use a key_ key as the password")
 			return
 		}
@@ -342,7 +354,7 @@ func handle(client net.Conn) {
 		}
 		actor = keyScope
 	} else if gatewayACL != nil && !gatewayACL.Can(account, target, access.Use) {
-		authStore.Audit(auth.EvDenied, account.Email, target, remoteHost(client), "gateway")
+		authStore.GatewayRefused(auth.EvDenied, account.Email, target, remoteHost(client), "gateway")
 		// Answered like a branch that does not exist, so a name is not
 		// confirmed to someone who may not open it — and checked before the
 		// branch is woken.
@@ -350,43 +362,27 @@ func handle(client net.Conn) {
 		return
 	}
 	touch(target)
-	var addr string
-	if standbyRead {
-		// Never EnsureRunning: the standby is not a branch, nothing may start
-		// it on a client's behalf, and a stepped-down primary must not be
-		// revived by somebody opening a read-only session.
-		a, err := branch.StandbyReadAddr(target)
-		if err != nil {
-			log.Printf("route dbname=%q: %v", branch.StandbyReadName(target), err)
-			// A refusal that retrying cannot change is a name problem; one
-			// that waiting can — a standby mid-rebuild, or promoted and not
-			// yet failed back — tells the client to come back instead.
-			code := "57P03" // cannot_connect_now
-			if errors.Is(err, branch.ErrNoStandbyRead) {
-				code = "3D000" // invalid_catalog_name
-			}
-			sendError(client, code, err.Error())
-			return
+	route := func() (string, error) {
+		if standbyRead {
+			// Never EnsureRunning: the standby is not a branch, nothing may
+			// start it on a client's behalf, and a stepped-down primary must
+			// not be revived by somebody opening a read-only session.
+			return standbyAddr(target)
 		}
-		addr = a
-	} else {
-		if st := branch.ContainerState(target); st != "running" && st != "absent" {
-			log.Printf("auto-resume: waking %s (was %s)", target, st)
-		}
-		a, err := branch.EnsureRunning(target) // resumes the branch if suspended
-		if err != nil {
-			log.Printf("route dbname=%q: %v", target, err)
-			if errors.Is(err, branch.ErrBranchClosed) {
-				sendError(client, "57P03", err.Error()) // cannot_connect_now: a masked branch being made
-				return
-			}
-			sendError(client, "3D000", err.Error()) // invalid_catalog_name
-			return
-		}
-		addr = a
+		return ensureRunning(target) // resumes the branch if suspended
 	}
-	backend, err := net.Dial("tcp", addr)
+	addr, err := route()
 	if err != nil {
+		sendRouteError(client, target, standbyRead, err)
+		return
+	}
+	backend, addr, err := connectBackend(addr, route)
+	if err != nil {
+		var refused *routeFailure
+		if errors.As(err, &refused) {
+			sendRouteError(client, target, standbyRead, refused.err)
+			return
+		}
 		log.Printf("dial backend %s: %v", addr, err)
 		sendError(client, "08006", fmt.Sprintf("could not reach branch %q", target))
 		return
@@ -502,6 +498,84 @@ func handle(client net.Conn) {
 	<-done
 }
 
+// The dials are bounded, unlike the rest of a session. The first is short
+// because a backend on the same docker bridge answers in a millisecond, and the
+// one that does not is an address the container has left. The second has come
+// through a fresh look at docker and is allowed more.
+const (
+	backendDialFirst = 3 * time.Second
+	backendDialRetry = 10 * time.Second
+)
+
+// The gateway's ways out to the engine, variables so a test can stand in for a
+// branch that moved.
+var (
+	ensureRunning  = branch.EnsureRunning
+	standbyAddr    = branch.StandbyReadAddr
+	forgetBackends = branch.ForgetBackends
+	dialBackend    = net.DialTimeout
+)
+
+// routeFailure is a retry that could not find the branch at all, which the
+// client is told about as a routing problem rather than a dial failure.
+type routeFailure struct{ err error }
+
+func (r *routeFailure) Error() string { return r.err.Error() }
+
+// connectBackend dials addr, and when that fails, routes again and dials once
+// more.
+//
+// The address may be seconds old (branch/statecache.go): a suspend or a restart
+// run by another process leaves it behind and nothing can tell this process. So
+// a failed dial says the memory was wrong, and it is dropped before routing
+// again, which then finds a suspended branch and wakes it. The client sees a
+// slightly slower connect instead of an error. Once only: a backend that fails
+// twice is down, and more tries would only make the client wait to hear it.
+func connectBackend(addr string, route func() (string, error)) (net.Conn, string, error) {
+	backend, err := dialBackend("tcp", addr, backendDialFirst)
+	if err == nil {
+		return backend, addr, nil
+	}
+	log.Printf("dial backend %s: %v (looking the branch up again)", addr, err)
+	forgetBackends()
+	again, rerr := route()
+	if rerr != nil {
+		return nil, addr, &routeFailure{err: rerr}
+	}
+	backend, err = dialBackend("tcp", again, backendDialRetry)
+	if err != nil {
+		return nil, again, err
+	}
+	return backend, again, nil
+}
+
+// sendRouteError tells the client why its branch could not be routed to.
+func sendRouteError(client net.Conn, target string, standbyRead bool, err error) {
+	name := target
+	if standbyRead {
+		name = branch.StandbyReadName(target)
+	}
+	log.Printf("route dbname=%q: %v", name, err)
+	sendError(client, routeErrorCode(standbyRead, err), err.Error())
+}
+
+// routeErrorCode separates a refusal that retrying cannot change, which is a
+// name problem, from one that waiting can — a standby mid-rebuild or promoted
+// and not yet failed back, a masked branch being made, a docker that did not
+// answer in time — which tells the client to come back instead.
+func routeErrorCode(standbyRead bool, err error) string {
+	const cannotConnectNow, invalidCatalog = "57P03", "3D000"
+	switch {
+	case errors.Is(err, branch.ErrStateUnknown):
+		return cannotConnectNow
+	case standbyRead && !errors.Is(err, branch.ErrNoStandbyRead):
+		return cannotConnectNow
+	case errors.Is(err, branch.ErrBranchClosed):
+		return cannotConnectNow
+	}
+	return invalidCatalog
+}
+
 // readStartup reads the startup phase and returns the startup parameters (user,
 // database, ...). When TLS is configured it accepts an SSLRequest, upgrades the
 // connection, and returns the wrapped conn — the caller must use the returned
@@ -512,8 +586,10 @@ func readStartup(client net.Conn) (net.Conn, map[string]string, error) {
 		if _, err := io.ReadFull(client, header); err != nil {
 			return client, nil, err
 		}
-		msgLen := int(binary.BigEndian.Uint32(header))
-		if msgLen < 8 || msgLen > 1<<20 {
+		// A uint32 kept whole: on a 32-bit build int() could turn a huge length negative.
+		msgLen := binary.BigEndian.Uint32(header)
+		if msgLen < 8 || msgLen > maxStartupPacket {
+			sendError(client, "08P01", "invalid length of startup packet") // protocol_violation
 			return client, nil, fmt.Errorf("bad startup length %d", msgLen)
 		}
 		body := make([]byte, msgLen-4)

@@ -85,7 +85,13 @@ var ErrNoStandbyRead = errors.New("no standby to read from")
 // StandbyReadAddr is the backend a read-only session should be sent to, or why
 // it cannot be.
 func StandbyReadAddr(name string) (string, error) {
-	if err := standbyReadRefusal(name, primaryBranch(), ContainerState("standby"), IsStandbyNode()); err != nil {
+	// From the gateway's connect path, so on the short deadline. A refusal is
+	// all that can come of a poor answer, and the client tries again.
+	state := "absent"
+	if f, err := containers.lookup(container("standby")); err == nil {
+		state = f.state
+	}
+	if err := standbyReadRefusal(name, primaryBranch(), state, IsStandbyNode()); err != nil {
 		return "", err
 	}
 	return BackendAddr("standby")

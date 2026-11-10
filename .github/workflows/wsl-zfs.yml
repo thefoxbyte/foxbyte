@@ -59,12 +59,11 @@ jobs:
           set -eux
           gh release upload "$TAG" dist/foxbyte-zfs-modules-*.tar.gz --clobber
 
-          # Keep SHA256SUMS complete, or setup skips verifying this bundle.
+          # A checksum beside each bundle, not in SHA256SUMS: that file is signed
+          # and belongs to release.yml, and rewriting it here without the key
+          # broke its signature, so fox update then refused the whole release.
           cd dist
-          gh release download "$TAG" -p SHA256SUMS -O existing.txt 2>/dev/null || : > existing.txt
-          sha256sum foxbyte-zfs-modules-*.tar.gz > mine.txt
-          awk '{print $2}' mine.txt > names.txt
-          grep -vFf names.txt existing.txt > SHA256SUMS || : > SHA256SUMS
-          cat mine.txt >> SHA256SUMS
-          sort -k2 -o SHA256SUMS SHA256SUMS
-          gh release upload "$TAG" SHA256SUMS --clobber
+          for f in foxbyte-zfs-modules-*.tar.gz; do
+            sha256sum "$f" > "$f.sha256"
+            gh release upload "$TAG" "$f.sha256" --clobber
+          done

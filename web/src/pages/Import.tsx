@@ -5,6 +5,7 @@ import {
   type ImportEvent, type ImportResult, type Replication,
 } from '../api'
 import { useConfirm } from '../confirm'
+import { usePolling } from '../usePolling'
 
 type Line = { text: string; kind?: 'err' | 'ok' }
 type Prog = { done: number; total: number; label: string }
@@ -186,14 +187,10 @@ function ContinuousImports() {
   const [done, setDone] = useState('')
   const [busy, setBusy] = useState('')
 
-  useEffect(() => {
-    let live = true
-    const load = () => listReplication().then(l => { if (live) { setList(l); setErr('') } })
-      .catch(e => { if (live) setErr((e as Error).message) })
-    load()
-    const t = setInterval(load, 4000)
-    return () => { live = false; clearInterval(t) }
-  }, [])
+  const live = useRef(true)
+  useEffect(() => { live.current = true; return () => { live.current = false } }, [])
+  usePolling(() => listReplication().then(l => { if (live.current) { setList(l); setErr('') } })
+    .catch(e => { if (live.current) setErr((e as Error).message) }), 10000)
 
   const cutover = async (r: Replication) => {
     const ok = await confirm({

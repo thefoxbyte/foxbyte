@@ -46,9 +46,9 @@ jobs:
       # occasional impossible value rather than a failing test.
       - name: Test (race detector)
         run: go test -race ./...
-      # The release workflows share one SHA256SUMS; this checks the script that
-      # merges into it never drops another job's entries.
-      - name: Release checksum merging
+      # Each release workflow signs only its own build's checksums; this checks
+      # the script never signs anything read back from a release.
+      - name: Release checksum signing
         run: bash scripts/test_release_checksums.sh
       # The release job's check that every file `fox update` needs was published.
       - name: Release assets for fox update

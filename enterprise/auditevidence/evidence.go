@@ -34,7 +34,8 @@ type inputs struct {
 	keyID     string
 	forward   *branch.ForwardStatus
 	findings  []branch.AuditFinding
-	records   []branch.AuditRecord
+	activity  branch.EvidenceActivity
+	records   []branch.AuditRecord // only when they were asked for
 	anchorSet []ledger.Anchor
 	publicKey string
 }
@@ -85,7 +86,7 @@ func gather(o branch.EvidenceOptions) (inputs, error) {
 		}
 	}
 	in.findings = branch.AuditFindings(marks)
-	if in.records, err = branch.AuditRecordsBetween(o.Since, o.Until); err != nil {
+	if in.activity, in.records, err = branch.AuditActivityBetween(o.Since, o.Until, o.Records); err != nil {
 		return in, err
 	}
 	if o.Records {
@@ -108,7 +109,7 @@ func assemble(o branch.EvidenceOptions, in inputs) branch.AuditEvidence {
 		},
 		Integrity: branch.EvidenceIntegrity{ChainReport: in.chain, AnchorsKept: in.anchors, KeyID: in.keyID},
 		Delivery:  branch.EvidenceDelivery{Forward: in.forward, Findings: in.findings},
-		Activity:  branch.EvidenceActivity{ByKind: map[string]int{}, ByBranch: map[string]int{}, Gaps: []branch.AuditRecord{}},
+		Activity:  in.activity,
 		Changes:   []auth.SecurityEvent{},
 		Limits:    branch.EvidenceLimits,
 	}
@@ -120,19 +121,6 @@ func assemble(o branch.EvidenceOptions, in inputs) branch.AuditEvidence {
 	}
 	if ev.Delivery.Findings == nil {
 		ev.Delivery.Findings = []branch.AuditFinding{}
-	}
-	for _, r := range in.records {
-		ev.Activity.Records++
-		ev.Activity.ByKind[r.Kind]++
-		ev.Activity.ByBranch[r.Branch]++
-		switch r.Kind {
-		case "outcome":
-			ev.Activity.Errors++
-		case "heartbeat":
-			ev.Activity.Heartbeats++
-		case "gap":
-			ev.Activity.Gaps = append(ev.Activity.Gaps, r)
-		}
 	}
 	for _, e := range o.Events {
 		if !strings.HasPrefix(e.Kind, "audit-log.") {

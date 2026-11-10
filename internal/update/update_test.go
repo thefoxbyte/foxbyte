@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -501,6 +502,70 @@ func TestReleaseForSetup(t *testing.T) {
 	if _, err := c.Release(ctx, "v1.0.0", linux); err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Errorf("pinned incomplete release = %v, want a 'missing' error", err)
 	}
+}
+
+// `fox setup` installs an engine that runs as root, so Release holds its
+// checksums to the same signature as Resolve: nothing comes back from a release
+// that doesn't verify, whichever way it fails.
+func TestReleaseRequiresTheSignature(t *testing.T) {
+	linux := Target{GOOS: "linux", HostArch: "amd64"}
+	ctx := context.Background()
+	_, other, _ := ed25519.GenerateKey(nil)
+
+	t.Run("good", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		f.publish("v0.9.1", map[string]string{engLinuxAMD64: "good"})
+		o, err := f.client("").Release(ctx, "v0.9.1", linux)
+		if err != nil || o.Sums[engLinuxAMD64] == "" {
+			t.Fatalf("release = %+v, %v", o, err)
+		}
+	})
+	t.Run("signed by another key", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		f.publish("v0.9.1", map[string]string{engLinuxAMD64: "forged"})
+		f.files["/dl/v0.9.1/SHA256SUMS.sig"] = ed25519.Sign(other, f.files["/dl/v0.9.1/SHA256SUMS"])
+		for _, tag := range []string{"latest", "v0.9.1"} {
+			if o, err := f.client("").Release(ctx, tag, linux); o != nil || err == nil ||
+				!strings.Contains(err.Error(), "not signed with the FoxByte release key") {
+				t.Errorf("%s: release = %+v, %v; want the signature error", tag, o, err)
+			}
+		}
+	})
+	t.Run("altered after signing", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		f.publish("v0.9.1", map[string]string{engLinuxAMD64: "good"})
+		f.files["/dl/v0.9.1/SHA256SUMS"] = append(f.files["/dl/v0.9.1/SHA256SUMS"], '\n')
+		if o, err := f.client("").Release(ctx, "latest", linux); o != nil || err == nil {
+			t.Errorf("release = %+v, %v; want refused", o, err)
+		}
+	})
+	t.Run("signature not attached", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		f.publish("v0.9.1", map[string]string{engLinuxAMD64: "unsigned"})
+		f.releases[0].Assets = f.releases[0].Assets[:len(f.releases[0].Assets)-1]
+		for _, tag := range []string{"latest", "v0.9.1"} {
+			if o, err := f.client("").Release(ctx, tag, linux); o != nil || err == nil {
+				t.Errorf("%s: release = %+v, %v; want refused", tag, o, err)
+			}
+		}
+	})
+	t.Run("signature attached but unavailable", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		f.publish("v0.9.1", map[string]string{engLinuxAMD64: "unsigned"})
+		delete(f.files, "/dl/v0.9.1/SHA256SUMS.sig")
+		if o, err := f.client("").Release(ctx, "latest", linux); o != nil || err == nil ||
+			!strings.Contains(err.Error(), SigAsset) {
+			t.Errorf("release = %+v, %v; want an error naming %s", o, err, SigAsset)
+		}
+	})
+	t.Run("build with no release key", func(t *testing.T) {
+		f := newFakeGitHub(t)
+		f.publish("v0.9.1", map[string]string{engLinuxAMD64: "good"})
+		releasePublicKey = "" // newFakeGitHub's cleanup restores it
+		if o, err := f.client("").Release(ctx, "latest", linux); o != nil || !errors.Is(err, ErrNoReleaseKey) {
+			t.Errorf("release = %+v, %v; want ErrNoReleaseKey", o, err)
+		}
+	})
 }
 
 func TestShouldCheck(t *testing.T) {

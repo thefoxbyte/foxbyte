@@ -18,8 +18,8 @@ const SchemaName = "bb"
 
 // PrivateSchemaName holds what no client may reach: application identity's
 // install secret and the function that makes its MACs (identity.sql). A schema
-// of its own because ledger.sql grants db_client EXECUTE on everything in
-// SchemaName. Like SchemaName it is the engine's, never a user's: everything
+// of its own so that the secret never depends on what SchemaName exposes to
+// db_client. Like SchemaName it is the engine's, never a user's: everything
 // that lists, counts, guards or tracks a user's tables leaves both out.
 const PrivateSchemaName = "bb_f1"
 

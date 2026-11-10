@@ -59,22 +59,33 @@ func parseReplication(name string, lines func() ([]string, error)) (Replication,
 	return r, nil
 }
 
+// runningBranchNames and replicationOf are Replicating's sources, variables so a
+// test can count them.
+var (
+	runningBranchNames = RunningBranches
+	replicationOf      = ReplicationStatus
+)
+
 // Replicating lists the running branches that have a continuous import.
 func Replicating() ([]Replication, error) {
-	names, err := RunningBranches()
+	names, err := runningBranchNames()
 	if err != nil {
 		return nil, err
 	}
+	found := make([]Replication, len(names))
+	forEachBounded(len(names), func(i int) {
+		if names[i] == "main" {
+			return // an import always lands in its own branch
+		}
+		if r, err := replicationOf(names[i]); err == nil {
+			found[i] = r
+		}
+	})
 	out := []Replication{}
-	for _, n := range names {
-		if n == "main" {
-			continue // an import always lands in its own branch
+	for _, r := range found {
+		if r.Replicating {
+			out = append(out, r)
 		}
-		r, err := ReplicationStatus(n)
-		if err != nil || !r.Replicating {
-			continue
-		}
-		out = append(out, r)
 	}
 	return out, nil
 }
@@ -90,6 +101,7 @@ func CutoverReplication(name string) (int, error) {
 	if !r.Replicating {
 		return 0, fmt.Errorf("%w: branch %q has no replication to cut over", ErrNotReplicating, name)
 	}
+	defer noteStateChange() // the import page must stop listing it
 	if err := ImportCutoverTo(&Progress{}, name); err != nil {
 		return 0, err
 	}
