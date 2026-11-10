@@ -164,7 +164,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
     EXECUTE format('ALTER ROLE %%I %s', r);
   END IF;
-END $do$;`, quoteLiteral(email), set)
+END $do$;`, bodyLiteral(email), set)
 }
 
 // Unmask gives an account unmask on a branch, or with off takes it. Only a

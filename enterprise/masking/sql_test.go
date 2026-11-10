@@ -298,3 +298,37 @@ func TestMaskBranchSQL(t *testing.T) {
 		t.Error("the source's slots would keep the old WAL")
 	}
 }
+
+// A table's name is chosen by whoever made it, may hold '$', and ends up inside
+// bodies the engine runs: it must not be able to end their quoting.
+func TestATableNameCannotCloseTheMaskBodies(t *testing.T) {
+	const hostile = "c$bbfill$d$bbmask$e"
+	m, err := maskTable("public", hostile, customers, everyRule, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(m.Fill, "DO $bbfill1$") || strings.Count(m.Fill, "$bbfill1$") != 2 {
+		t.Errorf("fill's quoting can collide with the table's name:\n%s", m.Fill)
+	}
+	var keep string
+	for _, s := range m.Build {
+		if strings.Contains(s, "RETURNS trigger") {
+			keep = s
+		}
+	}
+	if keep == "" {
+		t.Fatal("no trigger function was built")
+	}
+	if !strings.Contains(keep, "AS $bbmask1$") || strings.Count(keep, "$bbmask1$") != 2 {
+		t.Errorf("the trigger function's quoting can collide with the table's name:\n%s", keep)
+	}
+
+	// With an ordinary name, what is sent is what always was.
+	plain, err := maskTable("public", "customers", customers, everyRule, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(plain.Fill, "DO $bbfill$\nDECLARE") || !strings.HasSuffix(plain.Fill, "END $bbfill$;") {
+		t.Errorf("an ordinary table's fill changed:\n%s", plain.Fill)
+	}
+}

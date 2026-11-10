@@ -168,3 +168,29 @@ func TestDblinkIsNotGrantedToClients(t *testing.T) {
 		}
 	}
 }
+
+// The masked-reader role builders put emails and role names in $do$ bodies too.
+func TestMaskedRoleSQLCannotBeClosedByAName(t *testing.T) {
+	for _, v := range hostileValues {
+		for what, sql := range map[string]string{
+			"maskedRoleSQL":         maskedRoleSQL(v, "pw"),
+			"maskedAgentKeyRoleSQL": maskedAgentKeyRoleSQL(v, "pw"),
+		} {
+			if n := tagCount(sql, "$do$"); n != 2 {
+				t.Errorf("%s(%q): $do$ appears %d times, want 2:\n%s", what, v, n, sql)
+			}
+		}
+	}
+}
+
+func TestDollarTag(t *testing.T) {
+	for _, c := range [][3]string{
+		{"b", "SELECT 1", "$b$"},
+		{"b", "x$b$y", "$b1$"},
+		{"b", "x$b$y$b1$z", "$b2$"},
+	} {
+		if got := DollarTag(c[0], c[1]); got != c[2] {
+			t.Errorf("DollarTag(%q, %q) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}
