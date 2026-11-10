@@ -1257,8 +1257,8 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 			return
 		}
 		// A run deletes and re-creates its target, so it may only do that to
-		// a branch this pipeline made.
-		if branch.Exists(target) && !store.PipelineOwnsTarget(pl.ID, target) {
+		// a branch this pipeline made and this account still owns.
+		if branch.Exists(target) && !store.PipelineMayReplace(pl.ID, u.ID, target) {
 			send("error", map[string]string{"message": fmt.Sprintf(
 				"a branch named %q already exists and was not made by this pipeline — rename the pipeline, or delete that branch first", target)})
 			return

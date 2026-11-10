@@ -185,11 +185,17 @@ func (s *Store) BranchOwner(branch string) (int64, bool) {
 }
 
 // ForgetBranch drops what the store held about a branch that has been deleted:
-// its owner, and any change request still waiting on it. One place decides what
+// its owner, a pipeline's claim on its name, and any change request still
+// waiting on it. One place decides what
 // forgetting a branch means, so every caller — the CLI, the API, the agent API —
 // gets the same thing.
 func (s *Store) ForgetBranch(branch string) error {
 	if _, err := s.db.Exec(`DELETE FROM branch_owners WHERE branch=?`, branch); err != nil {
+		return err
+	}
+	// A claim that outlived the branch let its pipeline delete whatever somebody
+	// else later made under that name.
+	if _, err := s.db.Exec(`DELETE FROM pipeline_targets WHERE branch=?`, branch); err != nil {
 		return err
 	}
 	// Readings go with the branch, unlike decided requests, which are history

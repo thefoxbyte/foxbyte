@@ -141,3 +141,12 @@ func (s *Store) PipelineOwnsTarget(pipelineID, branch string) bool {
 	err := s.db.QueryRow(`SELECT pipeline_id FROM pipeline_targets WHERE branch=?`, branch).Scan(&owner)
 	return err == nil && owner == pipelineID
 }
+
+// PipelineMayReplace reports whether a run of pipelineID, which belongs to
+// userID, may delete branch and make it again: the pipeline made the branch and
+// the branch is still that account's. The claim alone is not enough, since a
+// branch can change hands under the same name.
+func (s *Store) PipelineMayReplace(pipelineID string, userID int64, branch string) bool {
+	owner, ok := s.BranchOwner(branch)
+	return ok && owner == userID && s.PipelineOwnsTarget(pipelineID, branch)
+}

@@ -220,3 +220,55 @@ func TestPipelineTargets(t *testing.T) {
 		t.Error("ownership reads back wrong")
 	}
 }
+
+// A branch's name can be reused. A pipeline's claim used to outlive the branch,
+// so its next run deleted whatever another account had since made under that
+// name, and took it over.
+func TestForgetBranchDropsThePipelineClaim(t *testing.T) {
+	s := testStore(t)
+	u, _ := s.CreateUser("a@x.com", "password1")
+	p1, _ := s.CreatePipeline(u.ID, "one", "{}")
+	p2, _ := s.CreatePipeline(u.ID, "two", "{}")
+	if err := s.ClaimPipelineTarget(p1.ID, "sales"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ForgetBranch("sales"); err != nil {
+		t.Fatal(err)
+	}
+	if s.PipelineOwnsTarget(p1.ID, "sales") {
+		t.Error("the claim outlived the branch")
+	}
+	if err := s.ClaimPipelineTarget(p2.ID, "sales"); err != nil {
+		t.Errorf("the freed name could not be claimed: %v", err)
+	}
+}
+
+func TestPipelineMayReplace(t *testing.T) {
+	s := testStore(t)
+	a, _ := s.CreateUser("a@x.com", "password1")
+	b, _ := s.CreateUser("b@x.com", "password1")
+	p, _ := s.CreatePipeline(a.ID, "one", "{}")
+	other, _ := s.CreatePipeline(a.ID, "two", "{}")
+
+	if s.PipelineMayReplace(p.ID, a.ID, "sales") {
+		t.Error("allowed with neither a claim nor an owner")
+	}
+	if err := s.ClaimPipelineTarget(p.ID, "sales"); err != nil {
+		t.Fatal(err)
+	}
+	if s.PipelineMayReplace(p.ID, a.ID, "sales") {
+		t.Error("allowed on a branch with no recorded owner")
+	}
+	_ = s.SetBranchOwner("sales", a.ID)
+	if !s.PipelineMayReplace(p.ID, a.ID, "sales") {
+		t.Error("a pipeline could not refresh its own branch")
+	}
+	if s.PipelineMayReplace(other.ID, a.ID, "sales") {
+		t.Error("allowed for a pipeline that did not make the branch")
+	}
+	// The name changed hands while the claim stayed.
+	_ = s.SetBranchOwner("sales", b.ID)
+	if s.PipelineMayReplace(p.ID, a.ID, "sales") {
+		t.Error("allowed on a branch another account now owns")
+	}
+}
