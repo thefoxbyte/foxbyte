@@ -13,6 +13,7 @@ import { TrackingControl, trackedOf } from '../components/Tracking'
 import { AuditControl } from '../components/AuditMark'
 import TableUpkeep from '../components/TableUpkeep'
 import PlanView from '../components/PlanView'
+import { RoutineDialog } from '../components/RoutineDialogs'
 import { explainSQL, parsePlan, type Plan } from '../plan'
 import { countQuery, nextSort, rowsQuery, summary, type Filter, type Sort } from '../gridquery'
 import { applySuggestion, schemaFrom, snippets, SCHEMA_SQL, type Rel } from '../sqlcomplete'
@@ -98,6 +99,7 @@ export default function Console() {
   // An EXPLAIN's plan (point 12.4), shown in place of a result.
   const [plan, setPlan] = useState<{ plan: Plan; raw: string } | null>(null)
   const [analyse, setAnalyse] = useState(false)
+  const [newRoutine, setNewRoutine] = useState(false)
   const [ranSql, setRanSql] = useState('')
   // The history panel (point 8.2): open or shut, remembered in this browser,
   // and a count of runs so it can show each new one.
@@ -128,6 +130,7 @@ export default function Console() {
   // Dragging the divider. Tracked on the window rather than the handle so the
   // pointer can leave it mid-drag without the pane sticking — the usual way a
   // splitter feels broken.
+  const loadSeq = useRef(0)
   const gutterRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<HTMLTextAreaElement>(null)
 
@@ -188,9 +191,14 @@ export default function Console() {
   // The console's own reads (the object list, a table's rows and structure)
   // stay out of the user's query history: nobody typed them.
   const loadObjects = useCallback(async (b: string) => {
+    // A reply to an earlier load, of the branch left or of this one, is not
+    // what is on screen now and must not replace it.
+    const seq = ++loadSeq.current
+    const live = () => seq === loadSeq.current
     setListing(true); setListErr('')
     try {
       const r = await runQuery(b, LIST_SQL, { history: false })
+      if (!live()) return
       if (r.error) { setListErr(r.error); return }
       setObjects((r.rows || []).map(row => ({
         schema: String(row[0]), name: String(row[1]),
@@ -199,17 +207,17 @@ export default function Console() {
       // The columns, for suggestions. Not worth an error of its own: without
       // them the editor still offers tables and keywords.
       runQuery(b, SCHEMA_SQL, { history: false })
-        .then(c => setRels(c.error ? [] : schemaFrom(c.rows || [])))
-        .catch(() => setRels([]))
+        .then(c => { if (live()) setRels(c.error ? [] : schemaFrom(c.rows || [])) })
+        .catch(() => { if (live()) setRels([]) })
       // Everything else it holds, for the object browser. Without it the rail
       // still lists tables and views, as it always has.
-      getCatalog(b).then(c => setCatalog(c.objects ?? [])).catch(() => setCatalog([]))
-      getTracking(b).then(setTracking).catch(() => setTracking(null))
-      getAuditMarks(b).then(setMarks).catch(() => setMarks(null))
+      getCatalog(b).then(c => { if (live()) setCatalog(c.objects ?? []) }).catch(() => { if (live()) setCatalog([]) })
+      getTracking(b).then(t => { if (live()) setTracking(t) }).catch(() => { if (live()) setTracking(null) })
+      getAuditMarks(b).then(m => { if (live()) setMarks(m) }).catch(() => { if (live()) setMarks(null) })
     } catch (e) {
-      setListErr((e as Error).message)
+      if (live()) setListErr((e as Error).message)
     } finally {
-      setListing(false)
+      if (live()) setListing(false)
     }
   }, [])
 
@@ -499,7 +507,11 @@ export default function Console() {
             {views.map(item)}
             <CatalogGroups objects={catalog} filter={filter} showSystem={showSystem}
               active={mode === 'object' ? objSel : null}
-              onOpen={o => { setObjSel(o); setMode('object') }} />
+              onOpen={o => { setObjSel(o); setMode('object') }} onNew={() => setNewRoutine(true)} />
+            {newRoutine && (
+              <RoutineDialog branch={branch} schemas={catalog.filter(o => o.kind === 'schema' && !o.system).map(o => o.name)} onOpenSql={openSql}
+                onClose={() => setNewRoutine(false)} onDone={() => { setNewRoutine(false); loadObjects(branch) }} />
+            )}
             {showSystem && system.length > 0 && (
               <>
                 <div className="obj-group">{BRAND.product} system</div>
@@ -618,7 +630,8 @@ export default function Console() {
               )}
             </>
           ) : mode === 'object' && objSel ? (
-            <ObjectView branch={branch} obj={objSel} onOpenSql={openSql} onRunSql={text => runSql({}, text)} />
+            <ObjectView branch={branch} obj={objSel} onOpenSql={openSql} onRunSql={text => runSql({}, text)}
+              onChanged={gone => { loadObjects(branch); if (gone) { setObjSel(null); setMode('query') } }} />
           ) : sel && (
             <section className="wb-pane wb-res">
               <div className="obj-view-head">
@@ -664,7 +677,7 @@ export default function Console() {
               {tab === 'upkeep'
                 ? <TableUpkeep branch={branch} schema={sel.schema} table={sel.name} />
                 : CATALOG_TABS.includes(tab)
-                ? <TableParts branch={branch} tab={tab as 'constraints' | 'triggers' | 'ddl'} onOpenSql={openSql}
+                ? <TableParts branch={branch} tab={tab as 'constraints' | 'triggers' | 'ddl'} onOpenSql={openSql} catalog={catalog}
                     obj={catalog.find(o => (o.kind === 'table' || o.kind === 'view') && o.schema === sel.schema && o.name === sel.name) ?? null} />
                 : tab === 'rows' && editing && browseRes && !browseRes.error
                   ? <EditGrid cols={browseRes.columns ?? []} rows={browseRes.rows ?? []} info={editing}

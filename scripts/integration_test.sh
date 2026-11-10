@@ -3893,6 +3893,92 @@ assert_eq "…with Analyse it runs, measured, inside a transaction rolled back: 
   "$(python3 -c 'import json,sys; d=json.load(sys.stdin); r=[x for x in d["results"] if x.get("columns")==["QUERY PLAN"]][0]; v=r["rows"][0][0]; doc=json.loads(v) if isinstance(v, str) else v; p=doc[0]; print(p["Plan"]["Node Type"], p["Plan"]["Actual Rows"], "Execution Time" in p)' <<<"$EXA")|$(pg pg-main "SELECT count(*) FROM r_items")" "ModifyTable 0 True|2"
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS r_items CASCADE; DROP FUNCTION IF EXISTS r_add(integer, integer), r_series(integer), r_none(), r_sum(VARIADIC integer[]), r_upper(); DROP PROCEDURE IF EXISTS r_bump(integer, integer, text)" >/dev/null
 
+echo "### 11ap. create and edit dialogs for functions and triggers (point 12.3)"
+# The dialogs write SQL the person runs, so what is checked here is what the
+# engine gives an edit dialog, and that what the dialogs write runs and keeps
+# what it was not asked to change; the dialogs themselves are routines.spec.ts.
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS rd_items CASCADE; DROP FUNCTION IF EXISTS rd_full(integer), rd_atomic(), rd_full2(integer), rd_tf(); DROP PROCEDURE IF EXISTS rd_proc(integer)" >/dev/null
+printf 'password123\n' | $S user create dlg-other@foxbyte.dev >/dev/null 2>&1
+DO="$($S apikey create dlg-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+rd() { curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST -d "$(python3 -c 'import json,sys; print(json.dumps({"sql": sys.argv[1]}))' "$1")" https://localhost:8080/api/branches/main/query; }
+rderr() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error") or next((r["error"] for r in d.get("results",[]) if r.get("error")), ""))'; }
+assert_eq "what the New dialog writes makes the function, the procedure and the trigger function" \
+  "$(rd 'CREATE FUNCTION "public"."rd_full"(a integer DEFAULT 1)
+ RETURNS integer
+ LANGUAGE sql
+ STABLE
+ STRICT
+ SECURITY DEFINER
+ COST 50
+ SET search_path TO '"'"'public'"'"', '"'"'pg_temp'"'"'
+AS $body$
+SELECT a
+$body$' | rderr)|$(rd 'CREATE PROCEDURE "public"."rd_proc"(a integer)
+ LANGUAGE plpgsql
+AS $body$
+BEGIN NULL; END;
+$body$' | rderr)|$(rd 'CREATE FUNCTION "public"."rd_tf"()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $body$
+BEGIN RETURN NEW; END;
+$body$' | rderr)" "||"
+rd 'CREATE FUNCTION rd_atomic() RETURNS integer BEGIN ATOMIC SELECT 1; END' >/dev/null
+RCAT="$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/schema)"
+rdoid() { hjson "print([o['oid'] for o in d['objects'] if o['name']=='$1' and o['kind']=='$2'][0])" <<<"$RCAT"; }
+rout() { curl -sk -H "$AUTH" "https://localhost:8080/api/branches/main/schema/$2/$(rdoid "$1" "$2")"; }
+assert_eq "an edit dialog is given everything: arguments, identity, returns, language, body, and each attribute" \
+  "$(rout rd_full function | hjson "r=d['routine']; print(r['arguments'], '/', r['identity'], '/', r['returns'], r['language'], r['body'].strip(), r['volatility'], r.get('strict'), r.get('definer'), r['cost'], r['set'])")" \
+  "a integer DEFAULT 1 / a integer / integer sql SELECT a stable True True 50 [\"SET search_path TO 'public', 'pg_temp'\"]"
+assert_eq "…a trigger function is told apart in the list; BEGIN ATOMIC is said to have no body to edit" \
+  "$(hjson "print([o.get('sub') for o in d['objects'] if o['name']=='rd_tf'][0])" <<<"$RCAT")|$(rout rd_tf function | hjson "print(d['routine'].get('trigger'))")|$(rout rd_atomic function | hjson "print(d['routine'].get('atomic'))")" "trigger|True|True"
+assert_eq "what the Edit dialog writes changes the body and keeps every attribute" \
+  "$(rd 'CREATE OR REPLACE FUNCTION "public"."rd_full"(a integer DEFAULT 1)
+ RETURNS integer
+ LANGUAGE sql
+ STABLE
+ STRICT
+ SECURITY DEFINER
+ COST 50
+ SET search_path TO '"'"'public'"'"', '"'"'pg_temp'"'"'
+AS $body$
+SELECT a + 1
+$body$' | rderr)|$(rout rd_full function | hjson "r=d['routine']; print(r['body'].strip(), r.get('definer'), r['cost'], len(r['set']))")" "|SELECT a + 1 True 50 1"
+# log_ddl_drop does not record a procedure's or a trigger's drop; the catalog
+# scan does, as OBSERVED, so one is run before the drop and one after. It names
+# what it drops as it last saw it, so a trigger renamed between scans keeps its old name.
+$S ledger scan main >/dev/null 2>&1
+assert_eq "rename and drop, as written; each in the Blackbox, the procedure's drop by the catalog scan" \
+  "$(rd 'ALTER FUNCTION "public"."rd_full"(a integer) RENAME TO "rd_full2"' | rderr)|$(pg pg-main "SELECT to_regproc('rd_full2') IS NOT NULL, to_regproc('rd_full') IS NULL")|$(rd 'DROP PROCEDURE "public"."rd_proc"(a integer)' | rderr)|$($S ledger scan main >/dev/null 2>&1; pg pg-main "SELECT to_regproc('rd_proc') IS NULL, (SELECT count(*) FROM bb.schema_ledger WHERE object_identity LIKE '%rd_full%' AND command_tag = 'ALTER FUNCTION'), (SELECT count(*) FROM bb.schema_ledger WHERE object_identity = 'public.rd_proc(integer)' AND command_tag = 'DROP PROCEDURE' AND status = 'OBSERVED')")" \
+  "|t|t||t|1|1"
+# Accounts reach a branch through one database role, so what any of them made
+# is that role's; what it does not own, Postgres refuses, from a dialog as anywhere.
+pg pg-main "CREATE OR REPLACE FUNCTION rd_admin(a integer) RETURNS integer LANGUAGE sql AS 'SELECT a'" >/dev/null
+assert_eq "a dialog cannot change what the account's database role does not own" \
+  "$(curl -sk -H "Authorization: Bearer $DO" -H 'Content-Type: application/json' -X POST -d '{"sql":"DROP FUNCTION \"public\".\"rd_admin\"(a integer)"}' https://localhost:8080/api/branches/main/query | rderr | grep -c 'must be owner')|$(pg pg-main "SELECT to_regproc('rd_admin') IS NOT NULL")" "1|t"
+# Triggers.
+rd 'CREATE TABLE rd_items (id int PRIMARY KEY, v text, w int)' >/dev/null
+assert_eq "what the New trigger dialog writes makes it, UPDATE OF, a condition and arguments included" \
+  "$(rd 'CREATE TRIGGER "rd_t" BEFORE INSERT OR UPDATE OF "v", "w" ON "public"."rd_items"
+ FOR EACH ROW
+ WHEN (new.w > 0)
+ EXECUTE FUNCTION "public"."rd_tf"('"'"'a'"'"', '"'"'b'"'"')' | rderr)" ""
+RCAT="$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/schema)"
+trinfo() { rout rd_items table | hjson "t=[x for x in d['triggers'] if not x.get('system')]; print([(x['name'], x['trigger']['timing'], x['trigger']['events'], x['trigger'].get('columns'), x['trigger']['forEach'], x['trigger'].get('when'), x['trigger']['function'], x['trigger'].get('args'), x.get('disabled', False)) for x in t])"; }
+assert_eq "an edit dialog is given each part of a trigger" \
+  "$(trinfo)" "[('rd_t', 'BEFORE', ['INSERT', 'UPDATE'], ['v', 'w'], 'ROW', 'new.w > 0', 'public.rd_tf', \"'a', 'b'\", False)]"
+rd 'ALTER TABLE "public"."rd_items" DISABLE TRIGGER "rd_t"' >/dev/null
+assert_eq "what the Edit dialog writes replaces it, and one that was disabled stays so" \
+  "$(rd 'CREATE OR REPLACE TRIGGER "rd_t" AFTER UPDATE ON "public"."rd_items"
+ FOR EACH ROW
+ EXECUTE FUNCTION "public"."rd_tf"();
+ALTER TABLE "public"."rd_items" DISABLE TRIGGER "rd_t"' | rderr)|$(trinfo)" "|[('rd_t', 'AFTER', ['UPDATE'], None, 'ROW', None, 'public.rd_tf', None, True)]"
+$S ledger scan main >/dev/null 2>&1
+assert_eq "a trigger renamed and dropped, as written; the drop in the Blackbox by the catalog scan" \
+  "$(rd 'ALTER TRIGGER "rd_t" ON "public"."rd_items" RENAME TO "rd_t2"' | rderr)|$(trinfo | grep -c rd_t2)|$(rd 'DROP TRIGGER "rd_t2" ON "public"."rd_items"' | rderr)|$(trinfo)|$($S ledger scan main >/dev/null 2>&1; pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE object_identity LIKE 'rd_t% on public.rd_items' AND command_tag = 'DROP TRIGGER' AND status = 'OBSERVED'")" "|1||[]|1"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS rd_items CASCADE; DROP FUNCTION IF EXISTS rd_full2(integer), rd_atomic(), rd_tf(), rd_admin(integer)" >/dev/null
+$S user delete dlg-other@foxbyte.dev >/dev/null 2>&1
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { getObject, runQuery, type CatalogKind, type CatalogObject, type CatalogPart, type FuncParam, type ObjectDetail } from '../api'
 import { useConfirm } from '../confirm'
 import { buildCall, inputsOf, quoteIdent, type ArgInput } from '../runcall'
+import { dropRoutine, dropTrigger, renameRoutine, renameTrigger } from '../ddl'
+import { RenameDialog, RoutineDialog, runDDL, TriggerDialog } from './RoutineDialogs'
 
 // The object browser (point 12.1). The schema rail already lists tables and
 // views; these are the rest of what a branch holds (functions, procedures,
 // sequences, types, schemas, extensions) and, for any object, what it is made
 // of and its CREATE script. The engine reads the catalog as you. A function
 // or a procedure can be run from a form, and a table's own triggers switched
-// off and on (point 12.4): both as SQL the person runs, through the console.
+// off and on (point 12.4), and functions, procedures and triggers made, edited,
+// renamed and dropped (point 12.3): all as SQL the person runs, through the console.
 
 const GROUPS: { kind: CatalogKind; title: string; icon: string }[] = [
   { kind: 'function', title: 'Functions', icon: 'ƒ' },
@@ -30,17 +33,19 @@ export function objectLabel(o: CatalogObject): string {
 const objKey = (o: CatalogObject) => `${o.kind}:${o.oid}`
 
 /** The rail's groups beyond tables and views, folded until opened or searched. */
-export function CatalogGroups({ objects, filter, showSystem, active, onOpen }: {
+export function CatalogGroups({ objects, filter, showSystem, active, onOpen, onNew }: {
   objects: CatalogObject[]
   filter: string
   showSystem: boolean
   active: CatalogObject | null
   onOpen: (o: CatalogObject) => void
+  onNew?: () => void
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({})
   const f = filter.trim().toLowerCase()
   return (
     <>
+      {onNew && <button type="button" className="ghost sm obj-new" onClick={onNew}>+ New function…</button>}
       {GROUPS.map(g => {
         const list = objects.filter(o => o.kind === g.kind && (showSystem || !o.system)
           && (!f || objectLabel(o).toLowerCase().includes(f) || (o.schema ?? '').toLowerCase().includes(f)))
@@ -99,7 +104,9 @@ export function DDL({ text, onOpenSql }: { text: string; onOpenSql: (sql: string
   )
 }
 
-function Parts({ title, parts, empty, onToggle }: { title: string; parts?: CatalogPart[]; empty: string; onToggle?: (p: CatalogPart) => void }) {
+function Parts({ title, parts, empty, onToggle, actions }: {
+  title: string; parts?: CatalogPart[]; empty: string; onToggle?: (p: CatalogPart) => void; actions?: (p: CatalogPart) => ReactNode
+}) {
   return (
     <section className="obj-parts" aria-label={title}>
       {!parts?.length ? <p className="muted">{empty}</p> : (
@@ -118,7 +125,7 @@ function Parts({ title, parts, empty, onToggle }: { title: string; parts?: Catal
                   <td style={{ whiteSpace: 'nowrap' }}>
                     {p.system
                       ? <span className="muted" title="FoxByte keeps its records with it: it is not switched off here">FoxByte&rsquo;s own</span>
-                      : <button type="button" className="ghost sm" onClick={() => onToggle(p)}>{p.disabled ? 'Enable' : 'Disable…'}</button>}
+                      : <><button type="button" className="ghost sm" onClick={() => onToggle(p)}>{p.disabled ? 'Enable' : 'Disable…'}</button>{actions?.(p)}</>}
                   </td>
                 )}
               </tr>
@@ -131,10 +138,27 @@ function Parts({ title, parts, empty, onToggle }: { title: string; parts?: Catal
 }
 
 /** Triggers, each of the user's own switched off and on (point 12.4), as the person, through the console. */
-function TriggerParts({ branch, obj, d, reload }: { branch: string; obj: CatalogObject; d: ObjectDetail; reload: () => void }) {
+function TriggerParts({ branch, obj, d, reload, catalog, onOpenSql }: {
+  branch: string; obj: CatalogObject; d: ObjectDetail; reload: () => void; catalog: CatalogObject[]; onOpenSql: (sql: string) => void
+}) {
   const confirm = useConfirm()
   const [err, setErr] = useState('')
   const [note, setNote] = useState('')
+  const [dialog, setDialog] = useState<{ type: 'new' } | { type: 'edit' | 'rename'; part: CatalogPart } | null>(null)
+  const schema = obj.schema ?? 'public'
+  const functions = catalog.filter(o => o.kind === 'function' && o.sub === 'trigger' && !o.system && !o.args)
+    .map(o => `${quoteIdent(o.schema ?? 'public')}.${quoteIdent(o.name)}`)
+  const done = (msg: string) => { setDialog(null); setErr(''); setNote(msg); reload() }
+  const drop = async (p: CatalogPart) => {
+    if (!await confirm({
+      title: 'Drop trigger',
+      message: <>This drops <code>{p.name}</code> from <code>{obj.name}</code>. The change is recorded in the Blackbox.</>,
+      confirmText: 'Drop it', danger: true,
+    })) return
+    setNote('')
+    const e = await runDDL(branch, dropTrigger(schema, obj.name, p.name))
+    if (e) setErr(e); else done(`${p.name} dropped.`)
+  }
   const toggle = async (p: CatalogPart) => {
     const on = p.disabled
     if (!on && !await confirm({
@@ -154,34 +178,76 @@ function TriggerParts({ branch, obj, d, reload }: { branch: string; obj: Catalog
   }
   return (
     <>
-      <Parts title="Triggers" parts={d.triggers} empty="No triggers." onToggle={toggle} />
+      <div className="row" style={{ margin: '0 0 8px' }}>
+        <button type="button" className="ghost sm" onClick={() => setDialog({ type: 'new' })}>+ New trigger…</button>
+      </div>
+      <Parts title="Triggers" parts={d.triggers} empty="No triggers." onToggle={toggle} actions={p => (
+        <>
+          {' '}{!p.trigger?.constraint && <button type="button" className="ghost sm" onClick={() => setDialog({ type: 'edit', part: p })}>Edit…</button>}
+          {' '}<button type="button" className="ghost sm" onClick={() => setDialog({ type: 'rename', part: p })}>Rename…</button>
+          {' '}<button type="button" className="ghost sm danger" onClick={() => void drop(p)}>Drop…</button>
+        </>
+      )} />
       {note && <div className="ok" role="status" data-testid="trigger-note">{note}</div>}
       {err && <div className="err">{err}</div>}
+      {dialog?.type === 'new' && (
+        <TriggerDialog branch={branch} schema={schema} table={obj.name} functions={functions} onOpenSql={onOpenSql}
+          onClose={() => setDialog(null)} onDone={() => done('Trigger created.')} />
+      )}
+      {dialog?.type === 'edit' && (
+        <TriggerDialog branch={branch} schema={schema} table={obj.name} functions={functions} edit={dialog.part} onOpenSql={onOpenSql}
+          onClose={() => setDialog(null)} onDone={() => done(`${dialog.part.name} saved.`)} />
+      )}
+      {dialog?.type === 'rename' && (
+        <RenameDialog title={`Rename ${dialog.part.name}`} current={dialog.part.name} branch={branch} onOpenSql={onOpenSql}
+          build={to => renameTrigger(schema, obj.name, dialog.part.name, to)}
+          onClose={() => setDialog(null)} onDone={() => done('Trigger renamed.')} />
+      )}
     </>
   )
 }
 
 /** The table tabs the catalog fills: constraints, triggers and the CREATE script. */
-export function TableParts({ branch, obj, tab, onOpenSql }: {
+export function TableParts({ branch, obj, tab, onOpenSql, catalog }: {
   branch: string
   obj: CatalogObject | null
   tab: 'constraints' | 'triggers' | 'ddl'
   onOpenSql: (sql: string) => void
+  catalog: CatalogObject[]
 }) {
   const { d, err, reload } = useObject(branch, obj)
   if (!obj) return <p className="muted">Not in this branch's catalog for you.</p>
   if (err) return <div className="err">{err}</div>
   if (!d) return <div className="muted">Loading…</div>
   if (tab === 'constraints') return <Parts title="Constraints" parts={d.constraints} empty="No constraints." />
-  if (tab === 'triggers') return <TriggerParts branch={branch} obj={obj} d={d} reload={reload} />
+  if (tab === 'triggers') return <TriggerParts branch={branch} obj={obj} d={d} reload={reload} catalog={catalog} onOpenSql={onOpenSql} />
   return <DDL text={d.ddl} onOpenSql={onOpenSql} />
 }
 
 /** ObjectView is any object that is not a table or a view: what it is, and its CREATE script. */
-export function ObjectView({ branch, obj, onOpenSql, onRunSql }: {
+export function ObjectView({ branch, obj, onOpenSql, onRunSql, onChanged }: {
   branch: string; obj: CatalogObject; onOpenSql: (sql: string) => void; onRunSql?: (sql: string) => void
+  onChanged?: (gone: boolean) => void
 }) {
-  const { d, err } = useObject(branch, obj)
+  const { d, err, reload } = useObject(branch, obj)
+  const confirm = useConfirm()
+  const [dialog, setDialog] = useState<'edit' | 'rename' | null>(null)
+  const [actErr, setActErr] = useState('')
+  const [dropSql, setDropSql] = useState('')
+  const routine = (obj.kind === 'function' || obj.kind === 'procedure') && !obj.system && onChanged ? d?.routine : undefined
+  const schema = obj.schema ?? 'public'
+  const editable = routine && !routine.atomic && (routine.language === 'plpgsql' || routine.language === 'sql')
+  const drop = async () => {
+    if (!routine || !await confirm({
+      title: `Drop ${obj.kind}`,
+      message: <>This drops <code>{objectLabel(obj)}</code>. Anything that calls it stops working. The change is recorded in the Blackbox.</>,
+      confirmText: 'Drop it', danger: true,
+    })) return
+    const sql = dropRoutine(obj.kind, schema, obj.name, routine.identity)
+    setActErr(''); setDropSql('')
+    const e = await runDDL(branch, sql)
+    if (e) { setActErr(e); setDropSql(sql) } else onChanged?.(true)
+  }
   return (
     <section className="wb-pane wb-res obj-view" aria-label={`${obj.kind} ${objectLabel(obj)}`}>
       <div className="obj-view-head">
@@ -205,6 +271,29 @@ export function ObjectView({ branch, obj, onOpenSql, onRunSql }: {
             </tbody></table>
           )}
           {!!d.constraints?.length && <Parts title="Constraints" parts={d.constraints} empty="" />}
+          {routine && (
+            <div className="row" style={{ gap: 8 }}>
+              {editable
+                ? <button type="button" className="ghost sm" onClick={() => setDialog('edit')}>Edit…</button>
+                : <span className="muted" style={{ fontSize: 13 }}>Written in a way the dialog cannot edit: change its CREATE script in the editor.</span>}
+              <button type="button" className="ghost sm" onClick={() => setDialog('rename')}>Rename…</button>
+              <button type="button" className="ghost sm danger" onClick={() => void drop()}>Drop…</button>
+            </div>
+          )}
+          {actErr && (
+            <div className="err" data-testid="routine-err">{actErr}
+              {dropSql && <> <button type="button" className="ghost sm" onClick={() => onOpenSql(dropSql)}>Put it in the editor</button></>}
+            </div>
+          )}
+          {dialog === 'edit' && routine && (
+            <RoutineDialog branch={branch} schemas={[schema]} edit={{ obj, routine }} onOpenSql={onOpenSql}
+              onClose={() => setDialog(null)} onDone={() => { setDialog(null); reload(); onChanged?.(false) }} />
+          )}
+          {dialog === 'rename' && routine && (
+            <RenameDialog title={`Rename ${obj.name}`} current={obj.name} branch={branch} onOpenSql={onOpenSql}
+              build={to => renameRoutine(obj.kind, schema, obj.name, routine.identity, to)}
+              onClose={() => setDialog(null)} onDone={() => { setDialog(null); onChanged?.(true) }} />
+          )}
           {(obj.kind === 'function' || obj.kind === 'procedure') && d.params && onRunSql && (
             <RunForm key={`${obj.kind}${obj.oid}`} kind={obj.kind} schema={obj.schema ?? 'public'} name={obj.name}
               params={d.params} onRun={onRunSql} onOpen={onOpenSql} />
