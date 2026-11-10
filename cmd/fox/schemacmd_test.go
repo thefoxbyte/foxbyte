@@ -28,7 +28,7 @@ func TestPrintCatalog(t *testing.T) {
 		{Kind: "schema", Name: "empty"},
 		{Kind: "table", Schema: "shop", Name: "orders"},
 		{Kind: "table", Schema: "shop", Name: "events", Sub: "partitioned"},
-		{Kind: "function", Schema: "shop", Name: "total", Args: "o_id integer"},
+		{Kind: "function", Schema: "shop", Name: "total", Args: "o_id integer", Sub: "trigger"},
 		{Kind: "extension", Schema: "public", Name: "dblink", Sub: "1.2"},
 	}
 	var b bytes.Buffer

@@ -440,13 +440,23 @@ export type CatalogKind = 'schema' | 'table' | 'view' | 'sequence' | 'function' 
 export type CatalogObject = {
   kind: CatalogKind; oid: number; schema?: string; name: string; args?: string; sub?: string; system?: boolean
 }
-export type CatalogPart = { name: string; kind?: string; def: string; constraint?: boolean; system?: boolean; disabled?: boolean }
+export type TriggerInfo = {
+  timing: string; events: string[]; columns?: string[]; forEach: string; when?: string; function: string; args?: string; referencing?: string; constraint?: boolean
+}
+export type CatalogPart = { name: string; kind?: string; def: string; constraint?: boolean; system?: boolean; disabled?: boolean; trigger?: TriggerInfo }
+// A function or procedure, attribute by attribute (point 12.3).
+export type RoutineInfo = {
+  arguments: string; identity: string; returns?: string; language: string; body: string; atomic?: boolean
+  volatility: string; strict?: boolean; definer?: boolean; leakproof?: boolean; window?: boolean
+  parallel: string; cost: number; rows?: number; set?: string[]; trigger?: boolean
+}
 export type CatalogCol = { name: string; type: string; not_null?: boolean; default?: string; identity?: string; generated?: string; comment?: string }
 export type ObjectDetail = CatalogObject & {
   comment?: string; columns?: CatalogCol[]; constraints?: CatalogPart[]; indexes?: CatalogPart[]; triggers?: CatalogPart[]
   facts?: [string, string][]; values?: string[]; members?: { Kind: string; Name: string }[]; ddl: string
   // A function's or a procedure's arguments, in order (point 12.4).
   params?: FuncParam[]
+  routine?: RoutineInfo
 }
 export type FuncParam = { name?: string; type: string; mode: 'in' | 'out' | 'inout' | 'variadic' | 'table'; default?: boolean }
 export const getCatalog = (branch: string) =>
