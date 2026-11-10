@@ -85,6 +85,11 @@ const (
 	codeSSL       = 80877103 // SSLRequest
 	codeGSS       = 80877104 // GSSENCRequest
 	codeCancel    = 80877102 // CancelRequest
+
+	// maxStartupPacket is the longest startup packet accepted, length field
+	// included: Postgres's own MAX_STARTUP_PACKET_LENGTH, so no client that
+	// works with Postgres is refused here.
+	maxStartupPacket = 10000
 )
 
 // errHandledCancel signals that readStartup already handled a CancelRequest, so
@@ -512,8 +517,10 @@ func readStartup(client net.Conn) (net.Conn, map[string]string, error) {
 		if _, err := io.ReadFull(client, header); err != nil {
 			return client, nil, err
 		}
-		msgLen := int(binary.BigEndian.Uint32(header))
-		if msgLen < 8 || msgLen > 1<<20 {
+		// A uint32 kept whole: on a 32-bit build int() could turn a huge length negative.
+		msgLen := binary.BigEndian.Uint32(header)
+		if msgLen < 8 || msgLen > maxStartupPacket {
+			sendError(client, "08P01", "invalid length of startup packet") // protocol_violation
 			return client, nil, fmt.Errorf("bad startup length %d", msgLen)
 		}
 		body := make([]byte, msgLen-4)
