@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   getStatus, getBranches, createBranch, deleteBranch, suspendBranch, resumeBranch,
   listBackups, API, type Status, type Branch, type Backup,
 } from '../api'
 import { useConfirm } from '../confirm'
 import { useFeatures } from '../features'
+import { usePolling } from '../usePolling'
 
 function Dot({ up }: { up: boolean }) {
   return <span className={'dot ' + (up ? 'up' : 'down')} />
@@ -131,19 +132,19 @@ export default function Dashboard() {
   const [err, setErr] = useState('')
   const [offline, setOffline] = useState(false)
 
+  // The newest refresh wins: a poll already on its way when the user suspends a
+  // branch can come back after the refresh that follows, carrying the old list.
+  const latest = useRef(0)
   const refresh = async () => {
+    const mine = ++latest.current
     try {
       const [s, b] = await Promise.all([getStatus(), getBranches()])
-      setStatus(s); setBranches(b); setOffline(false)
+      if (mine === latest.current) { setStatus(s); setBranches(b); setOffline(false) }
     } catch {
-      setOffline(true)
+      if (mine === latest.current) setOffline(true)
     }
   }
-  useEffect(() => {
-    refresh()
-    const t = setInterval(refresh, 3000)
-    return () => clearInterval(t)
-  }, [])
+  usePolling(refresh, 10000)
 
   const act = async (fn: () => Promise<unknown>) => {
     setErr('')
@@ -182,7 +183,7 @@ export default function Dashboard() {
   return (
     <div className="fade-up">
       <h1>Dashboard</h1>
-      <p className="muted" style={{ marginTop: -2 }}>Live control plane · auto-refreshing every 3s.</p>
+      <p className="muted" style={{ marginTop: -2 }}>Live control plane · auto-refreshing every 10s.</p>
 
       <div className="grid stat-grid">
         {tiles.map(([k, v], i) => (
