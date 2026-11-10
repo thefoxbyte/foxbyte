@@ -127,7 +127,7 @@ costs one ~2 MB bundle rather than another 740 MB image.
 
 **To cover a new kernel on an existing release**, run the **wsl-zfs** workflow
 manually with the kernel tag and the release tag. It builds just that bundle
-(~1 hour), attaches it, and updates `SHA256SUMS` — no full rebuild. Add the
+(~1 hour) and attaches it with a `.sha256` file beside it — no full rebuild. Add the
 kernel to the matrix as well, so future releases keep covering it.
 
 ## Building the ZFS bundle (maintainers)

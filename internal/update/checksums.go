@@ -14,7 +14,9 @@ import (
 )
 
 // SumsAsset is the checksum file every release publishes
-// (scripts/release-checksums.sh writes it).
+// (scripts/release-checksums.sh writes it, in release.yml's job). It lists every
+// file an update needs; the Windows distro image has a file of its own, which
+// only install.ps1 reads.
 const SumsAsset = "SHA256SUMS"
 
 // Checksums maps a file name to its lowercase hex SHA-256.

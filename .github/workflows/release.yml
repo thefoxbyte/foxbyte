@@ -285,11 +285,10 @@ jobs:
       # only integrity guarantee is TLS, and these assets are executed as root
       # inside the user's distro.
       #
-      # SHA256SUMS is shared with wsl-distro.yml, which runs on the same tag and
-      # can finish before or after this job. The script merges this job's entries
-      # into the published file by exact name, keeps the other job's, and checks
-      # again after uploading — so neither job can drop the other's checksums
-      # (v0.8.1 lost the distro image's entry that way).
+      # SHA256SUMS belongs to this job alone and lists only what it built here;
+      # wsl-distro.yml, on its own schedule, signs SHA256SUMS.distro for the
+      # distro image. Merging them meant signing lines read back from the
+      # release, so anyone able to upload an asset could get a hash signed.
       - name: Publish checksums
         env:
           GH_TOKEN: ${{ github.token }}
@@ -298,7 +297,7 @@ jobs:
           FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
         run: |
           cd dist
-          bash ../scripts/release-checksums.sh "$TAG" fox-* foxbyte-docker-context.tar.gz foxbyte-sbom.spdx.json
+          bash ../scripts/release-checksums.sh "$TAG" SHA256SUMS fox-* foxbyte-docker-context.tar.gz foxbyte-sbom.spdx.json
 
       - name: Attach binaries
         env:
