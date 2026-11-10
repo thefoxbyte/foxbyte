@@ -219,7 +219,7 @@ func statusForRequestErr(err error) int {
 	switch {
 	case errors.Is(err, branch.ErrConflict):
 		return 409
-	case errors.Is(err, branch.ErrBlockedByPolicy):
+	case errors.Is(err, branch.ErrBlockedByPolicy), errors.Is(err, branch.ErrNotReplayable):
 		return 422
 	case errors.Is(err, branch.ErrNothingToPromote):
 		return 400

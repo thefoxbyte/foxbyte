@@ -126,6 +126,9 @@ func build(source, target string, history []auth.ChangeRequest) (entries []branc
 		return nil, 0, fmt.Errorf("%w: %q has no schema change that %q does not already have",
 			branch.ErrNothingToPromote, source, target)
 	}
+	if err := checkReplayable(entries); err != nil {
+		return nil, 0, err
+	}
 	xids, err := runXids(source, forkAfterID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading %q's Blackbox: %w", source, err)
@@ -218,6 +221,10 @@ func checkPolicyFor(target string, entries []branch.RequestEntry) error {
 func apply(requestID int64, target, approver string, entries []branch.RequestEntry) (int, error) {
 	if len(entries) == 0 {
 		return 0, branch.ErrNothingToPromote
+	}
+	// Again here: what is applied is a stored snapshot, and may predate this check.
+	if err := checkReplayable(entries); err != nil {
+		return 0, err
 	}
 	target, err := branch.ResolveBranch(target)
 	if err != nil {
