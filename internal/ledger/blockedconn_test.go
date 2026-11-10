@@ -37,8 +37,8 @@ func TestBlockedRecordConnectionCarriesTimeouts(t *testing.T) {
 			t.Errorf("%s has %d direct dblink_exec call(s); the blocked path belongs in bb._record_blocked", what, n)
 		}
 	}
-	if n := strings.Count(SchemaData, "PERFORM bb._record_blocked(format("); n != 3 {
-		t.Errorf("datachanges.sql records %d blocked paths through the helper, want 3 (TRUNCATE, unqualified DML, impact)", n)
+	if n := strings.Count(SchemaData, "PERFORM bb._record_blocked(format("); n != 4 {
+		t.Errorf("datachanges.sql records %d blocked paths through the helper, want 4 (TRUNCATE, unqualified DML, impact, guard trigger)", n)
 	}
 }
 

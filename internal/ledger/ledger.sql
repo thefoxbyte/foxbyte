@@ -629,6 +629,59 @@ BEGIN
 END;
 $$;
 
+-- Is this trigger, named bb_something, exactly what the Blackbox installs under
+-- that name? A trigger's name is all the recorder's skip list and the data
+-- guards go by, and CREATE OR REPLACE TRIGGER keeps the name while changing what
+-- it does, so the definition is compared instead: the function, when it fires
+-- (tgtype), no column list (tgattr), and the WHEN clause (tgqual). The WHEN is
+-- compared as Postgres prints it, with parentheses, casts and spaces taken
+-- away from both sides, since the same expression prints differently between
+-- major versions.
+CREATE OR REPLACE FUNCTION bb._normal_when(e text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT regexp_replace(lower(e), '::[a-z_ ]+(\[\])?|[()[:space:]]', '', 'g');
+$$;
+
+CREATE OR REPLACE FUNCTION bb._is_own_trigger(t oid) RETURNS boolean
+LANGUAGE plpgsql STABLE SET search_path = pg_catalog, public, bb AS $$
+DECLARE g pg_trigger; a text[];
+BEGIN
+  SELECT * INTO g FROM pg_trigger WHERE oid = t;
+  IF NOT FOUND THEN
+    RETURN false;
+  END IF;
+  -- UPDATE OF a column nobody writes, a transition table, or a constraint trigger.
+  IF g.tgattr::text <> '' OR g.tgconstraint <> 0 OR g.tgdeferrable
+     OR g.tgoldtable IS NOT NULL OR g.tgnewtable IS NOT NULL THEN
+    RETURN false;
+  END IF;
+  CASE g.tgname
+    WHEN 'bb_guard_truncate' THEN  -- BEFORE TRUNCATE, per statement
+      RETURN g.tgfoid = to_regprocedure('bb.guard_truncate()') AND g.tgtype = 34 AND g.tgqual IS NULL AND g.tgnargs = 0;
+    WHEN 'bb_record_dml' THEN      -- AFTER UPDATE OR DELETE, per statement
+      RETURN g.tgfoid = to_regprocedure('bb.record_dml()') AND g.tgtype = 24 AND g.tgqual IS NULL AND g.tgnargs = 0;
+    WHEN 'bb_guard_dml' THEN       -- BEFORE UPDATE OR DELETE, per statement
+      RETURN g.tgfoid = to_regprocedure('bb.guard_dml()') AND g.tgtype = 26 AND g.tgqual IS NULL AND g.tgnargs = 0;
+    WHEN 'bb_guard_impact' THEN    -- BEFORE UPDATE OR DELETE, per row, with bb._impact_when
+      RETURN g.tgfoid = to_regprocedure('bb.guard_impact()') AND g.tgtype = 27 AND g.tgnargs = 0
+         AND bb._normal_when(substring(pg_get_triggerdef(t) FROM ' WHEN \((.*)\) EXECUTE ')) = bb._normal_when(bb._impact_when());
+    WHEN 'bb_track' THEN           -- BEFORE INSERT OR UPDATE, per row
+      IF NOT (g.tgfoid = to_regprocedure('bb.track_row()') AND g.tgtype = 23 AND g.tgqual IS NULL AND g.tgnargs IN (3, 4)) THEN
+        RETURN false;
+      END IF;
+      -- Which columns are the owner's choice, but they must be columns:
+      -- arguments naming nothing would leave a tracking trigger that writes nothing.
+      a := string_to_array(encode(g.tgargs, 'escape'), '\000');
+      RETURN EXISTS (SELECT 1 FROM unnest(a) x WHERE x <> '')
+         AND NOT EXISTS (SELECT 1 FROM unnest(a) x WHERE x <> ''
+                           AND NOT EXISTS (SELECT 1 FROM pg_attribute
+                                            WHERE attrelid = g.tgrelid AND attname = x AND attnum > 0 AND NOT attisdropped));
+    ELSE
+      RETURN false;
+  END CASE;
+END;
+$$;
+
 -- ddl_command_end: record CREATE/ALTER changes (drops are recorded in sql_drop).
 CREATE OR REPLACE FUNCTION bb.log_ddl_end() RETURNS event_trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, bb AS $$
@@ -652,8 +705,10 @@ BEGIN
     IF r.command_tag IN ('CREATE SEQUENCE','ALTER SEQUENCE') THEN CONTINUE; END IF;
     IF r.command_tag = 'CREATE INDEX' AND r.object_identity ~ '_pkey$' THEN CONTINUE; END IF;
     -- The Blackbox's own data-change triggers (datachanges.sql), attached to
-    -- every table: plumbing, like the objects in schema bb.
-    IF r.command_tag = 'CREATE TRIGGER' AND r.object_identity ~ '^bb_(guard_truncate|record_dml|guard_dml|guard_impact) on ' THEN CONTINUE; END IF;
+    -- every table: plumbing, like the objects in schema bb. Only as installed:
+    -- one replaced under the override is a change, and is recorded.
+    IF r.command_tag = 'CREATE TRIGGER' AND r.object_identity ~ '^bb_(guard_truncate|record_dml|guard_dml|guard_impact) on '
+       AND bb._is_own_trigger(r.objid) THEN CONTINUE; END IF;
     st := 'APPLIED'; rk := NULL;
     IF r.command_tag = 'ALTER TABLE' AND EXISTS (SELECT 1 FROM unnest(t) x WHERE x ~* '\malter\M[^;]*\mtype\M') THEN
       st := 'FLAGGED'; rk := 'type-change';

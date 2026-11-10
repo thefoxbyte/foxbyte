@@ -73,9 +73,8 @@ func TestClientCalledFunctionsAreOnTheList(t *testing.T) {
 	}
 }
 
-// Every SECURITY DEFINER function the free schemas define is either on the
-// list, named to be sealed, or simply not; what must hold is that the list
-// does not grow by accident to include a definer that writes the ledger.
+// bb.act_for is the one SECURITY DEFINER function a client may call. The list
+// must not grow, by accident, to include another that writes the ledger.
 func TestOnlyActForIsAClientCallableDefiner(t *testing.T) {
 	allowed := allowedCallable(t)
 	def := regexp.MustCompile(`(?is)FUNCTION bb\.([a-z0-9_]+)\([^)]*\)[^;$]*?SECURITY DEFINER`)
