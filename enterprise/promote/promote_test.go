@@ -5,8 +5,14 @@
 package promote
 
 import (
+	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
@@ -70,9 +76,41 @@ func TestBuildRequestChecksNames(t *testing.T) {
 	}
 }
 
+// recordingTx stands in for the transaction: what replay asked of it, in order.
+type recordingTx struct {
+	calls  []execCall
+	failOn string
+}
+
+type execCall struct {
+	sql  string
+	args []any
+}
+
+func (r *recordingTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	r.calls = append(r.calls, execCall{sql, args})
+	if r.failOn != "" && strings.Contains(sql, r.failOn) {
+		return pgconn.CommandTag{}, errors.New("boom")
+	}
+	return pgconn.CommandTag{}, nil
+}
+
+// The statements replay sent, without the settings between them.
+func (r *recordingTx) statements() []string {
+	var out []string
+	for _, c := range r.calls {
+		if !strings.HasPrefix(c.sql, "SELECT set_config(") {
+			out = append(out, c.sql)
+		}
+	}
+	return out
+}
+
+func alwaysInTx() bool { return true }
+
 // One run of two statements is two entries, each holding the run's whole
-// text: the script runs it once, at the first, under its author.
-func TestApplyScriptRunsASharedStatementOnce(t *testing.T) {
+// text: replay runs it once, at the first, under its author.
+func TestReplayRunsASharedStatementOnce(t *testing.T) {
 	run := "CREATE TABLE t (id int); CREATE FUNCTION t_add(i int) RETURNS void LANGUAGE sql AS $$ INSERT INTO t VALUES (i) $$"
 	entries := []branch.RequestEntry{
 		{ID: 171, Actor: "ada@example.com", CommandTag: "CREATE TABLE", Statement: run},
@@ -80,14 +118,105 @@ func TestApplyScriptRunsASharedStatementOnce(t *testing.T) {
 		{ID: 173, Actor: "bob@example.com", CommandTag: "CREATE INDEX", Statement: "CREATE INDEX ON t (id)"},
 	}
 	branch.ReplayOnce(entries, map[int64]int64{171: 900, 172: 900, 173: 901})
-	s := applyScript(5, "carol@example.com", entries)
-	if n := strings.Count(s, "CREATE TABLE t (id int)"); n != 1 {
-		t.Fatalf("the shared run is in the script %d times:\n%s", n, s)
+	tx := &recordingTx{}
+	if err := replay(context.Background(), tx, alwaysInTx, 5, "carol@example.com", entries); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(s, "CREATE INDEX ON t (id);") || !strings.Contains(s, "SET LOCAL bb.actor = 'bob@example.com'") {
-		t.Fatalf("the entry of its own is missing:\n%s", s)
+	got := tx.statements()
+	if len(got) != 2 || got[0] != run || got[1] != "CREATE INDEX ON t (id)" {
+		t.Fatalf("statements = %q", got)
 	}
-	if strings.Index(s, "CREATE TABLE t") > strings.Index(s, "CREATE INDEX") {
-		t.Fatalf("out of order:\n%s", s)
+	var actors []any
+	for _, c := range tx.calls {
+		if strings.Contains(c.sql, "'bb.actor'") {
+			actors = append(actors, c.args...)
+		}
+	}
+	if len(actors) != 2 || actors[0] != "ada@example.com" || actors[1] != "bob@example.com" {
+		t.Fatalf("actors = %v", actors)
+	}
+}
+
+// The apply path is not psql: each statement is one Exec, verbatim and with no
+// arguments, so nothing but the server reads it. The transaction is the
+// caller's, and replay issues none of its own control.
+func TestReplayNeverGoesThroughPsql(t *testing.T) {
+	stmt := "COMMENT ON TABLE t IS E':var \\\\! rm -rf / \\\\gexec'"
+	tx := &recordingTx{}
+	if err := replay(context.Background(), tx, alwaysInTx, 7, "carol@example.com",
+		[]branch.RequestEntry{{ID: 1, Actor: "ada@example.com", Statement: "  " + stmt + "\n"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := tx.statements(); len(got) != 1 || got[0] != stmt {
+		t.Fatalf("the statement was changed on its way: %q", got)
+	}
+	for _, c := range tx.calls {
+		if c.sql == stmt && len(c.args) != 0 {
+			t.Fatalf("the statement was sent with arguments: %v", c.args)
+		}
+		for _, control := range []string{"BEGIN", "COMMIT", "SET LOCAL", "RESET ROLE", "SET ROLE"} {
+			if strings.Contains(c.sql, control) {
+				t.Fatalf("replay issued %s itself: %q", control, c.sql)
+			}
+		}
+	}
+	src, err := os.ReadFile("promote.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "ExecScript(") {
+		t.Fatal("the apply path goes through branch.ExecScript, which is psql over stdin")
+	}
+}
+
+// The statement after the one that fails is not attempted, and the failure
+// names the entry.
+func TestReplayStopsAtTheFirstFailure(t *testing.T) {
+	tx := &recordingTx{failOn: "CREATE VIEW"}
+	err := replay(context.Background(), tx, alwaysInTx, 1, "c", []branch.RequestEntry{
+		{ID: 1, Statement: "CREATE TABLE a ()"}, {ID: 2, Statement: "CREATE VIEW b AS SELECT 1"}, {ID: 3, Statement: "CREATE TABLE c ()"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "entry 2") {
+		t.Fatalf("err = %v", err)
+	}
+	if got := tx.statements(); len(got) != 2 {
+		t.Fatalf("carried on after the failure: %q", got)
+	}
+}
+
+// If a statement ever did end the transaction, the next must not run.
+func TestReplayStopsIfTheTransactionEnded(t *testing.T) {
+	tx := &recordingTx{}
+	err := replay(context.Background(), tx, func() bool { return false }, 1, "c", []branch.RequestEntry{
+		{ID: 1, Statement: "CREATE TABLE a ()"}, {ID: 2, Statement: "CREATE TABLE b ()"},
+	})
+	if !errors.Is(err, errTransactionEnded) {
+		t.Fatalf("err = %v", err)
+	}
+	if got := tx.statements(); len(got) != 1 {
+		t.Fatalf("carried on outside the transaction: %q", got)
+	}
+}
+
+// What a failure says was committed has to be true.
+func TestApplyFailureSaysWhatWasCommitted(t *testing.T) {
+	refused := &pgconn.PgError{Message: "deferred constraint"}
+	lost := errors.New("connection reset")
+	cases := []struct {
+		name     string
+		replayed bool
+		err      error
+		want     string
+	}{
+		{"a statement failed", false, lost, "nothing was committed"},
+		{"the server refused the commit", true, refused, "nothing was committed"},
+		{"the server rolled back at commit", true, pgx.ErrTxCommitRollback, "nothing was committed"},
+		{"the commit's answer never came", true, lost, "may or may not be in"},
+		{"a statement ended the transaction", false, errTransactionEnded, "part of it may be committed"},
+	}
+	for _, c := range cases {
+		if got := applyFailure("main", c.replayed, c.err).Error(); !strings.Contains(got, c.want) {
+			t.Errorf("%s: %q does not say %q", c.name, got, c.want)
+		}
 	}
 }
