@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -612,6 +613,42 @@ func registerAPI(mux *http.ServeMux) {
 // statement.
 const maskedStatementSQL = `'(hidden from masked accounts: a statement can hold real values)'::text`
 
+// The console's way out to a branch, variables so a test can stand in for one
+// that moved.
+var (
+	pgConnect    = pgx.ConnectConfig
+	sessionRoute = branch.EnsureRunning
+)
+
+// connectSession connects, and if the address could not be dialled, forgets it,
+// routes the branch again and tries once more. The address may be seconds old
+// (branch/statecache.go), and a suspend run by the gateway's idle reaper leaves
+// it behind without this process hearing about it. Only for a failure to reach
+// the address: a refused password or a full server is an answer from a backend
+// that is there.
+func connectSession(ctx context.Context, cfg *pgx.ConnConfig, name string) (*pgx.Conn, error) {
+	conn, err := pgConnect(ctx, cfg)
+	if err == nil || name == "" || !isDialFailure(err) {
+		return conn, err
+	}
+	branch.ForgetBackends()
+	addr, rerr := sessionRoute(name)
+	if rerr != nil {
+		return nil, err
+	}
+	again, perr := pgx.ParseConfig(fmt.Sprintf("postgres://%s/%s", addr, branch.Database))
+	if perr != nil {
+		return nil, err
+	}
+	again.User, again.Password = cfg.User, cfg.Password
+	return pgConnect(ctx, again)
+}
+
+func isDialFailure(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
+}
+
 func sqlEsc(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
 // ledgerSQL builds a filtered, bounded query over bb.schema_ledger. Filter
@@ -867,7 +904,7 @@ func openSession(ctx context.Context, addr string, as queryAs) (*pgx.Conn, error
 		}
 		cfg.User, cfg.Password = as.Actor, branch.UserRolePassword(as.Actor)
 	}
-	conn, err := pgx.ConnectConfig(ctx, cfg)
+	conn, err := connectSession(ctx, cfg, as.Branch)
 	if err != nil {
 		return nil, err
 	}
