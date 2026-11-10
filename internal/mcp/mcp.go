@@ -409,6 +409,10 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		// client's, and is that agent's by login: nothing it sets changes the
 		// name on the record (branch/engineagent.go).
 		if branch.MCPSuperuser() {
+			// The legacy switch reads everything: never for a masked account.
+			if branch.IsMaskedAccount(me.Actor) {
+				return "", fmt.Errorf("%s is masked, and FOX_MCP_SUPERUSER would run its SQL as the superuser: refused", strings.TrimPrefix(me.Actor, "agent:"))
+			}
 			return branch.QueryText(a.Branch, a.SQL)
 		}
 		return branch.ClientQueryTextAs(a.Branch, a.SQL, "mcp", me.Actor)

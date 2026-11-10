@@ -113,6 +113,32 @@ rtsql "SET bb.allow_destructive=on; DROP TABLE IF EXISTS public.pii_people"
 rtsql "CREATE TABLE public.pii_people (id int PRIMARY KEY, aadhaar_no text, email text, card_no text, status text, profile jsonb)"
 rtsql "INSERT INTO public.pii_people VALUES (1, '234567890124', 'a@example.com', '4111111111111111', 'open', '{\"contact\": {\"phone\": \"9876543210\"}, \"theme\": \"dark\"}'), (2, '456789012341', 'b@example.org', NULL, 'closed', '{\"contact\": {\"phone\": \"+91 98765 43211\"}}')"
 
+# Masking (F5), made here for the same reason: its setup restarts the branch to
+# mount the key. A table whose personal data a reviewer confirmed, and an
+# account to mask that is not an admin; the page sets the rules.
+"$S" branch delete e2emb >/dev/null 2>&1
+"$S" branch delete e2emask >/dev/null 2>&1; "$S" branch create e2emask >/dev/null 2>&1
+sudo docker exec -e PGPASSWORD=foxbyte pg-e2emask psql -U dbadmin -d appdb -q -c \
+	"CREATE TABLE public.m_people (id int PRIMARY KEY, aadhaar_no text, email text UNIQUE); INSERT INTO public.m_people VALUES (1, '234567890124', 'a@example.com'), (2, '456789012341', 'b@example.org')" >/dev/null 2>&1
+# For the access paths (step 4): a table with a foreign key into the email, and
+# a definer function that reads it as its owner, a superuser.
+sudo docker exec -e PGPASSWORD=foxbyte pg-e2emask psql -U dbadmin -d appdb -q -c \
+	"CREATE TABLE public.m_logins (id int PRIMARY KEY, login text REFERENCES public.m_people(email));
+	 CREATE FUNCTION public.m_email_of(i int) RETURNS text LANGUAGE sql SECURITY DEFINER AS \$\$ SELECT email FROM public.m_people WHERE id = i \$\$" >/dev/null 2>&1
+"$S" pii scan --branch e2emask >/dev/null 2>&1
+for id in $("$S" pii --branch e2emask --json 2>/dev/null | python3 -c 'import sys,json; print(" ".join(str(f["id"]) for f in json.load(sys.stdin)["findings"] if f["table"] == "m_people"))'); do
+	"$S" pii mark "$id" confirm --branch e2emask >/dev/null 2>&1
+done
+"$S" mask setup --branch e2emask --yes >/dev/null 2>&1
+# masking.spec.ts's key test makes e2e_tenant and deletes it; a run cut short
+# may have left it.
+"$S" mask key drop e2e_tenant --yes >/dev/null 2>&1
+printf '%s\n' "$PASSWORD" | "$S" user create e2e-masked@foxbyte.dev >/dev/null 2>&1
+"$S" mask account e2e-masked@foxbyte.dev --off --yes >/dev/null 2>&1
+# The masked account owns the branch, as a developer owns the one they made:
+# masking.spec.ts's access-path test signs in as it and still reads masks.
+"$S" branch owner e2emask e2e-masked@foxbyte.dev >/dev/null 2>&1
+
 # Application identity (F1), for the Blackbox's "for" test: a table made on the
 # branch in a transaction that asserted alice, with a token signed by an
 # application registered for this account. Through the Gateway, as an
@@ -225,7 +251,10 @@ echo "### cleanup"
 # the feed off would otherwise fail for a reason this suite caused.
 "$S" realtime teardown --yes >/dev/null 2>&1
 "$S" app remove uishop >/dev/null 2>&1
-for b in "$BRANCH" "$NEW_BRANCH" e2eui3; do "$S" branch delete "$b" >/dev/null 2>&1; done
+"$S" mask account e2e-masked@foxbyte.dev --off --yes >/dev/null 2>&1
+"$S" user delete e2e-masked@foxbyte.dev >/dev/null 2>&1
+"$S" mask key drop e2e_tenant --yes >/dev/null 2>&1
+for b in "$BRANCH" "$NEW_BRANCH" e2eui3 e2emb e2emask; do "$S" branch delete "$b" >/dev/null 2>&1; done
 cd "$ROOT" || exit 1
 # A failure leaves the screenshots and traces where CI can collect them.
 if [ "$rc" = 0 ]; then

@@ -84,6 +84,9 @@ func ClientQueryTextAs(branchName, sql, tool, actor string) (string, error) {
 	// Blackbox predates agent roles, or as a claim when the role could not be
 	// had.
 	login := engineAgentLogin(branchName, actor)
+	if login.refused != nil {
+		return "", login.refused
+	}
 	args := []string{"docker", "exec", "-e", "PGAPPNAME=" + tool}
 	if opts := engineSessionOptions(login, branchName, actor); opts != "" {
 		args = append(args, "-e", "PGOPTIONS="+opts)

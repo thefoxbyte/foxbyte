@@ -73,6 +73,7 @@
 #include "miscadmin.h"
 #include "port.h"
 #include "postmaster/postmaster.h"
+#include "storage/fd.h"
 #include "storage/proc.h"
 #include "utils/builtins.h"
 #include "utils/elog.h"
@@ -85,6 +86,10 @@
 #if PG_VERSION_NUM < 170000
 extern bool redirection_done;
 #endif
+
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -875,4 +880,123 @@ audit_init(void)
 	emit_log_hook = audit_emit_log;
 	RegisterXactCallback(audit_xact, NULL);
 	RegisterSubXactCallback(audit_subxact, NULL);
+}
+
+/* ---- masking (F5) --------------------------------------------------------- */
+
+/*
+ * bbid_mask_hmac(domain, value) -> text: HMAC-SHA256 of value under the key
+ * domain's key, as 64 hex characters (docs/FOX_F5_Masking_Design.md, section
+ * 8). The key is a file the server reads, /run/bb-mask/<domain>.key, 32 bytes,
+ * owned by the server's user and readable by nobody else; never a table, never
+ * in an error. The function is never granted to a masked reader: it would be
+ * an oracle. Only the role that keeps the masks (bb_masker) may call it.
+ */
+#define MASK_KEY_LEN 32
+#define MASK_DOMAINS 8
+
+static struct
+{
+	char		name[33];
+	unsigned char key[MASK_KEY_LEN];
+	ino_t		ino;			/* the file it was read from, so a rotation is */
+	struct timespec mtime;		/* seen by a session that read the old key */
+}			mask_keys[MASK_DOMAINS];
+static int	mask_nkeys = 0;
+
+/* A domain is 1 to 32 of [a-z0-9_-]: it is a file name. */
+static bool
+mask_domain_ok(const char *d)
+{
+	size_t		n = strlen(d);
+
+	if (n == 0 || n > 32)
+		return false;
+	for (size_t i = 0; i < n; i++)
+		if (!((d[i] >= 'a' && d[i] <= 'z') || (d[i] >= '0' && d[i] <= '9') || d[i] == '_' || d[i] == '-'))
+			return false;
+	return true;
+}
+
+static const unsigned char *
+mask_key(const char *domain)
+{
+	char		path[MAXPGPATH];
+	struct stat st;
+	int			fd;
+	ssize_t		got;
+	int			slot = -1;
+
+	if (!mask_domain_ok(domain))
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("a masking key domain is 1 to 32 of a-z, 0-9, _ and -")));
+	snprintf(path, sizeof(path), "/run/bb-mask/%s.key", domain);
+	for (int i = 0; i < mask_nkeys; i++)
+		if (strcmp(mask_keys[i].name, domain) == 0)
+		{
+			/* Still the file it was read from: a rotation replaces it. */
+			if (stat(path, &st) == 0 && st.st_ino == mask_keys[i].ino &&
+				st.st_mtim.tv_sec == mask_keys[i].mtime.tv_sec && st.st_mtim.tv_nsec == mask_keys[i].mtime.tv_nsec)
+				return mask_keys[i].key;
+			slot = i;
+			break;
+		}
+	if (slot < 0)
+	{
+		if (mask_nkeys >= MASK_DOMAINS)
+			ereport(ERROR, (errmsg("more than %d masking key domains in one session", MASK_DOMAINS)));
+		slot = mask_nkeys;
+	}
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	if (fd < 0)
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						errmsg("the masking key for domain \"%s\" cannot be read", domain)));
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 077) != 0)
+	{
+		CloseTransientFile(fd);
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						errmsg("the masking key for domain \"%s\" must be a file of the server's own, readable by nobody else", domain)));
+	}
+	got = read(fd, mask_keys[slot].key, MASK_KEY_LEN);
+	CloseTransientFile(fd);
+	if (got != MASK_KEY_LEN || st.st_size != MASK_KEY_LEN)
+	{
+		explicit_bzero(mask_keys[slot].key, MASK_KEY_LEN);
+		if (slot < mask_nkeys)
+			mask_keys[slot].name[0] = '\0';	/* not this domain's any more */
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+						errmsg("the masking key for domain \"%s\" is not %d bytes", domain, MASK_KEY_LEN)));
+	}
+	strlcpy(mask_keys[slot].name, domain, sizeof(mask_keys[slot].name));
+	mask_keys[slot].ino = st.st_ino;
+	mask_keys[slot].mtime = st.st_mtim;
+	if (slot == mask_nkeys)
+		mask_nkeys++;
+	return mask_keys[slot].key;
+}
+
+PG_FUNCTION_INFO_V1(bbid_mask_hmac);
+
+Datum
+bbid_mask_hmac(PG_FUNCTION_ARGS)
+{
+	char	   *domain = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	text	   *value = PG_GETARG_TEXT_PP(1);
+	const unsigned char *key = mask_key(domain);
+	unsigned char mac[EVP_MAX_MD_SIZE];
+	size_t		maclen = 0;
+	char		out[65];
+	static const char hex[] = "0123456789abcdef";
+
+	if (EVP_Q_mac(NULL, "HMAC", NULL, "SHA256", NULL, key, MASK_KEY_LEN,
+				  (const unsigned char *) VARDATA_ANY(value), VARSIZE_ANY_EXHDR(value),
+				  mac, sizeof(mac), &maclen) == NULL || maclen != 32)
+		ereport(ERROR, (errmsg("computing a mask failed")));
+	for (size_t i = 0; i < maclen; i++)
+	{
+		out[2 * i] = hex[mac[i] >> 4];
+		out[2 * i + 1] = hex[mac[i] & 0x0f];
+	}
+	out[64] = '\0';
+	PG_RETURN_TEXT_P(cstring_to_text(out));
 }

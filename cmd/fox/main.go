@@ -101,6 +101,26 @@ Stack:
                        What scans have found on a branch; --state suggested is the review queue
   pii show <id> | samples <id> [--n 5] | mark <id> confirm|reject|reopen [--note "…"]
                        One finding and its decisions; masked samples to decide by; decide (Enterprise)
+  hardening [--branch b] [--level basic|strict] [--failed] [--json]
+                       How a branch's PostgreSQL and this install stand against hardening
+                       checks: pass, fail, manual or n/a, with the evidence and the fix
+  hardening fix <check> | profile baseline|strict [--branch b] [--yes]
+                       Fix a failing check, or every one a profile covers, after a preview (Enterprise)
+  mask [status] [--branch b] [--json]
+                       Masking personal data: the rules on a branch, and the accounts masked
+  mask setup [--branch b] [--yes] | account <email> [--off] [--yes]
+                       Set masking up on a branch; mask an account on every branch it does not own (Enterprise)
+  mask rule <[schema.]table.column> [partial|hash|fake|empty] [--path $.a.b] [--off] [--branch b] [--yes]
+                       Mask a confirmed finding for masked accounts, after saying what it costs (Enterprise)
+  mask key [status] [--json] | create <domain> | rotate <domain> | drop <domain> [--yes]
+                       The masking keys: domains that never hash alike, and rotating a key (Enterprise)
+  mask key use <domain> --table [schema.]table [--branch b] [--yes]
+                       Put a table's masks under a key domain (Enterprise)
+  mask unmask <email> --branch b [--off] [--yes]
+                       Let a masked account see real values on a branch, every read audited (Enterprise)
+  mask lookups [--branch b] [--limit n] [--json]
+                       Who looked a person up, when, by which column, how many found: never the value
+  mask branches [--json] The masked branches: how far each one's making got, and what it found
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)
@@ -140,8 +160,19 @@ PostgreSQL versions:
   pg upgrade --rollback | --finalize
                        Go back to the kept databases, or delete them
 
+Sessions and upkeep:
+  sessions [--branch b] [--json]
+                       Who is connected to a branch and what each is running
+  sessions cancel|end <pid> [--branch b] [--yes]
+                       Cancel a session's query, or end the session
+  maintain [--branch b] [--table t] [--json]
+                       Each table's rows, dead rows, and when it was last vacuumed and analysed
+  maintain vacuum|analyze|vacuum-analyze <[schema.]table> [--branch b]
+                       Vacuum or analyse a table
 Branching:
   branch create <name> [--from <branch>]  Instant copy-on-write branch of main, or of another branch
+  branch create <name> --masked [--from <branch>]
+                       A branch whose marked columns hold their masks, closed until masked and verified (Enterprise)
   branch list           List branches and their containers
   branch delete <name>  Stop and destroy a branch
   branch owner <name> [email]  Show who owns a branch, or give it to an account
@@ -399,6 +430,14 @@ func main() {
 		piiCmd(os.Args[2:])
 	case "access":
 		accessCmd(os.Args[2:])
+	case "hardening":
+		hardeningCmd(os.Args[2:])
+	case "mask":
+		maskCmd(os.Args[2:])
+	case "sessions":
+		sessionsCmd(os.Args[2:])
+	case "maintain":
+		maintainCmd(os.Args[2:])
 	case "app":
 		appCmd(os.Args[2:])
 	case "check":
@@ -742,10 +781,14 @@ func branchCmd(args []string) {
 	case "create":
 		name := firstPositional(args[1:], "--from")
 		if name == "" {
-			fmt.Println("usage: fox branch create <name> [--from <branch>]")
+			fmt.Println("usage: fox branch create <name> [--from <branch>] [--masked]")
 			os.Exit(2)
 		}
 		started := time.Now()
+		if hasFlag(args[1:], "--masked") {
+			maskedBranchCreate(name, optValue(args[1:], "--from"), started)
+			return
+		}
 		must(branch.Create(name, optValue(args[1:], "--from")))
 		// Made here, it is nobody's but an admin's — even if an account once
 		// owned a branch of that name.

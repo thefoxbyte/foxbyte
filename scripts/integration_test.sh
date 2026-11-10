@@ -85,6 +85,9 @@ rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/anchors/_audit-log"
 # dutifully puts the mode back, and the first assertion there ("commits do not
 # wait by default") fails for a reason that has nothing to do with it.
 rm -f "$HOME/$BRAND_STATE_DIR/sync-commit"
+# Masking's key and masked accounts (F5): §11ai starts from an install that
+# has never set masking up.
+sudo rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/mask"; rm -f "${HOME:?}/${BRAND_STATE_DIR:?}/masked-accounts.json" "${HOME:?}/${BRAND_STATE_DIR:?}/mask-keys.json" "${HOME:?}/${BRAND_STATE_DIR:?}/unmask-grants.json"
 # And the primary pointer, for the same reason: a run cut short after a failover
 # leaves 'main' pointing at the promoted standby. `stop` above has already
 # removed every container, so there is no promoted standby left to protect, and
@@ -3159,6 +3162,736 @@ assert_eq "every export is in the security log" "$($S audit log --limit 100 | gr
 $S user delete aud8-other@foxbyte.dev >/dev/null 2>&1
 $S audit-log off --yes >/dev/null 2>&1; main_up
 pg pg-main "SET bb.allow_destructive=on; DROP FUNCTION IF EXISTS aud8_pay(int); DROP TABLE IF EXISTS aud8_orders" >/dev/null
+
+echo "### 11ag. the hardening report (point 3.2)"
+# FoxByte's own checks, not the CIS Benchmark: each pass, fail, manual or n/a,
+# with the evidence and the fix. A weakness made on purpose is found.
+HJ="$($S hardening --json 2>/dev/null)"
+hj() { python3 -c "import sys,json; d=json.load(sys.stdin); c={x['id']:x for x in d['checks']}; print($1)" <<<"$HJ"; }
+assert_eq "fox hardening --json: every check, each with a known status and level, and the basis it stands on" \
+  "$(hj 'len(d["checks"]) >= 35 and all(x["status"] in ("pass","fail","manual","n/a") and x["level"] in ("basic","strict") for x in d["checks"])')|$(hj '"Not the CIS Benchmark" in d["basis"]')|$(hj 'sum(d["summary"].values()) == len(d["checks"])')" \
+  "True|True|True"
+assert_eq "…main as FoxByte sets it up: a supported version, SCRAM, durable writes, no network exposure, TLS at the Gateway" \
+  "$(hj 'c["install.supported"]["status"]')|$(hj 'c["roles.scram"]["status"]')|$(hj 'c["set.durability"]["status"]')|$(hj 'c["conn.exposure"]["status"]')|$(hj 'c["conn.tls"]["status"]')|$(hj 'c["roles.bypassrls"]["status"]')|$(hj 'c["files.datadir"]["status"]')" \
+  "pass|pass|pass|pass|pass|pass|pass"
+assert_eq "…with the audit log off, says so and how to turn it on" \
+  "$(hj 'c["audit.on"]["status"]')|$(hj '"audit-log setup" in c["audit.on"]["fix"]')" "fail|True"
+pg pg-main "DROP ROLE IF EXISTS hard_weak; CREATE ROLE hard_weak LOGIN SUPERUSER PASSWORD 'x'; DROP ROLE IF EXISTS hard_rls; CREATE ROLE hard_rls BYPASSRLS" >/dev/null
+OUT="$($S hardening --failed 2>&1)"
+assert_eq "a superuser that can log in, and a role that ignores row-level security, are found and named" \
+  "$(grep -A1 'roles.superusers' <<<"$OUT" | grep -c 'hard_weak')|$(grep -A1 'roles.bypassrls' <<<"$OUT" | grep -c 'hard_rls')|$(grep -c '^  pass ' <<<"$OUT")" "1|1|0"
+pg pg-main "DROP ROLE IF EXISTS hard_weak; DROP ROLE IF EXISTS hard_rls" >/dev/null
+assert_eq "--level strict lists strict checks only" \
+  "$($S hardening --level strict --json | python3 -c 'import sys,json; print({x["level"] for x in json.load(sys.stdin)["checks"]})')" "{'strict'}"
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+assert_eq "with the audit log on, pgAudit and its classes pass" \
+  "$($S hardening --json | python3 -c 'import sys,json; c={x["id"]:x for x in json.load(sys.stdin)["checks"]}; print(c["audit.on"]["status"], c["audit.classes"]["status"])')" "pass pass"
+$S audit-log off --yes >/dev/null 2>&1; main_up
+assert_eq "a branch not running is not woken: it says to start it" \
+  "$($S branch create hardsleep >/dev/null 2>&1; $S branch suspend hardsleep >/dev/null 2>&1; $S hardening --branch hardsleep 2>&1 | grep -c 'is not running')" "1"
+$S branch delete hardsleep >/dev/null 2>&1
+printf 'password123\n' | $S user create hard-other@foxbyte.dev >/dev/null 2>&1
+HK="$($S apikey create hard-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+assert_eq "the API: an admin gets the report; someone who is not an admin does not" \
+  "$(curl -sk -H "$AUTH" 'https://localhost:8080/api/hardening?branch=main' | python3 -c 'import sys,json; print(json.load(sys.stdin)["branch"])')|$(code "$HK" https://localhost:8080/api/hardening)" "main|403"
+$S user delete hard-other@foxbyte.dev >/dev/null 2>&1
+# Five: the four from the command line that produced one, and the API's.
+assert_eq "every report is in the security log" "$($S audit log --limit 100 | grep -c 'hardening.reported')" "5"
+
+echo "### 11ah. hardening fixes and profiles (points 3.3, 3.4)"
+# Enterprise: the safe fixes, after a preview, one check at a time or by
+# profile, each checked again; what is a person's to fix stays theirs. On a
+# branch of its own, so main keeps its settings.
+$S branch delete hardfix2 >/dev/null 2>&1; $S branch delete hardfix >/dev/null 2>&1; $S branch create hardfix >/dev/null 2>&1
+gwh() { PGPASSWORD="$1" psql "${GATEWAY}/hardfix?sslmode=require" -X -q -tA -c "$2" 2>&1; }
+showh() { pg pg-hardfix "SHOW $1"; }
+sudo docker exec -i pg-hardfix psql -U dbadmin -d appdb -q >/dev/null 2>&1 <<'EOF'
+ALTER SYSTEM SET log_connections = off;
+ALTER SYSTEM SET log_disconnections = off;
+ALTER SYSTEM SET idle_in_transaction_session_timeout = 0;
+SELECT pg_reload_conf();
+EOF
+pg pg-hardfix "GRANT CREATE ON SCHEMA public TO PUBLIC" >/dev/null
+PRE="$($S hardening fix log.connections --branch hardfix 2>&1)"
+assert_eq "fix without --yes says what it changes and runs, and changes nothing" \
+  "$(grep -c 'change: log_connections: off → on' <<<"$PRE")|$(grep -c "runs:   ALTER SYSTEM SET log_connections = 'on'" <<<"$PRE")|$(grep -c 'Run again with --yes' <<<"$PRE")|$(showh log_connections)" "1|1|1|off"
+FIX="$($S hardening fix log.connections --branch hardfix --yes 2>&1)"; rc=$?
+assert_eq "with --yes it is made with a reload, and checked again: it now passes" \
+  "$rc|$(grep -c 'log.connections: fail → pass' <<<"$FIX")|$(showh log_connections)" "0|1|on"
+assert_eq "a check that passes has nothing to fix; one that is a person's says so, and how" \
+  "$($S hardening fix log.connections --branch hardfix 2>&1 | grep -c 'is pass')|$(pg pg-hardfix "DROP ROLE IF EXISTS hard_su; CREATE ROLE hard_su LOGIN SUPERUSER" >/dev/null; $S hardening fix roles.superusers --branch hardfix 2>&1 | grep -c 'is for a person to fix: ALTER ROLE')" "1|1"
+pg pg-hardfix "DROP ROLE IF EXISTS hard_su" >/dev/null
+assert_eq "CREATE on the public schema taken from PUBLIC: it passes, and clients still create tables through the Gateway" \
+  "$($S hardening fix roles.public_schema --branch hardfix --yes 2>&1 | grep -c 'roles.public_schema: fail → pass')|$(gwh "$KEY" "CREATE TABLE hard_after (id int); SELECT 'made'")" "1|made"
+BASE="$($S hardening profile baseline --branch hardfix 2>&1)"
+assert_eq "profile baseline without --yes: each fix it makes, what it leaves to a person, and nothing changed" \
+  "$(grep -c '^log.disconnections on hardfix' <<<"$BASE")|$(grep -c 'conn.idle' <<<"$BASE")|$(grep -c 'Run again with --yes' <<<"$BASE")|$(showh log_disconnections)" "1|0|1|off"
+STRICT="$($S hardening profile strict --branch hardfix --yes 2>&1)"; rc=$?
+assert_eq "profile strict with --yes: basic and strict fixes made and checked, and the profile recorded" \
+  "$rc|$(showh log_disconnections)|$(showh idle_in_transaction_session_timeout)|$(grep -c 'The strict profile: .* made on hardfix, 0 did not hold' <<<"$STRICT")|$($S hardening --branch hardfix | grep -c 'Profile strict applied by')" \
+  "0|on|10min|1|1"
+assert_eq "…after which nothing failing is left that a fix could make" \
+  "$($S hardening --branch hardfix --json | python3 -c 'import sys,json; print([c["id"] for c in json.load(sys.stdin)["checks"] if c.get("fixable")])')" "[]"
+$S branch create hardfix2 --from hardfix >/dev/null 2>&1
+assert_eq "a branch made afterwards has the fixes: they live in the branch's own data directory" \
+  "$(pg pg-hardfix2 'SHOW log_connections')|$(pg pg-hardfix2 'SHOW idle_in_transaction_session_timeout')" "on|10min"
+printf 'password123\n' | $S user create hardfix-other@foxbyte.dev >/dev/null 2>&1
+HFK="$($S apikey create hardfix-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+sudo docker exec -i pg-hardfix psql -U dbadmin -d appdb -q >/dev/null 2>&1 <<'EOF'
+ALTER SYSTEM SET log_hostname = on;
+SELECT pg_reload_conf();
+EOF
+assert_eq "the API: an admin gets the preview; someone who is not an admin does not; a profile that is not one is refused" \
+  "$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"branch":"hardfix","check":"log.hostname"}' https://localhost:8080/api/hardening/fix | python3 -c 'import sys,json; print(json.load(sys.stdin)["fix"]["changes"])')|$(code "$HFK" -X POST -H 'Content-Type: application/json' -d '{"branch":"hardfix","check":"log.hostname"}' https://localhost:8080/api/hardening/fix)|$(code "$KEY" -X POST -H 'Content-Type: application/json' -d '{"branch":"hardfix","profile":"lax"}' https://localhost:8080/api/hardening/profile)" \
+  "['log_hostname: on → off']|403|400"
+assert_eq "…and an admin's fix through it is made and checked" \
+  "$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"branch":"hardfix","check":"log.hostname","apply":true}' https://localhost:8080/api/hardening/fix | python3 -c 'import sys,json; r=json.load(sys.stdin)["result"]; print(r["before"]["status"], r["after"]["status"], "error" in r)')|$(showh log_hostname)" \
+  "fail pass False|off"
+$S user delete hardfix-other@foxbyte.dev >/dev/null 2>&1
+assert_eq "every fix and every profile is in the security log" \
+  "$([ "$($S audit log --limit 200 | grep -c 'hardening.fixed')" -ge 5 ] && echo yes)|$($S audit log --limit 200 | grep -c 'hardening.profile')" "yes|1"
+$S branch delete hardfix2 >/dev/null 2>&1; $S branch delete hardfix >/dev/null 2>&1
+
+echo "### 11ai. masking personal data (F5 Gate 1, step 1)"
+# Enterprise: rules on confirmed findings; a masked account reads the masks of
+# marked tables and ordinary tables as they are, and cannot write to marked
+# tables; admins and a branch's owner always see real values. On main, as an
+# account reaches main and the branches it owns, and on those it sees real
+# values. Its tables and rules are taken off at the end.
+$S branch delete maskown >/dev/null 2>&1; $S branch delete maskold >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS m_customers, m_orders, m_kyc, m_plain CASCADE" >/dev/null
+$S branch create maskold >/dev/null 2>&1
+gwm() { PGPASSWORD="$1" psql "${GATEWAY}/$2?sslmode=require" -X -q -tA -c "$3" 2>&1; }
+pg pg-main "CREATE TABLE m_customers (id bigint PRIMARY KEY, email text, phone text, aadhaar_no text, prefs jsonb, city text, full_name text);
+  INSERT INTO m_customers VALUES
+    (1, 'asha@example.com', '+91 98765 43210', '234567890124', '{\"contact\": {\"mobile\": \"+91 98765 43210\"}, \"theme\": \"dark\"}', 'Pune', 'Asha Rao'),
+    (2, 'ravi@example.org', '9876543211', '456789012341', '{\"contact\": {\"mobile\": \"9876543211\"}}', 'Goa', 'Ravi Kumar');
+  CREATE TABLE m_orders (id bigint PRIMARY KEY, customer_email text, total int);
+  INSERT INTO m_orders VALUES (10, 'asha@example.com', 500), (11, 'ravi@example.org', 700);
+  CREATE TABLE m_kyc (id int PRIMARY KEY, aadhaar_no text); INSERT INTO m_kyc VALUES (1, '234567890124');
+  CREATE TABLE m_plain (id int PRIMARY KEY, v text); INSERT INTO m_plain VALUES (1, 'open');" >/dev/null
+printf 'password123\n' | $S user create mask-analyst@foxbyte.dev >/dev/null 2>&1
+MK="$($S apikey create mask-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+assert_eq "before masking, nothing is masked: an account reads real values" \
+  "$($S mask | head -1)|$(gwm "$MK" main "SELECT email FROM m_customers WHERE id = 1")" "Masking: not set up on this install.|asha@example.com"
+PRE="$($S mask setup 2>&1)"
+assert_eq "setup without --yes says what it makes and that the branch restarts, and makes nothing" \
+  "$(grep -c 'main restarts to mount the key' <<<"$PRE")|$(grep -c 'Run again with --yes' <<<"$PRE")|$(sudo test -e "${HOME:?}/${BRAND_STATE_DIR:?}/mask" && echo made || echo none)" "1|1|none"
+SET="$($S mask setup --yes 2>&1)"; rc=$?
+assert_eq "with --yes: the key is made, the server's alone, mounted read-only, and the branch set up" \
+  "$rc|$(sudo stat -c '%u %a' "${HOME:?}/${BRAND_STATE_DIR:?}/mask") $(sudo stat -c '%u %a %s' "${HOME:?}/${BRAND_STATE_DIR:?}/mask/default.key")|$(sudo docker inspect -f '{{range .Mounts}}{{if eq .Destination "/run/bb-mask"}}{{.RW}}{{end}}{{end}}' pg-main)|$(pg pg-main "SELECT to_regrole('db_masked') IS NOT NULL AND to_regclass('bb.mask_rules') IS NOT NULL")" \
+  "0|999 700 999 400 32|false|t"
+[ "$rc" = 0 ] || { echo "--- what it said ---"; tail -8 <<<"$SET"; echo "--- end ---"; }
+assert_eq "…and the key is in no table, log or message the setup produced" \
+  "$(sudo docker logs pg-main 2>&1 | grep -c "$(sudo od -An -tx1 "${HOME:?}/${BRAND_STATE_DIR:?}/mask/default.key" | tr -d ' \n')")|$(grep -c 'Done.' <<<"$SET")" "0|1"
+assert_eq "a branch started before it is listed as masking nothing until it starts again; main restarted with the key" \
+  "$($S mask --json | hjson "print('maskold' in d['pending'], 'main' in d['pending'])")" "True False"
+$S branch delete maskold >/dev/null 2>&1
+NOPE="$($S mask rule m_customers.email --yes 2>&1)"; rc=$?
+assert_eq "a rule is refused where no reviewer confirmed personal data" \
+  "$rc|$(grep -c 'no confirmed personal data at public.m_customers.email' <<<"$NOPE")" "1|1"
+$S pii scan >/dev/null 2>&1
+MJ="$($S pii --json 2>/dev/null)"
+mfid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='$1' and f['column']=='$2' and f['path']=='$3'][0])" <<<"$MJ"; }
+for at in "m_customers email" "m_customers phone" "m_customers aadhaar_no" "m_orders customer_email" "m_kyc aadhaar_no"; do
+  $S pii mark "$(mfid $at '')" confirm >/dev/null 2>&1
+done
+$S pii mark "$(mfid m_customers prefs '$.contact.mobile')" confirm >/dev/null 2>&1
+COST="$($S mask rule m_customers.email 2>&1)"
+assert_eq "a rule without --yes says what it costs first, and sets nothing" \
+  "$(grep -c '3.6 times as long' <<<"$COST")|$(grep -c 'a quarter slower' <<<"$COST")|$(grep -c 'Run again with --yes' <<<"$COST")|$($S mask --json | hjson "print(len(d['rules']))")" "1|1|1|0"
+assert_eq "…and a partial mask says it costs nothing on writes" \
+  "$($S mask rule m_kyc.aadhaar_no partial 2>&1 | grep -c 'nothing on writes')" "1"
+assert_eq "Aadhaar is never hashed: refused, saying why" \
+  "$($S mask rule m_customers.aadhaar_no hash --yes 2>&1 | grep -c 'never hashed or faked')" "1"
+for c in m_customers.email m_customers.phone m_customers.aadhaar_no m_orders.customer_email m_kyc.aadhaar_no; do
+  $S mask rule "$c" --yes >/dev/null 2>&1 || bad "setting the rule on $c"
+done
+$S mask rule m_customers.prefs --path '$.contact.mobile' --yes >/dev/null 2>&1 || bad "setting the rule on a JSON path"
+assert_eq "each rule is the category's default, and every table's masks are made" \
+  "$($S mask --json | hjson "print(sorted(r['table']+'.'+r['column']+r.get('path','')+':'+r['rule'] for r in d['rules']), sorted(d['ready']))")" \
+  "['m_customers.aadhaar_no:partial', 'm_customers.email:hash', 'm_customers.phone:partial', 'm_customers.prefs\$.contact.mobile:partial', 'm_kyc.aadhaar_no:partial', 'm_orders.customer_email:hash'] ['m_customers', 'm_kyc', 'm_orders']"
+assert_eq "a table with only partial masks gets no shadow and no trigger: nothing more on a write" \
+  "$(pg pg-main "SELECT to_regclass('bb_mask.public__m_kyc') IS NULL, (SELECT count(*) FROM pg_trigger WHERE tgrelid = 'm_kyc'::regclass AND tgname LIKE 'bb_mask%')")" "t|0"
+assert_eq "an admin cannot be masked: they can change the masks" \
+  "$($S mask account test@foxbyte.dev --yes 2>&1 | grep -c 'is an admin')|$($S mask --json | hjson "print(len(d['accounts']))")" "1|0"
+assert_eq "masking an account without --yes says what changes, and masks nobody" \
+  "$($S mask account mask-analyst@foxbyte.dev 2>&1 | grep -c 'Run again with --yes')|$(gwm "$MK" main "SELECT email FROM m_customers WHERE id = 1")" "1|asha@example.com"
+$S mask account mask-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the account"
+assert_eq "a masked account reads masks: a keyed hash, partial values, a JSON path, the rest of the row as it is" \
+  "$(gwm "$MK" main "SELECT length(email), email ~ '^[0-9a-f]{64}\$', phone, aadhaar_no, prefs->'contact'->>'mobile', prefs->>'theme', city, full_name FROM m_customers WHERE id = 1")" \
+  "64|t|XXXXXXXXXXX3210|XXXXXXXX0124|XXXXXXXXXXX3210|dark|Pune|Asha Rao"
+assert_eq "…joins on the hash: the same value, the same mask" \
+  "$(gwm "$MK" main "SELECT count(*) FROM m_customers c JOIN m_orders o ON o.customer_email = c.email")" "2"
+assert_eq "…a table with only partial masks too" "$(gwm "$MK" main "SELECT aadhaar_no FROM m_kyc")" "XXXXXXXX0124"
+assert_eq "…is refused the real table, the shadow and the hash" \
+  "$(gwm "$MK" main "SELECT email FROM public.m_customers" | grep -c 'permission denied')|$(gwm "$MK" main "SELECT * FROM bb_mask.public__m_customers" | grep -c 'permission denied')|$(gwm "$MK" main "SELECT bb_f1.bbid_mask_hmac('default', 'x')" | grep -c 'permission denied')" "1|1|1"
+assert_eq "…cannot write to a marked table, and can to an ordinary one" \
+  "$(gwm "$MK" main "UPDATE m_customers SET city = 'x' WHERE id = 1" | grep -cE 'permission denied|cannot update view')|$(gwm "$MK" main "UPDATE m_kyc SET aadhaar_no = 'x'" | grep -cE 'permission denied|cannot update')$(pg pg-main "SELECT aadhaar_no FROM m_kyc" | grep -c '^234567890124$')|$(gwm "$MK" main "INSERT INTO m_plain VALUES (2, 'by the analyst'); SELECT v FROM m_plain WHERE id = 2")" "1|11|by the analyst"
+assert_eq "…cannot put its search_path back to the real tables" \
+  "$(gwm "$MK" main "SET search_path = public; SELECT email FROM m_customers" | grep -c 'permission denied')" "1"
+gwm "$KEY" main "INSERT INTO m_customers VALUES (3, 'neha@example.com', '9123456780', '345678901238', NULL, 'Delhi', 'Neha');
+  UPDATE m_customers SET email = 'ravi.k@example.org' WHERE id = 2; UPDATE m_customers SET id = 4 WHERE id = 1; DELETE FROM m_customers WHERE id = 3" >/dev/null
+assert_eq "the application's writes keep the masks up: inserts, changes, a moved key and a delete" \
+  "$(pg pg-main "SELECT (SELECT count(*) FROM m_customers), (SELECT count(*) FROM bb_mask.public__m_customers), (SELECT count(*) FROM m_customers c JOIN bb_mask.public__m_customers m USING (id))")|$(gwm "$MK" main "SELECT id, email ~ '^[0-9a-f]{64}\$' FROM m_customers ORDER BY id" | tr '\n' ' ')" \
+  "2|2|2|2|t 4|t "
+assert_eq "…and an admin reads real values throughout" "$(gwm "$KEY" main "SELECT email FROM m_customers WHERE id = 2")" "ravi.k@example.org"
+code "$MK" -X POST -H 'Content-Type: application/json' -d '{"name":"maskown","from":"main"}' https://localhost:8080/api/branches >/dev/null
+# Owners once saw real values on their branches; a masked account made one of
+# main and read everything there. Now it is masked on its own branches too
+# (step 4).
+assert_eq "the masked account reads masks on a branch it owns too: owning one does not unmask" \
+  "$(gwm "$MK" maskown "SELECT email ~ '^[0-9a-f]{64}\$', phone FROM m_customers WHERE id = 2")" "t|XXXXXX3211"
+assert_eq "the API: an admin reads where masking stands and the cost of a rule; the masked account is refused both" \
+  "$(curl -sk -H "$AUTH" 'https://localhost:8080/api/masking?branch=main' | hjson "print(len(d['rules']), [a['email'] for a in d['accounts']])")|$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"branch":"main","table":"m_customers","column":"email"}' https://localhost:8080/api/masking/rule | hjson "print('3.6 times' in d['cost'])")|$(code "$MK" 'https://localhost:8080/api/masking?branch=main')|$(code "$MK" -X POST -H 'Content-Type: application/json' -d '{"email":"mask-analyst@foxbyte.dev","off":true}' https://localhost:8080/api/masking/account)" \
+  "6 ['mask-analyst@foxbyte.dev']|True|403|403"
+$S mask rule m_customers.email --off >/dev/null 2>&1 || bad "taking the email rule off"
+assert_eq "a rule taken off: its column is real again for the masked account, the others still masked" \
+  "$(gwm "$MK" main "SELECT email, phone FROM m_customers WHERE id = 2")" "ravi.k@example.org|XXXXXX3211"
+$S mask account mask-analyst@foxbyte.dev --off --yes >/dev/null 2>&1 || bad "unmasking the account"
+assert_eq "unmasked: real values again, and writes as before" \
+  "$(gwm "$MK" main "SELECT phone FROM m_customers WHERE id = 2")|$(gwm "$MK" main "UPDATE m_customers SET city = 'Panaji' WHERE id = 2; SELECT city FROM m_customers WHERE id = 2")" "9876543211|Panaji"
+assert_eq "every setup, rule and account change is in the security log" \
+  "$($S audit log --limit 300 | grep -c 'mask.setup')|$($S audit log --limit 300 | grep -c 'mask.rule')|$($S audit log --limit 300 | grep -c 'mask.account')" "1|7|2"
+$S branch delete maskown >/dev/null 2>&1
+for c in m_customers.phone m_customers.aadhaar_no m_orders.customer_email m_kyc.aadhaar_no; do $S mask rule "$c" --off >/dev/null 2>&1; done
+$S mask rule m_customers.prefs --path '$.contact.mobile' --off >/dev/null 2>&1
+assert_eq "with every rule taken off, no mask is left behind: no view, shadow, trigger or rule" \
+  "$(pg pg-main "SELECT (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'bb_mask' AND c.relkind IN ('r','v') AND c.relname <> 'lookups'), (SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'bb_mask%'), (SELECT count(*) FROM bb.mask_rules)")" "0|0|0"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS m_customers, m_orders, m_kyc, m_plain CASCADE" >/dev/null
+$S user delete mask-analyst@foxbyte.dev >/dev/null 2>&1
+
+echo "### 11aj. masking keys: domains and rotation (F5 Gate 1, step 2)"
+# Enterprise: a key domain hashes apart from the others; a table's masks are
+# put under one and back; a key is rotated while the application writes and a
+# masked account reads, the old key deleted; a branch stopped meanwhile is
+# named and its masks made again; a domain in use is not deleted. On main,
+# set up by §11ai. Its tables and rules are taken off at the end.
+$S branch delete keystale >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS k_people, k_orders CASCADE" >/dev/null
+pg pg-main "CREATE TABLE k_people (id bigint PRIMARY KEY, email text, phone text);
+  INSERT INTO k_people SELECT g, 'person' || g || '@example.com', '98765' || lpad(g::text, 5, '0') FROM generate_series(1, 5000) g;
+  CREATE TABLE k_orders (id bigint PRIMARY KEY, cust_email text);
+  INSERT INTO k_orders VALUES (1, 'person1@example.com'), (2, 'person2@example.com')" >/dev/null
+$S pii scan >/dev/null 2>&1
+KJ="$($S pii --json 2>/dev/null)"
+kfid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='$1' and f['column']=='$2'][0])" <<<"$KJ"; }
+for at in "k_people email" "k_people phone" "k_orders cust_email"; do $S pii mark "$(kfid $at)" confirm >/dev/null 2>&1; done
+for c in k_people.email k_people.phone k_orders.cust_email; do $S mask rule "$c" --yes >/dev/null 2>&1 || bad "setting the rule on $c"; done
+printf 'password123\n' | $S user create key-analyst@foxbyte.dev >/dev/null 2>&1
+KK="$($S apikey create key-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+$S mask account key-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the key analyst"
+KD="${HOME:?}/${BRAND_STATE_DIR:?}/mask"
+keyhex() { sudo od -An -tx1 "$KD/$1.key" | tr -d ' \n'; }
+JOIN="SELECT count(*) FROM k_people p JOIN k_orders o ON o.cust_email = p.email"
+assert_eq "the default domain: key 1, made when setup wrote it, the key itself never shown; masks join within it" \
+  "$($S mask key --json | hjson "k=[x for x in d['keys'] if x['domain']=='default'][0]; print(k['gen'], bool(k['made']), 'key' in k)")|$($S mask key | grep -c "$(keyhex default)")|$(gwm "$KK" main "$JOIN")" "1 True False|0|2"
+
+assert_eq "a domain's name is checked: a capital, a dot or a dash is refused" \
+  "$($S mask key create Tenant --yes 2>&1 | grep -c 'a key domain is a lowercase letter')|$($S mask key create a.b --yes 2>&1 | grep -c 'a key domain is')|$($S mask key create a-b --yes 2>&1 | grep -c 'a key domain is')" "1|1|1"
+assert_eq "making a domain without --yes says what it is for, and makes nothing" \
+  "$($S mask key create tenant_a 2>&1 | grep -c 'hash apart')|$(sudo test -e "$KD/tenant_a.key" && echo made || echo none)" "1|none"
+$S mask key create tenant_a --yes >/dev/null 2>&1 || bad "making tenant_a"
+assert_eq "with --yes: a key of its own, the server's alone, 32 bytes, unlike the default's" \
+  "$(sudo stat -c '%u %a %s' "$KD/tenant_a.key")|$([ "$(keyhex tenant_a)" != "$(keyhex default)" ] && echo apart)|$($S mask key --json | hjson "print(sorted(k['domain'] for k in d['keys']))")" \
+  "999 400 32|apart|['default', 'tenant_a']"
+assert_eq "…a second domain of the same name is refused" "$($S mask key create tenant_a --yes 2>&1 | grep -c 'already has a key domain')" "1"
+assert_eq "putting a table under a domain without --yes changes nothing" \
+  "$($S mask key use tenant_a --table k_orders 2>&1 | grep -c 'Run again with --yes')|$(gwm "$KK" main "$JOIN")" "1|2"
+$S mask key use tenant_a --table k_orders --yes >/dev/null 2>&1 || bad "putting k_orders under tenant_a"
+assert_eq "under tenant_a, k_orders's masks are tenant_a's hashes and no longer join with the default domain's" \
+  "$(gwm "$KK" main "$JOIN")|$(pg pg-main "SELECT count(*) FROM bb_mask.public__k_orders m JOIN k_orders o USING (id) WHERE m.cust_email = bb_f1.bbid_mask_hmac('tenant_a', o.cust_email)")|$($S mask key --json | hjson "print([t['table'] for k in d['keys'] if k['domain']=='tenant_a' for t in k['tables'] if t['branch']=='main'])")" \
+  "0|2|['k_orders']"
+DROPA="$($S mask key drop tenant_a --yes 2>&1)"
+assert_eq "a domain a table uses is not deleted" \
+  "$(grep -c 'main:public.k_orders uses tenant_a' <<<"$DROPA")|$(sudo test -e "$KD/tenant_a.key" && echo kept)" "1|kept"
+grep -q 'main:public.k_orders uses tenant_a' <<<"$DROPA" || echo "    it said: $DROPA"
+
+ROTD="$(mktemp -d)"
+# A branch with masks, stopped through the rotation: named, then made again.
+$S branch create keystale >/dev/null 2>&1
+$S branch suspend keystale >/dev/null 2>&1
+OLDKEY="$(keyhex default)"
+OLDMASK="$(gwm "$KK" main "SELECT email FROM k_people WHERE id = 1")"
+PRE="$($S mask key rotate default 2>&1)"
+assert_eq "rotating without --yes says what it does and costs, names the tables and the stopped branch, and makes no key" \
+  "$(grep -c 'There is no undo' <<<"$PRE")|$(grep -c '21 seconds a million rows' <<<"$PRE")|$(grep -c 'main: public.k_people' <<<"$PRE")|$(grep -c 'keystale' <<<"$PRE")|$(sudo test -e "$KD/default--next.key" && echo made || echo none)|$(keyhex default | grep -c "$OLDKEY")" \
+  "1|1|1|1|none|1"
+# The application writes and a masked account reads all through the rotation.
+( for i in $(seq 1 60); do gwm "$KEY" main "UPDATE k_people SET email = 'w$i@example.com' WHERE id = $((i * 50)); INSERT INTO k_people VALUES ($((100000 + i)), 'n$i@example.com', '1')" | grep -E 'ERROR|FATAL|error'; done ) >"$ROTD/writer.log" 2>&1 &
+RW=$!
+( for _ in $(seq 1 40); do gwm "$KK" main "SELECT count(*) FROM k_people" | grep -vE '^[0-9]+$'; done ) >"$ROTD/reader.log" 2>&1 &
+RR=$!
+ROT="$($S mask key rotate default --yes 2>&1)"; rc=$?
+wait "$RW" "$RR"
+assert_eq "with --yes: every table in the domain is written again, and the old key's file now holds a new key" \
+  "$rc|$(grep -c 'main: public.k_people written again under the new key' <<<"$ROT")|$(keyhex default | grep -c "$OLDKEY")|$(sudo stat -c '%u %a %s' "$KD/default.key")|$(sudo test -e "$KD/default--next.key" && echo left || echo gone)" \
+  "0|1|0|999 400 32|gone"
+[ "$rc" = 0 ] || { echo "--- what it said ---"; tail -8 <<<"$ROT"; echo "--- end ---"; }
+assert_eq "…the writer was never refused, and the masked reader never failed, while it ran" \
+  "$(grep -c . "$ROTD/writer.log")|$(grep -c . "$ROTD/reader.log")" "0|0"
+cat "$ROTD/writer.log" "$ROTD/reader.log" | head -5
+assert_eq "…every mask, the writer's included, is under the new key, nothing is left over, and only tenant_a's table is untouched" \
+  "$(pg pg-main "SELECT (SELECT count(*) FROM bb_mask.public__k_people m JOIN k_people p USING (id) WHERE m.email IS DISTINCT FROM bb_f1.bbid_mask_hmac('default', p.email)), (SELECT count(*) FROM k_people) = (SELECT count(*) FROM bb_mask.public__k_people), (SELECT count(*) FROM pg_class WHERE relname LIKE '%\_\_next' OR relname LIKE '%\_\_old'), (SELECT count(*) FROM bb_mask.public__k_orders m JOIN k_orders o USING (id) WHERE m.cust_email = bb_f1.bbid_mask_hmac('tenant_a', o.cust_email))")" \
+  "0|t|0|2"
+assert_eq "…the masked account reads the new masks, every hash changed: masks copied out before do not match" \
+  "$(NEW="$(gwm "$KK" main "SELECT email FROM k_people WHERE id = 1")"; [ "$NEW" != "$OLDMASK" ] && [ ${#NEW} = 64 ] && echo changed)|$(gwm "$KK" main "SELECT count(*) FROM k_people WHERE email = '$OLDMASK'")" "changed|0"
+assert_eq "…the default key is key 2, rotated by who asked; the new key is in no log" \
+  "$($S mask key --json | hjson "k=[x for x in d['keys'] if x['domain']=='default'][0]; print(k['gen'], k['rotatedBy'].startswith('cli:'), k['next'])")|$(sudo docker logs pg-main 2>&1 | grep -c "$(keyhex default)")" \
+  "2 True False|0"
+$S branch resume keystale >/dev/null 2>&1
+assert_eq "the branch stopped through it is named as made under an older key (its tenant_a table is not), and set up again it is not" \
+  "$($S mask key --json | hjson "print(sorted(t['branch']+':'+t['table'] for k in d['keys'] for t in k['stale']))")|$($S mask setup --branch keystale --yes >/dev/null 2>&1; $S mask key --json | hjson "print(sum(len(k['stale']) for k in d['keys']))")|$(pg pg-keystale "SELECT count(*) FROM bb_mask.public__k_people m JOIN k_people p USING (id) WHERE m.email IS DISTINCT FROM bb_f1.bbid_mask_hmac('default', p.email)")" \
+  "['keystale:k_people']|0|0"
+$S mask key use default --table k_orders --yes >/dev/null 2>&1 || bad "putting k_orders back under default"
+assert_eq "back under the default domain, k_orders joins again, under the new key" "$(gwm "$KK" main "$JOIN")" "2"
+assert_eq "the API: an admin reads the keys and a rotation's cost; a bad name is refused; the masked account is refused" \
+  "$(curl -sk -H "$AUTH" https://localhost:8080/api/masking/keys | hjson "print(sorted(k['domain'] for k in d['keys']))")|$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -d '{"action":"rotate","domain":"tenant_a"}' https://localhost:8080/api/masking/key | hjson "print('There is no undo' in d['cost'])")|$(code "$KEY" -X POST -H 'Content-Type: application/json' -d '{"action":"create","domain":"Bad","apply":true}' https://localhost:8080/api/masking/key)|$(code "$KK" https://localhost:8080/api/masking/keys)|$(code "$KK" -X POST -H 'Content-Type: application/json' -d '{"action":"rotate","domain":"default","apply":true}' https://localhost:8080/api/masking/key)" \
+  "['default', 'tenant_a']|True|400|403|403"
+$S branch delete keystale >/dev/null 2>&1
+DROPB="$($S mask key drop tenant_a --yes 2>&1)" || bad "deleting tenant_a once no table uses it: $DROPB"
+assert_eq "a domain no table uses is deleted, its key with it; the default cannot be" \
+  "$(sudo test -e "$KD/tenant_a.key" && echo kept || echo gone)|$($S mask key --json | hjson "print([k['domain'] for k in d['keys']])")|$($S mask key drop default --yes 2>&1 | grep -c 'default domain is the install')" \
+  "gone|['default']|1"
+assert_eq "every key change is in the security log" "$($S audit log --limit 300 | grep -c 'mask.key')" "5"
+for c in k_people.email k_people.phone k_orders.cust_email; do $S mask rule "$c" --off >/dev/null 2>&1; done
+$S mask account key-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS k_people, k_orders CASCADE" >/dev/null
+$S user delete key-analyst@foxbyte.dev >/dev/null 2>&1
+rm -rf "${ROTD:?}"
+
+echo "### 11ak. masking: unmask, the lookup, the access review, reads audited (F5 Gate 1, step 3)"
+# Enterprise: a masked account given unmask on a branch sees real values
+# there, and its reads of marked tables are logged by the audit log, its only;
+# it cannot undo that. The lookup finds a person by an exact value, masked, 30
+# a minute, recorded without the value. The access review says who sees what.
+# On main, set up by §11ai.
+$S branch delete umother >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS u_people CASCADE" >/dev/null
+pg pg-main "CREATE TABLE u_people (id bigint PRIMARY KEY, email text, phone text, aadhaar_no text);
+  INSERT INTO u_people VALUES (1, 'asha.u@example.com', '+91 98765 43210', '234567890124'), (2, 'ravi.u@example.org', '9876543211', '456789012341')" >/dev/null
+$S pii scan >/dev/null 2>&1
+UJ="$($S pii --json 2>/dev/null)"
+ufid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='u_people' and f['column']=='$1'][0])" <<<"$UJ"; }
+for c in email phone aadhaar_no; do $S pii mark "$(ufid $c)" confirm >/dev/null 2>&1; $S mask rule "u_people.$c" --yes >/dev/null 2>&1 || bad "setting the rule on u_people.$c"; done
+for u in unmask-analyst plain-person; do printf 'password123\n' | $S user create "$u@foxbyte.dev" >/dev/null 2>&1; done
+UM="$($S apikey create unmask-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+$S mask account unmask-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the analyst"
+UROLE="SELECT coalesce(array_to_string(rolconfig, ' '), '') FROM pg_roles WHERE rolname = 'unmask-analyst@foxbyte.dev'"
+unmasked() { $S access review --json 2>/dev/null | hjson "print([a['unmasked'] for a in d['accounts'] if a['email']=='$1'][0])"; }
+assert_eq "the access review says who sees what: an admin real values, an account not masked everything, a masked one masks" \
+  "$(unmasked test@foxbyte.dev | grep -c 'an admin always sees real values')|$(unmasked plain-person@foxbyte.dev | grep -c 'not masked')|$(unmasked unmask-analyst@foxbyte.dev | grep -c '^masks of marked tables$')" "1|1|1"
+assert_eq "unmask is for a masked account: one that is not is refused, saying why; so is a branch that is not there" \
+  "$($S mask unmask plain-person@foxbyte.dev --branch main --yes 2>&1 | grep -c 'is not masked, so it sees real values already')|$($S mask unmask unmask-analyst@foxbyte.dev --branch nosuchbranch --yes 2>&1 | grep -c 'there is no branch')" "1|1"
+PRE="$($S mask unmask unmask-analyst@foxbyte.dev --branch main 2>&1)"
+assert_eq "without --yes it says what changes, that reads are audited and the audit log is off, and changes nothing" \
+  "$(grep -c 'Every read they make there of a marked table is audited' <<<"$PRE")|$(grep -c 'The audit log is off' <<<"$PRE")|$(gwm "$UM" main "SELECT length(email) FROM u_people WHERE id = 1")" "1|1|64"
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+$S mask unmask unmask-analyst@foxbyte.dev --branch main --yes >/dev/null 2>&1 || bad "unmasking the analyst on main"
+assert_eq "with unmask on main, the masked account reads real values there, and its role's audit role is bb_audit_read" \
+  "$(gwm "$UM" main "SELECT email, phone FROM u_people WHERE id = 1")|$(pg pg-main "$UROLE" | grep -o 'pgaudit.role=bb_audit_read')" "asha.u@example.com|+91 98765 43210|pgaudit.role=bb_audit_read"
+gwm "$UM" main "SELECT count(*) FROM u_people" >/dev/null; sleep 1.5
+assert_eq "…its reads of a marked table are logged (both), under its login, with nothing the table holds" \
+  "$(auditlog main | grep '"user":"unmask-analyst@foxbyte.dev"' | grep -c 'AUDIT: OBJECT,[0-9]*,[0-9]*,READ,SELECT,TABLE,public.u_people,')|$(auditlog main | grep -c 'asha.u@example.com')" "2|0"
+assert_eq "…and it cannot undo that: the setting is a superuser's" \
+  "$(gwm "$UM" main "SET pgaudit.role = 'nobody'" | grep -c 'permission denied')|$(gwm "$UM" main "ALTER ROLE SESSION_USER RESET pgaudit.role" | grep -c 'permission denied')" "1|1"
+$S branch create umother >/dev/null 2>&1
+# The Gateway lets a non-admin reach main and the branches it owns only, so
+# another branch is read from the record, not by connecting.
+assert_eq "unmask is on one branch: another branch lists nobody" \
+  "$($S mask --branch umother --json | hjson "print(len(d['unmasks']))")|$($S mask --json | hjson "print(len(d['unmasks']))")" "0|1"
+assert_eq "the access review lists the unmask, audited" \
+  "$(unmasked unmask-analyst@foxbyte.dev)" "masks of marked tables; unmask on main, its reads of marked tables audited"
+assert_eq "status lists it, and the API: an admin reads lookups; the masked account may not unmask itself" \
+  "$($S mask --json | hjson "print([g['email'] for g in d['unmasks']], d['auditOn'])")|$(code "$KEY" https://localhost:8080/api/masking/lookups?branch=main)|$(code "$UM" -X POST -H 'Content-Type: application/json' -d '{"email":"unmask-analyst@foxbyte.dev","branch":"umother"}' https://localhost:8080/api/masking/unmask)" \
+  "['unmask-analyst@foxbyte.dev'] True|200|403"
+$S mask unmask unmask-analyst@foxbyte.dev --branch main --off --yes >/dev/null 2>&1 || bad "taking unmask off"
+assert_eq "unmask taken off: masks again, and the audit role is gone from the role" \
+  "$(gwm "$UM" main "SELECT length(email) FROM u_people WHERE id = 1")|$(pg pg-main "$UROLE" | grep -c 'pgaudit.role')" "64|0"
+
+# The lookup: by an exact value, the rows masked; nothing outside a rule.
+assert_eq "the lookup finds a person by an exact value and returns the row masked: by a hash, and by a partial mask" \
+  "$(gwm "$UM" main "SELECT d->>'id', length(d->>'email'), d->>'phone' FROM bb_mask.find('u_people', 'email', 'asha.u@example.com') d")|$(gwm "$UM" main "SELECT d->>'id', d->>'aadhaar_no' FROM bb_mask.find('public.u_people', 'aadhaar_no', '456789012341') d")|$(gwm "$UM" main "SELECT count(*) FROM bb_mask.find('u_people', 'email', 'nobody@example.com')")" \
+  "1|64|XXXXXXXXXXX3210|2|XXXXXXXX2341|0"
+assert_eq "…only in a column with a rule of its own, and never a table without one" \
+  "$(gwm "$UM" main "SELECT * FROM bb_mask.find('u_people', 'id', '1')" | grep -c 'has none')|$(gwm "$UM" main "SELECT * FROM bb_mask.find('pg_authid', 'rolpassword', 'x')" | grep -c 'has none')|$(gwm "$KEY" main "SELECT * FROM bb_mask.find('u_people', 'email', 'x')" | grep -c 'permission denied')" "1|1|1"
+LK="$($S mask lookups --json)"
+assert_eq "each lookup is recorded: who, which column, how many found; never the value; the masked account cannot read the record" \
+  "$(hjson "print(len(d), sorted(set(l['who'] for l in d)), sorted(set(l['column'] for l in d)), sum(l['found'] for l in d))" <<<"$LK")|$(grep -cE 'asha|456789' <<<"$LK")|$(gwm "$UM" main "SELECT count(*) FROM bb_mask.lookups" | grep -c 'permission denied')" \
+  "3 ['unmask-analyst@foxbyte.dev'] ['aadhaar_no', 'email'] 2|0|1"
+for _ in $(seq 27); do gwm "$UM" main "SELECT count(*) FROM bb_mask.find('u_people', 'email', 'x@example.com')" >/dev/null; done
+assert_eq "30 lookups a minute for each account, then refused" \
+  "$(gwm "$UM" main "SELECT count(*) FROM bb_mask.find('u_people', 'email', 'asha.u@example.com')" | grep -c 'too many lookups')" "1"
+assert_eq "no value looked up is in the database's log" "$(sudo docker logs pg-main 2>&1 | grep -cE 'asha.u@example.com|456789012341|x@example.com')" "0"
+
+# A branch's unmask goes with it; an account unmasked keeps none.
+$S mask unmask unmask-analyst@foxbyte.dev --branch umother --yes >/dev/null 2>&1 || bad "unmask on umother"
+$S branch delete umother >/dev/null 2>&1
+$S mask unmask unmask-analyst@foxbyte.dev --branch main --yes >/dev/null 2>&1
+UG="${HOME:?}/${BRAND_STATE_DIR:?}/unmask-grants.json"
+assert_eq "a deleted branch's unmask is gone with it, so a branch made later with its name has none" \
+  "$(python3 -c 'import json,sys; print(sorted(g["branch"] for g in json.load(open(sys.argv[1]))))' "$UG")" "['main']"
+$S mask account unmask-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
+assert_eq "an account unmasked keeps no unmask, and its audit role is gone" \
+  "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$UG")|$(pg pg-main "$UROLE" | grep -c 'pgaudit.role')" "0|0"
+assert_eq "every unmask given and taken is in the security log" "$($S audit log --limit 300 | grep -c 'mask.unmask')" "4"
+$S audit-log off --yes >/dev/null 2>&1; main_up
+for c in email phone aadhaar_no; do $S mask rule "u_people.$c" --off >/dev/null 2>&1; done
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS u_people CASCADE" >/dev/null
+for u in unmask-analyst plain-person; do $S user delete "$u@foxbyte.dev" >/dev/null 2>&1; done
+
+echo "### 11al. masking: every access path (F5 Gate 1, step 4)"
+# Enterprise. The suite runs as a masked account and as its agent on each path
+# the design names (section 11): each keeps the masks or is refused. The
+# tables are made by an ordinary account through the Gateway, as an
+# application's are, so what it makes later is granted as the defaults say.
+# On main, set up by §11ai.
+for b in pmown pmpit; do $S branch delete "$b" >/dev/null 2>&1; done
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS p_people, p_logins, p_notes, p_late CASCADE; DROP FUNCTION IF EXISTS p_phone_of(text)" >/dev/null
+for u in path-dev path-analyst; do printf 'password123\n' | $S user create "$u@foxbyte.dev" >/dev/null 2>&1; done
+PD="$($S apikey create path-dev@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+PM="$($S apikey create path-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+PA="$($S apikey create path-analyst@foxbyte.dev agent --agent 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+gwm "$PD" main "CREATE TABLE p_people (id bigint PRIMARY KEY, email text UNIQUE, phone text, city text);
+  INSERT INTO p_people VALUES (1, 'asha.p@example.com', '+91 98765 43210', 'Pune'), (2, 'ravi.p@example.org', '9876543211', 'Goa');
+  CREATE TABLE p_logins (id serial PRIMARY KEY, login text REFERENCES p_people(email), at timestamptz DEFAULT now());
+  CREATE TABLE p_notes (id serial PRIMARY KEY, person bigint REFERENCES p_people(id), note text)" >/dev/null
+$S pii scan >/dev/null 2>&1
+PJ="$($S pii --json 2>/dev/null)"
+pfid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='p_people' and f['column']=='$1'][0])" <<<"$PJ"; }
+for c in email phone; do $S pii mark "$(pfid $c)" confirm >/dev/null 2>&1; $S mask rule "p_people.$c" --yes >/dev/null 2>&1 || bad "setting the rule on p_people.$c"; done
+$S mask account path-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the analyst"
+PREAL="asha.p@example.com|98765 43210"
+leaks() { grep -cE "$PREAL"; }
+assert_eq "Gateway: masks; the real table refused" \
+  "$(gwm "$PM" main "SELECT email ~ '^[0-9a-f]{64}\$', phone, city FROM p_people WHERE id = 1")|$(gwm "$PM" main "SELECT * FROM public.p_people" | grep -c 'permission denied')" "t|XXXXXXXXXXX3210|Pune|1"
+pq() { as "$1" -H 'Content-Type: application/json' -X POST -d "$(python3 -c 'import json,sys; print(json.dumps({"sql": sys.argv[1]}))' "$2")" https://localhost:8080/api/branches/main/query; }
+assert_eq "console query, as the account's own role: masks; the real table refused" \
+  "$(pq "$PM" "SELECT email, phone FROM p_people" | leaks)|$(pq "$PM" "SELECT phone FROM p_people WHERE id = 1" | grep -c 'XXXXXXXXXXX3210')|$(pq "$PM" "SELECT * FROM public.p_people" | grep -c 'permission denied')" "0|1|1"
+assert_eq "the data grid: the marked table's real rows refused, its edit refused" \
+  "$(pq "$PM" 'SELECT * FROM "public"."p_people" LIMIT 100' | grep -c 'permission denied')|$(code "$PM" -X POST -H 'Content-Type: application/json' -d '{"schema":"public","table":"p_people","changes":[{"op":"update","key":{"id":"1"},"values":{"city":"x"}}]}' https://localhost:8080/api/branches/main/rows | grep -vc '^200$')$(pg pg-main "SELECT city FROM p_people WHERE id = 1")" "1|1Pune"
+assert_eq "exports, CSV and workbook: masks" \
+  "$(as "$PM" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM p_people"}' https://localhost:8080/api/branches/main/export | leaks)|$(as "$PM" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM p_people"}' https://localhost:8080/api/branches/main/export | grep -c 'XXXXXX3211')|$(as "$PM" -H 'Content-Type: application/json' -X POST -d '{"sql":"SELECT * FROM p_people","format":"xlsx"}' https://localhost:8080/api/branches/main/export | python3 -c 'import sys,zipfile,io; z=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())); print(sum(b"asha.p@" in z.read(n) for n in z.namelist()))')" "0|1|0"
+assert_eq "the object browser: definitions, no values" \
+  "$(as "$PM" 'https://localhost:8080/api/branches/main/schema' | leaks)" "0"
+assert_eq "an agent key of the masked account: masks through the Gateway, as a masked agent role; db_client out of reach" \
+  "$(gwm "$PA" main "SELECT current_user, session_user, phone FROM p_people WHERE id = 2")|$(gwm "$PA" main "SET ROLE db_client" | grep -c 'permission denied')|$(gwm "$PA" main "SELECT * FROM public.p_people" | grep -c 'permission denied')" \
+  "db_masked|agent:path-analyst@foxbyte.dev|XXXXXX3211|1|1"
+mcpm() { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" \
+    | env FOX_API_KEY="$PA" "$S" mcp 2>/dev/null \
+    | python3 -c 'import sys,json
+for line in sys.stdin:
+    m=json.loads(line)
+    if m.get("id")==2:
+        r=m.get("result") or {}; e=m.get("error") or {}
+        print((r.get("content") or [{}])[0].get("text","") or e.get("message",""))'; }
+assert_eq "MCP run_sql and execute_change, as the masked agent: masks; writing a marked table refused" \
+  "$(mcpm run_sql '{"sql":"SELECT email, phone FROM p_people"}' | leaks)|$(mcpm run_sql '{"sql":"SELECT phone FROM p_people WHERE id = 1"}' | grep -c 'XXXXXXXXXXX3210')|$(mcpm execute_change '{"sql":"UPDATE p_people SET city = city","agent_id":"pm"}' | grep -cE 'permission denied|cannot update')" "0|1|1"
+assert_eq "joins, views and functions it writes read masks only; it cannot make objects in public" \
+  "$(gwm "$PM" main "CREATE TEMP VIEW tv AS SELECT p.phone FROM p_people p JOIN p_notes n ON n.person = p.id; SELECT count(*) FROM tv; SELECT phone FROM p_people")" \
+  "0
+XXXXXXXXXXX3210
+XXXXXX3211"
+assert_eq "…a temporary function sees masks too; CREATE in public refused" \
+  "$(gwm "$PM" main "CREATE FUNCTION pg_temp.f(t text) RETURNS text LANGUAGE sql AS \$\$ SELECT t \$\$; SELECT pg_temp.f(phone) FROM p_people WHERE id = 1")|$(gwm "$PM" main "CREATE VIEW public.pv AS SELECT 1" | grep -c 'permission denied')" "XXXXXXXXXXX3210|1"
+assert_eq "RETURNING, ON CONFLICT and MERGE: no write to a marked table" \
+  "$(gwm "$PM" main "INSERT INTO p_people (id) VALUES (9) RETURNING *" | grep -cE 'permission denied|cannot insert')|$(gwm "$PM" main "INSERT INTO p_people (id) VALUES (1) ON CONFLICT (id) DO NOTHING" | grep -cE 'permission denied|cannot insert|no unique')|$(gwm "$PM" main "DELETE FROM p_people WHERE id = 1 RETURNING phone" | grep -cE 'permission denied|cannot delete')|$(gwm "$PM" main "MERGE INTO p_people t USING (SELECT 1 AS id) s ON t.id = s.id WHEN MATCHED THEN DELETE" | grep -cE 'permission denied|cannot')" "1|1|1|1"
+assert_eq "errors show masks: a failed cast quotes the mask" \
+  "$(gwm "$PM" main "SELECT phone::int FROM p_people WHERE id = 2" | grep -c 'XXXXXX3211')" "1"
+assert_eq "pg_stats and extended statistics: nothing of the real table; EXPLAIN: no values" \
+  "$(pg pg-main "ANALYZE p_people" >/dev/null; gwm "$PM" main "SELECT count(*) FROM pg_stats WHERE tablename IN ('p_people', 'public__p_people')")|$(gwm "$PM" main "SELECT count(*) FROM pg_stats_ext WHERE tablename = 'p_people'")|$(gwm "$PM" main "EXPLAIN (VERBOSE) SELECT * FROM p_people WHERE city = 'Pune'" | leaks)" "0|0|0"
+assert_eq "COPY: masks from a query, the real table refused, the view refused" \
+  "$(gwm "$PM" main "COPY (SELECT phone FROM p_people WHERE id = 2) TO STDOUT")|$(gwm "$PM" main "COPY public.p_people TO STDOUT" | grep -c 'permission denied')|$(gwm "$PM" main "COPY p_people TO STDOUT" | grep -c 'cannot copy from view')" "XXXXXX3211|1|1"
+assert_eq "realtime: refused to the masked account, saying why, before anything else; an account not masked is not" \
+  "$(code "$PM" https://localhost:8080/api/branches/main/realtime)|$(as "$PM" https://localhost:8080/api/branches/main/realtime | grep -c 'is masked, and the change feed would carry')|$(code "$PD" https://localhost:8080/api/branches/main/realtime | grep -vc '^403$')" "403|1|1"
+# A continuous import copies an outside source into a branch of its own, and
+# reads no marked table; its list is the imports' state, no rows.
+assert_eq "logical replication: the cutover is an admin's; the imports' list carries no values" \
+  "$(code "$PM" -X POST https://localhost:8080/api/branches/main/replication/cutover)|$(as "$PM" https://localhost:8080/api/replication | leaks)" "403|0"
+# The Blackbox: a statement's text can hold real values.
+gwm "$PD" main "UPDATE p_people SET city = 'Pune' WHERE email = 'asha.p@example.com'" >/dev/null
+gwm "$PD" main "CREATE TABLE p_late (id int PRIMARY KEY)" >/dev/null
+assert_eq "Blackbox: the masked account reads the entries without their text; an admin with it; its export refused" \
+  "$(as "$PM" 'https://localhost:8080/api/branches/main/ledger?limit=200' | leaks)|$(as "$PM" 'https://localhost:8080/api/branches/main/ledger?limit=20' | grep -c 'hidden from masked accounts')|$(curl -sk -H "$AUTH" 'https://localhost:8080/api/branches/main/ledger?limit=20' | grep -c 'CREATE TABLE p_late')|$(code "$PM" https://localhost:8080/api/branches/main/ledger/export)" "0|1|1|403"
+# Branches: owning one does not unmask, and the masks travel.
+code "$PM" -X POST -H 'Content-Type: application/json' -d '{"name":"pmown","from":"main"}' https://localhost:8080/api/branches >/dev/null
+LATE="$(pg pg-main "SELECT max(id) FROM bb.schema_ledger WHERE object_identity = 'public.p_late' AND command_tag = 'CREATE TABLE'")"
+code "$PM" -X POST -H 'Content-Type: application/json' -d '{"name":"pmpit"}' "https://localhost:8080/api/branches/main/ledger/$LATE/branch" >/dev/null
+assert_eq "a branch it makes of main, and one made back in time, read masks: owning them does not unmask" \
+  "$(gwm "$PM" pmown "SELECT phone FROM p_people WHERE id = 2")|$(gwm "$PM" pmown "SELECT * FROM public.p_people" | grep -c 'permission denied')|$(gwm "$PM" pmpit "SELECT phone FROM p_people WHERE id = 2")" "XXXXXX3211|1|XXXXXX3211"
+assert_eq "…its agent key too, on its own branch" "$(gwm "$PA" pmown "SELECT phone FROM p_people WHERE id = 2")" "XXXXXX3211"
+# Refused in step 4; since step 5 it is a masked branch of main (§11am).
+assert_eq "an agent branch is never one whose role reads real values: it is made as a masked branch" \
+  "$(code "$PM" -X POST https://localhost:8088/agents/pm1/branch)|$($S mask branches --json | hjson "print([b['state'] for b in d if b['name']=='agent-pm1'][0])")" "201|open"
+curl -sk -o /dev/null -H "Authorization: Bearer $PM" -X DELETE https://localhost:8088/agents/pm1/branch
+$S mask unmask path-analyst@foxbyte.dev --branch pmown --yes >/dev/null 2>&1 || bad "unmask on pmown"
+assert_eq "unmask on its branch lifts it there only, its agent key's too" \
+  "$(gwm "$PM" pmown "SELECT phone FROM p_people WHERE id = 2")|$(gwm "$PA" pmown "SELECT phone FROM p_people WHERE id = 2")|$(gwm "$PM" main "SELECT phone FROM p_people WHERE id = 2")" "9876543211|9876543211|XXXXXX3211"
+# What others make: views over a marked column, grants, foreign keys.
+gwm "$PD" main "CREATE VIEW p_summary AS SELECT email, city FROM p_people; CREATE VIEW p_cities AS SELECT id, city FROM p_people;
+  CREATE VIEW p_summary2 AS SELECT * FROM p_summary; CREATE MATERIALIZED VIEW p_mv AS SELECT phone FROM p_people" >/dev/null
+assert_eq "a view or materialized view over a marked column, made by an ordinary account, is closed to masked accounts; one over unmarked columns is not" \
+  "$(gwm "$PM" main "SELECT * FROM p_summary" | grep -c 'permission denied')|$(gwm "$PM" main "SELECT * FROM p_summary2" | grep -c 'permission denied')|$(gwm "$PM" main "SELECT * FROM p_mv" | grep -c 'permission denied')|$(gwm "$PM" main "SELECT city FROM p_cities WHERE id = 1")|$(gwm "$PD" main "SELECT email FROM p_summary WHERE city = 'Pune'")" \
+  "1|1|1|Pune|asha.p@example.com"
+assert_eq "a grant on a marked table or such a view is taken back; to PUBLIC it is refused, saying why" \
+  "$(gwm "$PD" main "GRANT SELECT ON p_people TO db_masked; GRANT SELECT ON p_summary TO \"path-analyst@foxbyte.dev\"" >/dev/null; gwm "$PM" main "SELECT * FROM public.p_people" | grep -c 'permission denied')$(gwm "$PM" main "SELECT * FROM p_summary" | grep -c 'permission denied')|$(gwm "$PD" main "GRANT SELECT ON p_summary TO PUBLIC" | grep -c 'to PUBLIC would give masked accounts')" "11|1"
+assert_eq "a foreign key into a marked column: writing that table is refused, it would say which values exist; one into the key is not" \
+  "$(gwm "$PM" main "INSERT INTO p_logins (login) VALUES ('guess@example.com')" | grep -c 'permission denied')|$(gwm "$PM" main "INSERT INTO p_notes (person, note) VALUES (1, 'n'); SELECT count(*) FROM p_notes")" "1|1"
+assert_eq "mask status lists what it closed, and why" \
+  "$($S mask --json | hjson "print(sorted(c['relation']+':'+c['kind'] for c in d['closed']))")|$($S mask | grep -c 'Closed to masked accounts on main')" \
+  "['public.p_logins:refs', 'public.p_mv:reads', 'public.p_summary2:reads', 'public.p_summary:reads']|1"
+gwm "$PD" main "CREATE FUNCTION p_phone_of(e text) RETURNS text LANGUAGE sql SECURITY DEFINER AS \$\$ SELECT phone FROM p_people WHERE email = e \$\$" >/dev/null
+assert_eq "a SECURITY DEFINER function owned by a reader of real values is listed: it can return them" \
+  "$($S mask --json | hjson "print([x['function']+'/'+x['owner']+'/'+','.join(x['tables']) for x in d['definers']])")|$($S mask | grep -c 'Definer functions a masked account can run')" \
+  "['p_phone_of(text)/db_client/public.p_people']|1"
+gwm "$PD" main "REVOKE EXECUTE ON FUNCTION p_phone_of(text) FROM PUBLIC" >/dev/null
+assert_eq "…and once EXECUTE is taken from PUBLIC it is not" "$($S mask --json | hjson "print(len(d['definers']))")" "0"
+$S mask rule p_people.email --off >/dev/null 2>&1 || bad "taking the email rule off"
+assert_eq "a rule taken off opens what it alone closed: the email views and the foreign key, not the phone's" \
+  "$(gwm "$PM" main "SELECT email FROM p_summary WHERE city = 'Goa'")|$(gwm "$PM" main "INSERT INTO p_logins (login) VALUES ('ravi.p@example.org'); SELECT count(*) FROM p_logins")|$(gwm "$PM" main "SELECT * FROM p_mv" | grep -c 'permission denied')" "ravi.p@example.org|1|1"
+assert_eq "no path above gave the masked account a real phone number" "$(gwm "$PM" main "SELECT count(*) FROM p_people WHERE phone LIKE '%98765 43210'")" "0"
+# The guard is the engine's: no definer function as a superuser outside bb.
+assert_eq "the hardening report's definer check still passes with the guard in place" \
+  "$($S hardening --json 2>/dev/null | hjson "print([c['status'] for c in d['checks'] if c['id']=='roles.definer'][0])")" "pass"
+for b in pmown pmpit; do $S branch delete "$b" >/dev/null 2>&1; done
+$S mask rule p_people.phone --off >/dev/null 2>&1
+$S mask account path-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
+assert_eq "every rule off: nothing is left closed" "$($S mask --json | hjson "print(len(d['closed']))")" "0"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS p_people, p_logins, p_notes, p_late CASCADE; DROP FUNCTION IF EXISTS p_phone_of(text)" >/dev/null
+for u in path-dev path-analyst; do $S user delete "$u@foxbyte.dev" >/dev/null 2>&1; done
+
+echo "### 11am. masking: masked branches (F5 Gate 1, step 5)"
+# Enterprise: `fox branch create <name> --masked` makes a copy whose marked
+# columns hold their masks, closed until it is masked and verified: no real
+# value left in its tables, statistics, WAL or Blackbox, and the scan finding
+# no masked category where no rule masked it. On an open one nobody is masked.
+# On main, set up by §11ai.
+for b in mb1c mb1 mb2 mbnone agent-mbag; do $S branch delete "$b" >/dev/null 2>&1; done
+curl -sk -o /dev/null -H "$AUTH" -X DELETE https://localhost:8088/agents/mbag/branch
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS b_people, b_orders, b_logins, b_feature CASCADE" >/dev/null
+pg pg-main "CREATE TABLE b_people (id bigint PRIMARY KEY, email text, phone text, aadhaar_no text, prefs jsonb, city text);
+  INSERT INTO b_people SELECT g, CASE WHEN g = 1 THEN 'asha.b@example.com' ELSE 'person' || g || '@example.org' END,
+    CASE WHEN g = 1 THEN '+91 98765 43210' ELSE '98' || lpad(g::text, 8, '0') END, CASE WHEN g = 1 THEN '234567890124' ELSE '456789012341' END,
+    jsonb_build_object('contact', jsonb_build_object('mobile', '+91 98765 43210'), 'theme', 'dark'), 'Pune' FROM generate_series(1, 2000) g;
+  CREATE TABLE b_orders (id bigint PRIMARY KEY, customer_email text, total int);
+  INSERT INTO b_orders SELECT g, CASE WHEN g = 1 THEN 'asha.b@example.com' ELSE 'person' || g || '@example.org' END, g FROM generate_series(1, 2000) g;
+  CREATE TABLE b_logins (id bigint PRIMARY KEY, login text);
+  INSERT INTO b_logins SELECT g, 'person' || g || '@example.org' FROM generate_series(1, 200) g; ANALYZE" >/dev/null
+# A statement whose text holds a real value, as the Blackbox records it.
+gwm "$KEY" main "CREATE TABLE b_tmp AS SELECT 1 AS x WHERE 'asha.b@example.com' <> ''" >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS b_tmp" >/dev/null
+$S pii scan >/dev/null 2>&1
+BJ="$($S pii --json 2>/dev/null)"
+bfid() { hjson "print([f['id'] for f in d['findings'] if f['table']=='$1' and f['column']=='$2' and f['path']=='$3'][0])" <<<"$BJ"; }
+for at in "b_people email" "b_people phone" "b_people aadhaar_no" "b_orders customer_email"; do $S pii mark "$(bfid $at '')" confirm >/dev/null 2>&1; done
+$S pii mark "$(bfid b_people prefs '$.contact.mobile')" confirm >/dev/null 2>&1
+for c in b_people.email b_people.phone b_people.aadhaar_no b_orders.customer_email; do $S mask rule "$c" --yes >/dev/null 2>&1 || bad "setting the rule on $c"; done
+$S mask rule b_people.prefs --path '$.contact.mobile' --yes >/dev/null 2>&1 || bad "the JSON path's rule"
+printf 'password123\n' | $S user create mb-analyst@foxbyte.dev >/dev/null 2>&1
+MB="$($S apikey create mb-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+MBA="$($S apikey create mb-analyst@foxbyte.dev agent --agent 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+$S mask account mb-analyst@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking the analyst"
+FORK="$(pg pg-main "SELECT max(id) FROM bb.schema_ledger")"
+assert_eq "main's Blackbox holds a statement with a real value in it, as a source's can" \
+  "$(pg pg-main "SELECT count(*) > 0 FROM bb.schema_ledger WHERE statement LIKE '%asha.b@%'")" "t"
+
+# The first run: b_logins holds emails no rule masks, so it stays closed.
+OUT1="$($S branch create mb1 --masked 2>&1)"; rc=$?
+assert_eq "a masked branch whose scan finds a masked category with no rule stays closed, saying where and what to do" \
+  "$rc|$(grep -c 'public.b_logins.login holds email with no rule masking it' <<<"$OUT1")|$(grep -c 'reject the finding there as not personal data' <<<"$OUT1")|$($S mask branches --json | hjson "print([b['state'] for b in d if b['name']=='mb1'][0])")" "1|1|1|failed"
+[ "$rc" = 1 ] || { echo "--- what it said ---"; tail -15 <<<"$OUT1"; echo "--- end ---"; }
+assert_eq "…closed to the Gateway, even an admin, and to the API, which says why; it may be deleted" \
+  "$(gwm "$KEY" mb1 "SELECT 1" | grep -c 'was not masked')|$(code "$KEY" https://localhost:8080/api/branches/mb1/schema)|$(as "$KEY" https://localhost:8080/api/branches/mb1/schema | grep -c 'stays closed')|$(curl -sk -H "$AUTH" https://localhost:8080/api/branches | hjson "print([b.get('masked') for b in d if b['name']=='mb1'][0])")" \
+  "1|423|1|failed"
+$S pii mark "$(bfid b_logins login '')" reject >/dev/null 2>&1
+OUT2="$($S branch create mb1 --masked 2>&1)"; rc=$?
+assert_eq "the finding rejected on the source, run again: it starts over from the source, is masked, verified and opened" \
+  "$rc|$(grep -c 'did not finish: starting again from main' <<<"$OUT2")|$(grep -c 'is masked, verified and open' <<<"$OUT2")|$($S mask branches --json | hjson "b=[x for x in d if x['name']=='mb1'][0]; print(b['state'], b['tables'], b['rows'], b['fork']==$FORK)")" \
+  "0|1|1|open 2 4000 True"
+[ "$rc" = 0 ] || { echo "--- what it said ---"; tail -15 <<<"$OUT2"; echo "--- end ---"; }
+assert_eq "its marked columns hold their masks, for anyone, the superuser included; the rest as it was" \
+  "$(pg pg-mb1 "SELECT email ~ '^[0-9a-f]{64}\$', phone, aadhaar_no, prefs->'contact'->>'mobile', prefs->>'theme', city FROM b_people WHERE id = 1")|$(pg pg-mb1 "SELECT count(*) FROM b_people WHERE email = 'asha.b@example.com' OR phone LIKE '%98765 43210'")" \
+  "t|XXXXXXXXXXX3210|XXXXXXXX0124|XXXXXXXXXXX3210|dark|Pune|0"
+assert_eq "…and joins on the hash, as on main for a masked account" \
+  "$(pg pg-mb1 "SELECT count(*) FROM b_people p JOIN b_orders o ON o.customer_email = p.email")" "2000"
+MBDIR="$(sudo docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' pg-mb1)"
+left_mb() { sudo grep -rlaE 'asha\.b@example\.com|98765 43210|234567890124' "$MBDIR/$1" 2>/dev/null | wc -l | tr -d ' '; }
+assert_eq "no file of its tables, statistics or WAL holds a real value; its Blackbox none of main's entries" \
+  "$(left_mb base)|$(left_mb pg_wal)|$(pg pg-mb1 "SELECT count(*) FROM bb.schema_ledger WHERE id <= $FORK")|$(pg pg-mb1 "SELECT count(*) FROM bb.schema_ledger WHERE statement LIKE '%asha.b@%'")" "0|0|0|0"
+[ -n "$MBDIR" ] || bad "the masked branch's data folder was not found"
+assert_eq "the masks' machinery is gone and the key never mounted: nothing there can make a mask" \
+  "$(pg pg-mb1 "SELECT to_regnamespace('bb_mask') IS NULL, (SELECT count(*) FROM pg_event_trigger WHERE evtname = 'bb_mask_close'), to_regclass('bb.mask_rules') IS NULL")|$(sudo docker inspect -f '{{range .Mounts}}{{.Destination}} {{end}}' pg-mb1 | grep -c '/run/bb-mask')" "t|0|t|0"
+# Made through the API by the masked account itself: it owns it, and reads it.
+assert_eq "the API makes one in the background, closed meanwhile: 202, then 423 until it opens" \
+  "$(code "$MB" -X POST -H 'Content-Type: application/json' -d '{"name":"mb2","from":"main","masked":true}' https://localhost:8080/api/branches)|$(code "$MB" https://localhost:8080/api/branches/mb2/schema)" "202|423"
+for _ in $(seq 1 120); do [ "$(as "$MB" https://localhost:8080/api/masking/branches | hjson "print([b['state'] for b in d if b['name']=='mb2'][0] if any(b['name']=='mb2' for b in d) else '')")" = making ] || break; sleep 2; done
+assert_eq "…open: the masked account reads it as it is, masks in its data, not as a masked reader; so does its agent key" \
+  "$(as "$MB" https://localhost:8080/api/masking/branches | hjson "print([b['state'] for b in d if b['name']=='mb2'][0])")|$(gwm "$MB" mb2 "SELECT current_user, phone FROM public.b_people WHERE id = 1")|$(gwm "$MBA" mb2 "SELECT phone FROM b_people WHERE id = 1")" \
+  "open|db_client|XXXXXXXXXXX3210|XXXXXXXXXXX3210"
+assert_eq "…and writes it as any account writes its own branch" \
+  "$(gwm "$MB" mb2 "UPDATE b_people SET city = 'Goa' WHERE id = 2; SELECT city FROM b_people WHERE id = 2")" "Goa"
+# A change request from it carries only what was done on it.
+gwm "$MB" mb2 "CREATE TABLE b_feature (id int PRIMARY KEY)" >/dev/null
+RQ="$(as "$MB" -X POST -H 'Content-Type: application/json' -d '{"target":"main"}' https://localhost:8080/api/branches/mb2/request)"
+RID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$RQ" 2>/dev/null)"
+assert_eq "a change request from a masked branch carries only its own change, nothing of its making" \
+  "$(hjson "print([e['command'] for e in d], [e['object'] for e in d])" <<<"$RQ")" "['CREATE TABLE'] ['public.b_feature']"
+APR="$(curl -sk -X POST -H "$AUTH" -H 'content-type: application/json' -d '{}' "https://localhost:8080/api/requests/$RID/approve")"
+assert_eq "…approved, main has the change and keeps every mask: the masked account still reads masks there" \
+  "$(pg pg-main "SELECT to_regclass('public.b_feature') IS NOT NULL")|$(gwm "$MB" main "SELECT phone FROM b_people WHERE id = 1")|$(pg pg-main "SELECT to_regclass('bb_mask.b_people') IS NOT NULL")" "t|XXXXXXXXXXX3210|t"
+[ -n "$RID" ] && grep -q '"status":"approved"' <<<"$APR" || { echo "--- request $RID, approval ---"; head -c 600 <<<"$APR"; echo; echo "--- end ---"; }
+# A masked account's agent is given a masked branch.
+AGR="$(as "$MB" -X POST https://localhost:8088/agents/mbag/branch)"
+assert_eq "a masked account's agent branch is made as a masked branch of main" \
+  "$(hjson "print(d.get('branch'))" <<<"$AGR")|$($S mask branches --json | hjson "print([b['state'] for b in d if b['name']=='agent-mbag'][0])")|$(pg pg-agent-mbag "SELECT phone FROM b_people WHERE id = 1")" "agent-mbag|open|XXXXXXXXXXX3210"
+curl -sk -o /dev/null -H "Authorization: Bearer $MB" -X DELETE https://localhost:8088/agents/mbag/branch
+RS="$($S branch reset mb1 2>&1)"
+assert_eq "reset makes it again as a masked branch of its source" \
+  "$(grep -c 'is masked and verified, and open' <<<"$RS")|$(pg pg-mb1 "SELECT phone FROM b_people WHERE id = 1")" "1|XXXXXXXXXXX3210"
+grep -q 'is masked and verified, and open' <<<"$RS" || { echo "--- what it said ---"; tail -8 <<<"$RS"; echo "--- end ---"; }
+assert_eq "a copy of a masked branch is one too, at once" \
+  "$($S branch create mb1c --from mb1 >/dev/null 2>&1; $S mask branches --json | hjson "b=[x for x in d if x['name']=='mb1c'][0]; print(b['state'], b.get('inherited'))")|$(pg pg-mb1c "SELECT phone FROM b_people WHERE id = 1")" "open True|XXXXXXXXXXX3210"
+assert_eq "a masked branch asked of a branch that is not there is refused" \
+  "$($S branch create mbnone --masked --from nosuchbranch 2>&1 | grep -ciE 'not found|no branch')|$($S mask branches --json | hjson "print(any(b['name']=='mbnone' for b in d))")" "1|False"
+assert_eq "every masked branch made or refused is in the security log" \
+  "$($S audit log --limit 400 | grep 'mask.branch' | grep -c 'refused')|$($S audit log --limit 400 | grep 'mask.branch' | grep -c 'opened')" "1|2"
+for b in mb1c mb1 mb2; do $S branch delete "$b" >/dev/null 2>&1; done
+assert_eq "a deleted masked branch's record goes with it" "$($S mask branches --json | hjson "print(len([b for b in d if b['name'].startswith('mb')]))")" "0"
+$S mask account mb-analyst@foxbyte.dev --off --yes >/dev/null 2>&1
+for c in b_people.email b_people.phone b_people.aadhaar_no b_orders.customer_email; do $S mask rule "$c" --off >/dev/null 2>&1; done
+$S mask rule b_people.prefs --path '$.contact.mobile' --off >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS b_people, b_orders, b_logins, b_feature CASCADE" >/dev/null
+$S user delete mb-analyst@foxbyte.dev >/dev/null 2>&1
+
+echo "### 11an. sessions and upkeep (point 12.5)"
+# Who is connected to a branch and what each runs; a query cancelled, a
+# session ended; a table vacuumed and analysed. The branch's owner and an
+# admin see and stop everyone's sessions, anyone else their own; FoxByte's own
+# are not ended from here; upkeep is the owner's.
+$S branch delete sesown >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS s_orders CASCADE" >/dev/null
+pg pg-main "CREATE TABLE s_orders (id int PRIMARY KEY, total int); INSERT INTO s_orders SELECT g, g FROM generate_series(1, 5000) g; DELETE FROM s_orders WHERE id <= 2000" >/dev/null
+for u in ses-dev ses-other; do printf 'password123\n' | $S user create "$u@foxbyte.dev" >/dev/null 2>&1; done
+SD="$($S apikey create ses-dev@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+SO="$($S apikey create ses-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+spid() { as "$1" "https://localhost:8080/api/branches/${3:-main}/sessions" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(",".join(str(s["pid"]) for s in d["sessions"] if sys.argv[1] in s["query"]))' "$2"; }
+gwm "$SD" main "SELECT pg_sleep(30) AS sd_sleep" > /tmp/ses-cancel.out 2>&1 & W1=$!
+for _ in $(seq 1 40); do [ -n "$(spid "$KEY" sd_sleep)" ] && break; sleep 0.25; done
+P1="$(spid "$KEY" sd_sleep)"
+assert_eq "an admin sees every client session, with its login and statement; the account sees its own; another account does not see it" \
+  "$([ -n "$P1" ] && echo found)|$(as "$KEY" https://localhost:8080/api/branches/main/sessions | hjson "print(d['all'], [s['user'] for s in d['sessions'] if 'sd_sleep' in s['query']])")|$(spid "$SD" sd_sleep)|$(as "$SO" https://localhost:8080/api/branches/main/sessions | hjson "print(d['all'], sum('sd_sleep' in s['query'] for s in d['sessions']))")" \
+  "found|True ['ses-dev@foxbyte.dev']|$P1|False 0"
+assert_eq "another account may not cancel it, and is not told whose it is" \
+  "$(code "$SO" -X POST "https://localhost:8080/api/branches/main/sessions/$P1/cancel")|$(as "$SO" -X POST "https://localhost:8080/api/branches/main/sessions/$P1/cancel" | grep -c 'no session')" "404|1"
+assert_eq "an admin cancels its query: the client is told, the session was not the admin's" \
+  "$(code "$KEY" -X POST "https://localhost:8080/api/branches/main/sessions/$P1/cancel")" "200"
+wait "$W1"
+assert_eq "…and the client's statement ended, cancelled" "$(grep -c 'canceling statement due to user request' /tmp/ses-cancel.out)" "1"
+gwm "$SD" main "SELECT pg_sleep(30) AS sd_own" > /tmp/ses-own.out 2>&1 & W2=$!
+for _ in $(seq 1 40); do [ -n "$(spid "$SD" sd_own)" ] && break; sleep 0.25; done
+assert_eq "the account cancels its own" \
+  "$(code "$SD" -X POST "https://localhost:8080/api/branches/main/sessions/$(spid "$SD" sd_own)/cancel")" "200"
+wait "$W2"
+gwm "$SD" main "SELECT pg_sleep(30) AS sd_end" > /tmp/ses-end.out 2>&1 & W3=$!
+for _ in $(seq 1 40); do [ -n "$(spid "$KEY" sd_end)" ] && break; sleep 0.25; done
+P3="$(spid "$KEY" sd_end)"
+PRE="$($S sessions end "$P3" 2>&1)"
+assert_eq "fox sessions lists it; ending it without --yes says what it ends and ends nothing" \
+  "$($S sessions | grep -c "^$P3 .*ses-dev@foxbyte.dev.*sd_end")|$(grep -c 'Run again with --yes' <<<"$PRE")|$(spid "$KEY" sd_end)" "1|1|$P3"
+assert_eq "…with --yes the session is ended: the client sees its connection closed" \
+  "$($S sessions end "$P3" --yes 2>&1 | grep -c "Ended session $P3")" "1"
+wait "$W3"
+assert_eq "…and was told by whom" "$(grep -cE 'terminating connection due to administrator command|server closed the connection' /tmp/ses-end.out)" "1"
+sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -c "SELECT pg_sleep(20) AS engine_own" >/dev/null 2>&1 & W4=$!
+for _ in $(seq 1 40); do [ -n "$(spid "$KEY" engine_own)" ] && break; sleep 0.25; done
+PE="$(spid "$KEY" engine_own)"
+assert_eq "FoxByte's own session is listed as its own and not ended from here" \
+  "$(as "$KEY" https://localhost:8080/api/branches/main/sessions | hjson "print([s['engine'] for s in d['sessions'] if 'engine_own' in s['query']])")|$(code "$KEY" -X POST "https://localhost:8080/api/branches/main/sessions/$PE/end")|$($S sessions end "$PE" --yes 2>&1 | grep -c "own, and is not ended from here")" "[True]|400|1"
+sudo docker exec pg-main psql -U dbadmin -d appdb -tAc "SELECT pg_cancel_backend($PE)" >/dev/null 2>&1; wait "$W4"
+assert_eq "a session that is not there is 404; a pid that is not a number, 400" \
+  "$(code "$KEY" -X POST https://localhost:8080/api/branches/main/sessions/999999/cancel)|$(code "$KEY" -X POST https://localhost:8080/api/branches/main/sessions/abc/cancel)" "404|400"
+assert_eq "every cancel and end is in the security log, under who did it" \
+  "$($S audit log --limit 300 | grep 'session.cancel' | grep -c 'ses-dev')|$($S audit log --limit 300 | grep 'session.end' | grep -c 'ses-dev')" "2|1"
+# Upkeep.
+MO="$($S maintain vacuum-analyze s_orders 2>&1)"
+assert_eq "fox maintain vacuums and analyses a table, and says what it found" \
+  "$(grep -c 'vacuum-analyze of public.s_orders on main done' <<<"$MO")|$($S maintain --table s_orders --json | hjson "t=d[0]; print(t['lastVacuum'] != '', t['lastAnalyze'] != '', t['vacuums'] >= 1, t['dead'])")" "1|True True True 0"
+assert_eq "…its list shows every table's upkeep, the engine's own left out" \
+  "$($S maintain | grep -c '^public.s_orders ')|$($S maintain --json | hjson "print(any(t['schema'] in ('bb', 'bb_mask') for t in d))")" "1|False"
+assert_eq "upkeep is read by anyone who may use the branch; run by its owner or an admin" \
+  "$(code "$SD" 'https://localhost:8080/api/branches/main/maintenance?table=s_orders')|$(code "$SD" -X POST -H 'Content-Type: application/json' -d '{"table":"s_orders","op":"analyze"}' https://localhost:8080/api/branches/main/maintenance)|$(as "$KEY" -X POST -H 'Content-Type: application/json' -d '{"table":"s_orders","op":"analyze"}' https://localhost:8080/api/branches/main/maintenance | hjson "print(d['op'], d['table']['table'], d['table']['lastAnalyze'] != '')")" \
+  "200|403|analyze s_orders True"
+assert_eq "VACUUM FULL is not offered; a table that is not there is 404" \
+  "$(code "$KEY" -X POST -H 'Content-Type: application/json' -d '{"table":"s_orders","op":"vacuum full"}' https://localhost:8080/api/branches/main/maintenance)|$(code "$KEY" -X POST -H 'Content-Type: application/json' -d '{"table":"no_such","op":"vacuum"}' https://localhost:8080/api/branches/main/maintenance)" "400|404"
+code "$SD" -X POST -H 'Content-Type: application/json' -d '{"name":"sesown","from":"main"}' https://localhost:8080/api/branches >/dev/null
+gwm "$SO" main "SELECT 1" >/dev/null
+assert_eq "on a branch it owns, the account runs upkeep and sees every session there" \
+  "$(code "$SD" -X POST -H 'Content-Type: application/json' -d '{"table":"s_orders","op":"vacuum"}' https://localhost:8080/api/branches/sesown/maintenance)|$(as "$SD" https://localhost:8080/api/branches/sesown/sessions | hjson "print(d['all'])")" "200|True"
+assert_eq "each upkeep run is in the security log" "$($S audit log --limit 300 | grep -cE '(vacuum|analyze|vacuum-analyze) of public.s_orders')" "3"
+$S branch delete sesown >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS s_orders CASCADE" >/dev/null
+for u in ses-dev ses-other; do $S user delete "$u@foxbyte.dev" >/dev/null 2>&1; done
+rm -f /tmp/ses-cancel.out /tmp/ses-own.out /tmp/ses-end.out
+
+echo "### 11ao. run, toggle and plan (point 12.4)"
+# The console's Run form, trigger switches and Explain are SQL the person
+# runs, so what is checked here is what the engine gives the form (each
+# argument of a function and a procedure) and that what the form writes runs
+# as written; the console's own behaviour is runplan.spec.ts.
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS r_items CASCADE; DROP FUNCTION IF EXISTS r_add(integer, integer), r_series(integer), r_none(), r_sum(VARIADIC integer[]); DROP PROCEDURE IF EXISTS r_bump(integer, integer, text)" >/dev/null
+pg pg-main "CREATE FUNCTION r_add(a integer, b integer DEFAULT 10) RETURNS integer LANGUAGE sql AS \$\$ SELECT a + b \$\$;
+  CREATE FUNCTION r_series(n integer) RETURNS TABLE(i integer, sq integer) LANGUAGE sql AS \$\$ SELECT g, g * g FROM generate_series(1, n) g \$\$;
+  CREATE FUNCTION r_none() RETURNS text LANGUAGE sql AS \$\$ SELECT 'none' \$\$;
+  CREATE FUNCTION r_sum(VARIADIC xs integer[]) RETURNS integer LANGUAGE sql AS \$\$ SELECT sum(x)::int FROM unnest(xs) x \$\$;
+  CREATE PROCEDURE r_bump(IN a integer, INOUT b integer, OUT note text) LANGUAGE plpgsql AS \$\$ BEGIN b := a + b; note := 'bumped'; END \$\$" >/dev/null
+rq() { curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST -d "$(python3 -c 'import json,sys; print(json.dumps({"sql": sys.argv[1]}))' "$1")" https://localhost:8080/api/branches/main/query; }
+# Made through the console as the admin, so its role owns the table, as a
+# person owns what they make: only an owner switches a table's triggers.
+rq 'CREATE TABLE r_items (id int PRIMARY KEY, v text);
+  CREATE FUNCTION r_upper() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.v := upper(NEW.v); RETURN NEW; END $$;
+  CREATE TRIGGER r_items_up BEFORE INSERT ON r_items FOR EACH ROW EXECUTE FUNCTION r_upper()' >/dev/null
+CAT="$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/schema)"
+roid() { hjson "print([o['oid'] for o in d['objects'] if o['name']=='$1' and o['kind']=='$2'][0])" <<<"$CAT"; }
+params() { curl -sk -H "$AUTH" "https://localhost:8080/api/branches/main/schema/$2/$(roid "$1" "$2")" | hjson "print([(p.get('name',''), p['type'], p['mode'], p.get('default', False)) for p in d.get('params', [])])"; }
+assert_eq "a function's arguments, each with its name, type, mode and whether it has a default" \
+  "$(params r_add function)" "[('a', 'integer', 'in', False), ('b', 'integer', 'in', True)]"
+assert_eq "…a set-returning one's TABLE columns, one without arguments, a variadic one" \
+  "$(params r_series function)|$(params r_none function)|$(params r_sum function)" \
+  "[('n', 'integer', 'in', False), ('i', 'integer', 'table', False), ('sq', 'integer', 'table', False)]|[]|[('xs', 'integer[]', 'variadic', False)]"
+assert_eq "…and a procedure's IN, INOUT and OUT" \
+  "$(params r_bump procedure)" "[('a', 'integer', 'in', False), ('b', 'integer', 'inout', False), ('note', 'text', 'out', False)]"
+rows() { python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("results",[d])[-1]; print(r.get("error") or ";".join(",".join(str(c) for c in row) for row in r.get("rows") or []))'; }
+assert_eq "what the Run form writes runs: named, a default left out, a NULL of its type" \
+  "$(rq "SELECT * FROM \"public\".\"r_add\"(\"a\" => CAST('5' AS integer))" | rows)|$(rq "SELECT * FROM \"public\".\"r_add\"(\"a\" => CAST('5' AS integer), \"b\" => NULL::integer)" | rows)" "15|None"
+assert_eq "…a set-returning function's rows, a variadic one, and a procedure's INOUT and OUT values" \
+  "$(rq "SELECT * FROM \"public\".\"r_series\"(\"n\" => CAST('3' AS integer))" | rows)|$(rq "SELECT * FROM \"public\".\"r_sum\"(VARIADIC \"xs\" => CAST('{1,2,3}' AS integer[]))" | rows)|$(rq "CALL \"public\".\"r_bump\"(\"a\" => CAST('2' AS integer), \"b\" => CAST('3' AS integer), \"note\" => NULL)" | rows)" \
+  "1,1;2,4;3,9|6|5,bumped"
+# A trigger switched off and on, as the Triggers tab does.
+toid="$(roid r_items table)"
+trg() { curl -sk -H "$AUTH" "https://localhost:8080/api/branches/main/schema/table/$toid" | hjson "print([(t['name'], t.get('disabled', False), t.get('system', False)) for t in d.get('triggers', []) if not t.get('system')])"; }
+rq 'ALTER TABLE "public"."r_items" DISABLE TRIGGER "r_items_up"' >/dev/null
+assert_eq "a trigger disabled as the Triggers tab disables it: the catalog says so, and it no longer fires" \
+  "$(trg)|$(rq "INSERT INTO r_items VALUES (1, 'quiet'); SELECT v FROM r_items WHERE id = 1" | rows)" "[('r_items_up', True, False)]|quiet"
+rq 'ALTER TABLE "public"."r_items" ENABLE TRIGGER "r_items_up"' >/dev/null
+assert_eq "…enabled again, it fires; both changes are in the Blackbox" \
+  "$(trg)|$(rq "INSERT INTO r_items VALUES (2, 'loud'); SELECT v FROM r_items WHERE id = 2" | rows)|$(pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE statement ~ 'r_items.*(DISABLE|ENABLE) TRIGGER'")" "[('r_items_up', False, False)]|LOUD|2"
+$S track r_items >/dev/null 2>&1
+assert_eq "FoxByte's own trigger on a tracked table is marked its own, which the tab does not switch" \
+  "$(curl -sk -H "$AUTH" "https://localhost:8080/api/branches/main/schema/table/$toid" | hjson "print(any(t.get('system') for t in d.get('triggers', [])), [t['name'] for t in d.get('triggers', []) if not t.get('system')])")" "True ['r_items_up']"
+$S track r_items --off >/dev/null 2>&1
+# Explain, as the console sends it.
+EX="$(rq 'EXPLAIN (FORMAT JSON) SELECT * FROM r_items WHERE id = 1')"
+assert_eq "a jsonb array of objects comes back as JSON whole, not each object as text of its own" \
+  "$(rq "SELECT '[{\"a\": 1}, {\"b\": [2]}]'::jsonb AS j" | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("results",[d])[-1]; print(json.loads(r["rows"][0][0]))')" "[{'a': 1}, {'b': [2]}]"
+assert_eq "Explain returns the plan as JSON, which the console reads into a table" \
+  "$(python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("results",[d])[-1]; v=r["rows"][0][0]; doc=json.loads(v) if isinstance(v, str) else v; p=doc[0]["Plan"]; print(r["columns"], p["Node Type"] in ("Index Scan", "Seq Scan", "Bitmap Heap Scan"), p.get("Relation Name"))' <<<"$EX")" "['QUERY PLAN'] True r_items"
+EXA="$(rq "BEGIN;
+EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) DELETE FROM r_items;
+ROLLBACK;")"
+assert_eq "…with Analyse it runs, measured, inside a transaction rolled back: nothing deleted" \
+  "$(python3 -c 'import json,sys; d=json.load(sys.stdin); r=[x for x in d["results"] if x.get("columns")==["QUERY PLAN"]][0]; v=r["rows"][0][0]; doc=json.loads(v) if isinstance(v, str) else v; p=doc[0]; print(p["Plan"]["Node Type"], p["Plan"]["Actual Rows"], "Execution Time" in p)' <<<"$EXA")|$(pg pg-main "SELECT count(*) FROM r_items")" "ModifyTable 0 True|2"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS r_items CASCADE; DROP FUNCTION IF EXISTS r_add(integer, integer), r_series(integer), r_none(), r_sum(VARIADIC integer[]), r_upper(); DROP PROCEDURE IF EXISTS r_bump(integer, integer, text)" >/dev/null
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

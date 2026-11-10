@@ -49,7 +49,7 @@ test('a table is marked for the audit log from the console, listed on the Audit 
   await expect(page.getByTestId('audit-mark')).toContainText('the audit log is off')
 
   await page.getByRole('link', { name: 'Audit log' }).click()
-  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByLabel('Branch', { exact: true }).selectOption(branch)
   const marked = page.getByRole('table', { name: `Marked tables on ${branch}` })
   const row = marked.locator('tr', { hasText: `public.${t}` })
   await expect(row).toContainText('writes and reads', { timeout: 30_000 })
@@ -125,7 +125,7 @@ test('a SECURITY DEFINER function naming a marked table is named as not audited'
   await expect(page.getByTestId('audit-mark')).toContainText('Audited: writes', { timeout: 30_000 })
 
   await page.getByRole('link', { name: 'Audit log' }).click()
-  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByLabel('Branch', { exact: true }).selectOption(branch)
   const definers = page.getByTestId('audit-definers')
   await expect(definers).toContainText(`${t}_add(integer)`, { timeout: 30_000 })
   await expect(definers).toContainText(`public.${t}`)

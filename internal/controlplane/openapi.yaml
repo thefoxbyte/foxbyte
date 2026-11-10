@@ -430,6 +430,7 @@ paths:
         unchanged, commit_lsn, xid, lsn), begin and commit when transactions=1, resync or error. Values are Postgres text as JSON strings,
         never numbers, so bigint and numeric survive. Resume with ?since=<commit_lsn>.
         Accepts an API key scoped to this branch, which no other /api route does.
+        Refused (403) to a masked account on a branch with masks: the feed carries real values.
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
         - name: since
@@ -483,7 +484,9 @@ paths:
               properties:
                 name: { type: string, example: qa }
                 from: { type: string, example: main, description: "The branch to copy (default main)." }
+                masked: { type: boolean, description: "A masked branch (Enterprise, masking step 5): its marked columns hold their masks. Answered 202 and made in the background; closed (423) until it is masked and verified. GET /api/masking/branches says how far it got." }
       responses:
+        "202": { description: 'A masked branch is being made: {"name", "from", "status": "masking"}.', content: { application/json: { schema: { type: object } } } }
         "201":
           description: Created.
           content:
@@ -664,7 +667,10 @@ paths:
       description: >-
         Columns, constraints, indexes and triggers for a table (FoxByte's own
         triggers marked system and left out of the script); a view's definition;
-        a function's arguments, result and language; a sequence's range; a
+        a function's arguments, result and language, and for a function or a
+        procedure params, each argument's name, type, mode (in, out, inout,
+        variadic, table) and whether it has a default, for the console's Run
+        form (point 12.4); a sequence's range; a
         type's values or fields; what an extension installed. ddl is what it
         would take to make the object again, without grants or ownership. An
         object the caller's list does not hold answers 404.
@@ -746,6 +752,70 @@ paths:
         "409": { description: A row was changed or deleted since it was loaded; nothing saved. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/sessions:
+    get:
+      tags: [branches]
+      summary: The client sessions on a branch, and what each is running (point 12.5).
+      description: >-
+        The branch's owner and an admin see every client session; anyone else who may use the branch sees
+        their own and their agent keys' (all is false), since another account's statement can hold values
+        that are not theirs. Each has its process id, login role, application, state, what it waits on and
+        who blocks it, when it began, its current or last statement (at most 4,000 characters), and whether
+        it is FoxByte's own.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200": { description: '{"branch", "all", "sessions": [{"pid", "user", "app", "state", "wait", "started", "since", "xact", "query", "blockedBy", "engine"}]}', content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/branches/{name}/sessions/{pid}/cancel:
+    post:
+      tags: [branches]
+      summary: Cancel a session's running query; the session stays (point 12.5).
+      description: The owner or an admin may cancel any client session's; anyone else their own. FoxByte's own sessions are refused. Recorded in the security log.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }, { name: pid, in: path, required: true, schema: { type: integer } }]
+      responses:
+        "200": { description: '{"branch", "pid", "user", "ended": false}', content: { application/json: { schema: { type: object } } } }
+        "404": { description: No such session, or none of the caller's. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/branches/{name}/sessions/{pid}/end:
+    post:
+      tags: [branches]
+      summary: End a session, rolling back what it had open (point 12.5).
+      description: As cancel, but the session is closed. Recorded in the security log.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }, { name: pid, in: path, required: true, schema: { type: integer } }]
+      responses:
+        "200": { description: '{"branch", "pid", "user", "ended": true}', content: { application/json: { schema: { type: object } } } }
+        "404": { description: No such session, or none of the caller's. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/branches/{name}/maintenance:
+    get:
+      tags: [branches]
+      summary: Each table's upkeep, or one table's (point 12.5).
+      description: Estimated live and dead rows, size, and when each was last vacuumed and analysed, by hand and by autovacuum. FoxByte's own tables are left out.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: schema, in: query, schema: { type: string, default: public } }
+        - { name: table, in: query, schema: { type: string } }
+      responses:
+        "200": { description: '{"branch", "tables": [{"schema", "table", "live", "dead", "bytes", "lastVacuum", "lastAutoVacuum", "lastAnalyze", "lastAutoAnalyze", "vacuums", "analyzes"}]}', content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [branches]
+      summary: Vacuum or analyse a table (the branch's owner or an admin; point 12.5).
+      description: >-
+        op is vacuum, analyze or vacuum-analyze; VACUUM FULL is not offered, as it locks the table for as long
+        as it takes. Run as the engine; neither reads nor changes what the table holds. Recorded in the
+        security log.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { schema: { type: string, default: public }, table: { type: string }, op: { type: string, enum: [vacuum, analyze, vacuum-analyze] } }, required: [table, op] }
+      responses:
+        "200": { description: '{"branch", "op", "ms", "table": {…}}', content: { application/json: { schema: { type: object } } } }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such table. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/branches/{name}/tracking:
     get:
       tags: [branches]
@@ -1010,6 +1080,7 @@ paths:
     get:
       tags: [ledger]
       summary: The branch's Blackbox history (filterable).
+      description: A masked account reads the entries with each statement's text hidden, as it can hold real values.
       parameters:
         - { $ref: "#/components/parameters/BranchName" }
         - { name: actor, in: query, schema: { type: string } }
@@ -1104,7 +1175,7 @@ paths:
     get:
       tags: [ledger]
       summary: Every Blackbox entry with its capture columns, one JSON document per line.
-      description: The input fox-verify checks offline with --export.
+      description: The input fox-verify checks offline with --export. Refused (403) to a masked account, as every row carries its statement.
       parameters: [{ $ref: "#/components/parameters/BranchName" }]
       responses:
         "200":
@@ -2121,6 +2192,290 @@ paths:
         "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/hardening:
+    get:
+      tags: [audit-log]
+      summary: How a branch's PostgreSQL, and the install, stand against FoxByte's hardening checks (admins only).
+      description: >-
+        FoxByte's own checks, written from PostgreSQL's documentation; not the CIS Benchmark. Each check is basic or
+        strict, and ends pass, fail, manual (a person judges, from the evidence) or n/a, with why it matters and, when it
+        does not pass, the fix. The branch must be running: it is not woken. Each report is in the security log.
+      parameters:
+        - { name: branch, in: query, schema: { type: string, default: main } }
+      responses:
+        "200":
+          description: The report.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branch: { type: string }
+                  generated: { type: string, format: date-time }
+                  postgres: { type: string }
+                  basis: { type: string }
+                  summary: { type: object, additionalProperties: { type: integer } }
+                  checks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        section: { type: string }
+                        level: { type: string, enum: [basic, strict] }
+                        title: { type: string }
+                        status: { type: string, enum: [pass, fail, manual, n/a] }
+                        evidence: { type: string }
+                        why: { type: string }
+                        fix: { type: string }
+                  limits: { type: array, items: { type: string } }
+        "400": { description: Not a branch name, or the branch is not running. }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/hardening/fix:
+    post:
+      tags: [audit-log]
+      summary: Fix one failing hardening check, after a preview (admins only; Enterprise).
+      description: >-
+        Without apply, what the fix will change and run. With apply, it is made from a plan made again now, the check
+        is run again, and the result says if something still overrides it. Only fixes safe to make without more than a
+        yes are offered (settings with ALTER SYSTEM and a reload, a grant, a role attribute, the data directory's
+        mode); the rest are for a person, and say how. Each fix is in the security log.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { branch: { type: string, default: main }, check: { type: string }, apply: { type: boolean } } }
+      responses:
+        "200": { description: '{"fix": …} for a preview, {"result": {fix, before, after, error}} for a fix.', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No such check or branch, or nothing to fix (it passes, or its fix is a person's). }
+        "403": { description: Not an admin, or not licensed for hardening fixes and profiles. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/hardening/profile:
+    post:
+      tags: [audit-log]
+      summary: Apply a hardening profile, baseline or strict, after a preview (admins only; Enterprise).
+      description: >-
+        baseline fixes the basic checks that fail and have a safe fix; strict the strict ones too. The preview lists
+        each fix and the failing checks left to a person. Applied, each fix is made and checked again, one failing
+        does not stop the others, and the profile is recorded against the branch, which the report then shows.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { branch: { type: string, default: main }, profile: { type: string, enum: [baseline, strict] }, apply: { type: boolean } } }
+      responses:
+        "200": { description: '{"fixes", "manual"} for a preview, {"results"} once applied.', content: { application/json: { schema: { type: object } } } }
+        "400": { description: Not a profile, or not a branch. }
+        "403": { description: Not an admin, or not licensed for hardening fixes and profiles. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking:
+    get:
+      tags: [audit-log]
+      summary: Where masking stands on the install and a branch (admins only; in every edition).
+      description: >-
+        Whether masking is set up, the databases started before it was (which mask nothing until they start
+        again), a branch's rules and the tables whose masks are made, and the accounts masked. A masked account
+        reads the masks of marked tables, ordinary tables as they are, and cannot write to marked tables, on
+        every branch, its own included; its agent keys read the same. Admins are never masked. Also listed:
+        closed, what the guard took from masked accounts (views reading a masked column, tables with a foreign
+        key into one), and definers, the SECURITY DEFINER functions a masked account may run that can return
+        real values.
+      parameters:
+        - { name: branch, in: query, schema: { type: string, default: main } }
+      responses:
+        "200":
+          description: The status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  on: { type: boolean }
+                  pending: { type: array, items: { type: string } }
+                  branch: { type: string }
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        schema: { type: string }
+                        table: { type: string }
+                        column: { type: string }
+                        path: { type: string }
+                        rule: { type: string, enum: [partial, hash, fake, empty] }
+                        category: { type: string }
+                        by: { type: string }
+                        at: { type: string }
+                  ready: { type: array, items: { type: string } }
+                  accounts: { type: array, items: { type: object, properties: { email: { type: string }, by: { type: string }, at: { type: string } } } }
+                  writes: { type: boolean, description: Whether this install may set masking (Enterprise). }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/setup:
+    post:
+      tags: [audit-log]
+      summary: Set masking up on a branch, after a preview (admins only; Enterprise).
+      description: >-
+        Without apply, whether the branch restarts to mount the key. With apply, the install's key is made if it
+        has none (32 random bytes, readable only by the database server, never read back), the branch restarts if
+        it must, and the masked readers' role, schema and rights are made. In the security log.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { branch: { type: string, default: main }, apply: { type: boolean } } }
+      responses:
+        "200": { description: '{"branch", "restart", "keyDir"} for a preview, {"branch", "restarted"} once done.', content: { application/json: { schema: { type: object } } } }
+        "403": { description: Not an admin, or not licensed for masking. }
+        "409": { description: Main is served by the promoted HA standby. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/rule:
+    post:
+      tags: [audit-log]
+      summary: Mask a confirmed finding, after saying what it costs, or take a rule off (admins only; Enterprise).
+      description: >-
+        A rule is set only where a reviewer confirmed personal data. Without a rule, the category's default
+        (partial for Aadhaar, PAN, cards and mobiles; hash for email; fake for names; else empty). Aadhaar is never
+        hashed or faked. Without apply, the cost; with apply, the rule is set and the table's masks made. off takes
+        it off. In the security log.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                branch: { type: string, default: main }
+                schema: { type: string, default: public }
+                table: { type: string }
+                column: { type: string }
+                path: { type: string, description: 'A JSON path in a jsonb column, as $.a.b.' }
+                rule: { type: string, enum: [partial, hash, fake, empty] }
+                off: { type: boolean }
+                apply: { type: boolean }
+      responses:
+        "200": { description: '{"where", "cost"} for a preview, {"set"} or {"off"} once done.', content: { application/json: { schema: { type: object } } } }
+        "400": { description: Not a confirmed finding, a rule the category may not have, or a table that cannot be masked (no one-column primary key, the key itself, an array path). }
+        "403": { description: Not an admin, or not licensed for masking. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/account:
+    post:
+      tags: [audit-log]
+      summary: Mask an account on every branch it does not own, or unmask it (admins only; Enterprise).
+      description: >-
+        Admins are refused: they can change the masks. The account's open sessions on running branches end, so its
+        next one sees the change. In the security log.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string }, off: { type: boolean } } }
+      responses:
+        "200": { description: '{"email", "masked"}', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No email, or an admin. }
+        "403": { description: Not an admin, or not licensed for masking. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/unmask:
+    post:
+      tags: [audit-log]
+      summary: Give a masked account unmask on a branch, or take it (admins only; Enterprise).
+      description: >-
+        There the account sees real values, as the branch's owner does, and every read it makes of a marked table
+        is audited: its role's pgaudit.role becomes bb_audit_read, which only a superuser can change. Its reads are
+        logged while the audit log is on. Only a masked account is given it. Its open sessions on the branch end.
+        Listed in the access review, and in the security log.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string }, branch: { type: string }, off: { type: boolean } } }
+      responses:
+        "200": { description: '{"email", "branch", "unmasked", "auditOn"}', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No email or branch, a branch that is not there, or an account that is not masked. }
+        "403": { description: Not an admin, or not licensed for masking. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/lookups:
+    get:
+      tags: [audit-log]
+      summary: Who looked a person up on a branch, when, by which column and how many rows were found (admins only).
+      description: >-
+        A masked account looks a person up by an exact value with bb_mask.find(table, column, value), which returns
+        the rows masked, 30 a minute for each account. Each call is recorded here; the value never is.
+      parameters:
+        - { name: branch, in: query, schema: { type: string, default: main } }
+      responses:
+        "200": { description: '{"branch", "lookups": [{"at", "who", "table", "column", "found"}]}', content: { application/json: { schema: { type: object } } } }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/branches:
+    get:
+      tags: [audit-log]
+      summary: The masked branches the caller may reach, how far each one's making got, and what verifying found.
+      description: >-
+        A masked branch (POST /api/branches with masked, or fox branch create --masked) is closed until it is masked
+        and verified: no real value left in its tables, statistics, WAL or Blackbox, and the personal-data scan
+        finding no masked category, nor anything confirmed, where no rule masked it. Problems name tables and
+        columns, never a value.
+      responses:
+        "200": { description: '[{"name", "from", "by", "started", "finished", "state": "making|open|failed", "step", "error", "problems", "fork", "tables", "rows", "inherited"}]', content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/keys:
+    get:
+      tags: [audit-log]
+      summary: The install's masking key domains, and the tables using each on the running branches (admins only).
+      description: >-
+        About the keys, never a key. Each domain's key number (one more at each rotation), when it was made and
+        rotated and by whom, whether a rotation was cut short, the tables under it on running branches, those whose
+        masks were made under an older key, and the branches not running, which could not be read.
+      responses:
+        "200":
+          description: Where the keys stand.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        domain: { type: string }
+                        gen: { type: integer }
+                        made: { type: string }
+                        by: { type: string }
+                        rotated: { type: string }
+                        rotatedBy: { type: string }
+                        next: { type: boolean, description: A rotation was cut short; rotating again finishes it. }
+                        tables: { type: array, items: { type: object } }
+                        stale: { type: array, items: { type: object } }
+                  stopped: { type: array, items: { type: string } }
+                  writes: { type: boolean }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/masking/key:
+    post:
+      tags: [audit-log]
+      summary: Make, rotate or delete a key domain, or put a table under one, after a preview (admins only; Enterprise).
+      description: >-
+        create makes a domain with a key of its own; tables in different domains hash apart. rotate makes a new key
+        and writes every hashed or faked mask under the old one again, a batch at a time, masked readers reading the
+        old masks until each table is done; the old key is then deleted, with no undo. drop deletes a domain no
+        table uses, and is refused while a branch stopped since it was made, whose tables cannot be read. use puts a table's masks on a branch under a domain.
+        Without apply, what it does (with rotate, the cost); with apply, it is done. In the security log.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action: { type: string, enum: [create, rotate, drop, use] }
+                domain: { type: string, description: 'A lowercase letter, then up to 23 of a-z, 0-9 and _.' }
+                branch: { type: string, default: main }
+                schema: { type: string, default: public }
+                table: { type: string }
+                apply: { type: boolean }
+      responses:
+        "200": { description: 'A preview (rotate gives {"domain", "cost"}), or once done {"made"}, {"rotated", "done"}, {"deleted"} or {"table", "domain"}.', content: { application/json: { schema: { type: object } } } }
+        "400": { description: A domain name that is not allowed, a domain the install has not got, or no table. }
+        "403": { description: Not an admin, or not licensed for masking. }
+        "409": { description: The domain is used by a table, or a branch stopped since it was made. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /api/audit-log/evidence:
     get:
       tags: [audit-log]

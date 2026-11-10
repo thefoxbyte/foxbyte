@@ -11,14 +11,18 @@ import { CatalogGroups, ObjectView, TableParts } from '../components/ObjectBrows
 import { EditGrid, FilterBar, type ColInfo } from '../components/DataGrid'
 import { TrackingControl, trackedOf } from '../components/Tracking'
 import { AuditControl } from '../components/AuditMark'
+import TableUpkeep from '../components/TableUpkeep'
+import PlanView from '../components/PlanView'
+import { explainSQL, parsePlan, type Plan } from '../plan'
 import { countQuery, nextSort, rowsQuery, summary, type Filter, type Sort } from '../gridquery'
 import { applySuggestion, schemaFrom, snippets, SCHEMA_SQL, type Rel } from '../sqlcomplete'
 
 type DbObject = { schema: string; name: string; type: 'table' | 'view' }
-type Tab = 'rows' | 'structure' | 'indexes' | 'constraints' | 'triggers' | 'ddl'
-// Tabs the catalog fills (point 12.1), rather than a query of the console's own.
-const CATALOG_TABS: Tab[] = ['constraints', 'triggers', 'ddl']
-const TAB_LABEL: Record<Tab, string> = { rows: 'Rows', structure: 'Structure', indexes: 'Indexes', constraints: 'Constraints', triggers: 'Triggers', ddl: 'CREATE script' }
+type Tab = 'rows' | 'structure' | 'indexes' | 'constraints' | 'triggers' | 'ddl' | 'upkeep'
+// Tabs the catalog fills (point 12.1), rather than a query of the console's own,
+// and the table's upkeep (12.5), which has a component of its own.
+const CATALOG_TABS: Tab[] = ['constraints', 'triggers', 'ddl', 'upkeep']
+const TAB_LABEL: Record<Tab, string> = { rows: 'Rows', structure: 'Structure', indexes: 'Indexes', constraints: 'Constraints', triggers: 'Triggers', ddl: 'CREATE script', upkeep: 'Upkeep' }
 
 const PAGE = 100
 const HISTORY_KEY = 'fox.history.open'
@@ -91,6 +95,9 @@ export default function Console() {
   const [browseRes, setBrowseRes] = useState<QueryResult | null>(null)
   const [sql, setSql] = useState('SELECT version();')
   const [queryRes, setQueryRes] = useState<QueryResult | null>(null)
+  // An EXPLAIN's plan (point 12.4), shown in place of a result.
+  const [plan, setPlan] = useState<{ plan: Plan; raw: string } | null>(null)
+  const [analyse, setAnalyse] = useState(false)
   const [ranSql, setRanSql] = useState('')
   // The history panel (point 8.2): open or shut, remembered in this browser,
   // and a count of runs so it can show each new one.
@@ -310,7 +317,7 @@ export default function Console() {
     const b = on ?? branch
     if (text !== undefined) setSql(text)
     if (b !== branch) setBranch(b)
-    setBusy(true); setQueryRes(null); setMode('query')
+    setBusy(true); setQueryRes(null); setPlan(null); setMode('query')
     // The SQL this run is labelled against. The editor is read-only while a
     // query is in flight, so it should not be able to change underneath — this
     // is the belt to that pair of braces, and it costs one assignment.
@@ -324,6 +331,35 @@ export default function Console() {
       setQueryRes({ error: (e as Error).message })
     } finally {
       setBusy(false); setAllowDestructive(false); setHistoryTick(t => t + 1)
+    }
+  }
+
+  // Explain (point 12.4): the selected statement, or the editor's only one, as
+  // a plan. With Analyse it runs, inside a transaction that is rolled back.
+  const explain = async () => {
+    const ta = editorRef.current
+    const picked = ta && ta.selectionEnd > ta.selectionStart ? sql.slice(ta.selectionStart, ta.selectionEnd) : sql
+    const e = explainSQL(picked, analyse)
+    setPlan(null); setMode('query')
+    if (!e.sql) { setQueryRes({ error: e.error }); return }
+    setBusy(true); setQueryRes(null); setRanSql(picked); setRanBranch(branch)
+    try {
+      const r = await runQuery(branch, e.sql, { history: false })
+      const all = r.results ?? [r]
+      const bad = all.find(x => x.error)
+      const got = all.find(x => x.columns?.[0] === 'QUERY PLAN' && x.rows?.length)
+      if (bad || !got) { setQueryRes(bad ?? { error: 'Postgres gave no plan' }); return }
+      // The plan is JSON text: an array of one plan, which an older engine
+      // sent with the plan inside as text of its own.
+      const v = got.rows![0][0]
+      let doc: unknown = typeof v === 'string' ? JSON.parse(v) : v
+      if (Array.isArray(doc) && typeof doc[0] === 'string') doc = [JSON.parse(doc[0])]
+      const raw = JSON.stringify(doc, null, 2)
+      setPlan({ plan: parsePlan(raw), raw })
+    } catch (err) {
+      setQueryRes({ error: (err as Error).message })
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -418,6 +454,11 @@ export default function Console() {
         <button className={'primary' + (allowDestructive ? ' danger' : '')} onClick={() => runSql()} disabled={busy}>
           {busy ? 'Running…' : 'Run'} <span className="kbd">⌘↵</span>
         </button>
+        <button className="ghost" onClick={explain} disabled={busy}
+          title="The plan of the selected statement, or of the editor's only one">Explain</button>
+        <label className="field-inline" title="Runs the statement to measure it, inside a transaction that is then rolled back">
+          <input type="checkbox" aria-label="Analyse" checked={analyse} onChange={e => setAnalyse(e.target.checked)} /> <span>Analyse</span>
+        </label>
         <label className={'override-toggle' + (allowDestructive ? ' on' : '')}
           title={admins && !canOverride
             ? `Only admins of ${branch} can override the guardrail`
@@ -541,7 +582,9 @@ export default function Console() {
               {expand !== 'editor' && (
               <section className="wb-pane wb-res">
                 {fixNote && <div className="err-hint wb-note" role="status">{fixNote}</div>}
-                {queryRes
+                {plan
+                  ? <PlanView plan={plan.plan} raw={plan.raw} />
+                  : queryRes
                   ? <QueryOutput res={queryRes} sql={ranSql} branch={ranBranch} onFix={fix}
                       expanded={expand === 'results'}
                       onExpand={() => setExpand(x => (x === 'results' ? 'none' : 'results'))} />
@@ -575,7 +618,7 @@ export default function Console() {
               )}
             </>
           ) : mode === 'object' && objSel ? (
-            <ObjectView branch={branch} obj={objSel} onOpenSql={openSql} />
+            <ObjectView branch={branch} obj={objSel} onOpenSql={openSql} onRunSql={text => runSql({}, text)} />
           ) : sel && (
             <section className="wb-pane wb-res">
               <div className="obj-view-head">
@@ -597,7 +640,7 @@ export default function Console() {
                   }} />
               </div>
               <div className="db-tabs">
-                {((sel.type === 'view' ? ['rows', 'structure', 'ddl'] : ['rows', 'structure', 'indexes', 'constraints', 'triggers', 'ddl']) as Tab[]).map(t => (
+                {((sel.type === 'view' ? ['rows', 'structure', 'ddl'] : ['rows', 'structure', 'indexes', 'constraints', 'triggers', 'ddl', 'upkeep']) as Tab[]).map(t => (
                   <button key={t} className={tab === t ? 'active' : ''} onClick={() => switchTab(t)}>
                     {TAB_LABEL[t]}
                   </button>
@@ -618,7 +661,9 @@ export default function Console() {
                   )}
                 </div>
               )}
-              {CATALOG_TABS.includes(tab)
+              {tab === 'upkeep'
+                ? <TableUpkeep branch={branch} schema={sel.schema} table={sel.name} />
+                : CATALOG_TABS.includes(tab)
                 ? <TableParts branch={branch} tab={tab as 'constraints' | 'triggers' | 'ddl'} onOpenSql={openSql}
                     obj={catalog.find(o => (o.kind === 'table' || o.kind === 'view') && o.schema === sel.schema && o.name === sel.name) ?? null} />
                 : tab === 'rows' && editing && browseRes && !browseRes.error

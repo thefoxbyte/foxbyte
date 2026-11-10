@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
@@ -126,6 +127,13 @@ func registerLedgerV2(mux *http.ServeMux) {
 			return
 		}
 		name := r.PathValue("name")
+		// Every row with its statement, as the anchors hashed it: a blanked
+		// one would not verify, so a masked account is refused the export
+		// and reads the entries instead (step 4).
+		if u, _ := auth.UserFrom(r.Context()); branch.AccountMaskedOn(name, u.Email) {
+			writeErr(w, 403, fmt.Errorf("%s is masked, and the export carries every statement's text, which can hold real values: the Blackbox's entries are readable without it", u.Email))
+			return
+		}
 		if _, err := branch.EnsureRunning(name); err != nil {
 			writeErr(w, 404, err)
 			return

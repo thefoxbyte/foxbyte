@@ -4,6 +4,7 @@ package branch
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 )
@@ -47,6 +48,9 @@ const (
 type engineLogin struct {
 	role, password string
 	mode           engineLoginMode
+	// refused: a masked account's agent, which may log in only as its own
+	// masked role, never as a shared one that reads real values (step 4).
+	refused error
 }
 
 // engineAgentLogin picks the login for an engine agent session on a branch,
@@ -65,20 +69,37 @@ func engineAgentLogin(branchName, account string) engineLogin {
 		}
 		return engineLogin{role: role, password: pw, mode: mode}
 	}
+	// A masked branch not yet open is the engine's alone.
+	if err := checkBranchOpen(branchName); err != nil {
+		return engineLogin{mode: loginClaimed, refused: err}
+	}
+	email := strings.TrimPrefix(account, agentKeyRolePrefix)
+	masked := strings.Contains(email, "@") && IsMaskedAccount(email)
+	refuse := func(why string) engineLogin {
+		return engineLogin{mode: loginClaimed, refused: fmt.Errorf("%w: %s is masked, and %s", ErrInvalidRequest, email, why)}
+	}
 	// An agent's own branch: its own role, made with the branch.
 	if strings.HasPrefix(branchName, "agent-") {
+		if masked && accountMasked(branchName, email) {
+			// The branch's role is no masked reader's: a masked account's
+			// agents belong on a masked branch (design, sections 10 and 12).
+			return refuse("an agent branch's own role reads real values: its agents may use main or a branch where it holds unmask")
+		}
 		if err := ensureAgentRoles(branchName); err != nil {
 			return shared(loginLegacy)
 		}
 		return engineLogin{role: branchName, password: AgentRolePassword(branchName), mode: loginOwn}
 	}
-	email := strings.TrimPrefix(account, agentKeyRolePrefix)
 	if !strings.Contains(email, "@") {
 		return shared(loginLegacy)
 	}
 	switch err := EnsureAgentKeyRole(branchName, email); {
 	case err == nil:
 		return engineLogin{role: AgentKeyRole(email), password: AgentKeyRolePassword(email), mode: loginOwn}
+	case masked:
+		// Never the shared role, which reads real values.
+		log.Printf("agent role for masked %s on %q: %v (refused)", email, branchName, err)
+		return refuse(fmt.Sprintf("its agent role on %s could not be made: %v", branchName, err))
 	case errors.Is(err, ErrAgentRolesNeedUpgrade):
 		return shared(loginLegacy)
 	default:

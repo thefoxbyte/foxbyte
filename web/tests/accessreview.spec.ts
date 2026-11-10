@@ -33,7 +33,8 @@ test('the access review lists accounts, keys and branches, follows a new window,
   const branches = page.getByRole('table', { name: 'Branches' })
   await expect(branches.locator('tr', { has: page.getByText(branch, { exact: true }) })).toContainText(email)
   await expect(page.getByRole('heading', { name: 'What this report cannot claim' })).toBeVisible()
-  await expect(page.getByText(/No masking is in place yet/)).toBeVisible()
+  // Masking is set up on e2emask before Chromium starts (integration_ui.sh).
+  await expect(page.getByText(/Sees unmasked is from masking/)).toBeVisible()
 
   await page.getByLabel('Dormant after (days)').fill('30')
   await page.getByRole('button', { name: 'Produce report' }).click()

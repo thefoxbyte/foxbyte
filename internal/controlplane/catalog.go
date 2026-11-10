@@ -4,6 +4,7 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -67,6 +68,20 @@ type ObjectDetail struct {
 	Values      []string        `json:"values,omitempty"` // an enum's labels
 	DDL         string          `json:"ddl"`
 	Members     []CatalogMember `json:"members,omitempty"` // what an extension installed
+	// Params are a function's or a procedure's arguments, in order, for a
+	// form that calls it (point 12.4).
+	Params []FuncParam `json:"params,omitempty"`
+}
+
+// FuncParam is one argument of a function or a procedure.
+type FuncParam struct {
+	Name string `json:"name,omitempty"` // "" when it has none
+	Type string `json:"type"`
+	// Mode is in, out, inout, variadic or table (a RETURNS TABLE column).
+	Mode string `json:"mode"`
+	// Default: an input that may be left out, taking the default it was
+	// declared with.
+	Default bool `json:"default,omitempty"`
 }
 
 // CatalogCol is a column of a table, a view or a composite type.
@@ -565,7 +580,53 @@ func readFunction(ctx context.Context, tx pgx.Tx, d *ObjectDetail) error {
 	}
 	d.Facts = append(d.Facts, [2]string{"language", lang})
 	d.DDL = strings.TrimRight(def, "\n") + ";\n"
+	return readParams(ctx, tx, d)
+}
+
+// paramsSQL reads a function's arguments: every one, with its mode and name,
+// and how many inputs at the end have defaults.
+const paramsSQL = `SELECT coalesce(json_agg(json_build_object('name', coalesce(a.n, ''), 'type', format_type(a.t, NULL), 'mode', a.m) ORDER BY a.o)
+         FILTER (WHERE a.o IS NOT NULL), '[]'::json),
+       p.pronargdefaults
+  FROM pg_proc p
+  LEFT JOIN LATERAL unnest(coalesce(p.proallargtypes, p.proargtypes::oid[]),
+                          coalesce(p.proargmodes, array_fill('i'::"char", ARRAY[cardinality(p.proargtypes::oid[])])),
+                          coalesce(p.proargnames, array_fill(''::text, ARRAY[cardinality(coalesce(p.proallargtypes, p.proargtypes::oid[]))])))
+         WITH ORDINALITY AS a(t, m, n, o) ON true
+ WHERE p.oid = $1::oid
+ GROUP BY p.pronargdefaults`
+
+func readParams(ctx context.Context, tx pgx.Tx, d *ObjectDetail) error {
+	var raw []byte
+	var defaults int
+	if err := tx.QueryRow(ctx, paramsSQL, d.OID).Scan(&raw, &defaults); err != nil {
+		return err
+	}
+	var ps []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal(raw, &ps); err != nil {
+		return err
+	}
+	modes := map[string]string{"i": "in", "o": "out", "b": "inout", "v": "variadic", "t": "table"}
+	for _, p := range ps {
+		d.Params = append(d.Params, FuncParam{Name: p.Name, Type: p.Type, Mode: modes[p.Mode]})
+	}
+	markDefaults(d.Params, defaults)
 	return nil
+}
+
+// markDefaults marks the last n inputs as having defaults, as pronargdefaults
+// counts them: OUT and TABLE arguments are not inputs.
+func markDefaults(ps []FuncParam, n int) {
+	for i := len(ps) - 1; i >= 0 && n > 0; i-- {
+		if m := ps[i].Mode; m == "in" || m == "inout" || m == "variadic" {
+			ps[i].Default = true
+			n--
+		}
+	}
 }
 
 func readType(ctx context.Context, tx pgx.Tx, d *ObjectDetail) error {

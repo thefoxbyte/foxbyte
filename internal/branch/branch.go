@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"os"
 	"os/exec"
@@ -314,6 +315,8 @@ func startContainer(name string, primary bool) error {
 		"-v", mountpoint(name) + ":/var/lib/postgresql/data",
 	}
 	args = append(args, restartPolicy...)
+	// The masking keys, read-only, once masking is set up (mask.go).
+	args = append(args, maskMount(name)...)
 	// The audit log's directory, outside the data directory, which a clone
 	// would copy. Made first: a logging process that cannot write its file
 	// stops the server starting.
@@ -615,17 +618,37 @@ func EnsureUserRole(branchName, email string) error {
 	if branchName == "" {
 		branchName = "main"
 	}
-	k := branchName + "\x00" + email
+	// Masked or not is part of the key: an admin masking an account changes
+	// what its role must be, in every process that makes roles (mask.go).
+	maskedHere := accountMasked(branchName, email)
+	audited := readsAudited(branchName, email)
+	state := "plain"
+	switch {
+	case maskedHere:
+		state = "masked"
+	case audited:
+		state = "unmasked" // an unmask holder: real values, reads audited
+	}
+	k := branchName + "\x00" + email + "\x00" + state
 	if _, ok := ensuredRoles.Load(k); ok {
 		return nil
 	}
 	// One at a time per branch and role, and the one that waited finds the
 	// work done (roleguard.go).
-	defer lockRole("user\x00" + k)()
+	defer lockRole("user\x00" + branchName + "\x00" + email)()
 	if _, ok := ensuredRoles.Load(k); ok {
 		return nil
 	}
-	if err := provisionRole(branchName, userRoleSQL(email, UserRolePassword(email))); err != nil {
+	sql := userRoleSQL(email, UserRolePassword(email))
+	switch {
+	case maskedHere:
+		sql = maskedRoleSQL(email, UserRolePassword(email))
+	case MaskOn():
+		// Unmasked, or exempt here: a role once a masked reader's is made an
+		// ordinary account's again, its reads audited if it holds unmask here.
+		sql += "\n" + unmaskedRoleSQL(email) + "\n" + auditedReadsSQL(email, audited)
+	}
+	if err := provisionRole(branchName, sql); err != nil {
 		return err
 	}
 	ensuredRoles.Store(k, struct{}{})
@@ -855,6 +878,11 @@ func Create(name, parent string) error {
 	if activeStorage().exists(name) {
 		return fmt.Errorf("branch %q already exists", name)
 	}
+	// A masked branch being made, or one that failed, is copied by nobody;
+	// a copy of an open one is masked too (maskedbranch.go).
+	if err := inheritMasked(name, parent); err != nil {
+		return err
+	}
 	if err := ensureNetwork(); err != nil {
 		return err
 	}
@@ -892,8 +920,13 @@ func Delete(name string) error {
 	}
 	forgetBranchRoles(name)
 	forgetCatalogScan(name)
+	forgetBranchUnmasks(name)
 	removeContainer(container(name))
-	return activeStorage().destroy(name)
+	if err := activeStorage().destroy(name); err != nil {
+		return err
+	}
+	forgetMaskedBranch(name)
+	return nil
 }
 
 // Reset re-creates a branch as a fresh copy-on-write clone of parent (default
@@ -909,6 +942,14 @@ func Reset(name, parent string) error {
 	}
 	if parent == "" {
 		parent = "main"
+	}
+	// A masked branch is made again as one, from its own source.
+	if r, ok := MaskedBranchOf(name); ok && !r.Inherited {
+		if err := Delete(name); err != nil {
+			return err
+		}
+		_, err := CreateMasked(name, r.From, r.By, func(s string) { fmt.Println("  " + s) })
+		return err
 	}
 	if err := Delete(name); err != nil {
 		return err
@@ -1309,6 +1350,20 @@ func CreateAgentBranch(agentID string) (Info, error) { return CreateAgentBranchF
 // owns the branch (it may use and delete it) and the branch-scoped key minted
 // with it. 0 means no account, as from the command line.
 func CreateAgentBranchFor(owner int64, agentID string) (Info, error) {
+	// An agent branch's own role reads real values, so a masked account's
+	// agent is given a masked branch of main (design, sections 10 and 12): its
+	// data holds the masks. Main without rules has nothing to mask, and the
+	// account reads it as it is.
+	maskedFor := ""
+	if owner != 0 {
+		if st, err := auth.OpenFromEnv(); err == nil {
+			email := st.EmailOf(owner)
+			st.Close()
+			if email != "" && IsMaskedAccount(email) {
+				maskedFor = email
+			}
+		}
+	}
 	// Cap concurrent agent branches so an agent loop can't exhaust the pool
 	// (each branch is a full Postgres). 0 disables the cap.
 	if max := agentMax(); max > 0 {
@@ -1317,8 +1372,20 @@ func CreateAgentBranchFor(owner int64, agentID string) (Info, error) {
 		}
 	}
 	name := agentBranch(agentID)
-	if err := Create(name, "main"); err != nil {
-		return Info{}, err
+	made := false
+	if maskedFor != "" {
+		switch _, err := CreateMasked(name, "main", maskedFor, nil); {
+		case err == nil:
+			made = true
+		case errors.Is(err, ErrNothingToMask):
+		default:
+			return Info{}, err
+		}
+	}
+	if !made {
+		if err := Create(name, "main"); err != nil {
+			return Info{}, err
+		}
 	}
 	ip, err := containerIP(container(name))
 	if err != nil {
@@ -1424,6 +1491,9 @@ type BranchInfo struct {
 	Refer       string `json:"refer"` // logical size referenced (human)
 	Connections int    `json:"connections"`
 	Port        string `json:"port"`
+	// Masked: a masked branch's state (making, open, failed), "" for any
+	// other (masking step 5).
+	Masked string `json:"masked,omitempty"`
 }
 
 // Branches returns structured info for every branch (including main), enriched
@@ -1440,6 +1510,7 @@ func Branches() ([]BranchInfo, error) {
 			continue // only direct children
 		}
 		bi := BranchInfo{
+			Masked:  maskedStateOf(name),
 			Name:    name,
 			Used:    u.Used,
 			Refer:   u.Refer,
@@ -1546,6 +1617,10 @@ var OnUse func(name string)
 
 func EnsureRunning(name string) (string, error) {
 	if err := checkName(name); err != nil {
+		return "", err
+	}
+	// A masked branch is closed until it is masked and verified.
+	if err := checkBranchOpen(name); err != nil {
 		return "", err
 	}
 	// Before the branch is woken or looked at, so the idle reaper (which runs

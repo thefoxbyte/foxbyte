@@ -66,13 +66,35 @@ func mountRealtimeStream(outer *http.ServeMux, store *auth.Store, acl *access.Ch
 		if !requireFeature(w, edition.Realtime) {
 			return
 		}
-		// 4. And the engine has to be set up for it at all.
+		// 4. Never a masked account's, where there are masks.
+		if refuseMaskedRealtime(w, r, u, name) {
+			return
+		}
+		// 5. And the engine has to be set up for it at all.
 		if !branch.RealtimeOn() {
 			writeErr(w, 409, fmt.Errorf("the change feed is not set up on this install — run `fox realtime setup`"))
 			return
 		}
 		streamRealtime(w, r, name)
 	})
+}
+
+// refuseMaskedRealtime refuses the change feed to a masked account on a
+// branch with masks (design, sections 10 and 11): the feed is decoded from the
+// log, under the masks, so it would carry real values. Answered 403, and in
+// the security log; true when it refused. A branch whose rules cannot be read
+// is refused too.
+func refuseMaskedRealtime(w http.ResponseWriter, r *http.Request, u auth.User, name string) bool {
+	if !branch.AccountMaskedOn(name, u.Email) {
+		return false
+	}
+	rules, err := branch.MaskRulesOn(name)
+	if err == nil && len(rules) == 0 {
+		return false
+	}
+	secLog.Audit(auth.EvDenied, u.Email, name, remoteIP(r), "realtime: masked account")
+	writeErr(w, 403, fmt.Errorf("%s is masked, and the change feed would carry the real values of %s's masked tables: it is refused to masked accounts", u.Email, name))
+	return true
 }
 
 func streamRealtime(w http.ResponseWriter, r *http.Request, name string) {

@@ -32,7 +32,7 @@ async function openRealtime(page: Page) {
   await signIn(page)
   await page.goto('/realtime', { waitUntil: 'domcontentloaded' })
   await expect(page.getByRole('heading', { name: 'Realtime', exact: true })).toBeVisible()
-  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByLabel('Branch', { exact: true }).selectOption(branch)
   // The table list is fetched per branch; wait for a fixture rather than a
   // timeout, so a slow VM does not read as a failure.
   await expect(page.getByText(`public.rt_ready`)).toBeVisible({ timeout: 30_000 })
@@ -108,7 +108,7 @@ test('starting a table makes Postgres publish it, and stopping undoes it', async
   // comes back streaming because Postgres publishes the table, not because
   // this tab remembers clicking.
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await page.getByLabel('Branch').selectOption(branch)
+  await page.getByLabel('Branch', { exact: true }).selectOption(branch)
   await expect(row(page, 'rt_ready')).toContainText('streaming', { timeout: 30_000 })
 
   await row(page, 'rt_ready').getByRole('button', { name: 'Stop' }).click()
@@ -154,7 +154,7 @@ test('a connection string belonging to another branch is not left on screen', as
   await expect(page.getByTestId('realtime-dsn')).toBeVisible({ timeout: 30_000 })
 
   // It is a secret, and after the change it is also the wrong one.
-  await page.getByLabel('Branch').selectOption('main')
+  await page.getByLabel('Branch', { exact: true }).selectOption('main')
   await expect(page.getByTestId('realtime-dsn')).toBeHidden()
 })
 

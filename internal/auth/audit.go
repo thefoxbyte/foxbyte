@@ -120,6 +120,22 @@ const (
 	// The access review report produced (point 4.8): who asked, and what it
 	// covered. A report of who can reach what is itself worth knowing about.
 	EvAccessReviewed = "access.reviewed"
+	// The hardening report produced (point 3.2): which branch, and how it
+	// stood. A list of a database's weak points is itself worth knowing about.
+	EvHardeningReported = "hardening.reported"
+	// A hardening fix made, or a profile applied (points 3.3, 3.4): which
+	// check or profile, on which branch, what changed, and whether it held.
+	EvHardeningFixed   = "hardening.fixed"
+	EvHardeningProfile = "hardening.profile"
+	// Masking (F5): set up on a branch, a rule set or taken off, an account
+	// masked or unmasked. Who decided what a person sees of personal data is
+	// something an auditor asks about.
+	EvMaskSetup   = "mask.setup"
+	EvMaskRule    = "mask.rule"
+	EvMaskAccount = "mask.account"
+	EvMaskKey     = "mask.key"
+	EvMaskUnmask  = "mask.unmask"
+	EvMaskBranch  = "mask.branch" // a masked branch made, opened, or refused
 	// The databases' audit log (F6) turned on or off: who decided. Whoever
 	// can stop the record of who did what is someone an auditor asks about.
 	EvAuditLogOn  = "audit-log.on"
@@ -144,6 +160,11 @@ const (
 	// The evidence export produced (F6 step 6b): for which period, and
 	// whether the records went with it.
 	EvAuditLogEvidence = "audit-log.evidence"
+	// A session's query cancelled, or the session ended, and a table vacuumed
+	// or analysed (point 12.5).
+	EvSessionCancel = "session.cancel"
+	EvSessionEnd    = "session.end"
+	EvMaintenance   = "maintenance"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

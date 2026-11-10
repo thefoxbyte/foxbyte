@@ -102,11 +102,15 @@ func Serve(addr string) error {
 	registerAuditRecords(api)          // /api/audit-log/records (admins; F6: the records)
 	registerAuditSettings(api)         // /api/audit-log/{mode,retention,purge} (admins; F6 step 5a)
 	registerAuditEvidence(api)         // /api/audit-log/evidence (admins, Enterprise; F6 step 6b)
+	registerHardening(api)             // /api/hardening (admins; point 3.2)
+	registerHardeningFixes(api)        // /api/hardening/{fix,profile} (admins, Enterprise; points 3.3, 3.4)
+	registerMasking(api)               // /api/masking (admins; setting it is Enterprise; F5, point 4.6)
 	registerRequests(api, store)       // /api/branches/{name}/request, /api/requests*
 	registerLicense(api)               // /api/license
 	registerHistory(api, store)        // /api/history* (the caller's own query history)
 	registerSavedQueries(api, store)   // /api/saved-queries* (the caller's own)
 	registerTracking(api)              // /api/branches/{name}/tracking* (points 5, 6)
+	registerSessions(api)              // /api/branches/{name}/{sessions*,maintenance} (point 12.5)
 	registerPersonalData(api)          // /api/branches/{name}/personal-data* (point 4)
 	registerPersonalDataReview(api)    // /api/branches/{name}/personal-data/findings/* (point 4.6)
 	registerPersonalDataInventory(api) // /api/branches/{name}/personal-data/{unclassified,columns/*} (point 4.7)
@@ -289,8 +293,9 @@ func registerAPI(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /api/branches", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Name string `json:"name"`
-			From string `json:"from"` // the branch to copy; default main
+			Name   string `json:"name"`
+			From   string `json:"from"`   // the branch to copy; default main
+			Masked bool   `json:"masked"` // a masked branch (masking step 5): made in the background
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if !nameRe.MatchString(body.Name) {
@@ -304,6 +309,10 @@ func registerAPI(mux *http.ServeMux) {
 		// Copying a branch reads all of it, so it needs the right to use it.
 		if u, _ := auth.UserFrom(r.Context()); !acl.Can(u, body.From, access.Use) {
 			writeErr(w, 404, fmt.Errorf("%w: %q", branch.ErrParentNotFound, body.From))
+			return
+		}
+		if body.Masked {
+			createMaskedBranch(w, r, body.Name, body.From)
 			return
 		}
 		if err := branch.Create(body.Name, body.From); err != nil {
@@ -577,7 +586,14 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 404, err)
 			return
 		}
-		writeJSON(w, 200, runQuery(addr, ledgerSQL(r.URL.Query()), queryAs{}))
+		q := ledgerSQL(r.URL.Query())
+		// A masked account reads the Blackbox's entries without their
+		// statements' text, which can hold real values: an UPDATE's literals,
+		// a migration's data (design, section 9; step 4).
+		if u, _ := auth.UserFrom(r.Context()); branch.AccountMaskedOn(r.PathValue("name"), u.Email) {
+			q = strings.Replace(q, " statement, ", " "+maskedStatementSQL+" AS statement, ", 1)
+		}
+		writeJSON(w, 200, runQuery(addr, q, queryAs{}))
 	})
 
 	// Tamper-evidence: recompute the ledger's hash chain and report whether it
@@ -591,6 +607,10 @@ func registerAPI(mux *http.ServeMux) {
 		writeJSON(w, 200, runQuery(addr, branch.LedgerVerifySQL, queryAs{}))
 	})
 }
+
+// maskedStatementSQL is what a masked account reads for a Blackbox entry's
+// statement.
+const maskedStatementSQL = `'(hidden from masked accounts: a statement can hold real values)'::text`
 
 func sqlEsc(s string) string { return strings.ReplaceAll(s, "'", "''") }
 
@@ -1017,6 +1037,13 @@ func scriptCell(b []byte, oid uint32, m *pgtype.Map) any {
 // someone reading a table wants, and pgx can produce it for any type it knows
 // (pgText). Values that already render well are left exactly as they were.
 func cell(v any, oid uint32, m *pgtype.Map) any {
+	// A json or jsonb value is JSON whole: an array in it is not a Postgres
+	// array, and its objects are not cells of their own. Rendered element by
+	// element, '[{"a": 1}]' reached the console as ["{\"a\":1}"], and an
+	// EXPLAIN (FORMAT JSON) plan as a list holding its text (point 12.4).
+	if a, ok := v.([]any); ok && (oid == pgtype.JSONOID || oid == pgtype.JSONBOID) {
+		return jsonText(a)
+	}
 	switch t := v.(type) {
 	case nil, bool, string, int16, int32, int64, float32, float64:
 		return v

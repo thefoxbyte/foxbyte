@@ -273,3 +273,40 @@ func TestApplicationsEmpty(t *testing.T) {
 		t.Errorf("no applications: %+v", r.Applications)
 	}
 }
+
+// With masking: an admin sees real values, an account not masked sees
+// everything, a masked one masks, on the branches it owns too, except where it
+// holds unmask, whose reads are audited, said to wait for the audit log if it
+// is off.
+func TestUnmaskedColumn(t *testing.T) {
+	in := inputs{maskOn: true, masked: map[string]bool{"m@x.io": true}, unmasks: map[string][]string{"m@x.io": {"dev", "ana"}}}
+	for _, c := range []struct {
+		email string
+		admin bool
+		owns  []string
+		want  []string
+		not   string
+	}{
+		{"a@x.io", true, nil, []string{"an admin always sees real values"}, "masks"},
+		{"p@x.io", false, nil, []string{"not masked"}, "masks"},
+		{"m@x.io", false, []string{"mine"}, []string{"masks of marked tables", "on the branches it owns too (mine)", "unmask on ana, dev", "audited once the audit log is on"}, "real values on the branches"},
+	} {
+		got := unmaskedText(in, c.email, c.admin, c.owns)
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: %q lacks %q", c.email, got, w)
+			}
+		}
+		if strings.Contains(got, c.not) {
+			t.Errorf("%s: %q has %q", c.email, got, c.not)
+		}
+	}
+	in.auditOn = true
+	if got := unmaskedText(in, "m@x.io", false, nil); strings.Contains(got, "once") || strings.Contains(got, "owns") {
+		t.Errorf("audit on, owning nothing: %q", got)
+	}
+	in.maskOn = false
+	if got := unmaskedText(in, "m@x.io", false, nil); !strings.Contains(got, "no masking is in place") {
+		t.Errorf("masking not set up: %q", got)
+	}
+}

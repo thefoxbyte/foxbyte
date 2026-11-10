@@ -24,6 +24,8 @@ export type Feature =
   | 'pipelines'
   | 'personal-data'
   | 'access-review'
+  | 'hardening'
+  | 'masking'
 
 export type Status = {
   mainReady: boolean
@@ -42,6 +44,8 @@ export const has = (s: Status | null | undefined, f: Feature) => !!s?.features?.
 export type Branch = {
   name: string; primary: boolean; agent: boolean; state: string
   used: string; refer: string; connections: number; port: string
+  // A masked branch's state (masking step 5): being made, open, or failed and closed.
+  masked?: 'making' | 'open' | 'failed'
 }
 // One statement's outcome. `results` always holds at least one, so a caller can
 // read one shape whether the SQL was a single statement or a script; the fields
@@ -382,8 +386,15 @@ export const startEditionSwitch = (edition: 'enterprise' | 'standard', acceptLic
 export const getEditionSwitch = () => req('GET', `${API}/api/edition/switch`) as Promise<EditionSwitch>
 export const getBranches = () => req('GET', `${API}/api/branches`) as Promise<Branch[]>
 // from: the branch to copy (default main).
-export const createBranch = (name: string, from?: string) =>
-  req('POST', `${API}/api/branches`, from ? { name, from } : { name })
+export const createBranch = (name: string, from?: string, masked?: boolean) =>
+  req('POST', `${API}/api/branches`, { name, ...(from ? { from } : {}), ...(masked ? { masked: true } : {}) })
+// A masked branch (step 5): how far its making got, and what verifying found.
+export type MaskedBranch = {
+  name: string; from: string; by: string; started: string; finished?: string
+  state: 'making' | 'open' | 'failed'; step?: string; error?: string; problems?: string[]
+  fork: number; tables: number; rows: number; inherited?: boolean
+}
+export const getMaskedBranches = () => req('GET', `${API}/api/masking/branches`) as Promise<MaskedBranch[]>
 export const deleteBranch = (name: string) => req('DELETE', `${API}/api/branches/${name}`)
 export const suspendBranch = (name: string) => req('POST', `${API}/api/branches/${name}/suspend`)
 export const resumeBranch = (name: string) => req('POST', `${API}/api/branches/${name}/resume`)
@@ -434,7 +445,10 @@ export type CatalogCol = { name: string; type: string; not_null?: boolean; defau
 export type ObjectDetail = CatalogObject & {
   comment?: string; columns?: CatalogCol[]; constraints?: CatalogPart[]; indexes?: CatalogPart[]; triggers?: CatalogPart[]
   facts?: [string, string][]; values?: string[]; members?: { Kind: string; Name: string }[]; ddl: string
+  // A function's or a procedure's arguments, in order (point 12.4).
+  params?: FuncParam[]
 }
+export type FuncParam = { name?: string; type: string; mode: 'in' | 'out' | 'inout' | 'variadic' | 'table'; default?: boolean }
 export const getCatalog = (branch: string) =>
   req('GET', `${API}/api/branches/${branch}/schema`) as Promise<{ objects: CatalogObject[] | null }>
 export const getObject = (branch: string, kind: CatalogKind, oid: number) =>
@@ -911,6 +925,77 @@ export const setAuditRetention = (days: number, forensic: boolean) =>
 export const purgeAuditText = (user: string) => req('POST', `${API}/api/audit-log/purge`, { user }) as Promise<{ purged: number }>
 export type AuditFinding = { kind: 'space' | 'collector' | 'heartbeat' | 'gap' | 'mark' | 'forward' | 'definer'; branch?: string; detail: string; since?: string }
 export const getAuditLog = () => req('GET', `${API}/api/audit-log`) as Promise<AuditLogReply>
+
+// The hardening report (point 3.2): admins only, every edition. FoxByte's own
+// checks, not the CIS Benchmark.
+export type HardeningStatus = 'pass' | 'fail' | 'manual' | 'n/a'
+export type HardeningCheck = {
+  id: string; section: string; level: 'basic' | 'strict'; title: string
+  status: HardeningStatus; evidence: string; why: string; fix?: string
+  fixable?: boolean // a fix can be made here, after a preview (Enterprise)
+}
+export type HardeningReport = {
+  branch: string; generated: string; postgres: string; basis: string
+  summary: Record<HardeningStatus, number>; checks: HardeningCheck[]; limits: string[]
+  profile?: { profile: string; by: string; at: string } | null
+}
+// Fixes and profiles (points 3.3, 3.4): admins, Enterprise.
+export type HardeningFix = { id: string; title: string; level: string; changes: string[]; sql: string[] | null; note?: string }
+export type HardeningFixResult = { fix: HardeningFix; before: HardeningCheck; after: HardeningCheck; error?: string }
+export const planHardeningFix = (branch: string, check: string) =>
+  req('POST', `${API}/api/hardening/fix`, { branch, check, apply: false }) as Promise<{ fix: HardeningFix }>
+export const applyHardeningFix = (branch: string, check: string) =>
+  req('POST', `${API}/api/hardening/fix`, { branch, check, apply: true }) as Promise<{ result: HardeningFixResult }>
+export const planHardeningProfile = (branch: string, profile: string) =>
+  req('POST', `${API}/api/hardening/profile`, { branch, profile, apply: false }) as Promise<{ fixes: HardeningFix[]; manual: HardeningCheck[] }>
+export const applyHardeningProfile = (branch: string, profile: string) =>
+  req('POST', `${API}/api/hardening/profile`, { branch, profile, apply: true }) as Promise<{ results: HardeningFixResult[] }>
+// Masking (F5, point 4.6): admins only. Reading where it stands is free;
+// setting it up, rules and masked accounts are Enterprise.
+export type MaskRuleName = 'partial' | 'hash' | 'fake' | 'empty'
+export type MaskRule = { schema: string; table: string; column: string; path?: string; rule: MaskRuleName; category: string; by: string; at: string }
+export type MaskedAccount = { email: string; by: string; at: string }
+export type UnmaskGrant = { email: string; branch: string; by: string; at: string }
+export type MaskLookup = { at: string; who: string; table: string; column: string; found: number }
+export type MaskStatus = {
+  on: boolean; pending: string[]; branch: string; rules: MaskRule[]; ready: string[]; accounts: MaskedAccount[]; writes: boolean
+  unmasks: UnmaskGrant[]; lookups: MaskLookup[]; auditOn: boolean
+  // The paths around the masks (step 4): definer functions that can return
+  // real values to a masked caller, and what the guard closed to masked accounts.
+  definers?: { function: string; owner: string; tables: string[] }[]
+  closed?: { relation: string; kind: 'reads' | 'refs'; privs: string; at: string }[]
+}
+export type MaskPlace = { schema: string; table: string; column: string; path?: string }
+export const getMasking = (branch: string) => req('GET', `${API}/api/masking?branch=${encodeURIComponent(branch)}`) as Promise<MaskStatus>
+export const planMaskSetup = (branch: string) =>
+  req('POST', `${API}/api/masking/setup`, { branch, apply: false }) as Promise<{ branch: string; restart: boolean; keyDir: string }>
+export const applyMaskSetup = (branch: string) =>
+  req('POST', `${API}/api/masking/setup`, { branch, apply: true }) as Promise<{ branch: string; restarted: boolean }>
+export const planMaskRule = (branch: string, at: MaskPlace, rule: MaskRuleName | '') =>
+  req('POST', `${API}/api/masking/rule`, { branch, ...at, rule, apply: false }) as Promise<{ where: string; cost: string }>
+export const setMaskRule = (branch: string, at: MaskPlace, rule: MaskRuleName | '') =>
+  req('POST', `${API}/api/masking/rule`, { branch, ...at, rule, apply: true }) as Promise<{ set: string }>
+export const dropMaskRule = (branch: string, at: MaskPlace) =>
+  req('POST', `${API}/api/masking/rule`, { branch, ...at, off: true }) as Promise<{ off: string }>
+export const maskAccount = (email: string, off: boolean) =>
+  req('POST', `${API}/api/masking/account`, { email, off }) as Promise<{ email: string; masked: boolean }>
+export const unmaskAccount = (email: string, branch: string, off: boolean) =>
+  req('POST', `${API}/api/masking/unmask`, { email, branch, off }) as Promise<{ email: string; branch: string; unmasked: boolean; auditOn: boolean }>
+// Masking keys (F5 step 2): about the keys, never a key.
+export type MaskTableKey = { branch: string; schema: string; table: string; domain: string; gen: number; keyed: boolean }
+export type MaskKeyUse = {
+  domain: string; gen: number; made: string; by: string; rotated?: string; rotatedBy?: string
+  next: boolean; tables: MaskTableKey[]; stale: MaskTableKey[]
+}
+export type MaskKeysStatus = { keys: MaskKeyUse[]; stopped: string[]; writes: boolean }
+export type MaskKeyAction = 'create' | 'rotate' | 'drop' | 'use'
+export const getMaskKeys = () => req('GET', `${API}/api/masking/keys`) as Promise<MaskKeysStatus>
+export const maskKey = (action: MaskKeyAction, domain: string, apply: boolean, at?: { branch: string; schema: string; table: string }) =>
+  req('POST', `${API}/api/masking/key`, { action, domain, apply, ...(at ?? {}) }) as Promise<{ cost?: string; done?: string[] }>
+
+const hardeningURL = (branch: string) => `${API}/api/hardening?branch=${encodeURIComponent(branch)}`
+export const getHardening = (branch: string) => req('GET', hardeningURL(branch)) as Promise<HardeningReport>
+export const hardeningJsonUrl = hardeningURL
 // The evidence export (F6 step 6b): a file to save, admins only, Enterprise.
 // since and until are days back (90d), a date, or RFC 3339.
 export const auditEvidenceUrl = (since: string, until: string, records: boolean) => {
@@ -972,3 +1057,23 @@ export const addAppKey = (name: string, public_key: string, kid = '') =>
 export const revokeAppKey = (name: string, kid: string, compromised_since = '') =>
   req('POST', `${API}/api/apps/${encodeURIComponent(name)}/keys/${encodeURIComponent(kid)}/revoke`,
     compromised_since ? { compromised_since } : {}) as Promise<AppChange>
+
+// Sessions and upkeep (point 12.5).
+export type DbSession = {
+  pid: number; user: string; app: string; state: string; wait: string
+  started: string; since: string; xact: string; query: string; blockedBy: number[]; engine: boolean
+}
+export type SessionsList = { branch: string; all: boolean; sessions: DbSession[] }
+export const getSessions = (branch: string) =>
+  req('GET', `${API}/api/branches/${encodeURIComponent(branch)}/sessions`) as Promise<SessionsList>
+export const signalSession = (branch: string, pid: number, end: boolean) =>
+  req('POST', `${API}/api/branches/${encodeURIComponent(branch)}/sessions/${pid}/${end ? 'end' : 'cancel'}`)
+export type TableUpkeepStats = {
+  schema: string; table: string; live: number; dead: number; bytes: number
+  lastVacuum: string; lastAutoVacuum: string; lastAnalyze: string; lastAutoAnalyze: string; vacuums: number; analyzes: number
+}
+export type MaintenanceOp = 'vacuum' | 'analyze' | 'vacuum-analyze'
+export const getUpkeep = (branch: string, schema: string, table: string) =>
+  req('GET', `${API}/api/branches/${encodeURIComponent(branch)}/maintenance?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`) as Promise<{ branch: string; tables: TableUpkeepStats[] }>
+export const runMaintenance = (branch: string, schema: string, table: string, op: MaintenanceOp) =>
+  req('POST', `${API}/api/branches/${encodeURIComponent(branch)}/maintenance`, { schema, table, op }) as Promise<{ branch: string; op: MaintenanceOp; ms: number; table: TableUpkeepStats }>

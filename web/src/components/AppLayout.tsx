@@ -30,6 +30,7 @@ export const APP_NAV: NavSection[] = [
       { to: '/import', label: 'Import', icon: I.IconImport },
       { to: '/pipelines', label: 'Pipelines', icon: I.IconPipelines },
       { to: '/realtime', label: 'Realtime', icon: I.IconConsole },
+      { to: '/sessions', label: 'Sessions', icon: I.IconConsole },
     ],
   },
   {
@@ -45,9 +46,11 @@ export const APP_NAV: NavSection[] = [
     label: 'Compliance',
     items: [
       { to: '/personal-data', label: 'Personal data', icon: I.IconPersonalData },
+      { to: '/masking', label: 'Masking', icon: I.IconPersonalData },
       { to: '/access-review', label: 'Access review', icon: I.IconKey },
       { to: '/applications', label: 'Applications', icon: I.IconKey },
       { to: '/audit-log', label: 'Audit log', icon: I.IconIntegrity },
+      { to: '/hardening', label: 'Hardening', icon: I.IconPolicies },
     ],
   },
   {

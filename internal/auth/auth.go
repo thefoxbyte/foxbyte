@@ -426,6 +426,15 @@ func (s *Store) Login(email, password string) (User, error) {
 	return u, nil
 }
 
+// EmailOf is an account's email, or "" when there is no such account.
+func (s *Store) EmailOf(id int64) string {
+	u, err := s.userByID(id)
+	if err != nil {
+		return ""
+	}
+	return u.Email
+}
+
 func (s *Store) userByID(id int64) (User, error) {
 	var u User
 	err := s.db.QueryRow(`SELECT id, email FROM users WHERE id=?`, id).Scan(&u.ID, &u.Email)

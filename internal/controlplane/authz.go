@@ -63,6 +63,15 @@ func authorize(next http.Handler) http.Handler {
 			if name != "" && !allowed(w, r, u, name, needFor(r.Method, tail)) {
 				return
 			}
+			// A masked branch is closed until it is masked and verified
+			// (masking step 5): it may only be deleted. After the access
+			// check, so a caller who may not reach it learns nothing.
+			if name != "" && !(r.Method == http.MethodDelete && tail == "") {
+				if err := branch.CheckBranchOpen(name); err != nil {
+					writeErr(w, 423, err)
+					return
+				}
+			}
 		}
 		switch r.URL.Path {
 		case "/api/ledger/diff", "/api/blackbox/diff":
@@ -121,6 +130,11 @@ func needFor(method, tail string) access.Level {
 	// Personal-data discovery (point 4): where personal data sits is itself
 	// sensitive, so reading the findings is the owner's, as scanning is.
 	case tail == "personal-data", strings.HasPrefix(tail, "personal-data/"):
+		return access.Manage
+	// Vacuuming and analysing (point 12.5) change how the branch runs: the
+	// owner's. Reading a table's upkeep, and one's own sessions, is Use; whose
+	// sessions are shown and may be signalled is decided in sessions.go.
+	case tail == "maintenance" && method != http.MethodGet:
 		return access.Manage
 	}
 	return access.Use

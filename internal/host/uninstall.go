@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
@@ -168,9 +169,26 @@ func hostSteps(o UninstallOptions) []removal {
 		what:    "accounts, API keys, secrets and Blackbox anchors (" + dir + ")",
 		data:    true,
 		present: func() bool { _, err := os.Stat(dir); return err == nil },
-		run:     func() error { return os.RemoveAll(dir) },
+		run:     func() error { return removeStateDir(dir) },
 	})
 	return out
+}
+
+// removeStateDir deletes the state directory. Masking's keys are in a folder
+// only the database server's user may enter (uid 999), so what the operator
+// cannot delete is deleted with sudo, and only inside the state directory.
+func removeStateDir(dir string) error {
+	err := os.RemoveAll(dir)
+	// Only a state directory: an absolute path to a dot-folder (.fox, or a
+	// retired name's), never anything sudo could be pointed at by mistake.
+	dir = filepath.Clean(dir)
+	if err == nil || runtime.GOOS == "windows" || !filepath.IsAbs(dir) || !strings.HasPrefix(filepath.Base(dir), ".") || len(filepath.Base(dir)) < 2 {
+		return err
+	}
+	if out, err := exec.Command("sudo", "rm", "-rf", "--", dir).CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // binaryNames is this command and the commands of retired product names, so an
