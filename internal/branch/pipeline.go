@@ -94,9 +94,5 @@ func RunPipelineAs(p *Progress, spec PipelineSpec, branch string, a As) (RunResu
 	if runPipeline == nil {
 		return RunResult{}, ErrPipelinesNotLicensed
 	}
-	// The engine begins by deleting whatever has this name.
-	if err := CheckNewName(branch); err != nil {
-		return RunResult{}, err
-	}
 	return runPipeline(p, spec, branch, a)
 }

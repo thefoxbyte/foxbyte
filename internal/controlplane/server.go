@@ -1244,9 +1244,8 @@ func registerPipelines(mux *http.ServeMux, store *auth.Store) {
 			return
 		}
 		target := pipelineBranch(pl)
-		// Here as well as in the engine: a run that got as far as the engine
-		// has already claimed the name, and is recorded as owning it even when
-		// it fails.
+		// Before anything else: the engine begins by deleting whatever has this
+		// name, and a run is recorded as owning its target even when it fails.
 		if err := branch.CheckNewName(target); err != nil {
 			send("error", map[string]string{"message": fmt.Sprintf("rename the pipeline: %v", err)})
 			return

@@ -696,6 +696,7 @@ func pipelineCmd(args []string) {
 	if target == "" {
 		target = "pl-" + strings.TrimSuffix(filepath.Base(specPath), filepath.Ext(specPath))
 	}
+	must(branch.CheckNewName(target))
 	// A run deletes and re-creates its target. A branch an account owns is not
 	// this command's to replace; deleting it first is a decision made out loud.
 	if branch.Exists(target) && accountOwnsBranch(target) {
