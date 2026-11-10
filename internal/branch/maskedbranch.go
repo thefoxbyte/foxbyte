@@ -143,6 +143,7 @@ func putMaskedBranch(r MaskedBranch) error {
 		m[k] = v
 	}
 	m[r.Name] = r
+	defer noteStateChange() // the console shows a masked branch's state
 	return saveMaskedBranches(m)
 }
 

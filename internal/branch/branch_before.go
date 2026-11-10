@@ -595,7 +595,9 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 		"-v", mountpoint(newName)+":/var/lib/postgresql/data",
 		"--entrypoint", "bash",
 		pgImage(), "-c", restoreBeforeScript)
-	if out, err := exec.Command("sudo", args...).CombinedOutput(); err != nil {
+	out, err := exec.Command("sudo", args...).CombinedOutput()
+	noteStateChange()
+	if err != nil {
 		return fail(fmt.Errorf("starting the restore: %v: %s", err, strings.TrimSpace(string(out))))
 	}
 	if err := waitPromoted(newName, envDurationOr("FOX_BRANCH_BEFORE_TIMEOUT", 15*time.Minute)); err != nil {
