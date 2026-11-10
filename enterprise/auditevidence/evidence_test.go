@@ -27,7 +27,7 @@ func TestAssemble(t *testing.T) {
 	for _, r := range in.records {
 		branch.TallyAuditActivity(&in.activity, r)
 	}
-	o :=branch.EvidenceOptions{Since: since, Until: until, By: "ada@example.com", Events: []auth.SecurityEvent{
+	o := branch.EvidenceOptions{Since: since, Until: until, By: "ada@example.com", Events: []auth.SecurityEvent{
 		{Kind: auth.EvAuditLogOn, At: "2026-11-02T10:00:00Z", Actor: "ada@example.com", IP: "10.0.0.9"},
 		{Kind: auth.EvAuditMarked, At: "2026-10-30T10:00:00Z", Subject: "main", Detail: "auditing writes of public.t"}, // before the period
 		{Kind: "user.login", At: "2026-11-02T11:00:00Z"},                                                               // not the audit log's
