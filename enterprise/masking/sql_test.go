@@ -287,6 +287,7 @@ func TestMaskBranchSQL(t *testing.T) {
 		}
 	}
 	if !strings.Contains(freshBlackboxSQL, "session_replication_role = replica") || !strings.Contains(freshBlackboxSQL, "'bb.schema_ledger'") ||
+		!strings.Contains(freshBlackboxSQL, "'bb.aadhaar_places'") || !strings.Contains(freshBlackboxSQL, "'bb.aadhaar_runs'") ||
 		strings.Contains(freshBlackboxSQL, "RESTART IDENTITY") {
 		t.Error("the Blackbox is emptied past its triggers, keeping its numbering")
 	}

@@ -119,6 +119,9 @@ const (
 	// A new column or JSON path accepted as holding nothing to classify
 	// (point 4.7): who, and where.
 	EvPersonalDataAccepted = "personal-data.accepted"
+	// The Aadhaar exposure report run (point 4.5): which branch, and how much
+	// it found, as counts. Never a place, a row or a digit.
+	EvAadhaarExposure = "personal-data.aadhaar"
 	// The access review report produced (point 4.8): who asked, and what it
 	// covered. A report of who can reach what is itself worth knowing about.
 	EvAccessReviewed = "access.reviewed"

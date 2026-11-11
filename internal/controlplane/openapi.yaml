@@ -1056,6 +1056,76 @@ paths:
         "403": { description: Not the branch's owner or an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/personal-data/aadhaar:
+    get:
+      tags: [branches]
+      summary: The Aadhaar exposure report as the latest run left it (the branch's owner or an admin).
+      description: >-
+        What the latest run read and could not read, what it found column by
+        column (counted in full), the people whose numbers it found (by the
+        number's last four digits, the most places first, up to 500), and how
+        many places earlier runs found that it no longer does. Never a full
+        number, and never a hash of one. Free in every edition; run is null
+        before the first run.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200": { description: The report., content: { application/json: { schema: { $ref: "#/components/schemas/AadhaarReport" } } } }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/personal-data/aadhaar/run:
+    post:
+      tags: [branches]
+      summary: Read every row of the branch for Aadhaar numbers now (Enterprise; the branch's owner or an admin).
+      description: >-
+        Every text, number, array and JSON column, in read-only transactions,
+        one a table with a time limit (300 seconds unless given). The database
+        passes on rows holding twelve digits in Aadhaar's shape; each is
+        checked by its check digit. Each place a number sits is kept as its
+        column or JSON path, the row's primary key and the number's last four
+        digits, with when it was first and last seen. The run is in the
+        security log with its counts.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tableTimeout: { type: integer, minimum: 1, maximum: 3600, description: "Seconds one table's read may take." }
+      responses:
+        "200": { description: Read; the report as it now is., content: { application/json: { schema: { $ref: "#/components/schemas/AadhaarReport" } } } }
+        "400": { description: A table timeout outside 1 to 3600 seconds. }
+        "403": { description: Not the branch's owner or an admin, or no licence covers personal-data discovery. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/personal-data/aadhaar/places:
+    get:
+      tags: [branches]
+      summary: The places of the latest Aadhaar exposure run, or those it no longer found (the branch's owner or an admin).
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: person, in: query, schema: { type: integer }, description: "One person's places, by the latest run's number for them." }
+        - { name: column, in: query, schema: { type: string }, description: "One column: schema.table.column, or with a space and a JSON path." }
+        - { name: gone, in: query, schema: { type: boolean }, description: "Places earlier runs found that the latest no longer does." }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 10000, default: 200 } }
+      responses:
+        "200":
+          description: The places.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branch: { type: string }
+                  places: { type: array, items: { $ref: "#/components/schemas/AadhaarPlace" } }
+        "400": { description: A person or limit that is not a number, or a column not written schema.table.column. }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches/{name}/personal-data/columns/{id}/accept:
     post:
       tags: [branches]
@@ -3330,6 +3400,69 @@ components:
                     sessions: { type: object, additionalProperties: { type: integer }, description: By running branch. }
                     lastAsserted: { type: string, format: date-time, nullable: true }
         limits: { type: array, items: { type: string } }
+    AadhaarReport:
+      type: object
+      properties:
+        branch: { type: string }
+        run:
+          type: object
+          nullable: true
+          properties:
+            id: { type: integer }
+            started: { type: string, format: date-time }
+            finished: { type: string, format: date-time }
+            actor: { type: string }
+            tables: { type: integer }
+            columns: { type: integer }
+            rows: { type: integer, description: "Rows holding something shaped like an Aadhaar number." }
+            numbers: { type: integer, description: "Numbers found, place by place." }
+            people: { type: integer, description: "Distinct numbers." }
+            listed: { type: integer, description: "Places kept." }
+            skipped: { type: array, items: { type: object, properties: { object: { type: string }, reason: { type: string } } } }
+            limits: { type: array, items: { type: string } }
+        columns:
+          type: array
+          items:
+            type: object
+            properties:
+              schema: { type: string }
+              table: { type: string }
+              column: { type: string }
+              path: { type: string }
+              numbers: { type: integer }
+              rows: { type: integer }
+              listed: { type: integer }
+              capped: { type: boolean, description: "Only the first places were kept." }
+              since: { type: string, format: date-time, nullable: true }
+        people:
+          type: array
+          items:
+            type: object
+            properties:
+              person: { type: integer }
+              masked: { type: string, example: "XXXX XXXX 0124" }
+              places: { type: integer }
+              since: { type: string, format: date-time }
+              where: { type: array, items: { type: string } }
+        peopleListed: { type: integer }
+        gone: { type: integer }
+    AadhaarPlace:
+      type: object
+      properties:
+        id: { type: integer }
+        schema: { type: string }
+        table: { type: string }
+        column: { type: string }
+        path: { type: string }
+        row: { type: string, example: "id=42" }
+        last4: { type: string }
+        masked: { type: string, example: "XXXX XXXX 0124" }
+        person: { type: integer, description: "The latest run's number for whose Aadhaar this is; 0 when ungrouped or gone." }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        rowCreated: { type: string, format: date-time, nullable: true }
+        since: { type: string, format: date-time }
+        gone: { type: boolean }
     PersonalDataColumn:
       type: object
       properties:

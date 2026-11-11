@@ -162,11 +162,16 @@ DROP TABLE IF EXISTS bb.mask_closed, bb.mask_rules, bb.mask_tables;
 // freshBlackboxSQL empties the Blackbox's tables in one statement, as the
 // engine, past their append-only triggers. Its sequence is kept, so the
 // branch's first entry follows the source's last.
+//
+// The Aadhaar exposure report's places too (point 4.5): each names a row of
+// the source by its key and a number's last four digits, which are the
+// source's, not the masks'.
 const freshBlackboxSQL = `SET session_replication_role = replica;
 DO $bbfresh$
 DECLARE t text; ts text[] := '{}';
 BEGIN
-  FOREACH t IN ARRAY ARRAY['bb.ledger_ext', 'bb.ledger_checkpoints', 'bb.agent_sessions', 'bb.schema_ledger'] LOOP
+  FOREACH t IN ARRAY ARRAY['bb.ledger_ext', 'bb.ledger_checkpoints', 'bb.agent_sessions', 'bb.schema_ledger',
+                           'bb.aadhaar_places', 'bb.aadhaar_columns', 'bb.aadhaar_runs'] LOOP
     IF to_regclass(t) IS NOT NULL THEN ts := ts || t; END IF;
   END LOOP;
   IF array_length(ts, 1) > 0 THEN
