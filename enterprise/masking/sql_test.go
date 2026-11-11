@@ -207,8 +207,14 @@ func TestRekeyTable(t *testing.T) {
 	if strings.Contains(swap, "'default'") || strings.Contains(swap, "__next\" (") || strings.Contains(swap, "GRANT") {
 		t.Errorf("after the swap the triggers keep only the new shadow, under the new key, and grants are kept:\n%s", swap)
 	}
-	if i, j := strings.Index(swap, "RENAME TO \"public__customers\""), strings.Index(swap, "CREATE OR REPLACE VIEW"); i < 0 || j < i {
-		t.Errorf("the view is replaced before the new shadow has the shadow's name:\n%s", swap)
+	// The swap locks what a masked read locks, in a read's order: the view
+	// before the shadow. The other way round, a read arriving between the two
+	// deadlocked with it.
+	if rk.Swap[2] != strings.Split(swap, ";\n")[2] || !strings.HasPrefix(rk.Swap[2], `CREATE OR REPLACE VIEW bb_mask."customers"`) {
+		t.Errorf("the swap does not take the view first, after holding writes:\n%s", swap)
+	}
+	if !strings.Contains(rk.Swap[2], `JOIN bb_mask."public__customers__next" m ON`) {
+		t.Errorf("the view does not read the new shadow:\n%s", rk.Swap[2])
 	}
 }
 
