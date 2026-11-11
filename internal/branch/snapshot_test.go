@@ -122,12 +122,24 @@ func TestSnapshotServesThePreviousAnswerRatherThanHang(t *testing.T) {
 	_, _ = withFakeDocker(t)
 	var reads atomic.Int64
 	gate := make(chan struct{})
-	defer close(gate)
 	s := NewSnapshot(SnapshotTTL, 20*time.Millisecond, func() (int, error) {
 		if reads.Add(1) > 1 {
 			<-gate
 		}
 		return 1, nil
+	})
+	// The hung read is let go, and finished, before withFakeDocker's cleanup
+	// (registered earlier, so run later) puts the clock back: it reads the
+	// clock as it ends, and doing so while the clock was being put back was a
+	// data race the race detector caught now and then.
+	t.Cleanup(func() {
+		s.mu.Lock()
+		fl := s.flight
+		s.mu.Unlock()
+		close(gate)
+		if fl != nil {
+			<-fl.done
+		}
 	})
 	if v, _ := s.Get(); v != 1 {
 		t.Fatal(v)
