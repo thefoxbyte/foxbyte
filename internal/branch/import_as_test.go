@@ -139,3 +139,14 @@ func TestEnsureDblinkPutsItWhereTheTriggersLook(t *testing.T) {
 		}
 	}
 }
+
+// Every start runs ensureDblinkSQL, and the Blackbox records each REVOKE, held
+// or not: each is issued only while the grant it removes is there, so a start
+// that changes nothing records nothing.
+func TestEnsureDblinkRevokesOnlyWhatIsHeld(t *testing.T) {
+	revokes := strings.Count(ensureDblinkSQL, "EXECUTE format('REVOKE")
+	guarded := strings.Count(ensureDblinkSQL, "aclexplode(coalesce(p.proacl, acldefault('f', p.proowner)))")
+	if revokes != 2 || guarded != revokes {
+		t.Errorf("%d REVOKEs, %d of them guarded by a look at the grant", revokes, guarded)
+	}
+}
