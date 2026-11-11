@@ -567,6 +567,74 @@ export const getUnclassified = (branch: string) =>
 export const acceptColumn = (branch: string, id: number, note = '') =>
   req('POST', `${API}/api/branches/${branch}/personal-data/columns/${id}/accept`, note ? { note } : {}) as Promise<PIIColumn>
 
+// The Aadhaar exposure report (point 4.5): every row read for Aadhaar
+// numbers; each place kept by its row's key and the number's last four digits,
+// grouped by person, never the number.
+export type AadhaarRun = {
+  id: number
+  started: string
+  finished: string
+  actor: string
+  tables: number
+  columns: number
+  rows: number
+  numbers: number
+  people: number
+  listed: number
+  skipped: { object: string; reason: string }[] | null
+  limits: string[] | null
+}
+export type AadhaarColumn = {
+  schema: string
+  table: string
+  column: string
+  path: string
+  numbers: number
+  rows: number
+  listed: number
+  capped: boolean
+  since: string | null
+}
+export type AadhaarPerson = { person: number; masked: string; places: number; since: string; where: string[] | null }
+export type AadhaarReport = {
+  branch: string
+  run: AadhaarRun | null
+  columns: AadhaarColumn[] | null
+  people: AadhaarPerson[] | null
+  peopleListed: number
+  gone: number
+}
+export type AadhaarPlace = {
+  id: number
+  schema: string
+  table: string
+  column: string
+  path: string
+  row: string
+  last4: string
+  masked: string
+  person: number
+  firstSeen: string
+  lastSeen: string
+  rowCreated: string | null
+  since: string
+  gone: boolean
+}
+export type AadhaarPlaceFilter = { person?: number; column?: string; gone?: boolean; limit?: number }
+const aadhaarURL = (branch: string) => `${API}/api/branches/${branch}/personal-data/aadhaar`
+export const getAadhaar = (branch: string) => req('GET', aadhaarURL(branch)) as Promise<AadhaarReport>
+export const runAadhaar = (branch: string, tableTimeout?: number) =>
+  req('POST', `${aadhaarURL(branch)}/run`, tableTimeout ? { tableTimeout } : {}) as Promise<AadhaarReport>
+export const getAadhaarPlaces = (branch: string, f: AadhaarPlaceFilter) => {
+  const q = new URLSearchParams()
+  if (f.person) q.set('person', String(f.person))
+  if (f.column) q.set('column', f.column)
+  if (f.gone) q.set('gone', '1')
+  if (f.limit) q.set('limit', String(f.limit))
+  const qs = q.toString()
+  return req('GET', `${aadhaarURL(branch)}/places${qs ? '?' + qs : ''}`) as Promise<{ branch: string; places: AadhaarPlace[] | null }>
+}
+
 // The data grid's save (point 12.2): rows added, changed and deleted, applied
 // together as you, or not at all.
 export const saveRows = (branch: string, schema: string, table: string, changes: import('./gridquery').RowChange[]) =>

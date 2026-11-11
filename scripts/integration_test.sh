@@ -4057,6 +4057,99 @@ assert_eq "…and the table is still there; with the override, as the editor ask
   "$(pg pg-main "SELECT to_regclass('kt_renamed') IS NOT NULL")|$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST -d '{"sql":"DROP TABLE \"public\".\"kt_renamed\"","allow_destructive":true}' https://localhost:8080/api/branches/main/query | rderr)|$(pg pg-main "SELECT to_regclass('kt_renamed') IS NULL")" "t||t"
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS kt_child, kt_parent, kt_ex, kt_renamed CASCADE" >/dev/null
 
+echo "### 11ar. the Aadhaar exposure report: whose Aadhaar is exposed, where, and since when (point 4.5)"
+# Synthetic numbers only, the same as 11r's: 234567890124, 345678901238 and
+# 456789012341 pass Verhoeff. 4111 1111 1111 1111 is the usual test card, a
+# sixteen-digit number that must not be read as an Aadhaar.
+$S branch delete aadt >/dev/null 2>&1
+$S branch create aadt >/dev/null 2>&1
+pg pg-aadt "CREATE TABLE customers (id int PRIMARY KEY, name text, aadhaar text);
+  INSERT INTO customers VALUES (1, 'A Person', '2345 6789 0124'), (2, 'B Person', '456789012341'), (3, 'C Person', NULL);
+  -- created_at already there, so tracking it (below) keeps when each row was made.
+  CREATE TABLE tickets (id int PRIMARY KEY, notes text, created_at timestamptz);
+  INSERT INTO tickets VALUES
+    (9, 'customer read out 234567890124 on the call', '2026-01-15 10:00+00'),
+    (10, 'card 4111 1111 1111 1111, phone +91 98765 43210', '2026-01-16 10:00+00'),
+    (12, 'again: 4567-8901-2341', '2026-02-01 10:00+00');
+  CREATE TABLE orders (id bigint PRIMARY KEY, meta jsonb);
+  INSERT INTO orders VALUES (1, '{\"kyc\": {\"uid\": 345678901238}, \"status\": \"open\"}'), (2, '{\"by\": {\"456789012341\": \"seen\"}}');
+  CREATE TABLE nokey (note text);
+  INSERT INTO nokey VALUES ('345678901238'), ('nothing here');" >/dev/null
+$S track tickets --branch aadt >/dev/null 2>&1
+LEDGER_BEFORE="$(pg pg-aadt "SELECT count(*) FROM bb.schema_ledger")"
+RUNS_LOGGED="$($S audit --limit 1000 | grep -c 'personal-data.aadhaar')"
+AR="$($S pii aadhaar run --branch aadt 2>&1)"; AR_RC=$?
+assert_eq "fox pii aadhaar run reads every table and exits 0" \
+  "$AR_RC|$(grep -c '^Aadhaar exposure on aadt: run [0-9]*' <<<"$AR")|$(grep -c '^[0-9]* table(s), [0-9]* column(s) read; [0-9]* row(s) held twelve digits in its shape. 7 number(s) found, 3 distinct; 7 place(s) kept.' <<<"$AR")" "0|1|1"
+# The branch is made from main, so main's tables are read too: the counts of
+# tables and rows are main's as well, and only what was found is pinned.
+grep -q ' 7 number(s) found, 3 distinct; 7 place(s) kept.' <<<"$AR" || { echo "--- what it said ---"; head -12 <<<"$AR"; echo "--- end ---"; }
+AJ="$($S pii aadhaar --branch aadt --json 2>/dev/null)"
+assert_eq "…finds each number by column, inside JSON path by path, a key holding one hidden as *; not a card or a phone" \
+  "$(hjson "print(' '.join(sorted(c['schema']+'.'+c['table']+'.'+c['column']+(' '+c['path'] if c['path'] else '')+':'+str(c['numbers']) for c in d['columns'])))" <<<"$AJ")" \
+  "public.customers.aadhaar:2 public.nokey.note:1 public.orders.meta $.by.*:1 public.orders.meta $.kyc.uid:1 public.tickets.notes:2"
+assert_eq "…groups the places of one number as one person, shown by its last four digits, the most places first" \
+  "$(hjson "print([(p['masked'], p['places']) for p in d['people']])" <<<"$AJ")" \
+  "[('XXXX XXXX 2341', 3), ('XXXX XXXX 0124', 2), ('XXXX XXXX 1238', 2)]"
+P2341="$(hjson "print(d['people'][0]['person'])" <<<"$AJ")"
+PJ2341="$($S pii aadhaar places --person "$P2341" --branch aadt --json 2>/dev/null)"
+assert_eq "fox pii aadhaar places names a person's rows by their primary key" \
+  "$(hjson "print(sorted(p['table']+(' '+p['path'] if p['path'] else '')+' '+p['row'] for p in d))" <<<"$PJ2341")" \
+  "['customers id=2', 'orders $.by.* id=2', 'tickets id=12']"
+P0124="$(hjson "print([p['person'] for p in d['people'] if p['masked'].endswith('0124')][0])" <<<"$AJ")"
+assert_eq "…since when: a tracked row's created_at, when it is earlier than the first run" \
+  "$(hjson "print([p['since'][:10] for p in d['people'] if p['masked'].endswith('0124')][0])" <<<"$AJ")|$($S pii aadhaar places --person "$P0124" --branch aadt --json | hjson "print(sorted((p['table'], p['rowCreated'] is not None) for p in d))")" \
+  "2026-01-15|[('customers', False), ('tickets', True)]"
+assert_eq "…a row of a table with no primary key named by its position, and the report says so" \
+  "$($S pii aadhaar places --column public.nokey.note --branch aadt --json | hjson "print([p['row'][:6] for p in d])")|$(grep -c 'no primary key are named by their physical position (ctid).*public.nokey' <<<"$AR")" "['ctid=(']|1"
+assert_eq "…and says what it cannot claim: the check digit, no vault yet, the logs not read" \
+  "$(grep -c 'not that it was issued' <<<"$AR")|$(grep -c 'no Aadhaar vault in FoxByte yet' <<<"$AR")|$(grep -c 'Query history, the audit log' <<<"$AR")" "1|1|1"
+# The point of the design: the report must not become one more copy of the
+# numbers it finds, or a way to find them again.
+assert_eq "no full number is stored, nor its first eight digits, in any of the report's tables" \
+  "$(pg pg-aadt "SELECT count(*) FROM (SELECT r::text t FROM bb.aadhaar_runs r UNION ALL SELECT c::text FROM bb.aadhaar_columns c UNION ALL SELECT p::text FROM bb.aadhaar_places p) x
+     WHERE regexp_replace(t, '[ -]', '', 'g') ~ '(23456789|45678901|34567890)'")" "0"
+assert_eq "…and a client role cannot read it" \
+  "$(sudo docker exec -e PGPASSWORD=foxbyte pg-aadt psql -U dbadmin -d appdb -tAc "SET ROLE db_client; SELECT count(*) FROM bb.aadhaar_places" 2>&1 | grep -c 'permission denied')" "1"
+assert_eq "a run reads only: the Blackbox records nothing for it" "$(pg pg-aadt "SELECT count(*) FROM bb.schema_ledger")" "$LEDGER_BEFORE"
+assert_eq "…and it is in the security log, with counts and no digit of a number" \
+  "$($S audit --limit 1000 | grep -c 'personal-data.aadhaar')|$($S audit --limit 1000 | grep 'personal-data.aadhaar' | grep -cE '0124|2341|1238')" "$((RUNS_LOGGED+1))|0"
+
+# A second run: a number removed is gone; a table it could not read is not.
+# customers is held locked past the run's lock wait, so it is skipped, and its
+# places are not looked for, which is not the same as not found.
+RUN1="$(hjson "print(d['run']['id'])" <<<"$AJ")"
+pg pg-aadt "UPDATE tickets SET notes = 'number removed' WHERE id = 9" >/dev/null
+sudo docker exec -e PGPASSWORD=foxbyte pg-aadt psql -U dbadmin -d appdb -qc "BEGIN; LOCK TABLE customers IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(25); COMMIT;" >/dev/null 2>&1 &
+LOCKER=$!
+sleep 2
+AR2="$($S pii aadhaar run --branch aadt 2>&1)"
+wait "$LOCKER" 2>/dev/null
+AJ2="$($S pii aadhaar --branch aadt --json 2>/dev/null)"
+assert_eq "a table locked past the run's wait is skipped and said so" \
+  "$(grep -c 'not read: public.customers (it was locked by another session for longer than 10s)' <<<"$AR2")" "1"
+assert_eq "…a number no longer there is gone, and the skipped table's places are not" \
+  "$(hjson "print(d['gone'])" <<<"$AJ2")|$($S pii aadhaar places --gone --branch aadt --json | hjson "print([(p['table'], p['row'], p['masked']) for p in d])")" \
+  "1|[('tickets', 'id=9', 'XXXX XXXX 0124')]"
+assert_eq "…and a place found again keeps when it was first found" \
+  "$(pg pg-aadt "SELECT first_run = $RUN1 AND last_run > $RUN1 FROM bb.aadhaar_places WHERE table_name = 'tickets' AND row_key = 'id=12'")" "t"
+assert_eq "a table's time limit outside 1s to 1h is refused" \
+  "$($S pii aadhaar run --branch aadt --table-timeout 500ms >/dev/null 2>&1; echo $?)|$(code "$KEY" -H 'Content-Type: application/json' -X POST -d '{"tableTimeout":4000}' https://localhost:8080/api/branches/aadt/personal-data/aadhaar/run)" "1|400"
+AU=https://localhost:8080/api/branches/aadt/personal-data/aadhaar
+assert_eq "the API runs and reads for the branch's owner or an admin, and no one else" \
+  "$(code "$KEY" -X POST "$AU/run")|$(code "$KEY" "$AU")|$(code "$KEY" "$AU/places?person=$P2341")|$(code "$KA" "$AU")|$(code "$KA" -X POST "$AU/run")|$(code "$KA" https://localhost:8080/api/branches/main/personal-data/aadhaar)|$(code "$KA" -X POST https://localhost:8080/api/branches/main/personal-data/aadhaar/run)" \
+  "200|200|200|404|404|403|403"
+assert_eq "…refusing a person that is not a number, or a column not written schema.table.column" \
+  "$(code "$KEY" "$AU/places?person=abc")|$(code "$KEY" "$AU/places?column=notes")|$(code "$KEY" "$AU/places?limit=20000")" "400|400|400"
+assert_eq "…answering with the report, by person, last four digits only" \
+  "$(as "$KEY" "$AU" | hjson "print(d['run']['actor'], d['people'][0]['masked'], len(d['columns']))")" "test@foxbyte.dev XXXX XXXX 2341 5"
+$S branch delete aadt2 >/dev/null 2>&1
+$S branch create aadt2 --from aadt >/dev/null 2>&1
+assert_eq "the report travels with the branch: one made from it carries it" \
+  "$($S pii aadhaar --branch aadt2 --json | hjson "print(d['run']['id'] == $(as "$KEY" "$AU" | hjson "print(d['run']['id'])"))")" "True"
+$S branch delete aadt2 >/dev/null 2>&1
+$S branch delete aadt >/dev/null 2>&1
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

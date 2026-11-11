@@ -130,6 +130,68 @@ CREATE OR REPLACE TRIGGER pii_column_reviews_append_only BEFORE UPDATE OR DELETE
 CREATE OR REPLACE TRIGGER pii_column_reviews_no_truncate BEFORE TRUNCATE ON bb.pii_column_reviews
   FOR EACH STATEMENT EXECUTE FUNCTION bb.pii_append_only();
 
+-- The Aadhaar exposure report (point 4.5): every Aadhaar number in the
+-- branch's tables, found by reading every row, and kept as places. A place is
+-- where a number sits (a column, or a JSON path in one, and the row's primary
+-- key) and the number's last four digits, which UIDAI's own masked form shows.
+-- Never the number, and never a hash of it: a hash of Aadhaar is the reference
+-- key UIDAI forbids, and a number has few enough values to be found from one.
+--
+-- A place keeps when a run first and last saw it, so the report can say since
+-- when a number has been exposed. person groups the places of one number,
+-- within the run that last saw them, by the number held in memory for the run
+-- only: it is a run's numbering, not an identity kept across runs.
+CREATE TABLE IF NOT EXISTS bb.aadhaar_runs (
+  id           bigserial   PRIMARY KEY,
+  started_at   timestamptz NOT NULL,
+  finished_at  timestamptz NOT NULL,
+  actor        text        NOT NULL DEFAULT '',
+  tables_read  integer     NOT NULL,
+  columns_read integer     NOT NULL,
+  rows_read    bigint      NOT NULL,   -- rows the database's filter passed on
+  numbers      bigint      NOT NULL,   -- Aadhaar numbers found, place by place
+  people       integer     NOT NULL,   -- distinct numbers
+  listed       integer     NOT NULL,   -- places kept
+  skipped      jsonb       NOT NULL DEFAULT '[]',  -- [{object, reason}]
+  limits       jsonb       NOT NULL DEFAULT '[]'
+);
+
+-- What each run found in each column or path, counted in full even where
+-- only the first places were kept (capped).
+CREATE TABLE IF NOT EXISTS bb.aadhaar_columns (
+  run_id      bigint  NOT NULL REFERENCES bb.aadhaar_runs (id),
+  schema_name text    NOT NULL,
+  table_name  text    NOT NULL,
+  column_name text    NOT NULL,
+  json_path   text    NOT NULL DEFAULT '',
+  numbers     bigint  NOT NULL,
+  rows_with   bigint  NOT NULL,
+  listed      integer NOT NULL,
+  capped      boolean NOT NULL DEFAULT false,
+  PRIMARY KEY (run_id, schema_name, table_name, column_name, json_path)
+);
+
+CREATE TABLE IF NOT EXISTS bb.aadhaar_places (
+  id          bigserial   PRIMARY KEY,
+  schema_name text        NOT NULL,
+  table_name  text        NOT NULL,
+  column_name text        NOT NULL,
+  json_path   text        NOT NULL DEFAULT '',
+  row_key     text        NOT NULL,   -- id=42, or (a, b)=(1, x); ctid=(0,7) for a table with no primary key
+  last4       text        NOT NULL CHECK (last4 ~ '^[0-9]{4}$'),
+  person      integer     NOT NULL,
+  first_run   bigint      NOT NULL REFERENCES bb.aadhaar_runs (id),
+  last_run    bigint      NOT NULL REFERENCES bb.aadhaar_runs (id),
+  first_seen  timestamptz NOT NULL,
+  last_seen   timestamptz NOT NULL,
+  row_created timestamptz,             -- the row's created_at, on a tracked table (point 6.1)
+  UNIQUE (schema_name, table_name, column_name, json_path, row_key, last4)
+);
+CREATE INDEX IF NOT EXISTS aadhaar_places_run ON bb.aadhaar_places (last_run, person);
+
+REVOKE ALL ON bb.aadhaar_runs, bb.aadhaar_columns, bb.aadhaar_places FROM PUBLIC;
+REVOKE ALL ON SEQUENCE bb.aadhaar_runs_id_seq, bb.aadhaar_places_id_seq FROM PUBLIC;
+
 REVOKE ALL ON bb.pii_scans, bb.pii_findings, bb.pii_decisions, bb.pii_columns, bb.pii_column_reviews FROM PUBLIC;
 REVOKE ALL ON SEQUENCE bb.pii_scans_id_seq, bb.pii_findings_id_seq, bb.pii_decisions_id_seq,
   bb.pii_columns_id_seq, bb.pii_column_reviews_id_seq FROM PUBLIC;
