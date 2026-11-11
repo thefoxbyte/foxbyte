@@ -24,8 +24,14 @@ package branch
 // connections from inside the database to anything the container can reach
 // (audit GW-1). healDblink runs this on every start, so a branch made before
 // the change loses the grant the next time it starts.
+//
+// Each REVOKE is issued only while the grant it takes away is there. The
+// Blackbox records every GRANT and REVOKE, held or not, so revoking all 41
+// functions' grants again on each start wrote 82 unattributed entries into the
+// branch's Blackbox every time it started, and into a branch made from just
+// before an entry, after that entry.
 const ensureDblinkSQL = `DO $do$
-DECLARE s name; f regprocedure;
+DECLARE s name; f regprocedure; c oid;
 BEGIN
   SELECT n.nspname INTO s FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
    WHERE e.extname = 'dblink';
@@ -40,8 +46,14 @@ BEGIN
              JOIN pg_proc p ON p.oid = d.objid
             WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_extension'::regclass
               AND d.deptype = 'e' AND e.extname = 'dblink' LOOP
-    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f);
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'db_client') THEN
+    -- PUBLIC is grantee 0; a function with no ACL has the default one, which grants it.
+    IF EXISTS (SELECT 1 FROM pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                WHERE p.oid = f AND a.grantee = 0 AND a.privilege_type = 'EXECUTE') THEN
+      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f);
+    END IF;
+    SELECT oid INTO c FROM pg_roles WHERE rolname = 'db_client';
+    IF c IS NOT NULL AND EXISTS (SELECT 1 FROM pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                WHERE p.oid = f AND a.grantee = c AND a.privilege_type = 'EXECUTE') THEN
       EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM db_client', f);
     END IF;
   END LOOP;
