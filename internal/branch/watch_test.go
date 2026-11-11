@@ -142,12 +142,11 @@ func TestWitnessAnswersOneQuestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer up.Close()
-	down, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	downAddr := down.Addr().String()
-	down.Close() // nothing is listening there now
+	// Port 0: nothing can listen there, so connecting fails at once on every
+	// system. A port freed by closing a listener was used before, and the test
+	// servers below were sometimes handed that very port, so the "down" primary
+	// answered (seen in CI).
+	downAddr := "127.0.0.1:0"
 
 	t.Run("it reaches a primary that is up", func(t *testing.T) {
 		srv := httptest.NewServer(WitnessHandler(up.Addr().String(), ""))
