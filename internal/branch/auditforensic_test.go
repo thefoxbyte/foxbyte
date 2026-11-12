@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func settingsIn(t *testing.T) {
@@ -149,5 +150,43 @@ func TestForensicText(t *testing.T) {
 	_ = appendForensic("2026-11-04", recs)
 	if n, err := pruneForensic("2026-10-05"); err != nil || n != 1 || len(forensicDays()) != 1 {
 		t.Errorf("prune: %d %v %v", n, err, forensicDays())
+	}
+}
+
+// The Aadhaar report's logs part reads a branch's texts, only those it keeps,
+// each with its record's time, or its day's when the record is not there.
+func TestScanForensicTexts(t *testing.T) {
+	storeIn(t)
+	settingsIn(t)
+	recs := chainOf(t, lineForensic, lineObject)
+	recs[0].Text = "UPDATE people SET uid = '2345 6789 0124'"
+	if err := appendForensic("2026-11-04", recs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appendDay("2026-11-04", recs); err != nil {
+		t.Fatal(err)
+	}
+	// A day with a text whose record is not in the store, and one on another
+	// branch.
+	if err := rewriteForensic("2026-11-05", []forensicText{
+		{Seq: 99, Branch: recs[0].Branch, Login: "eve", Text: "SELECT 'uid 2345 6789 0124'"},
+		{Seq: 100, Branch: "other", Login: "eve", Text: "SELECT 'uid 2345 6789 0124'"},
+		{Seq: 101, Branch: recs[0].Branch, Login: "eve", Text: "SELECT 1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var got []ForensicText
+	n, err := ScanForensicTexts(recs[0].Branch, func(s string) bool { return strings.Contains(s, "2345") }, func(f ForensicText) {
+		got = append(got, f)
+	})
+	if err != nil || n != 3 || len(got) != 2 {
+		t.Fatalf("n=%d err=%v %+v", n, err, got)
+	}
+	want, _ := time.Parse(time.RFC3339Nano, recs[0].Time)
+	if got[0].Seq != recs[0].Seq || !got[0].At.Equal(want) || got[0].Text != recs[0].Text {
+		t.Errorf("first: %+v (record at %s)", got[0], recs[0].Time)
+	}
+	if got[1].Seq != 99 || got[1].Login != "eve" || got[1].At.Format("2006-01-02T15:04") != "2026-11-05T00:00" {
+		t.Errorf("second: %+v", got[1])
 	}
 }

@@ -4150,6 +4150,107 @@ assert_eq "the report travels with the branch: one made from it carries it" \
 $S branch delete aadt2 >/dev/null 2>&1
 $S branch delete aadt >/dev/null 2>&1
 
+echo "### 11as. the Aadhaar exposure report's logs part: query history, the audit log's text, the Blackbox (point 4.5b)"
+# Synthetic numbers, each passing Verhoeff, used nowhere else in the suite:
+# the branch is made from main, and main's Blackbox keeps other sections'
+# statements, numbers and all. 298765432101 (A, in a table and in the logs),
+# 387654321095 (B, a table only), 476543210985 (C, a query's error only),
+# 565432109873 (D, the Blackbox only), 654321098763 (E, the audit log's text
+# only). alice owns the branch and is not an admin; test@ is the admin.
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+$S branch delete aadl >/dev/null 2>&1
+$S branch create aadl >/dev/null 2>&1
+$S branch owner aadl alice@foxbyte.dev >/dev/null 2>&1
+# One statement a call: the Blackbox keeps a DDL statement's whole query
+# string, and an INSERT run with the CREATE would put its numbers there too.
+pg pg-aadl "CREATE TABLE uids (id int PRIMARY KEY, uid text UNIQUE)" >/dev/null
+pg pg-aadl "INSERT INTO uids VALUES (1, '2987 6543 2101'), (2, '387654321095')" >/dev/null
+pg pg-aadl "GRANT ALL ON uids TO db_client" >/dev/null
+pg pg-aadl "ALTER TABLE uids ADD CONSTRAINT uid_not_test CHECK (uid <> '565432109873')" >/dev/null
+AQ=https://localhost:8080/api/branches/aadl
+as "$KA" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT id FROM uids WHERE uid = '2987 6543 2101'\"}" "$AQ/query" >/dev/null
+as "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT ('4765' || '43210985')::int\"}" "$AQ/query" >/dev/null
+code "$KEY" -X PUT -H 'Content-Type: application/json' -d '{}' "$AQ/audit/tables/public/uids" >/dev/null
+$S audit-log mode forensic --branch aadl --reason 'aadhaar logs test' --yes >/dev/null 2>&1
+PGPASSWORD="$KEY" psql "$GATEWAY/aadl?sslmode=require" -X -q -tA -c "UPDATE uids SET uid = uid WHERE uid IN ('2987 6543 2101', '654321098763')" >/dev/null 2>&1
+# The collector moves raw lines into the store once a minute; collect now.
+for i in $(seq 1 30); do $S audit-log collect >/dev/null 2>&1; forensic_all | grep -q '654321098763' && break; sleep 1; done
+assert_eq "(setup) the audit log kept the UPDATE's text" "$(forensic_all | grep -c '654321098763' | awk '{print ($1 >= 1)}')" "1"
+LEDGER_BEFORE="$(pg pg-aadl "SELECT count(*) FROM bb.schema_ledger")"
+LOGGED0="$($S audit --limit 1000 | grep -c 'personal-data.aadhaar')"
+AL="$($S pii aadhaar run --branch aadl --logs 2>&1)"; AL_RC=$?
+assert_eq "fox pii aadhaar run --logs reads the tables and the logs, and exits 0" \
+  "$AL_RC|$(grep -c '^The logs (admins only), read with run [0-9]*: [0-9]* query history entr(ies), [0-9]* audit statement text(s), [0-9]* Blackbox entr(ies).' <<<"$AL")|$(grep -c 'what they hold is in the logs part, for admins only' <<<"$AL")" "0|1|1"
+grep -q '^The logs (admins only)' <<<"$AL" || { echo "--- what it said ---"; tail -30 <<<"$AL"; echo "--- end ---"; }
+ALJ="$($S pii aadhaar --branch aadl --json 2>/dev/null)"
+who() { hjson "p=[p for p in d['people'] if p['masked'].endswith('$1')]; print(sorted(p[0]['where']) if p else None)" <<<"$ALJ"; }
+assert_eq "a number in a table and in the logs is one person, with each place it is" \
+  "$(who 2101)" "['audit log', 'public.uids.uid', 'query history']"
+assert_eq "…a number in the logs only is a person of its own: an error, the Blackbox, the audit log's text" \
+  "$(who 0985)|$(who 9873)|$(who 8763)" "['query history']|['Blackbox']|['audit log']"
+assert_eq "…a number in the tables only is not in the logs" "$(who 1095)" "['public.uids.uid']"
+assert_eq "…and the logs part is read with this run, so its people are the report's" \
+  "$(hjson "print(d['logs']['linked'], d['logs']['run']['branchRun'] == d['run']['id'], d['logs']['run']['skipped'])" <<<"$ALJ")" "True True []"
+PA="$(hjson "print([p['person'] for p in d['people'] if p['masked'].endswith('2101')][0])" <<<"$ALJ")"
+assert_eq "fox pii aadhaar places --logs --person names the entries: which log, who made it" \
+  "$($S pii aadhaar places --logs --person "$PA" --branch aadl --json | hjson "print(sorted((p['source'], p['field'], p['actor']) for p in d))")" \
+  "[('audit', '', 'test@foxbyte.dev'), ('history', 'sql', 'alice@foxbyte.dev')]"
+assert_eq "…a query's error is read too: it can quote a value the statement did not" \
+  "$($S pii aadhaar places --logs --source history --branch aadl --json | hjson "print([(p['field'], p['actor']) for p in d if p['last4'] == '0985'])")" \
+  "[('error', 'test@foxbyte.dev')]"
+assert_eq "…and the Blackbox entry is the one that added the constraint" \
+  "$($S pii aadhaar places --logs --source blackbox --branch aadl --json | hjson "print([p['entry'] for p in d if p['last4'] == '9873'])")" \
+  "[$(pg pg-aadl "SELECT id FROM bb.schema_ledger WHERE statement LIKE '%uid_not_test%'")]"
+assert_eq "…and prints them to read" \
+  "$($S pii aadhaar places --logs --person "$PA" --branch aadl | grep -c 'XXXX XXXX 2101  *query history  *[0-9]* (sql)  *alice@foxbyte.dev')" "1"
+assert_eq "no full number is kept in the install's store, nor its first eight digits" \
+  "$(python3 - "$HOME/$BRAND_STATE_DIR/auth.db" <<'PYA'
+import re,sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+rows=[str(r) for t in ('aadhaar_log_runs','aadhaar_log_places') for r in c.execute('SELECT * FROM '+t)]
+print(sum(1 for r in rows if re.search('(29876543|38765432|47654321|56543210|65432109)', r.replace(' ','').replace('-',''))), len(rows) > 0)
+PYA
+)" "0 True"
+assert_eq "…nor in the branch: the logs' places are not in its tables" \
+  "$(pg pg-aadl "SELECT count(*) FROM bb.aadhaar_places WHERE row_key ~ 'history|audit|blackbox'")" "0"
+assert_eq "a run reads only: the Blackbox records nothing for it" "$(pg pg-aadl "SELECT count(*) FROM bb.schema_ledger")" "$LEDGER_BEFORE"
+assert_eq "…and the security log has it, with the logs' counts and no digit of a number" \
+  "$(( $($S audit --limit 1000 | grep -c 'personal-data.aadhaar') - LOGGED0 ))|$($S audit --limit 1000 | grep 'personal-data.aadhaar' | grep -c '; logs: ')|$($S audit --limit 1000 | grep 'personal-data.aadhaar' | grep -cE 'XXXX|29876543|38765432|47654321|56543210|65432109')" "1|1|0"
+
+# The branch's owner, not an admin: the tables' report, never the logs.
+AU=https://localhost:8080/api/branches/aadl/personal-data/aadhaar
+printf 'password123\n' | $S user create aad-none@foxbyte.dev >/dev/null 2>&1
+KN="$($S apikey create aad-none@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+assert_eq "an owner who is not an admin may not read the logs, or run a read of them" \
+  "$(code "$KA" -H 'Content-Type: application/json' -X POST -d '{"logs":true}' "$AU/run")|$(code "$KA" "$AU/log-places")|$(as "$KA" "$AU" | hjson "print('logs' in d, d['run'] is not None)")" "403|403|False True"
+assert_eq "…their report has no log in it, though the tables' people are there" \
+  "$(as "$KA" "$AU" | hjson "print(sorted(w for p in d['people'] for w in p['where'] if not w.startswith('public.')), [p['masked'] for p in d['people'] if p['masked'].endswith('0985')])")" "[] []"
+assert_eq "…someone with no access to the branch gets nothing either" "$(code "$KN" "$AU/log-places")|$(code "$KN" "$AU")" "404|404"
+assert_eq "an owner's run reads the tables only" \
+  "$(code "$KA" -X POST "$AU/run")|$(as "$KA" "$AU" | hjson "print('logs' in d)")" "200|False"
+assert_eq "…after which an admin's report lists the logs' people apart: they were read with an earlier run" \
+  "$(as "$KEY" "$AU" | hjson "print(d['logs']['linked'], [p['masked'] for p in d['logs']['people'] if p['masked'].endswith('2101')], [w for p in d['people'] for w in p['where'] if not w.startswith('public.')])")" \
+  "False ['XXXX XXXX 2101'] []"
+assert_eq "…and fox pii aadhaar says so" \
+  "$($S pii aadhaar --branch aadl | grep -c 'before the latest, so its people are numbered apart')" "1"
+
+# Gone: alice deletes her history, and the next read with the logs no longer
+# finds her entry there; the audit text and the Blackbox are still there.
+as "$KA" -X DELETE "$HU/history" >/dev/null
+assert_eq "an admin runs it with the logs through the API" \
+  "$(code "$KEY" -H 'Content-Type: application/json' -X POST -d '{"logs":true}' "$AU/run")" "200"
+ALG="$(as "$KEY" "$AU")"
+assert_eq "…an entry deleted since is gone; the others are found again" \
+  "$(hjson "print(d['logs']['gone'], d['logs']['linked'], sorted(s['source'] for s in d['logs']['sources']))" <<<"$ALG")|$(as "$KEY" "$AU/log-places?gone=1" | hjson "print([(p['source'], p['actor'], p['masked'], p['gone']) for p in d['places']])")" \
+  "1 True ['audit', 'blackbox', 'history']|[('history', 'alice@foxbyte.dev', 'XXXX XXXX 2101', True)]"
+assert_eq "…a log the API does not know is refused" \
+  "$(code "$KEY" "$AU/log-places?source=gateway")|$(code "$KEY" "$AU/log-places?person=x")" "400|400"
+assert_eq "a run without --logs still says the logs were not read" \
+  "$($S pii aadhaar run --branch aadl 2>&1 | grep -c 'Query history, the audit log.s statement text and the Blackbox are not read by this run')" "1"
+$S audit-log mode default --branch aadl >/dev/null 2>&1
+$S branch delete aadl >/dev/null 2>&1
+$S audit-log off --yes >/dev/null 2>&1; main_up
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

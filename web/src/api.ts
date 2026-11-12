@@ -595,7 +595,14 @@ export type AadhaarColumn = {
   capped: boolean
   since: string | null
 }
-export type AadhaarPerson = { person: number; masked: string; places: number; since: string; where: string[] | null }
+export type AadhaarPerson = {
+  person: number
+  masked: string
+  places: number
+  since: string
+  where: string[] | null
+  logs?: Partial<Record<AadhaarLogSource, number>> // places in each log, with the logs part
+}
 export type AadhaarReport = {
   branch: string
   run: AadhaarRun | null
@@ -603,7 +610,50 @@ export type AadhaarReport = {
   people: AadhaarPerson[] | null
   peopleListed: number
   gone: number
+  logs?: AadhaarLogs // the logs part (4.5b): admins only, once a run has read them
 }
+
+// The logs part (point 4.5b): the branch's query history, the audit log's
+// statement text and its Blackbox, read with its tables. Admins only.
+export type AadhaarLogSource = 'history' | 'audit' | 'blackbox'
+export const aadhaarLogName: Record<AadhaarLogSource, string> = { history: 'query history', audit: 'audit log', blackbox: 'Blackbox' }
+export type AadhaarLogRun = {
+  id: number
+  branch: string
+  branchRun: number
+  started: string
+  finished: string
+  actor: string
+  read: Partial<Record<AadhaarLogSource, number>> | null
+  numbers: number
+  people: number
+  linked: number
+  listed: number
+  skipped: { source: AadhaarLogSource; reason: string }[] | null
+  limits: string[] | null
+}
+export type AadhaarLogs = {
+  run: AadhaarLogRun
+  linked: boolean // read with the latest run of the tables: its people are the report's
+  sources: { source: AadhaarLogSource; entries: number; places: number; since: string | null }[] | null
+  people: AadhaarPerson[] | null
+  gone: number
+}
+export type AadhaarLogPlace = {
+  id: number
+  source: AadhaarLogSource
+  entry: number
+  field: string
+  last4: string
+  masked: string
+  actor: string
+  at: string
+  person: number
+  firstSeen: string
+  lastSeen: string
+  gone: boolean
+}
+export type AadhaarLogFilter = { person?: number; source?: AadhaarLogSource; gone?: boolean; limit?: number }
 export type AadhaarPlace = {
   id: number
   schema: string
@@ -623,8 +673,8 @@ export type AadhaarPlace = {
 export type AadhaarPlaceFilter = { person?: number; column?: string; gone?: boolean; limit?: number }
 const aadhaarURL = (branch: string) => `${API}/api/branches/${branch}/personal-data/aadhaar`
 export const getAadhaar = (branch: string) => req('GET', aadhaarURL(branch)) as Promise<AadhaarReport>
-export const runAadhaar = (branch: string, tableTimeout?: number) =>
-  req('POST', `${aadhaarURL(branch)}/run`, tableTimeout ? { tableTimeout } : {}) as Promise<AadhaarReport>
+export const runAadhaar = (branch: string, tableTimeout?: number, logs?: boolean) =>
+  req('POST', `${aadhaarURL(branch)}/run`, { ...(tableTimeout ? { tableTimeout } : {}), ...(logs ? { logs } : {}) }) as Promise<AadhaarReport>
 export const getAadhaarPlaces = (branch: string, f: AadhaarPlaceFilter) => {
   const q = new URLSearchParams()
   if (f.person) q.set('person', String(f.person))
@@ -634,6 +684,17 @@ export const getAadhaarPlaces = (branch: string, f: AadhaarPlaceFilter) => {
   const qs = q.toString()
   return req('GET', `${aadhaarURL(branch)}/places${qs ? '?' + qs : ''}`) as Promise<{ branch: string; places: AadhaarPlace[] | null }>
 }
+export const getAadhaarLogPlaces = (branch: string, f: AadhaarLogFilter) => {
+  const q = new URLSearchParams()
+  if (f.person) q.set('person', String(f.person))
+  if (f.source) q.set('source', f.source)
+  if (f.gone) q.set('gone', '1')
+  if (f.limit) q.set('limit', String(f.limit))
+  const qs = q.toString()
+  return req('GET', `${aadhaarURL(branch)}/log-places${qs ? '?' + qs : ''}`) as Promise<{ branch: string; places: AadhaarLogPlace[] | null }>
+}
+// Whether the signed-in account is an admin (GET /api/account).
+export const getAccount = () => req('GET', `${API}/api/account`) as Promise<{ admin: boolean }>
 
 // The data grid's save (point 12.2): rows added, changed and deleted, applied
 // together as you, or not at all.

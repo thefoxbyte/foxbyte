@@ -126,11 +126,14 @@ Stack:
                        who has gone quiet, and the applications that assert their users (Enterprise)
   pii unclassified | accept <column-id> [--note "…"]
                        What appeared since a branch's first scan, not reviewed; accept one as holding nothing
-  pii aadhaar run [--branch b] [--table-timeout 5m] [--json]
+  pii aadhaar run [--branch b] [--table-timeout 5m] [--logs] [--json]
                        Read every row for Aadhaar numbers: where each is, by row and last four
-                       digits, grouped by person, and since when; never the number (Enterprise)
+                       digits, grouped by person, and since when; never the number (Enterprise).
+                       --logs reads the branch's query history, audit text and Blackbox too
   pii aadhaar [--branch b] [--json] | places [--person n] [--column s.t.c] [--gone] [--limit n]
                        The latest exposure report, by column and by person; or its places
+  pii aadhaar places --logs [--source history|audit|blackbox] [--person n] [--gone]
+                       The log entries holding a number: which, who made it and when
   app [list|show <name>] [--json]
                        The applications that may say which of their users a transaction
                        acts for, and the "aud" their tokens name

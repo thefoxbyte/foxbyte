@@ -48,6 +48,9 @@ import (
 //   - query_history, saved_queries, history_optout, history_settings:
 //     deliberately not. The SQL people type is the last thing to replicate
 //     (history.go, saved.go), and the settings are this node's.
+//   - aadhaar_log_runs, aadhaar_log_places: deliberately not. Where this
+//     node's logs hold an Aadhaar number, and who typed it (aadhaarlog.go): of
+//     this node's history and audit log, and as unfit to carry as they are.
 //   - branch_activity: deliberately not. When the console last used a branch
 //     is for this node's own idle reaper (branchuse.go).
 //   - security_events: deliberately not. It is a hash chain, and a chain is a
