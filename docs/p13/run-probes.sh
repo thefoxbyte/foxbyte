@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Runs the vault design's probes (docs/FOX_P13_Vault_Design.md, section 3) in a
+# Runs the vault design's probes (docs/FOX_P13_Vault_Design.md, section 4) in a
 # throwaway Debian container with SoftHSM2. Nothing touches an install.
 # Usage, in the test VM, from the repository: sh docs/p13/run-probes.sh
 set -eu
