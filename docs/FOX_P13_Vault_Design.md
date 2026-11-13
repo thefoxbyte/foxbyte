@@ -1,99 +1,160 @@
-# Point 13: the Aadhaar vault — design
+# Point 13: the vault (Aadhaar first) — design
 
-**Status:** proposed for agreement. Two decisions were taken before writing,
-on 13 November 2026 (section 16, decisions 1 and 2). This answers point 13 of
-the review plan (`docs/FOX_Expert_Review_Plan.md`, point 13): an Aadhaar Data
-Vault for entities that do not have one. It was written against `main` at
-`8dc47ad`, after the Aadhaar exposure report (4.5, #232 and #233) shipped.
+**Status:** proposed for agreement. Three decisions were taken on 13 November
+2026, the first two before writing and the third after the first draft
+(section 17, decisions 1 to 3). This answers point 13 of the review plan
+(`docs/FOX_Expert_Review_Plan.md`, point 13). The plan asks for an Aadhaar
+Data Vault for entities that do not have one. This design builds a **general
+vault** for sensitive values, and Aadhaar is its first kind, held to UIDAI's
+rules. It was written against `main` at `8dc47ad`, after the Aadhaar exposure
+report (4.5, #232 and #233) shipped.
 
-UIDAI's Circular No. 14 of 2025 was read in full (section 2). What this
+UIDAI's Circular No. 14 of 2025 was read in full (section 3). What this
 design says about a PKCS#11 token was checked on SoftHSM2 2.6.1 in a
-throwaway container in the test VM (section 3), not taken from documentation
+throwaway container in the test VM (section 4), not taken from documentation
 alone. The scripts are in `docs/p13/`. Claims that still need the prototype
 are marked **(prototype)**.
 
-**What a reader is asked to decide** (section 16 lists each with the
+**What a reader is asked to decide** (section 17 lists each with the
 recommendation):
 
 1. *(agreed 13 Nov)* The vault talks to an HSM through PKCS#11 from the first
    build. FoxByte's own software key is a SoftHSM2 token behind the same
-   interface, labelled "not UIDAI-compliant: trials and testing only".
+   interface, labelled as not compliant wherever a kind's rules require an
+   HSM (Aadhaar's do).
 2. *(agreed 13 Nov)* One vault per install: a separate database, in its own
    container and its own network, reached only through FoxByte's vault
    service. Never a schema inside each branch.
-3. Each number is encrypted inside the HSM, one call per record, rather than
-   with a data key unwrapped into memory (section 5).
-4. One reference key per number, found again through a keyed index that is
-   computed in the HSM and never leaves the vault (section 6).
-5. Two reference-key formats: an opaque one by default, and a 12-digit one
-   for legacy columns that cannot hold anything else (section 6).
-6. Detokenising is its own permission, granted by admins only, with a stated
-   purpose on every call, every call logged, and a rate limit (section 8).
+3. *(agreed 13 Nov)* A general vault with **kinds**. Each kind has its own
+   check, keys, reference-key formats, permissions and rules. Aadhaar is the
+   first kind, and keeps every UIDAI rule (section 2).
+4. Each value is encrypted inside the HSM, one call per record, rather than
+   with a data key unwrapped into memory (section 6).
+5. One reference key per value within a kind, found again through a keyed
+   index that is computed in the HSM and never leaves the vault (section 7).
+6. Reference-key formats: an opaque one for every kind, with the kind in its
+   prefix, and a format-preserving one per kind for legacy columns that
+   cannot hold anything else (section 7).
+7. Detokenising is its own permission per kind, granted by admins only, with
+   a stated purpose on every call, every call logged, and a rate limit
+   (section 9).
+8. The first build ships two kinds: Aadhaar, and a general text kind with no
+   check. PAN, card numbers and the others follow as small steps (section 2).
 
 ---
 
 ## 1. What the vault will be, and what it will not
 
-**It will be:** the one place where an install keeps Aadhaar numbers, and
-the eKYC data that comes with them.
-- Applications hand a number to the vault and keep the **reference key** it
+**It will be:** the one place where an install keeps its most sensitive
+values: Aadhaar numbers first, and then PAN, card numbers, bank accounts,
+passport numbers, or any value a customer chooses.
+- Applications hand a value to the vault and keep the **reference key** it
   returns. Their own tables hold only reference keys.
-- Each number is encrypted with AES-256 inside an HSM. FoxByte never holds
+- Each value is encrypted with AES-256 inside an HSM. FoxByte never holds
   the key, and neither does the vault's database.
-- Getting the number back (**detokenising**) is a separate, audited
+- Getting the value back (**detokenising**) is a separate, audited
   permission.
-- Every access is logged in a hash-chained log, and the evidence a UIDAI
-  audit asks for comes from one command.
-- Numbers already sitting in ordinary tables, which the exposure report (4.5)
-  finds, can be moved into the vault, with reference keys left behind, on a
-  branch first.
+- Every access is logged in a hash-chained log. The evidence an auditor asks
+  for comes from one command, against the rules of each kind (UIDAI's for
+  Aadhaar).
+- Values already sitting in ordinary tables can be moved into the vault, with
+  reference keys left behind, on a branch first. For Aadhaar, the exposure
+  report (4.5) finds them; for other kinds, the PII scanner's confirmed
+  marks (4.1, 4.6) do.
 
 **It will not be:**
-- **The HSM.** The customer supplies a FIPS 140-2 Level 3 HSM, on premises or
-  on a MeitY-empanelled Government Community Cloud. FoxByte talks to it. The
-  software token FoxByte ships is for trials and tests, and says so
-  everywhere.
-- **The customer's hosting, network zone or SOC 2 audit.** The circular puts
-  these on the entity (section 2). FoxByte isolates the vault on the machine
+- **A secrets manager.** Passwords, API keys and certificates that programs
+  use belong in a secrets manager (HashiCorp Vault and the like). This vault
+  keeps personal data that people and applications refer to by a reference
+  key, and rarely read back.
+- **The HSM.** For Aadhaar the customer supplies a FIPS 140-2 Level 3 HSM, on
+  premises or on a MeitY-empanelled Government Community Cloud. FoxByte talks
+  to it. The software token FoxByte ships is for trials and tests, and says so
+  wherever a kind's rules require an HSM.
+- **The customer's hosting, network zone or audits.** UIDAI's circular puts
+  these on the entity (section 3). FoxByte isolates the vault on the machine
   it runs on; the network zone around that machine is the customer's.
 - **Protection from the HSM's own administrators**, or from someone who has
   both the token's PIN and the HSM. That is the HSM's job.
 - **Masking.** Masking (point 7) hides values from people who should not see
-  them. The vault takes the numbers out of the business database altogether.
+  them. The vault takes the values out of the business database altogether.
 - **An integration with another vault product.** That needs the other
   product's own API; one is named once a design partner picks it (plan,
   phase 3).
 
 ---
 
-## 2. What UIDAI requires: Circular No. 14 of 2025
+## 2. Kinds
+
+A **kind** is what a value is. The vault's machinery (the HSM, encryption,
+reference keys, the access log, permissions, migration) is the same for
+every kind. What differs is in the kind:
+
+| Part of a kind | What it says | Aadhaar's |
+|---|---|---|
+| Check | what a value must look like before it is stored; a value that fails is refused | 12 digits, the first 2 to 9, passing Verhoeff (the PII scanner's own check, 4.1) |
+| Normal form | how a value is written before it is indexed, so the same value is found again | digits only: spaces and hyphens removed |
+| Keys | its own data key and index key in the HSM, so kinds never share a key | `vault-aadhaar-data-<n>`, `vault-aadhaar-index-<n>` |
+| Reference-key formats | the opaque format, with the kind's prefix; a legacy format that can never pass the check | `AR…`; 12 digits starting with 1 |
+| Connected data | what may be stored with a value | the eKYC XML (para 2) |
+| HSM required | whether the kind's rules require an HSM; if so, a software token is shown as not compliant | yes (para 8) |
+| Display | how a value is shown to someone allowed to see it, before they choose to reveal it | the last four digits |
+| Where it is found | what finds values of the kind outside the vault | the exposure report (4.5) |
+| Rules | the regulation its evidence is checked against | UIDAI Circular No. 14 of 2025 (section 3) |
+
+**The kinds, and when** (decision 8):
+
+| Kind | Check | Prefix | Rules | When |
+|---|---|---|---|---|
+| Aadhaar | as above | `AR` | UIDAI Circular No. 14 of 2025 | 13.1 |
+| Text | none: any value up to a size limit, as given | `TX` | none of its own; the customer's | 13.1 |
+| PAN | the scanner's PAN check | `PN` | mapped when built | after 13.4 |
+| Card number | the scanner's Luhn check, 13 to 19 digits | `CN` | PCI DSS, mapped when built | after 13.4 |
+| Bank account, passport, voter ID, phone, email | the scanner's checks, where it has one | own prefix | mapped when built | as customers ask |
+
+- **The text kind** is for anything without a kind of its own. It has no
+  check, so it cannot have a legacy format, and its evidence says only what
+  the vault does, against no regulation.
+- **A new kind is code, not configuration.** A kind's check and legacy
+  format decide what is safe to store and what can never be mistaken for a
+  real value, so each is reviewed and tested like any other feature. A
+  customer cannot define one at run time **(later: customer-defined kinds
+  with the text kind's limits)**.
+- **Each kind's rules** are mapped clause by clause, as UIDAI's are in
+  section 3, when the kind is built, never before. Until then the evidence
+  says "no rules mapped".
+
+---
+
+## 3. Aadhaar's rules: UIDAI Circular No. 14 of 2025
 
 The circular is dated 4 November 2025. It supersedes the 2017 vault circular
 (25 July 2017) and Circular 8 of 2025. It is read together with the 2017 HSM
 circular (22 June 2017). This table is the mapping the plan asks to keep
 under version control. Each row says whether FoxByte meets the clause, or
-whose job it is.
+whose job it is. It applies to the Aadhaar kind; most of it is how the vault
+works for every kind.
 
 | Para | What it requires | How the vault meets it | Whose |
 |---|---|---|---|
-| 2 | Aadhaar numbers and connected data (such as eKYC XML) are kept in a separate secure database or system, the only place they are kept | A separate vault database, its own container and network (section 4); connected data stored encrypted beside the number (section 7) | FoxByte |
-| 3 | Reference keys, demographic data and photos may stay in the local database, encrypted, as long as the number is not there | Branches keep reference keys; the exposure report checks that no number is left (section 14) | FoxByte, then the customer |
+| 2 | Aadhaar numbers and connected data (such as eKYC XML) are kept in a separate secure database or system, the only place they are kept | A separate vault database, its own container and network (section 5); connected data stored encrypted beside the number (section 8) | FoxByte |
+| 3 | Reference keys, demographic data and photos may stay in the local database, encrypted, as long as the number is not there | Branches keep reference keys; the exposure report checks that no number is left (section 15) | FoxByte, then the customer |
 | 4 | No storing the number or related data from what a holder typed into an authentication or eKYC request | The authentication application's job; the exposure report finds numbers left in logs and tables | Customer; FoxByte reports |
 | 5 | The vault is on premises, on a MeitY-empanelled GCC cloud, or a vault-as-a-service from a requesting entity | FoxByte runs wherever the customer installs it | Customer |
 | 6 | GCC or vault-as-a-service: an annual SOC 2 Type II audit by a CERT-In empanelled auditor | Not FoxByte's; the evidence lists it as declared by the customer | Customer |
-| 7(a) | A GCC or vault-as-a-service provider keeps each entity's vault logically separate | One vault per install (section 4) | FoxByte, per install |
-| 7(b) | Each number has a reference key; the mapping is kept in the vault | The vault's records table (section 7) | FoxByte |
-| 7(c) | Business systems store only the reference key | Applications call the vault; migration replaces numbers (phase 3) | FoxByte and the customer |
-| 7(d) | A single logical instance per entity; access through internal systems only | One vault per install; no published port (section 10) | FoxByte |
-| 7(e) | Encrypted with AES-256 or stronger | AES-256-GCM in the HSM (section 5) | FoxByte |
-| 7(f) | HA and DR, at the same level of security; dual redundant links to the ASAs | Backups and a standby of the vault database (section 12); the HSM's keys at the DR site; the links are the customer's | Both |
-| 7(g) | The vault and the referencing system in a highly restricted network zone | Inside the machine: an internal network with only the vault service (section 10). Around it: the customer's | Both |
-| 7(h) | Only trusted channels and secure APIs; all access through authenticated applications with authentication, authorisation and logging | The vault API, behind FoxByte's sign-in and API keys; every call logged (sections 8 and 9) | FoxByte |
-| 7(i) | Access control, monitoring and alerting against unauthorised access; strict IAM; all access logged and monitored | Permissions by admins only, rate limits, findings in `fox check`, the access log (sections 8 and 9) | FoxByte |
-| 7(j) | Secure deletion and update, as the entity's retention policy requires | Delete and update by reference key; what lingers in backups and how it is shredded (section 11) | FoxByte |
-| 7(k) | Recovering the number from one or many reference keys must not be computationally feasible. **Hashing the number is not allowed as a reference key** | Reference keys are random, with no relation to the number (section 6) | FoxByte |
-| 8 | An HSM is **mandatory** for encrypting and decrypting vault data, on premises, on GCC, or with a vault-as-a-service | PKCS#11 from the first build (section 5) | FoxByte talks to it; the customer supplies it |
-| 9 | The HSM is FIPS 140-2 Level 3 or higher, logically separate per entity, and supports key generation, secure key storage, multi-factor multi-role access control and audit logging | The customer's HSM. FoxByte generates keys in it and reads back that they cannot leave it (section 3); the certificate is declared by the customer | Customer |
+| 7(a) | A GCC or vault-as-a-service provider keeps each entity's vault logically separate | One vault per install (section 5) | FoxByte, per install |
+| 7(b) | Each number has a reference key; the mapping is kept in the vault | The vault's records table (section 8) | FoxByte |
+| 7(c) | Business systems store only the reference key | Applications call the vault; migration replaces numbers (13.3) | FoxByte and the customer |
+| 7(d) | A single logical instance per entity; access through internal systems only | One vault per install; no published port (section 11) | FoxByte |
+| 7(e) | Encrypted with AES-256 or stronger | AES-256-GCM in the HSM (section 6) | FoxByte |
+| 7(f) | HA and DR, at the same level of security; dual redundant links to the ASAs | Backups and a standby of the vault database (section 13); the HSM's keys at the DR site; the links are the customer's | Both |
+| 7(g) | The vault and the referencing system in a highly restricted network zone | Inside the machine: an internal network with only the vault service (section 11). Around it: the customer's | Both |
+| 7(h) | Only trusted channels and secure APIs; all access through authenticated applications with authentication, authorisation and logging | The vault API, behind FoxByte's sign-in and API keys; every call logged (sections 9 and 10) | FoxByte |
+| 7(i) | Access control, monitoring and alerting against unauthorised access; strict IAM; all access logged and monitored | Permissions by admins only, rate limits, findings in `fox check`, the access log (sections 9 and 10) | FoxByte |
+| 7(j) | Secure deletion and update, as the entity's retention policy requires | Delete and update by reference key; what lingers in backups and how it is shredded (section 12) | FoxByte |
+| 7(k) | Recovering the number from one or many reference keys must not be computationally feasible. **Hashing the number is not allowed as a reference key** | Reference keys are random, with no relation to the number (section 7) | FoxByte |
+| 8 | An HSM is **mandatory** for encrypting and decrypting vault data, on premises, on GCC, or with a vault-as-a-service | PKCS#11 from the first build (section 6) | FoxByte talks to it; the customer supplies it |
+| 9 | The HSM is FIPS 140-2 Level 3 or higher, logically separate per entity, and supports key generation, secure key storage, multi-factor multi-role access control and audit logging | The customer's HSM. FoxByte generates keys in it and reads back that they cannot leave it (section 4); the certificate is declared by the customer | Customer |
 | 10 | Authentication applications are hosted on premises or on GCC only | Not the vault's | Customer |
 
 **Still to read:** the circular points to a 2025 FAQ on the vault, but its
@@ -103,7 +164,7 @@ above, the table changes with it.
 
 ---
 
-## 3. Checked on a throwaway token
+## 4. Checked on a throwaway token
 
 SoftHSM2 2.6.1 (Debian bookworm's package), driven through PKCS#11 from
 Python, in a throwaway container in the test VM. The scripts are
@@ -128,7 +189,7 @@ Python, in a throwaway container in the test VM. The scripts are
 **What this does not show:**
 - **A real HSM's speed.** A network HSM adds a round trip to every call,
   typically a millisecond or less on a local network. The prototype measures
-  what migration and lookups cost at 1 ms a call (section 17).
+  what migration and lookups cost at 1 ms a call (section 18).
 - **SoftHSM2's error codes on a failed tag.** It answers `CKR_GENERAL_ERROR`,
   not `CKR_ENCRYPTED_DATA_INVALID`. The service treats any decrypt failure as
   a record that does not verify, and logs it as one.
@@ -138,27 +199,29 @@ Python, in a throwaway container in the test VM. The scripts are
 
 ---
 
-## 4. The shape: one vault per install
+## 5. The shape: one vault per install
 
 ```
  applications, console, `fox vault`
             │  HTTPS, FoxByte sign-in or API key
             ▼
  ┌──────── fox (the engine) ────────┐
- │ vault API: who may do what,      │
- │ rate limits, the security log    │
+ │ vault API: kinds and their       │
+ │ checks, who may do what, rate    │
+ │ limits, the security log         │
  └──────────────┬───────────────────┘
                 │ a socket only the engine can reach, a per-install secret
                 ▼
- ┌──── vault service (container) ───┐      ┌──── the HSM ────┐
- │ PKCS#11 session, encrypt,        │─────▶│ data key, index │
- │ decrypt, index, reference keys   │      │ key: never out  │
- └──────────────┬───────────────────┘      └─────────────────┘
-                │ vault network (internal: no route out)
+ ┌──── vault service (container) ───┐      ┌──── the HSM ─────┐
+ │ PKCS#11 session, encrypt,        │─────▶│ each kind's data │
+ │ decrypt, index, reference keys   │      │ and index keys:  │
+ └──────────────┬───────────────────┘      │ never out        │
+                │ vault network            └──────────────────┘
+                │ (internal: no route out)
                 ▼
  ┌──── vault database (container) ──┐
- │ reference key, nonce, ciphertext │
- │ index, the access log            │
+ │ kind, reference key, nonce,      │
+ │ ciphertext, index, access log    │
  └──────────────────────────────────┘
 ```
 
@@ -172,9 +235,10 @@ Python, in a throwaway container in the test VM. The scripts are
   session, and it is the only thing that connects to the vault database. It
   answers only the engine, which proves itself with a per-install secret
   made when the vault is set up.
-- **The engine** decides who may do what (section 8), applies the rate limits,
-  and writes the security log. It never sees a key. It sees a number only
-  while passing it between a caller and the vault service.
+- **The engine** knows the kinds: it checks and normalises a value before the
+  service sees it, decides who may do what (section 9), applies the rate
+  limits, and writes the security log. It never sees a key. It sees a value
+  only while passing it between a caller and the vault service.
 
 **Why a separate service, and not in `fox` itself.** PKCS#11 libraries are C
 libraries that HSM vendors ship for Linux. `fox` is built without cgo, so that
@@ -183,37 +247,46 @@ vault service is the one piece built with cgo, for Linux only, inside an image
 beside the database image. A customer's HSM client library is mounted into it
 read-only.
 
-**Why not a schema in each branch** (decided 13 November). The circular asks
-for a separate system and a single logical instance (para 2 and 7(d)). A
-schema inside the business database is neither. Every branch would also copy
-it, multiplying the vault. And a branch's database can open network
+**Why not a schema in each branch** (decided 13 November). UIDAI's circular
+asks for a separate system and a single logical instance (para 2 and 7(d)).
+A schema inside the business database is neither. Every branch would also
+copy it, multiplying the vault. And a branch's database can open network
 connections through dblink, so the vault's network is kept apart from the
 branches' network as well.
 
 ---
 
-## 5. The keys
+## 6. The keys
 
-- **Two keys, both made inside the HSM, neither able to leave it**
-  (`sensitive`, not `extractable`):
-  - the **data key**, AES-256, which encrypts each number and its connected
+- **Each kind has two keys, both made inside the HSM, neither able to leave
+  it** (`sensitive`, not `extractable`):
+  - the **data key**, AES-256, which encrypts each value and its connected
     data;
-  - the **index key**, a 256-bit HMAC key, which finds a number again
-    (section 6).
-- **Every encrypt and decrypt is one call to the HSM** (decision 3). The
-  number goes in, the ciphertext comes out. The data key is never unwrapped
-  into the service's memory. This is the plainest reading of para 8,
-  "encryption/decryption of ADV data" in the HSM, and section 3 shows a
-  token keeps up.
+  - the **index key**, a 256-bit HMAC key, which finds a value again
+    (section 7).
+
+  Separate keys per kind mean one kind can be rotated, or shredded, without
+  touching another, and the same text stored as two kinds is never matched.
+- **Every encrypt and decrypt is one call to the HSM** (decision 4). The
+  value goes in, the ciphertext comes out. The data key is never unwrapped
+  into the service's memory. For Aadhaar this is the plainest reading of
+  para 8, "encryption/decryption of ADV data" in the HSM, and section 4 shows
+  a token keeps up. Every kind works the same way, so there is one path to
+  test.
   - *The alternative*, a data key wrapped by the HSM and unwrapped into
     memory, is faster on a slow network HSM, but the key then lives in a
     process the HSM cannot see. It is not proposed.
-- **AES-256-GCM, with the reference key as associated data.** A ciphertext
-  only decrypts under its own reference key (section 3), so copying a
-  ciphertext to another record gets nothing.
+- **AES-256-GCM, with the kind and the reference key as associated data.** A
+  ciphertext only decrypts under its own kind and reference key (section 4),
+  so copying a ciphertext to another record gets nothing.
 - **Nonces** are 96 bits from the HSM's random generator, one per encryption,
   kept beside the ciphertext. A data key is retired well before 2³² uses, the
   limit for random GCM nonces **(prototype: count uses per key)**.
+- **One token per vault.** Every kind's keys are in the same token, so the
+  vault has one HSM to configure, back up and audit. A kind whose rules
+  require an HSM (Aadhaar) is shown as **not compliant** while that token is
+  the software one. A kind whose rules do not (text) is shown as using a
+  software token, with no verdict.
 - **The PIN.** The service logs in to the HSM with the token's user PIN, kept
   in a file in the state directory, readable by the service's user only, and
   mounted read-only. Multi-factor, multi-role control of the HSM itself
@@ -221,54 +294,60 @@ branches' network as well.
 - **FoxByte's own key custody** (decided 13 November) is a SoftHSM2 token in
   the state directory, made by `fox vault setup` when no HSM is named. It
   uses the same code, so a trial becomes a real deployment by pointing the
-  service at another library, then rotating (below). Everywhere the vault
+  service at another library, then moving the keys (below). Wherever Aadhaar
   appears (the status line, the console, the evidence) it reads
   **"Software token: not UIDAI-compliant (trials and testing only)"**.
-- **Rotation.** A new data key, or a new index key, is made in the HSM. Every
-  record is read and written again, in batches, while the vault keeps
-  answering **(prototype)**. Then the old key is destroyed in the HSM, which
-  is also what shreds deleted numbers left in old backups (section 11).
-- **Moving from the software token to an HSM** is a rotation across two
-  tokens. The service holds both sessions, decrypts with the old one and
-  encrypts with the new one, then the software token is deleted.
+- **Rotation**, per kind. A new data key, or a new index key, is made in the
+  HSM. Every record of the kind is read and written again, in batches, while
+  the vault keeps answering **(prototype)**. Then the old key is destroyed in
+  the HSM, which is also what shreds deleted values left in old backups
+  (section 12).
+- **Moving from the software token to an HSM** is a rotation of every kind
+  across two tokens. The service holds both sessions, decrypts with the old
+  one and encrypts with the new one, then the software token is deleted.
 
 ---
 
-## 6. Reference keys
+## 7. Reference keys
 
-**Random, from the HSM's generator, with no relation to the number** (para
-7(k)). Knowing any number of reference keys tells nothing about any number.
+**Random, from the HSM's generator, with no relation to the value** (para
+7(k)). Knowing any number of reference keys tells nothing about any value.
 
-**Two formats** (decision 5):
-
-| Format | Looks like | For | Space |
-|---|---|---|---|
-| Opaque (default) | `AR` and 26 characters of Crockford base32, e.g. `AR7Q2M…` | new tables and applications | 130 bits |
-| 12 digits | a 12-digit number starting with **1** | legacy columns typed `char(12)`, `numeric(12)` or `bigint` that cannot hold anything else | 11 random digits: 10¹¹ |
-
-- An Aadhaar number never starts with 0 or 1, so a 12-digit reference key
-  can never be mistaken for one. The exposure report's check (12 digits, the
-  first 2 to 9, passing Verhoeff) never flags it.
-- Starting with 1 rather than 0 keeps all 12 digits in a `bigint`.
+**Formats** (decision 6):
+- **Opaque, for every kind (the default):** the kind's two-letter prefix and
+  26 characters of Crockford base32, 130 random bits. `AR7Q2M…` is an
+  Aadhaar reference key, `TX…` a text one. The prefix lets a person, the
+  exposure report and the vault itself tell the kind apart without a lookup.
+- **Legacy, per kind, for columns that cannot hold anything else**: a value
+  shaped like the kind's own values that **can never pass the kind's check**,
+  so it is never mistaken for a real one, by a person or by the PII scanner.
+  A kind without a check (text) has no legacy format.
+  - **Aadhaar's:** 12 digits starting with **1**, for columns typed
+    `char(12)`, `numeric(12)` or `bigint`. An Aadhaar number never starts
+    with 0 or 1, so the scanner's check (12 digits, the first 2 to 9, passing
+    Verhoeff) never flags it. Starting with 1 rather than 0 keeps all 12
+    digits in a `bigint`. 11 random digits: 10¹¹ keys.
+  - Other kinds' legacy formats are designed with the kind, and shown to fail
+    its check by a test.
 - A collision is refused by the vault's unique index and a new key drawn.
-- The smaller space of the 12-digit format matters only for guessing a key
-  and then detokenising it, which needs the detokenise permission and is
-  rate-limited (section 8). It is stated in the evidence.
+- The smaller space of a legacy format matters only for guessing a key and
+  then detokenising it, which needs the detokenise permission and is
+  rate-limited (section 9). The evidence states it.
 
-**One reference key per number** (decision 4). Tokenising a number already in
-the vault returns its existing reference key. Applications need that: "is this
-customer already here?" is asked of the number.
-- The vault finds a number through an **index**: HMAC-SHA-256 of the number
-  under the index key, computed in the HSM.
+**One reference key per value, within a kind** (decision 5). Tokenising a
+value already in the vault returns its existing reference key. Applications
+need that: "is this customer already here?" is asked of the value.
+- The vault finds a value through an **index**: HMAC-SHA-256 of the kind's
+  normal form of the value, under the kind's index key, computed in the HSM.
 - **The index is not a reference key.** It never leaves the vault database.
-  No API returns it, and no business table holds it. The circular forbids a
-  hash used *as a reference key* (para 7(k)). A keyed index inside the vault
-  is how a vault finds its own records.
+  No API returns it, and no business table holds it. UIDAI forbids a hash
+  used *as a reference key* (para 7(k)). A keyed index inside the vault is how
+  a vault finds its own records.
 - An auditor may still ask about it, so the evidence states it plainly: what
   it is, that its key is in the HSM, and that it never leaves the vault.
 - *The alternative* is no index: every tokenise makes a new reference key,
-  and nobody can ask whether a number is already there. It is not proposed,
-  because applications then keep their own copy of the number to answer that
+  and nobody can ask whether a value is already there. It is not proposed,
+  because applications then keep their own copy of the value to answer that
   question, which is the exposure the vault exists to end.
 - **Per-application reference keys**, so two applications cannot match their
   customers through the vault's keys, are left for later: named domains, as
@@ -276,80 +355,85 @@ customer already here?" is asked of the number.
 
 ---
 
-## 7. What the vault stores
+## 8. What the vault stores
 
 The vault database has two tables, in a schema only the vault service's role
 can use.
 
-- **`records`**: the reference key; the index; the nonce; the ciphertext of
-  the number; the nonce and ciphertext of the connected data, if any; which
-  data key and index key were used; when it was made and by whom; and when it
-  was last changed.
-- **`access_log`**: one row per call (section 9).
+- **`records`**: the kind; the reference key; the index; the nonce; the
+  ciphertext of the value; the nonce and ciphertext of the connected data, if
+  any; which data key and index key were used; when it was made and by whom;
+  and when it was last changed.
+- **`access_log`**: one row per call (section 10).
 
-**Connected data** (para 2's eKYC XML) is stored only if the caller sends it,
-encrypted the same way, up to a size limit **(prototype: pick the limit)**. A
-caller asks for it back with the same detokenise permission.
+**Connected data** is stored only if the kind allows it and the caller sends
+it, encrypted the same way, up to a size limit **(prototype: pick the
+limit)**. For Aadhaar it is the eKYC XML (para 2). A caller asks for it back
+with the same detokenise permission.
 
-**What stays outside**, as para 3 allows: names, addresses, photos and
-UIDAI's own UID tokens may stay in business tables, encrypted by the
-customer as they choose. Masking (point 7) is how FoxByte hides them from
-people who should not see them.
+**What stays outside**, as UIDAI's para 3 allows for Aadhaar: names,
+addresses, photos and UIDAI's own UID tokens may stay in business tables,
+encrypted by the customer as they choose. Masking (point 7) is how FoxByte
+hides them from people who should not see them.
 
 ---
 
-## 8. Who may do what
+## 9. Who may do what
+
+Every permission is **per kind**: being allowed to detokenise text says
+nothing about Aadhaar.
 
 | Action | What it does | Who |
 |---|---|---|
-| Tokenise | a number in, its reference key out (made if new) | an account or application given *vault use* by an admin; admins |
-| Find | a number in, its reference key out, or "not in the vault"; never makes one | the same |
-| Detokenise | a reference key in, the number out (and its connected data if asked) | only an account or application given *detokenise* by an admin, **with a stated purpose on every call** |
+| Tokenise | a value in, its reference key out (made if new); a value failing the kind's check is refused | an account or application given *vault use* for the kind by an admin; admins |
+| Find | a value in, its reference key out, or "not in the vault"; never makes one | the same |
+| Detokenise | a reference key in, the value out (and its connected data if asked) | only an account or application given *detokenise* for the kind by an admin, **with a stated purpose on every call** |
 | Update, delete | replace or remove a record by its reference key | admins |
 | Setup, rotate, evidence | the vault itself | admins; rotation and setup also the operator |
 
-- **Admins grant both permissions** (decision 6), the way they grant unmask
+- **Admins grant both permissions** (decision 7), the way they grant unmask
   (point 7). Each grant is recorded, shown in the access review (4.8), and
   can carry an expiry.
-- **Admins do not detokenise by being admins.** An admin who needs a number
+- **Admins do not detokenise by being admins.** An admin who needs a value
   grants themselves detokenise, which is itself recorded and reviewed.
 - **Agents and MCP never detokenise.** An agent key may be given vault use,
   to tokenise what it writes.
 - **Masked accounts** (point 7) are never given detokenise. Granting it to one
   is refused.
-- **Rate limits.** Each holder of detokenise has a limit per hour (default
-  100, set per grant). Past it, calls are refused and a finding is raised.
+- **Rate limits.** Each detokenise grant has a limit per hour (default 100,
+  set per grant). Past it, calls are refused and a finding is raised.
   Tokenise and find have a much higher default limit, for applications.
-- **Monitoring** (para 7(i)): `fox check` raises findings for refused calls,
-  limits reached, records that do not verify, a software token in use, and a
+- **Monitoring** (UIDAI para 7(i), and good practice for every kind):
+  `fox check` raises findings for refused calls, limits reached, records that
+  do not verify, a software token holding a kind that requires an HSM, and a
   grant unused for 90 days.
 - **The console**:
-  - a Vault page for admins: the HSM, the keys and their ages, counts, grants,
-    and the access log;
-  - a detokenise box for holders, which asks the purpose, and shows the
-    number masked to its last four digits until the holder chooses to reveal
-    it.
+  - a Vault page for admins: the HSM, each kind's keys and their ages,
+    counts per kind, grants, and the access log;
+  - a detokenise box for holders, which asks the purpose, and shows the value
+    in the kind's display form (Aadhaar: the last four digits) until the
+    holder chooses to reveal it.
 
 ---
 
-## 9. The access log
+## 10. The access log
 
 - **Every call is a row:** when, who (account, application key or operator),
-  which action, which reference key, the purpose, and the result (done,
-  refused, not found, did not verify). **No number, ever:** a find or
+  which action, which kind, which reference key, the purpose, and the result
+  (done, refused, not found, did not verify). **No value, ever:** a find or
   tokenise logs the reference key it returned, or none.
 - **Hash-chained**, as the Blackbox is. Each row carries a hash of itself and
   of the row before it, so a deleted or changed row breaks the chain, and
   `fox vault evidence` checks it.
 - **Copied to the security log**, one line per call, so the install's log of
   who did what has it too. Detokenise lines say whose reference key was read,
-  never the number.
+  never the value.
 - **Kept** as long as the customer's retention policy says, at least a year
-  by default **(to confirm against the 2025 FAQ)**.
+  by default **(for Aadhaar, to confirm against the 2025 FAQ)**.
 
 ---
 
-## 10. The network, inside the machine
+## 11. The network, inside the machine
 
 - The vault network is a Docker network created `--internal`: its containers
   have no route out, and nothing outside reaches them.
@@ -361,28 +445,29 @@ people who should not see them.
   client, so the service needs a route to that one address. This is set at
   `fox vault setup --hsm …`, and is the only route the vault has out
   **(prototype: an internal network plus one route; else a third network)**.
-- What surrounds the machine (the restricted zone of para 7(g), firewalls,
-  the dual links of 7(f)) is the customer's, and the evidence says so.
+- What surrounds the machine (UIDAI's restricted zone of para 7(g),
+  firewalls, the dual links of 7(f)) is the customer's, and the evidence says
+  so.
 
 ---
 
-## 11. Deleting a number
+## 12. Deleting a value
 
 - **Delete** removes the record and logs it. The reference key then answers
   "not in the vault" to everyone.
 - **What lingers:** the ciphertext stays in the vault database's WAL and its
-  backups until they expire. It is unreadable without the data key, but the
-  data key still exists.
-- **Shredding:** rotating the data key, then destroying the old one in the
-  HSM, makes every ciphertext under it unreadable, in backups too. The
+  backups until they expire. It is unreadable without the kind's data key,
+  but that key still exists.
+- **Shredding:** rotating a kind's data key, then destroying the old one in
+  the HSM, makes every ciphertext under it unreadable, in backups too. The
   evidence shows when each key was destroyed. The customer's retention policy
-  sets how often this happens.
-- **Update** replaces the number under the same reference key, logged as
-  such.
+  sets how often this happens, kind by kind.
+- **Update** replaces the value under the same reference key, logged as
+  such. The new value must pass the kind's check.
 
 ---
 
-## 12. Backups, HA and DR
+## 13. Backups, HA and DR
 
 - **Backups:** the vault database is backed up with wal-g to the object
   store, like main. A backup holds ciphertext, nonces and the index only.
@@ -392,15 +477,15 @@ people who should not see them.
   keys between their own devices; FoxByte cannot, and does not try. For the
   software token, the token's files are backed up with the state directory.
 - **A standby** of the vault database, on a second node, uses the standbys
-  FoxByte already makes for main (`fox node`). It comes after the four phases
+  FoxByte already makes for main (`fox node`). It comes after the four steps
   **(later)**.
 
 ---
 
-## 13. What stays the customer's
+## 14. What stays the customer's
 
-The evidence (phase 4) lists these as declared by the customer, never as
-checked by FoxByte:
+The evidence (13.4) lists these as declared by the customer, never as checked
+by FoxByte. For Aadhaar:
 
 - where the vault is hosted (para 5), and the SOC 2 Type II report if on GCC
   (para 6);
@@ -409,34 +494,42 @@ checked by FoxByte:
 - the network zone around the machine (para 7(g));
 - the DR site and the dual links to the ASAs (para 7(f)).
 
+Other kinds list their own when their rules are mapped.
+
 ---
 
-## 14. Branches, the exposure report and migration
+## 15. Branches, finding values, and migration
 
 - **Branches** hold reference keys only, so branching, masking and the
-  Blackbox need nothing new. A reference key is not Aadhaar.
-- **The exposure report (4.5)** already reads every table and log. With a
-  vault, it also counts reference keys it recognises (the `AR` format, and
-  12-digit values the vault confirms), so "exposed numbers: 0, reference
-  keys: 12,408" is one line in the evidence.
-- **Migration** (phase 3), on a branch first:
-  1. the exposure report's places give the columns to move;
-  2. each distinct number is tokenised (one HSM call for the index, one to
-     encrypt if new);
-  3. each row's number is replaced by its reference key, in batches;
-  4. the report is run again, and must find none left in those columns;
+  Blackbox need nothing new. A reference key is not the value.
+- **Finding values outside the vault:**
+  - **Aadhaar:** the exposure report (4.5) already reads every table and log.
+    With a vault, it also counts the reference keys it recognises (the `AR`
+    prefix, and 12-digit values the vault confirms), so "exposed numbers: 0,
+    reference keys: 12,408" is one line in the evidence.
+  - **Other kinds:** the PII scanner's confirmed marks (4.1, 4.6) say which
+    columns hold which category, and so which kind. A per-kind exposure
+    report like Aadhaar's is a later step, if customers ask.
+- **Migration** (13.3), on a branch first:
+  1. the columns to move come from the exposure report's places (Aadhaar) or
+     the confirmed marks (other kinds);
+  2. each distinct value is checked against the kind and tokenised (one HSM
+     call for the index, one to encrypt if new); a value that fails the check
+     is listed and left alone;
+  3. each row's value is replaced by its reference key, in batches;
+  4. the columns are read again, and must hold no value of the kind;
   5. the branch is promoted (`fox promote`) once the owner has checked it.
-- **What migration does not do:** numbers in query history, the audit log and
-  the Blackbox stay where they are. The report keeps listing them. The
-  Blackbox is hash-chained and is not rewritten. History and audit text
-  follow their own retention.
+- **What migration does not do:** values in query history, the audit log and
+  the Blackbox stay where they are. For Aadhaar the exposure report keeps
+  listing them. The Blackbox is hash-chained and is not rewritten. History
+  and audit text follow their own retention.
 - **A discarded migration branch** leaves records in the vault that no table
   points to. `fox vault orphans` lists reference keys made by a migration
   whose branch is gone, and an admin can delete them.
 
 ---
 
-## 15. Edition
+## 16. Edition
 
 Enterprise, as the plan proposes. The vault service image is published beside
 the engine image, and the engine starts it only with an Enterprise licence.
@@ -445,20 +538,22 @@ Without the vault they are only values.
 
 ---
 
-## 16. Decisions
+## 17. Decisions
 
 | # | Decision | Recommended | Status |
 |---|---|---|---|
-| 1 | Keys | PKCS#11 HSM from the first build; SoftHSM2 as FoxByte's own key custody, labelled not compliant | **Agreed 13 Nov** |
+| 1 | Keys | PKCS#11 HSM from the first build; SoftHSM2 as FoxByte's own key custody, labelled not compliant for kinds that require an HSM | **Agreed 13 Nov** |
 | 2 | Where the vault lives | One vault per install: its own database, container and internal network, reached only through the vault service | **Agreed 13 Nov** |
-| 3 | How numbers are encrypted | One HSM call per record (AES-256-GCM, reference key as associated data), never a data key in memory | Proposed |
-| 4 | One reference key per number | Yes, through a keyed index computed in the HSM that never leaves the vault | Proposed |
-| 5 | Reference key formats | Opaque `AR…` by default; 12 digits starting with 1 for legacy columns | Proposed |
-| 6 | Detokenise | Its own permission, granted by admins only (admins included), a purpose on every call, every call logged, a rate limit per grant (default 100 an hour); never agents or masked accounts | Proposed |
+| 3 | What the vault holds | A general vault with kinds; Aadhaar first, under UIDAI's rules | **Agreed 13 Nov** |
+| 4 | How values are encrypted | One HSM call per record (AES-256-GCM, the kind and reference key as associated data), never a data key in memory; each kind its own keys, one token per vault | Proposed |
+| 5 | One reference key per value | Yes, within a kind, through a keyed index computed in the HSM that never leaves the vault | Proposed |
+| 6 | Reference-key formats | Opaque with the kind's prefix (`AR…`, `TX…`) by default; a legacy format per kind that can never pass its check (Aadhaar: 12 digits starting with 1) | Proposed |
+| 7 | Detokenise | Its own permission per kind, granted by admins only (admins included), a purpose on every call, every call logged, a rate limit per grant (default 100 an hour); never agents or masked accounts | Proposed |
+| 8 | The first kinds | Aadhaar and text in 13.1; PAN and card numbers next; the rest as customers ask; kinds are code, not configuration | Proposed |
 
 ---
 
-## 17. Gate 0: the prototype
+## 18. Gate 0: the prototype
 
 Built after agreement, in the test VM, with SoftHSM2:
 
@@ -466,6 +561,7 @@ Built after agreement, in the test VM, with SoftHSM2:
   image from the same Debian base as the database image;
 - the vault database and the two networks; the engine reaching the service
   with its secret, and nothing else reaching either;
+- the Aadhaar and text kinds, each with its own keys;
 - tokenise, find, detokenise and delete, through a test-only API.
 
 **What it measures:**
@@ -473,7 +569,8 @@ Built after agreement, in the test VM, with SoftHSM2:
    HSM round trip: tokenise, find, detokenise.
 2. **Migrating 1,000,000 rows** with 200,000 distinct numbers: time, and how
    long a table's writes wait.
-3. **Rotation** of 1,000,000 records while the vault keeps answering.
+3. **Rotation** of one kind's 1,000,000 records while the vault keeps
+   answering, and the other kind untouched.
 4. **The network:** from a branch's container, from the object store and
    from the host, the vault database cannot be reached; the service cannot
    be reached without the secret.
@@ -481,14 +578,15 @@ Built after agreement, in the test VM, with SoftHSM2:
 
 ---
 
-## 18. Gate 1: the steps
+## 19. Gate 1: the steps
 
 | Step | What | CLI | Console |
 |---|---|---|---|
-| 13.1 | The vault: setup with the software token or a named HSM, the vault database and service, tokenise, find, detokenise, the access log | `fox vault setup [--hsm lib --slot s]`, `fox vault status`, `fox vault tokenise`, `find`, `detokenise --purpose` | Vault page: status, keys, counts |
-| 13.2 | Permissions and limits: vault use and detokenise grants, rate limits, findings, the access review | `fox vault grant`, `revoke`, `grants` | grants, the detokenise box, the access log |
-| 13.3 | Migration on a branch, from the exposure report's places; orphans | `fox vault migrate --branch b --column c`, `fox vault orphans` | Migrate from the exposure page |
-| 13.4 | Evidence for UIDAI audits; rotation; delete and update | `fox vault evidence`, `fox vault rotate`, `delete`, `update` | Evidence page and download |
+| 13.1 | The vault and its kinds (Aadhaar, text): setup with the software token or a named HSM, the vault database and service, tokenise, find, detokenise, the access log | `fox vault setup [--hsm lib --slot s]`, `fox vault status`, `fox vault tokenise --kind k`, `find`, `detokenise --purpose`, `fox vault kinds` | Vault page: status, kinds, keys, counts |
+| 13.2 | Permissions and limits, per kind: vault use and detokenise grants, rate limits, findings, the access review | `fox vault grant --kind k`, `revoke`, `grants` | grants, the detokenise box, the access log |
+| 13.3 | Migration on a branch, from the exposure report (Aadhaar) or the confirmed marks (other kinds); orphans | `fox vault migrate --branch b --column c --kind k`, `fox vault orphans` | Migrate from the exposure page and the PII page |
+| 13.4 | Evidence per kind, against its rules (UIDAI's for Aadhaar); rotation; delete and update | `fox vault evidence [--kind k]`, `fox vault rotate --kind k`, `delete`, `update` | Evidence page and download |
+| after | Further kinds: PAN and card numbers first, each with its check, legacy format, rules mapping and tests | `--kind pan`, `--kind card` | the same pages |
 
 Each step comes with its CLI and console tests, an integration section in
 the test VM, and the docs, as every point has.
@@ -501,6 +599,6 @@ the test VM, and the docs, as every point has.
   hosting Hardware Security Module (HSM), Aadhaar Data Vault (ADV) and
   authentication application on premises and cloud infrastructure":
   https://www.uidai.gov.in/images/Circular-No.14_of-2025.pdf
-- PKCS#11 v2.40 (OASIS): the mechanisms and attributes in section 3.
+- PKCS#11 v2.40 (OASIS): the mechanisms and attributes in section 4.
 - SoftHSM2: https://www.opendnssec.org/softhsm/ (BSD-2-Clause).
 - `github.com/miekg/pkcs11` (BSD-3-Clause), for the prototype's service.
