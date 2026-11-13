@@ -387,3 +387,61 @@ func verifyForensic(recs []AuditRecord, texts map[int64]forensicText) []string {
 	}
 	return problems
 }
+
+// ForensicText is one statement's text from forensic mode, as the Aadhaar
+// exposure report's logs part reads it (point 4.5b), with when it ran.
+type ForensicText struct {
+	Seq   int64
+	Login string
+	Text  string
+	At    time.Time
+}
+
+// ScanForensicTexts reads every statement text kept for a branch, day by day,
+// and hands fn those keep accepts, each with its record's time (the day it was
+// collected, when its record cannot be found). It returns how many texts the
+// branch has. Texts are read one day at a time, and records only for a day
+// that had a text kept.
+func ScanForensicTexts(branchName string, keep func(text string) bool, fn func(ForensicText)) (int, error) {
+	n := 0
+	for _, day := range forensicDays() {
+		ts, err := readForensic(day)
+		if err != nil {
+			return n, err
+		}
+		var kept []ForensicText
+		want := map[int64]int{}
+		for _, t := range ts {
+			if t.Branch != branchName {
+				continue
+			}
+			n++
+			if keep(t.Text) {
+				want[t.Seq] = len(kept)
+				kept = append(kept, ForensicText{Seq: t.Seq, Login: t.Login, Text: t.Text})
+			}
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		dayStart, _ := time.Parse("2006-01-02", day)
+		for i := range kept {
+			kept[i].At = dayStart.UTC()
+		}
+		if _, err := os.Stat(dayPath(day)); err == nil {
+			if err := scanDay(day, func(r AuditRecord) {
+				if i, ok := want[r.Seq]; ok {
+					if at, err := time.Parse(time.RFC3339Nano, r.Time); err == nil {
+						kept[i].At = at.UTC()
+					}
+				}
+			}); err != nil {
+				return n, err
+			}
+		}
+		for _, t := range kept {
+			fn(t)
+		}
+	}
+	return n, nil
+}

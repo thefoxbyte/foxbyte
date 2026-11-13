@@ -1066,7 +1066,8 @@ paths:
         number's last four digits, the most places first, up to 500), and how
         many places earlier runs found that it no longer does. Never a full
         number, and never a hash of one. Free in every edition; run is null
-        before the first run.
+        before the first run. For an admin, logs is the logs part, once a run
+        has read them: an owner's report has none.
       parameters: [{ $ref: "#/components/parameters/BranchName" }]
       responses:
         "200": { description: The report., content: { application/json: { schema: { $ref: "#/components/schemas/AadhaarReport" } } } }
@@ -1085,7 +1086,11 @@ paths:
         checked by its check digit. Each place a number sits is kept as its
         column or JSON path, the row's primary key and the number's last four
         digits, with when it was first and last seen. The run is in the
-        security log with its counts.
+        security log with its counts. With logs (admins only), the same run
+        reads the branch's query history entries, the audit log's forensic
+        statement text and its Blackbox's statements too, so a number in a
+        table and in a log is one person; those places are kept in the
+        install's store, never in the branch.
       parameters: [{ $ref: "#/components/parameters/BranchName" }]
       requestBody:
         content:
@@ -1094,10 +1099,11 @@ paths:
               type: object
               properties:
                 tableTimeout: { type: integer, minimum: 1, maximum: 3600, description: "Seconds one table's read may take." }
+                logs: { type: boolean, description: "Read the branch's logs too (admins only)." }
       responses:
         "200": { description: Read; the report as it now is., content: { application/json: { schema: { $ref: "#/components/schemas/AadhaarReport" } } } }
         "400": { description: A table timeout outside 1 to 3600 seconds. }
-        "403": { description: Not the branch's owner or an admin, or no licence covers personal-data discovery. }
+        "403": { description: Not the branch's owner or an admin, logs asked for by someone not an admin, or no licence covers personal-data discovery. }
         "404": { description: No such branch. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
@@ -1123,6 +1129,36 @@ paths:
                   places: { type: array, items: { $ref: "#/components/schemas/AadhaarPlace" } }
         "400": { description: A person or limit that is not a number, or a column not written schema.table.column. }
         "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/personal-data/aadhaar/log-places:
+    get:
+      tags: [branches]
+      summary: The log entries of the latest logs run that hold an Aadhaar number, or no longer do (admins only).
+      description: >-
+        Each is its log (history, audit or blackbox), the entry's number
+        there (a history entry's id, an audit record's sequence number, a
+        Blackbox entry's id), the part of a history entry (sql or error), who
+        made it and when, and the number's last four digits.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: person, in: query, schema: { type: integer }, description: "One person's places, by the logs run's number for them." }
+        - { name: source, in: query, schema: { type: string, enum: [history, audit, blackbox] } }
+        - { name: gone, in: query, schema: { type: boolean }, description: "Places earlier runs found that the latest no longer does." }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 10000, default: 200 } }
+      responses:
+        "200":
+          description: The places.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branch: { type: string }
+                  places: { type: array, items: { $ref: "#/components/schemas/AadhaarLogPlace" } }
+        "400": { description: A person or limit that is not a number, or no such log. }
+        "403": { description: Not an admin. }
         "404": { description: No such branch. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
@@ -3444,8 +3480,56 @@ components:
               places: { type: integer }
               since: { type: string, format: date-time }
               where: { type: array, items: { type: string } }
+              logs: { type: object, additionalProperties: { type: integer }, description: "Places in each log, in a report with the logs part." }
         peopleListed: { type: integer }
         gone: { type: integer }
+        logs:
+          type: object
+          description: "The logs part: admins only, once a run has read them."
+          properties:
+            run:
+              type: object
+              properties:
+                id: { type: integer }
+                branch: { type: string }
+                branchRun: { type: integer, description: "The run of the tables the logs were read with." }
+                started: { type: string, format: date-time }
+                finished: { type: string, format: date-time }
+                actor: { type: string }
+                read: { type: object, additionalProperties: { type: integer }, description: "Entries read in each log." }
+                numbers: { type: integer }
+                people: { type: integer }
+                linked: { type: integer, description: "People also in the branch's tables." }
+                listed: { type: integer }
+                skipped: { type: array, items: { type: object, properties: { source: { type: string }, reason: { type: string } } } }
+                limits: { type: array, items: { type: string } }
+            linked: { type: boolean, description: "Read with the latest run of the tables: its people are the report's." }
+            sources:
+              type: array
+              items:
+                type: object
+                properties:
+                  source: { type: string }
+                  entries: { type: integer }
+                  places: { type: integer }
+                  since: { type: string, format: date-time, nullable: true }
+            people: { type: array, items: { type: object } }
+            gone: { type: integer }
+    AadhaarLogPlace:
+      type: object
+      properties:
+        id: { type: integer }
+        source: { type: string, enum: [history, audit, blackbox] }
+        entry: { type: integer }
+        field: { type: string, description: "sql or error, for a history entry." }
+        last4: { type: string }
+        masked: { type: string, example: "XXXX XXXX 0124" }
+        actor: { type: string }
+        at: { type: string, format: date-time }
+        person: { type: integer }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        gone: { type: boolean }
     AadhaarPlace:
       type: object
       properties:

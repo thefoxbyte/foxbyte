@@ -299,9 +299,16 @@ func runExposure(name string, o branch.AadhaarRunOptions) (branch.AadhaarRun, er
 	}
 	r.People = len(e.people)
 	r.Listed = len(e.places)
-	r.Limits = exposureLimits(e, st)
+	r.Limits = exposureLimits(e, st, o.Logs)
 	r.Finished = time.Now().UTC()
-	return r, recordExposure(ctx, conn, &r, e)
+	if err := recordExposure(ctx, conn, &r, e); err != nil || !o.Logs {
+		return r, err
+	}
+	// The logs, with the numbers the tables' read still holds: a number in
+	// both is one person. Every person numbered so far was in a table.
+	lr, places := readExposureLogs(ctx, conn, name, o, e, int32(r.People))
+	lr.BranchRun = r.ID
+	return r, o.Store.RecordAadhaarLogs(&lr, places)
 }
 
 // exposureStats is what a run could not read, or read only in part.
@@ -545,16 +552,24 @@ func exposureFailure(err error, timeout time.Duration) string {
 	return readFailure(err)
 }
 
+const (
+	onlyTables = "Only the branch's tables were read. Query history, the audit log's statement text and the Blackbox are not read by this run."
+	withLogs   = "The branch's logs were read too (query history, the audit log's statement text and the Blackbox); what they hold is in the logs part, for admins only."
+)
+
 // exposureLimits are what a run's report cannot claim. Every report carries
 // them, found or not.
-func exposureLimits(e *exposure, st exposureStats) []string {
+func exposureLimits(e *exposure, st exposureStats, logs bool) []string {
 	l := []string{
 		"Every row of every text, number, array and JSON column was read. The database passed on only rows holding twelve digits in Aadhaar's shape (four, four and four, with or without a space or hyphen), and each was then checked by its check digit.",
 		"A check digit shows a number is well-formed, not that it was issued, or whose it is.",
 		"There is no Aadhaar vault in FoxByte yet (point 13), so every number found is outside one.",
-		"Only the branch's tables were read. Query history, the audit log's statement text and the Blackbox are not read by this run.",
+		onlyTables,
 		"Not read: views (they show what tables hold, and the tables are read), FoxByte's masks, binary columns, and dates, booleans and network addresses.",
 		"Since when is the first run that found a number in a place, or the row's created_at on a tracked table if that is earlier. A number there before the first run has no earlier date.",
+	}
+	if logs {
+		l[3] = withLogs
 	}
 	capped := false
 	for _, c := range e.cols {

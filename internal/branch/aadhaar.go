@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
 )
 
@@ -31,12 +32,24 @@ import (
 // personal-data licence feature; reading what runs found is free, as the
 // scan's findings are. The tables are the branch's (bb.aadhaar_*), so a
 // branch's report travels with it.
+//
+// The logs part (4.5b) reads, in the same run, the query history entries made
+// on the branch, the audit log's forensic statement text for it and its
+// Blackbox's statements, so a number in a table and in a log is one person.
+// What it finds is kept in the install's store (internal/auth/aadhaarlog.go),
+// never in the branch, and only admins and the machine's operator run or read
+// it: it says who typed whose number.
 
 // AadhaarRunOptions is what a run is asked to do.
 type AadhaarRunOptions struct {
 	Actor string // who asked, kept with the run
 	// TableTimeout bounds one table's read; DefaultAadhaarTableTimeout when 0.
 	TableTimeout time.Duration
+	// Logs reads the branch's logs too (4.5b), and needs Store.
+	Logs bool
+	// Store is the install's store. Given, the report returned includes the
+	// logs part: the caller is an admin or the machine's operator.
+	Store *auth.Store `json:"-"`
 }
 
 // DefaultAadhaarTableTimeout is how long one table's read may take, unless told.
@@ -119,8 +132,12 @@ type AadhaarPerson struct {
 	Masked string    `json:"masked"`
 	Places int       `json:"places"` // places kept for it
 	Since  time.Time `json:"since"`
-	// Where are its columns (schema.table.column [path]), each once.
+	// Where are its columns (schema.table.column [path]), each once, and
+	// then the logs it is in (query history, audit log, Blackbox).
 	Where []string `json:"where"`
+	// Logs counts its places in each log source, in a report with the logs
+	// part (4.5b); Places includes them.
+	Logs map[string]int `json:"logs,omitempty"`
 }
 
 // AadhaarReport is a branch's exposure now: the latest run, what it found
@@ -134,6 +151,24 @@ type AadhaarReport struct {
 	People       []AadhaarPerson `json:"people"`
 	PeopleListed int             `json:"peopleListed"`
 	// Gone counts places earlier runs found that the latest no longer does.
+	Gone int `json:"gone"`
+	// Logs is the logs part (4.5b): only for an admin or the machine's
+	// operator, and only once a run has read them.
+	Logs *AadhaarLogsReport `json:"logs,omitempty"`
+}
+
+// AadhaarLogsReport is a branch's latest logs part.
+type AadhaarLogsReport struct {
+	Run *auth.AadhaarLogRun `json:"run"`
+	// Linked says the logs were read with the latest run of the tables, so its
+	// people are the report's: a logs run read with an earlier run of the
+	// tables numbered its people its own way, and they are listed apart.
+	Linked  bool                         `json:"linked"`
+	Sources []auth.AadhaarLogSourceCount `json:"sources"`
+	// People are the logs' people, the most places first.
+	People []AadhaarPerson `json:"people"`
+	// Gone counts places in the logs earlier runs found that this one did not:
+	// an entry deleted or past its retention.
 	Gone int `json:"gone"`
 }
 
@@ -176,10 +211,13 @@ func RunAadhaarExposure(name string, o AadhaarRunOptions) (AadhaarReport, error)
 	if err != nil {
 		return AadhaarReport{}, err
 	}
+	if o.Logs && o.Store == nil {
+		return AadhaarReport{}, errors.New("reading the logs needs the install's store, which could not be opened")
+	}
 	if _, err := runAadhaar(name, o); err != nil {
 		return AadhaarReport{}, err
 	}
-	return AadhaarExposure(name)
+	return AadhaarExposureFor(name, o.Store)
 }
 
 // latestAadhaarRun opens a branch and reads its latest run; nil, with no
@@ -225,6 +263,12 @@ func latestAadhaarRun(ctx context.Context, name string) (*pgx.Conn, *AadhaarRun,
 // AadhaarExposure reads a branch's report as its latest run left it. Free in
 // every edition, as reading a scan's findings is.
 func AadhaarExposure(name string) (AadhaarReport, error) {
+	return AadhaarExposureFor(name, nil)
+}
+
+// AadhaarExposureFor is AadhaarExposure with the logs part, when st (the
+// install's store) is given: for an admin or the machine's operator.
+func AadhaarExposureFor(name string, st *auth.Store) (AadhaarReport, error) {
 	if name == "" {
 		name = "main"
 	}
@@ -291,8 +335,170 @@ func AadhaarExposure(name string) (AadhaarReport, error) {
 	if err := rows.Err(); err != nil {
 		return rep, err
 	}
-	err = conn.QueryRow(ctx, `SELECT count(*) FROM bb.aadhaar_places p WHERE `+goneSQL, run.ID).Scan(&rep.Gone)
-	return rep, err
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM bb.aadhaar_places p WHERE `+goneSQL, run.ID).Scan(&rep.Gone); err != nil {
+		return rep, err
+	}
+	if st == nil {
+		return rep, nil
+	}
+	return rep, withAadhaarLogs(ctx, conn, st, &rep)
+}
+
+// withAadhaarLogs adds the logs part to a report: the branch's latest logs
+// run, and, when it was read with the latest run of the tables, its people
+// merged into the report's.
+func withAadhaarLogs(ctx context.Context, conn *pgx.Conn, st *auth.Store, rep *AadhaarReport) error {
+	lr, err := st.LatestAadhaarLogRun(rep.Branch)
+	if err != nil || lr == nil {
+		return err
+	}
+	// The run of the tables it was read with, and read just after it: a
+	// branch deleted and made again numbers its runs from 1, and an old logs
+	// run of the same name is not this one's.
+	linked := lr.BranchRun == rep.Run.ID && !lr.Started.Add(time.Second).Before(rep.Run.Finished)
+	logs := &AadhaarLogsReport{Run: lr, Linked: linked, People: []AadhaarPerson{}}
+	if logs.Sources, logs.Gone, err = st.AadhaarLogCounts(lr); err != nil {
+		return err
+	}
+	people, err := st.AadhaarLogPeople(lr)
+	if err != nil {
+		return err
+	}
+	for _, lp := range people {
+		p := AadhaarPerson{Person: lp.Person, Masked: MaskAadhaar(lp.Last4), Places: lp.Places, Since: lp.Since, Logs: lp.Sources}
+		p.Where = aadhaarLogWhere(lp.Sources)
+		logs.People = append(logs.People, p)
+	}
+	if len(logs.People) > MaxAadhaarPeople {
+		logs.People = logs.People[:MaxAadhaarPeople]
+	}
+	rep.Logs = logs
+	if !logs.Linked || len(people) == 0 {
+		return nil
+	}
+
+	// One list of people: the tables' and the logs', a person in both once.
+	// The tables' places of the logs' people, which may be past the report's
+	// first MaxAadhaarPeople.
+	ids := make([]int32, len(people))
+	for i, p := range people {
+		ids[i] = int32(p.Person)
+	}
+	rows, err := conn.Query(ctx, `SELECT person, min(last4), count(*)::int,
+			min(least(first_seen, coalesce(row_created, first_seen))),
+			array_agg(DISTINCT schema_name || '.' || table_name || '.' || column_name || CASE WHEN json_path <> '' THEN ' ' || json_path ELSE '' END)
+		FROM bb.aadhaar_places WHERE last_run = $1 AND person = ANY($2) GROUP BY person`, rep.Run.ID, ids)
+	if err != nil {
+		return err
+	}
+	byPerson := map[int]*AadhaarPerson{}
+	for i := range rep.People {
+		byPerson[rep.People[i].Person] = &rep.People[i]
+	}
+	inTables := map[int]AadhaarPerson{}
+	for rows.Next() {
+		var p AadhaarPerson
+		var last4 string
+		if err := rows.Scan(&p.Person, &last4, &p.Places, &p.Since, &p.Where); err != nil {
+			rows.Close()
+			return err
+		}
+		sort.Strings(p.Where)
+		p.Masked = MaskAadhaar(last4)
+		inTables[p.Person] = p
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// Those already listed first, through pointers into rep.People, before
+	// any append can move it.
+	var rest []auth.AadhaarLogPerson
+	for _, lp := range people {
+		if cur, ok := byPerson[lp.Person]; ok {
+			addAadhaarLogs(cur, lp)
+		} else {
+			rest = append(rest, lp)
+		}
+	}
+	merged := rep.People
+	for _, lp := range rest {
+		p, ok := inTables[lp.Person]
+		if !ok {
+			// In the logs only.
+			p = AadhaarPerson{Person: lp.Person, Masked: MaskAadhaar(lp.Last4), Since: lp.Since, Where: []string{}}
+			rep.PeopleListed++
+		}
+		addAadhaarLogs(&p, lp)
+		merged = append(merged, p)
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].Places != merged[j].Places {
+			return merged[i].Places > merged[j].Places
+		}
+		if !merged[i].Since.Equal(merged[j].Since) {
+			return merged[i].Since.Before(merged[j].Since)
+		}
+		return merged[i].Person < merged[j].Person
+	})
+	if len(merged) > MaxAadhaarPeople {
+		merged = merged[:MaxAadhaarPeople]
+	}
+	rep.People = merged
+	return nil
+}
+
+// addAadhaarLogs adds a person's places in the logs to their places in the
+// tables.
+func addAadhaarLogs(p *AadhaarPerson, lp auth.AadhaarLogPerson) {
+	p.Places += lp.Places
+	if lp.Since.Before(p.Since) || p.Since.IsZero() {
+		p.Since = lp.Since
+	}
+	p.Logs = lp.Sources
+	p.Where = append(p.Where, aadhaarLogWhere(lp.Sources)...)
+}
+
+// aadhaarLogWhere names the log sources a person is in, in the report's order.
+func aadhaarLogWhere(by map[string]int) []string {
+	out := []string{}
+	for _, src := range auth.AadhaarLogSources {
+		if by[src] > 0 {
+			out = append(out, auth.AadhaarLogSourceName(src))
+		}
+	}
+	return out
+}
+
+// AadhaarLogPlaces lists the log places of a branch's latest logs run, or
+// those it no longer found: for an admin or the machine's operator.
+func AadhaarLogPlaces(name string, st *auth.Store, f auth.AadhaarLogFilter) ([]auth.AadhaarLogPlace, error) {
+	if name == "" {
+		name = "main"
+	}
+	if f.Limit == 0 {
+		f.Limit = DefaultAadhaarPlaces
+	}
+	if f.Limit < 1 || f.Limit > MaxAadhaarPlaces {
+		return nil, fmt.Errorf("%w: a list is 1 to %d places, not %d", ErrInvalidRequest, MaxAadhaarPlaces, f.Limit)
+	}
+	if f.Source != "" && !auth.ValidAadhaarLogSource(f.Source) {
+		return nil, fmt.Errorf("%w: a log is %s, not %q", ErrInvalidRequest, strings.Join(auth.AadhaarLogSources, ", "), f.Source)
+	}
+	f.Source = strings.ToLower(f.Source)
+	out := []auth.AadhaarLogPlace{}
+	lr, err := st.LatestAadhaarLogRun(name)
+	if err != nil || lr == nil {
+		return out, err
+	}
+	ps, err := st.AadhaarLogPlaces(lr, f)
+	if err != nil {
+		return nil, err
+	}
+	for i := range ps {
+		ps[i].Masked = MaskAadhaar(ps[i].Last4)
+	}
+	return ps, nil
 }
 
 // goneSQL is the condition, on bb.aadhaar_places p, for a place the latest
@@ -389,8 +595,18 @@ func (r AadhaarReport) Summary() string {
 		return "read"
 	}
 	x := r.Run
-	return fmt.Sprintf("run %d: %d table(s), %d column(s), %d skipped; %d number(s) in %d place(s) kept, %d distinct",
+	s := fmt.Sprintf("run %d: %d table(s), %d column(s), %d skipped; %d number(s) in %d place(s) kept, %d distinct",
 		x.ID, x.Tables, x.Columns, len(x.Skipped), x.Numbers, x.Listed, x.People)
+	if r.Logs != nil && r.Logs.Linked {
+		l := r.Logs.Run
+		read := 0
+		for _, n := range l.Read {
+			read += n
+		}
+		s += fmt.Sprintf("; logs: %d entr(ies) read, %d skipped; %d number(s) in %d place(s) kept, %d distinct, %d also in the tables",
+			read, len(l.Skipped), l.Numbers, l.Listed, l.People, l.Linked)
+	}
+	return s
 }
 
 // ParseAadhaarWhere checks a column as a filter names it: schema.table.column,

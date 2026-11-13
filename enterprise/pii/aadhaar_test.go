@@ -160,7 +160,7 @@ func TestExposureGroupsAndCaps(t *testing.T) {
 	if st.listed != maxListedPerColumn || !st.capped || st.numbers != int64(maxListedPerColumn+5) {
 		t.Errorf("capped column: %+v", *st)
 	}
-	if lim := strings.Join(exposureLimits(e, exposureStats{}), " "); !strings.Contains(lim, "places are kept for a column") {
+	if lim := strings.Join(exposureLimits(e, exposureStats{}, false), " "); !strings.Contains(lim, "places are kept for a column") {
 		t.Errorf("a capped run does not say so: %s", lim)
 	}
 }

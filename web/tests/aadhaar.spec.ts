@@ -81,3 +81,40 @@ test('a run from the page finds whose Aadhaar is where, by its last four digits,
   // later spec applies to another branch, where the guardrail refuses it. The
   // harness remakes the branch, as personaldata.spec.ts leaves its table too.
 })
+
+test("an admin's run reads the branch's logs too: a number someone typed is the same person as the row's", async ({ page }) => {
+  await signIn(page)
+  // Synthetic: 298765432101 passes Verhoeff, and is used nowhere else here.
+  const t = `aad_logs_${Date.now().toString().slice(-6)}`
+  const sql = async (q: string) => {
+    const r = await page.request.post(`/api/branches/${branch}/query`, { data: { sql: q } })
+    expect(r.ok(), await r.text()).toBeTruthy()
+  }
+  await sql(`CREATE TABLE public.${t} (id int PRIMARY KEY, note text)`)
+  await sql(`INSERT INTO public.${t} VALUES (3, 'uid 2987 6543 2101')`)
+  // Kept in this account's query history, number and all.
+  await sql(`SELECT id FROM public.${t} WHERE note LIKE '%2987 6543 2101%'`)
+
+  await page.getByRole('link', { name: 'Aadhaar exposure' }).click()
+  await page.getByLabel('Branch', { exact: true }).selectOption(branch)
+  await page.getByLabel(/Read the logs too/).check()
+  await page.getByRole('button', { name: 'Run the report' }).click()
+
+  const logs = page.getByRole('table', { name: 'Aadhaar in the logs' })
+  await expect(logs).toContainText('query history', { timeout: 120_000 })
+  await expect(page.getByTestId('aadhaar-logs-summary')).toContainText('also in the tables')
+  const person = page.getByRole('table', { name: 'Aadhaar by person' })
+    .locator('tr', { has: page.getByText('XXXX XXXX 2101', { exact: true }) })
+  await expect(person).toContainText(`public.${t}.note`)
+  await expect(person).toContainText('query history')
+  await person.getByRole('button', { name: /^Rows of person \d+$/ }).click()
+  await expect(page.getByRole('table', { name: 'Aadhaar places' })).toContainText('id=3')
+  const entries = page.getByRole('table', { name: 'Aadhaar log entries' })
+  await expect(entries).toContainText(email)
+  await expect(entries).toContainText('(sql)')
+  await expect(page.getByRole('heading', { name: 'What the logs part cannot claim' })).toBeVisible()
+
+  const text = (await page.locator('main').innerText()).replace(/[ -]/g, '')
+  expect(text).not.toContain('298765432101')
+  // No clean-up, as above.
+})
