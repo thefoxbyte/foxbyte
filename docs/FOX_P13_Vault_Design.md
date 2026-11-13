@@ -1,8 +1,9 @@
 # Point 13: the vault (Aadhaar first) — design
 
-**Status:** proposed for agreement. Three decisions were taken on 13 November
-2026, the first two before writing and the third after the first draft
-(section 17, decisions 1 to 3). This answers point 13 of the review plan
+**Status:** agreed (#234, #235, 13 November 2026); decisions 4 to 8 taken as
+recommended when the design merged. The Gate 0 prototype is built and its
+suite passes (`make integration-p13`, 75 checks); what it found is in section
+20, and it changes sections 10 and 11 where marked. This answers point 13 of the review plan
 (`docs/FOX_Expert_Review_Plan.md`, point 13). The plan asks for an Aadhaar
 Data Vault for entities that do not have one. This design builds a **general
 vault** for sensitive values, and Aadhaar is its first kind, held to UIDAI's
@@ -425,6 +426,12 @@ nothing about Aadhaar.
 - **Hash-chained**, as the Blackbox is. Each row carries a hash of itself and
   of the row before it, so a deleted or changed row breaks the chain, and
   `fox vault evidence` checks it.
+- **Its head anchored outside the vault** *(changed by the prototype, section
+  20)*. A chain shows a row changed or removed from the middle, but not rows
+  cut off the end. The running service remembers how long the log is; across
+  a restart, Gate 1 records the head (sequence and hash) in the install's
+  security log at every call, which FoxByte's anchors already cover, so a cut
+  is seen afterwards too.
 - **Copied to the security log**, one line per call, so the install's log of
   who did what has it too. Detokenise lines say whose reference key was read,
   never the value.
@@ -439,6 +446,13 @@ nothing about Aadhaar.
   have no route out, and nothing outside reaches them.
 - On it are only the vault database and the vault service. The branches'
   network (where dblink could reach) and the object store are not.
+- **The vault database also admits only the service's address and role**
+  *(changed by the prototype, section 20)*. An internal network has no route
+  out and no route from other networks, but the machine itself still reaches
+  it through the network's bridge. So `pg_hba.conf` lets in the service's
+  role from the service's fixed address only, and rejects everything else,
+  the superuser included: the superuser works only from inside the database's
+  container.
 - The vault service is also on a second network, to which only the engine
   connects. It refuses any caller without the per-install secret.
 - A network HSM is reached from the vault service through the HSM vendor's
@@ -545,11 +559,11 @@ Without the vault they are only values.
 | 1 | Keys | PKCS#11 HSM from the first build; SoftHSM2 as FoxByte's own key custody, labelled not compliant for kinds that require an HSM | **Agreed 13 Nov** |
 | 2 | Where the vault lives | One vault per install: its own database, container and internal network, reached only through the vault service | **Agreed 13 Nov** |
 | 3 | What the vault holds | A general vault with kinds; Aadhaar first, under UIDAI's rules | **Agreed 13 Nov** |
-| 4 | How values are encrypted | One HSM call per record (AES-256-GCM, the kind and reference key as associated data), never a data key in memory; each kind its own keys, one token per vault | Proposed |
-| 5 | One reference key per value | Yes, within a kind, through a keyed index computed in the HSM that never leaves the vault | Proposed |
-| 6 | Reference-key formats | Opaque with the kind's prefix (`AR…`, `TX…`) by default; a legacy format per kind that can never pass its check (Aadhaar: 12 digits starting with 1) | Proposed |
-| 7 | Detokenise | Its own permission per kind, granted by admins only (admins included), a purpose on every call, every call logged, a rate limit per grant (default 100 an hour); never agents or masked accounts | Proposed |
-| 8 | The first kinds | Aadhaar and text in 13.1; PAN and card numbers next; the rest as customers ask; kinds are code, not configuration | Proposed |
+| 4 | How values are encrypted | One HSM call per record (AES-256-GCM, the kind and reference key as associated data), never a data key in memory; each kind its own keys, one token per vault | Taken as recommended (merged, 13 Nov) |
+| 5 | One reference key per value | Yes, within a kind, through a keyed index computed in the HSM that never leaves the vault | Taken as recommended (merged, 13 Nov) |
+| 6 | Reference-key formats | Opaque with the kind's prefix (`AR…`, `TX…`) by default; a legacy format per kind that can never pass its check (Aadhaar: 12 digits starting with 1) | Taken as recommended (merged, 13 Nov) |
+| 7 | Detokenise | Its own permission per kind, granted by admins only (admins included), a purpose on every call, every call logged, a rate limit per grant (default 100 an hour); never agents or masked accounts | Taken as recommended (merged, 13 Nov) |
+| 8 | The first kinds | Aadhaar and text in 13.1; PAN and card numbers next; the rest as customers ask; kinds are code, not configuration | Taken as recommended (merged, 13 Nov) |
 
 ---
 
@@ -571,6 +585,8 @@ Built after agreement, in the test VM, with SoftHSM2:
    long a table's writes wait.
 3. **Rotation** of one kind's 1,000,000 records while the vault keeps
    answering, and the other kind untouched.
+
+The results are in section 20.
 4. **The network:** from a branch's container, from the object store and
    from the host, the vault database cannot be reached; the service cannot
    be reached without the secret.
@@ -590,6 +606,104 @@ Built after agreement, in the test VM, with SoftHSM2:
 
 Each step comes with its CLI and console tests, an integration section in
 the test VM, and the docs, as every point has.
+
+---
+
+## 20. What the prototype found (Gate 0)
+
+Built in the test VM: the service (`enterprise/vault`, with the cgo part in
+`enterprise/vault/hsm` and the command in `enterprise/vault/cmd/fox-vault`),
+its image (`enterprise/vault/image`), and the suite
+(`scripts/integration_p13.sh`, `make integration-p13`), which runs everything
+in throwaway containers and networks and removes them. 75 checks pass. The
+figures are from the test VM (4 Apple-silicon cores, 4 GB), with SoftHSM2, and
+with a 1 ms delay added before every call to the token to stand for a network
+HSM. The VM is shared and its speed varies, so each figure is the range over
+two full runs.
+
+**1. Calls a second**, one value a call, 8 calls at once, through the socket:
+
+| Call | SoftHSM2 | 1 ms HSM | Calls to the token |
+|---|---|---|---|
+| Tokenise a new value | 1,477–2,696 (p99 6–20 ms) | 1,077–1,085 (p99 15 ms) | 4: index, random key, random nonce, encrypt |
+| Find | 2,478–3,880 | 3,282–3,684 | 1: index |
+| Detokenise | 2,966–3,949 | 3,363–3,921 | 1: decrypt |
+
+- The token is not what limits these: from Python it did 30,000 encryptions a
+  second (section 4). Each call's own costs are: the HTTP round trip; one row
+  in the access log, written one at a time because each row chains to the
+  one before; and the database. That is why find and detokenise are as fast
+  with a 1 ms token. Gate 1 writes the log in small groups (each still
+  chained) if a customer needs more.
+- Big calls go much faster: migration tokenises 1,000 values a call (below).
+
+**2. Migrating 1,000,000 rows holding 200,000 distinct numbers**, on a branch:
+
+| | SoftHSM2 | 1 ms HSM |
+|---|---|---|
+| Tokenising the 200,000 distinct numbers, 1,000 a call | 19–39 s (5,157–10,337 a second) | 168–170 s (about 1,180 a second) |
+| Rewriting the 1,000,000 rows, 10,000 a batch | 4.7–8.5 s | 4.7–7.4 s |
+| Longest batch, so the longest a write to those rows waits | 0.11–0.63 s | 0.12–0.30 s |
+| Numbers left in the column | 0 | 0 |
+
+A value that fails the kind's check is listed and left alone. The map of
+number to reference key is an unlogged table, so it never reaches the WAL,
+and it is dropped at the end. At 1 ms an HSM call, 10,000,000 distinct numbers
+would take about 2.4 hours with 8 sessions; more sessions shorten it, as far
+as the HSM allows.
+
+**3. Rotating about 1,005,000 records while the vault answers.** 3 min 3 s to
+3 min 53 s with SoftHSM2. Readers detokenised all the while (316,540 to
+355,019 reads, p99 12–29 ms) and none failed, through the switch to the new key and the old key's
+destruction. Every record ended under the new key; the text kind was not
+touched. With a 1 ms HSM each record costs three calls (decrypt, random,
+encrypt), so expect roughly three to four times as long **(not measured)**.
+
+**4. The network:**
+- The service listens on no TCP port at all. Docker's own DNS on 127.0.0.11
+  is the only listener in its container.
+- Its socket is mode 600, owned by the service's user, in a directory of
+  mode 700.
+- A call without the secret is refused, and the refusal is logged.
+- From a branch's database, the vault database cannot be reached.
+- Neither the vault database nor the service has a route out.
+- **But the machine itself reaches the vault database's port**, through the
+  internal network's bridge. What refuses it is `pg_hba.conf`: only the
+  service's role, from the service's fixed address. Even with the service's
+  password, the host is refused, and so is a container put on the vault
+  network at another address. Section 11 now says so.
+
+**5. Uses per data key:** counted across restarts, and equal to the records
+made under the key (421,003 when the suite counts, against GCM's limit of
+2³²).
+
+**Also found:**
+- **The chain** held over 1,012,091 entries. One entry changed in the
+  database was found at that entry. An entry cut off the end was found only
+  because the running service remembered the log's length. Section 10 now
+  anchors the head, so a cut made across a restart is found too.
+- **Nothing in the clear:** neither a dump of the vault database nor its WAL
+  (16 MB read) holds a number or a text value; the access log holds reference
+  keys only. The secret, the PIN and the database password are files of mode
+  400, the service's own.
+- **Tampering:** a ciphertext with one bit changed, or copied onto another
+  record, does not verify. Each case is logged as such, and the record opens
+  again once it is put back.
+- **A number's other spellings** (spaces, hyphens) find the same reference
+  key. The same digits stored as text get a text reference key under the text
+  kind's own index key, so the two never match.
+- **The image links no PKCS#11 library.** The library is loaded at run time,
+  so a customer's HSM library is mounted in and named; nothing is rebuilt.
+- **Some HSMs choose their own GCM nonce.** The service stores the nonce the
+  token reports back, not the one it offered.
+- **cgo:** the service is the only cgo code, built for Linux in a Go image of
+  the same Debian release. Every other build, macOS and Windows included,
+  gets a stub. `fox` stays cgo-free.
+
+**What Gate 1 changes because of this:** the `pg_hba.conf` pin (section 11);
+the log's head in the security log (section 10); the log written in groups if
+calls a second matter; a real HSM's figures, on the first design partner's
+device.
 
 ---
 
