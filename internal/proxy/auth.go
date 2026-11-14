@@ -8,6 +8,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -259,13 +260,21 @@ func scramSHA256(backend net.Conn, mechanisms []byte, password string) error {
 		return err
 	}
 
-	// AuthenticationSASLFinal (server signature) — consume it.
-	typ, _, err = readMsg(backend)
+	// AuthenticationSASLFinal. The server signature is HMAC(ServerKey, AuthMessage).
+	// Checking it is what makes the gateway sure it reached Postgres and not
+	// something else on the path to the container.
+	typ, body, err = readMsg(backend)
 	if err != nil {
 		return err
 	}
-	if typ != 'R' {
+	if typ != 'R' || len(body) < 4 || binary.BigEndian.Uint32(body[:4]) != 12 {
 		return fmt.Errorf("expected SASLFinal")
+	}
+	got := scramAttrs(string(body[4:]))["v"]
+	serverKey := hmacSum(saltedPassword, []byte("Server Key"))
+	want := base64.StdEncoding.EncodeToString(hmacSum(serverKey, []byte(authMessage)))
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		return fmt.Errorf("SCRAM server signature mismatch")
 	}
 	return nil
 }

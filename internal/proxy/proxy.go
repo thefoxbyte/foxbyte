@@ -75,6 +75,16 @@ const realDatabase = branch.Database
 // branch, a scoped one only the branch it names.
 func scopeAllows(scope, target string) bool { return scope == "" || scope == target }
 
+// noteScopedRefusal records a key that is real but named the wrong branch.
+// Other refusals already reach the security log; this one used to return
+// 42501 and leave no event.
+func noteScopedRefusal(account auth.User, scope, target, ip string) {
+	if authStore == nil {
+		return
+	}
+	authStore.GatewayRefused(auth.EvDenied, account.Email, target, ip, "scoped key for "+scope)
+}
+
 // realUser is the Postgres role the Gateway logs clients in as — a non-superuser
 // role, so client sessions obey RLS/GRANTs and cannot bypass the append-only
 // ledger. The API key gates the client; this role bounds what they can do.
@@ -425,6 +435,7 @@ func handle(client net.Conn) {
 	// another branch, and the actor recorded is the agent, not the key's owner.
 	if keyScope != "" {
 		if !scopeAllows(keyScope, target) {
+			noteScopedRefusal(account, keyScope, target, remoteHost(client))
 			sendError(client, "42501", fmt.Sprintf("this key only opens branch %q", keyScope))
 			return
 		}
