@@ -581,6 +581,25 @@ var appRoleSynced sync.Map
 // the caches still said "already provisioned" and the Gateway or the console
 // tried to log in as a role the new branch does not have — which Postgres
 // reports as "password authentication failed", not as a missing role.
+// ForgetUserRole drops this process's memory that email's login role is
+// already on the branch. The memory is not shared with the process that
+// deleted and recreated the branch, so a gateway that logged in once still
+// believes the role is there. The next password failure has to provision
+// it again; otherwise Postgres reports "password authentication failed"
+// for a role the new clone does not have, until this process restarts.
+func ForgetUserRole(branchName, email string) {
+	if branchName == "" {
+		branchName = "main"
+	}
+	prefix := branchName + "\x00" + email + "\x00"
+	ensuredRoles.Range(func(k, _ any) bool {
+		if s, ok := k.(string); ok && strings.HasPrefix(s, prefix) {
+			ensuredRoles.Delete(k)
+		}
+		return true
+	})
+}
+
 func forgetBranchRoles(name string) {
 	appRoleSynced.Delete(name)
 	agentRolesReady.Range(func(k, _ any) bool {

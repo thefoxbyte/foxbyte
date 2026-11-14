@@ -2,7 +2,7 @@ module github.com/thefoxbyte/foxbyte
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.11
 
 require (
 	github.com/jackc/pglogrepl v0.0.0-20261003132456-662581bb6bb6

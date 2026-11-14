@@ -1020,9 +1020,20 @@ func streamJSONDocs(br *bufio.Reader, first byte, emit func(string) error) error
 // -c quiets routine NOTICEs (e.g. "table … does not exist, skipping" from a
 // defensive DROP IF EXISTS); both -c options share the one psql session.
 func psqlExec(target, sql string) error {
-	return run("docker", "exec", "-e", pgImportOptions, container(target),
+	return retryIfStopped(target, func() error { return psqlExecOnce(target, sql) })
+}
+
+// psqlExecOnce is one attempt. stderr stays on the error: a container another
+// process has just stopped says "is not running" there, which is what
+// retryIfStopped looks for. run() streamed that line to the terminal and
+// returned only "exit status 1", so the retry could not see it.
+func psqlExecOnce(target, sql string) error {
+	cmd, ctx, cancel := sudoCmd(execLong, "docker", "exec", "-e", pgImportOptions, container(target),
 		"psql", "-q", "-U", pgUser, "-d", pgDatabase, "-v", "ON_ERROR_STOP=1",
 		"-c", "SET client_min_messages=warning;", "-c", sql)
+	defer cancel()
+	_, err := cmd.Output()
+	return execErr(ctx, execLong, "docker exec psql", withStderr(err))
 }
 
 // relationalizeJSON turns the jsonb documents in `stage` into a typed relational

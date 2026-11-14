@@ -28,6 +28,12 @@ func pidPath(name string) string { return filepath.Join(runDir(), name+".pid") }
 // LogPath is the log file for a service.
 func LogPath(name string) string { return filepath.Join(runDir(), name+".log") }
 
+// openServiceLog appends to a service's log. 0600: the file holds actors,
+// branch names and errors, and any local user could otherwise read it.
+func openServiceLog(name string) (*os.File, error) {
+	return os.OpenFile(LogPath(name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+}
+
 func readPid(name string) int {
 	b, err := os.ReadFile(pidPath(name))
 	if err != nil {
@@ -53,7 +59,7 @@ func Start(name string, args []string) error {
 	if err != nil {
 		return err
 	}
-	logf, err := os.OpenFile(LogPath(name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logf, err := openServiceLog(name)
 	if err != nil {
 		return err
 	}

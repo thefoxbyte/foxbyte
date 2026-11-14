@@ -75,6 +75,16 @@ const realDatabase = branch.Database
 // branch, a scoped one only the branch it names.
 func scopeAllows(scope, target string) bool { return scope == "" || scope == target }
 
+// noteScopedRefusal records a key that is real but named the wrong branch.
+// Other refusals already reach the security log; this one used to return
+// 42501 and leave no event.
+func noteScopedRefusal(account auth.User, scope, target, ip string) {
+	if authStore == nil {
+		return
+	}
+	authStore.GatewayRefused(auth.EvDenied, account.Email, target, ip, "scoped key for "+scope)
+}
+
 // realUser is the Postgres role the Gateway logs clients in as — a non-superuser
 // role, so client sessions obey RLS/GRANTs and cannot bypass the append-only
 // ledger. The API key gates the client; this role bounds what they can do.
@@ -237,13 +247,89 @@ func Serve(addr string, idle time.Duration) error {
 // time, would otherwise hold its slot for ever.
 const startupTimeout = 30 * time.Second
 
-// maxConns is FOX_GATEWAY_MAX_CONNS, 1000 by default: how many client
-// connections the Gateway serves at once.
+// Stock Postgres allows 100 connections and keeps 3 of them for superusers
+// (superuser_reserved_connections). Every gateway client is a non-superuser,
+// so the 97th is refused by Postgres itself, with a message about reserved
+// slots. The default sits one under that line: the gateway says 53300 first.
+const (
+	defaultMaxConnections    = 100
+	defaultSuperuserReserved = 3
+)
+
+// ConnectionCap is how many client sessions fit under Postgres's non-superuser
+// limit with one slot to spare, so the gateway refuses before Postgres does.
+// A non-positive max is the stock setting. The result is at least 1.
+func ConnectionCap(maxConn, reserved int) int {
+	if maxConn <= 0 {
+		maxConn = defaultMaxConnections
+	}
+	if reserved < 0 {
+		reserved = defaultSuperuserReserved
+	}
+	room := maxConn - reserved - 1
+	if room < 1 {
+		return 1
+	}
+	return room
+}
+
+// MaxConns is how many client connections the gateway serves at once:
+// FOX_GATEWAY_MAX_CONNS when that is set, otherwise ConnectionCap for a stock
+// Postgres (96).
+func MaxConns() int { return maxConns() }
+
+// maxConns is FOX_GATEWAY_MAX_CONNS, or the stock cap when it is unset.
 func maxConns() int {
 	if n, err := strconv.Atoi(strings.TrimSpace(brand.Getenv("GATEWAY_MAX_CONNS"))); err == nil && n > 0 {
 		return n
 	}
-	return 1000
+	return ConnectionCap(defaultMaxConnections, defaultSuperuserReserved)
+}
+
+// The role cache and the backend handshake, variables so a test can show a
+// branch that was deleted and created again while this process kept running.
+var (
+	forgetLoginRole     = branch.ForgetUserRole
+	ensureLoginRole     = branch.EnsureUserRole
+	authenticateBackend = backendAuth
+)
+
+// authNeedsRole reports a backend refusal that a missing or stale login role
+// produces. A wrong password and a role the clone does not have both look
+// like this; provisioning the role again fixes the second and leaves the
+// first refused.
+func authNeedsRole(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "28p01") || strings.Contains(s, "28000") ||
+		strings.Contains(s, "password authentication failed") ||
+		strings.Contains(s, "does not exist")
+}
+
+// reopenIfRoleMissing logs in, and when Postgres refuses because the role is
+// not the one this process remembers, forgets that memory, makes the role,
+// and tries once on a new connection. user is empty when this session is not
+// a per-user role.
+func reopenIfRoleMissing(backend net.Conn, redial func() (net.Conn, error), params map[string]string, password, branchName, user string, err error) (net.Conn, error) {
+	if err == nil || user == "" || !authNeedsRole(err) {
+		return backend, err
+	}
+	forgetLoginRole(branchName, user)
+	if e := ensureLoginRole(branchName, user); e != nil {
+		return backend, err
+	}
+	_ = backend.Close()
+	again, dialErr := redial()
+	if dialErr != nil {
+		return nil, err
+	}
+	if e := authenticateBackend(again, params, password); e != nil {
+		_ = again.Close()
+		return nil, e
+	}
+	return again, nil
 }
 
 // remoteHost is the address a client connected from.
@@ -349,6 +435,7 @@ func handle(client net.Conn) {
 	// another branch, and the actor recorded is the agent, not the key's owner.
 	if keyScope != "" {
 		if !scopeAllows(keyScope, target) {
+			noteScopedRefusal(account, keyScope, target, remoteHost(client))
 			sendError(client, "42501", fmt.Sprintf("this key only opens branch %q", keyScope))
 			return
 		}
@@ -470,7 +557,20 @@ func handle(client net.Conn) {
 	// branch's DDL event triggers read via current_setting('foxbyte.*'). For a
 	// per-user login this is a fallback/display value; session_user is authoritative.
 	params["options"] = ledgerOptions(params["options"], actor, target, keyScope == "", agentKey)
-	if err := backendAuth(backend, params, backendPass); err != nil {
+	// Only a person's own role is reprovisioned. An agent role and the shared
+	// client role are made by other paths; EnsureUserRole on those names would
+	// create a second, ordinary role under the same name.
+	roleUser := ""
+	if !agentKey && keyScope == "" && actor != "" && loginUser == actor {
+		roleUser = actor
+	}
+	backend, err = reopenIfRoleMissing(backend, func() (net.Conn, error) {
+		var e error
+		var c net.Conn
+		c, addr, e = connectBackend(addr, route)
+		return c, e
+	}, params, backendPass, target, roleUser, backendAuth(backend, params, backendPass))
+	if err != nil {
 		log.Printf("backend auth %s: %v", addr, err)
 		sendError(client, "08006", fmt.Sprintf("branch %q authentication failed", target))
 		return

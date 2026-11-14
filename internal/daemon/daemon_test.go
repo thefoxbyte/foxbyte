@@ -49,3 +49,21 @@ func TestStopTerminatesProcess(t *testing.T) {
 		t.Errorf("Stop did not remove the pidfile")
 	}
 }
+
+func TestServiceLogIsPrivate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f, err := openServiceLog("gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(LogPath("gateway"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("log mode %o, want 0600", st.Mode().Perm())
+	}
+}

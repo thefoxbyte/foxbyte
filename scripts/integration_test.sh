@@ -1996,6 +1996,12 @@ assert_eq "an update moves updated_at, keeps created_at, and names the person wh
   "$(pg pg-main "SELECT (created_at = '$C4')::text || '|' || (updated_at > created_at)::text || '|' || last_modified_by FROM trk_a WHERE id = 4")" "true|true|alice@foxbyte.dev"
 assert_eq "…the Blackbox records the table's change under who asked" \
   "$(pg pg-main "SELECT string_agg(command_tag, ',' ORDER BY id) FROM bb.schema_ledger WHERE object_identity IN ('public.trk_a', 'bb_track on public.trk_a') AND command_tag IN ('ALTER TABLE','CREATE TRIGGER') AND actor LIKE 'cli:%'")" "ALTER TABLE,CREATE TRIGGER"
+# The refusal is the event triggers in internal/ledger/tracking.sql. On
+# Postgres 18 a dropped bb_track's identity is "bb_track on public.<table>",
+# which that SQL matches, and a throwaway 18 refuses the DROP. A 0|0 here
+# means those triggers did not run for this session (the override was already
+# on, or the triggers were not installed), not that 18 names the trigger
+# differently.
 assert_eq "the trigger cannot be dropped or disabled without the override" \
   "$(sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -tAc "DROP TRIGGER bb_track ON trk_a" 2>&1 | grep -c 'cannot be dropped')|$(sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -tAc "ALTER TABLE trk_a DISABLE TRIGGER bb_track" 2>&1 | grep -c 'cannot be disabled')" "1|1"
 assert_contains "--label-existing gives rows already there this moment" "$($S track trk_b --label-existing)" "labelled with this moment"

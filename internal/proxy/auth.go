@@ -8,6 +8,7 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -121,7 +122,14 @@ func backendAuth(backend net.Conn, params map[string]string, password string) er
 			return err
 		}
 		if typ == 'E' {
-			return fmt.Errorf("backend refused connection")
+			code, msg := errorFields(body)
+			if msg == "" {
+				return fmt.Errorf("backend refused connection")
+			}
+			if code == "" {
+				return fmt.Errorf("backend refused connection: %s", msg)
+			}
+			return fmt.Errorf("backend refused connection: %s: %s", code, msg)
 		}
 		if typ != 'R' || len(body) < 4 {
 			return fmt.Errorf("unexpected message %q during backend auth", typ)
@@ -149,6 +157,28 @@ func backendAuth(backend net.Conn, params map[string]string, password string) er
 			return fmt.Errorf("unsupported backend auth method %d", code)
 		}
 	}
+}
+
+// errorFields reads a Postgres ErrorResponse: a code byte, a NUL-terminated
+// value, repeated, ending in a NUL. C is the SQLSTATE, M the message.
+func errorFields(body []byte) (code, msg string) {
+	for len(body) > 0 && body[0] != 0 {
+		field := body[0]
+		body = body[1:]
+		i := bytes.IndexByte(body, 0)
+		if i < 0 {
+			break
+		}
+		val := string(body[:i])
+		body = body[i+1:]
+		switch field {
+		case 'C':
+			code = val
+		case 'M':
+			msg = val
+		}
+	}
+	return code, msg
 }
 
 func md5Password(user, password string, salt []byte) string {
@@ -230,13 +260,21 @@ func scramSHA256(backend net.Conn, mechanisms []byte, password string) error {
 		return err
 	}
 
-	// AuthenticationSASLFinal (server signature) — consume it.
-	typ, _, err = readMsg(backend)
+	// AuthenticationSASLFinal. The server signature is HMAC(ServerKey, AuthMessage).
+	// Checking it is what makes the gateway sure it reached Postgres and not
+	// something else on the path to the container.
+	typ, body, err = readMsg(backend)
 	if err != nil {
 		return err
 	}
-	if typ != 'R' {
+	if typ != 'R' || len(body) < 4 || binary.BigEndian.Uint32(body[:4]) != 12 {
 		return fmt.Errorf("expected SASLFinal")
+	}
+	got := scramAttrs(string(body[4:]))["v"]
+	serverKey := hmacSum(saltedPassword, []byte("Server Key"))
+	want := base64.StdEncoding.EncodeToString(hmacSum(serverKey, []byte(authMessage)))
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		return fmt.Errorf("SCRAM server signature mismatch")
 	}
 	return nil
 }

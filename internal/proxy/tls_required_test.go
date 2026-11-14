@@ -30,11 +30,31 @@ func TestNeedsTLS(t *testing.T) {
 
 func TestMaxConns(t *testing.T) {
 	t.Setenv("FOX_GATEWAY_MAX_CONNS", "")
-	if maxConns() != 1000 {
-		t.Errorf("default = %d, want 1000", maxConns())
+	// Stock Postgres: 100 total, 3 reserved for superusers, one under that so
+	// the gateway's 53300 is the error a client sees.
+	if maxConns() != 96 {
+		t.Errorf("default = %d, want 96", maxConns())
 	}
 	t.Setenv("FOX_GATEWAY_MAX_CONNS", "25")
 	if maxConns() != 25 {
 		t.Errorf("FOX_GATEWAY_MAX_CONNS=25 gave %d", maxConns())
+	}
+}
+
+func TestConnectionCapStaysUnderTheSuperuserReserve(t *testing.T) {
+	if got := ConnectionCap(100, 3); got != 96 {
+		t.Errorf("stock = %d, want 96", got)
+	}
+	if got := ConnectionCap(20, 3); got != 16 {
+		t.Errorf("20/3 = %d, want 16", got)
+	}
+	if got := ConnectionCap(0, 3); got != 96 {
+		t.Errorf("unknown max = %d, want the stock cap", got)
+	}
+	if got := ConnectionCap(100, 0); got != 99 {
+		t.Errorf("no reserve = %d, want 99", got)
+	}
+	if got := ConnectionCap(2, 5); got != 1 {
+		t.Errorf("reserve larger than max = %d, want 1", got)
 	}
 }

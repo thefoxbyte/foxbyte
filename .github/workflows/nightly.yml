@@ -45,7 +45,7 @@ jobs:
       - if: ${{ inputs.suite == '' || inputs.suite == matrix.suite }}
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '>=1.26.11 <1.27.0'
           check-latest: true  # newest 1.26.x, not the image's cached one
       - if: ${{ (inputs.suite == '' || inputs.suite == matrix.suite) && (matrix.suite == 'ui' || matrix.suite == 'sdks') }}
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
