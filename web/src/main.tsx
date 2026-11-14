@@ -20,10 +20,12 @@ import Import from './pages/Import'
 import Pipelines from './pages/Pipelines'
 import PersonalData from './pages/PersonalData'
 import AccessReview from './pages/AccessReview'
+import AadhaarExposure from './pages/AadhaarExposure'
 import Applications from './pages/Applications'
 import AuditLog from './pages/AuditLog'
 import Hardening from './pages/Hardening'
 import Masking from './pages/Masking'
+import Vault from './pages/Vault'
 import Sessions from './pages/Sessions'
 import PipelineEditor from './pages/PipelineEditor'
 import { ConfirmProvider } from './confirm'
@@ -119,11 +121,13 @@ const router = createBrowserRouter([
       { path: 'import', element: <Import /> },
       { path: 'pipelines', element: <Pipelines /> },
       { path: 'personal-data', element: <PersonalData /> },
+      { path: 'aadhaar-exposure', element: <AadhaarExposure /> },
       { path: 'access-review', element: <AccessReview /> },
       { path: 'applications', element: <Applications /> },
       { path: 'audit-log', element: <AuditLog /> },
       { path: 'hardening', element: <Hardening /> },
       { path: 'masking', element: <Masking /> },
+      { path: 'vault', element: <Vault /> },
       { path: 'sessions', element: <Sessions /> },
       { path: 'pipelines/:id', element: <PipelineEditor /> },
       { path: 'console', element: <Console /> },

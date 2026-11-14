@@ -71,6 +71,30 @@ type ObjectDetail struct {
 	// Params are a function's or a procedure's arguments, in order, for a
 	// form that calls it (point 12.4).
 	Params []FuncParam `json:"params,omitempty"`
+	// Routine is what an edit dialog needs to write a function or procedure
+	// again without losing anything it was not asked to change (point 12.3).
+	Routine *RoutineInfo `json:"routine,omitempty"`
+}
+
+// RoutineInfo is a function or a procedure, attribute by attribute.
+type RoutineInfo struct {
+	Arguments string `json:"arguments"` // as declared, defaults included
+	Identity  string `json:"identity"`  // as ALTER and DROP name it
+	Returns   string `json:"returns,omitempty"`
+	Language  string `json:"language"`
+	Body      string `json:"body"`
+	// Atomic: written with BEGIN ATOMIC, which has no body as text to edit.
+	Atomic     bool     `json:"atomic,omitempty"`
+	Volatility string   `json:"volatility"` // immutable, stable, volatile
+	Strict     bool     `json:"strict,omitempty"`
+	Definer    bool     `json:"definer,omitempty"`
+	Leakproof  bool     `json:"leakproof,omitempty"`
+	Window     bool     `json:"window,omitempty"`
+	Parallel   string   `json:"parallel"` // safe, restricted, unsafe
+	Cost       float64  `json:"cost"`
+	Rows       float64  `json:"rows,omitempty"`
+	Set        []string `json:"set,omitempty"` // each SET clause, as Postgres writes it
+	Trigger    bool     `json:"trigger,omitempty"`
 }
 
 // FuncParam is one argument of a function or a procedure.
@@ -106,6 +130,139 @@ type CatalogPart struct {
 	// System marks a trigger FoxByte installed (the Blackbox's), as opposed to one of the user's.
 	System   bool `json:"system,omitempty"`
 	Disabled bool `json:"disabled,omitempty"`
+	// Trigger is a trigger's parts, for the dialog that edits it (point 12.3).
+	Trigger *TriggerInfo `json:"trigger,omitempty"`
+	// Key is a constraint's parts, for the dialog that edits it (point 12.3).
+	Key *ConstraintInfo `json:"key,omitempty"`
+}
+
+// ConstraintInfo is a table constraint, part by part.
+type ConstraintInfo struct {
+	Type       string   `json:"type"` // primary, unique, foreign, check, exclusion
+	Columns    []string `json:"columns,omitempty"`
+	RefSchema  string   `json:"refSchema,omitempty"`
+	RefTable   string   `json:"refTable,omitempty"`
+	RefColumns []string `json:"refColumns,omitempty"`
+	OnDelete   string   `json:"onDelete,omitempty"` // CASCADE, SET NULL, SET DEFAULT, RESTRICT; none is NO ACTION
+	OnUpdate   string   `json:"onUpdate,omitempty"`
+	Match      string   `json:"match,omitempty"` // FULL; none is SIMPLE
+	Deferrable bool     `json:"deferrable,omitempty"`
+	Deferred   bool     `json:"deferred,omitempty"`
+	NotValid   bool     `json:"notValid,omitempty"`
+	NoInherit  bool     `json:"noInherit,omitempty"`
+	Check      string   `json:"check,omitempty"`
+	// Editable: the parts above say all of it, so writing it again loses nothing.
+	Editable bool `json:"editable,omitempty"`
+}
+
+// keyExtras are what a key's definition can hold that ConstraintInfo has no
+// part for. A key with one is renamed and dropped, but not rewritten.
+var keyExtras = []string{" INCLUDE (", " NULLS NOT DISTINCT", " WITH (", " USING INDEX TABLESPACE ", " WITHOUT OVERLAPS", "PERIOD ", " SET NULL (", " SET DEFAULT ("}
+
+var fkActions = map[string]string{"r": "RESTRICT", "c": "CASCADE", "n": "SET NULL", "d": "SET DEFAULT"}
+
+// constraintInfo reads a pg_constraint row. local is false for a constraint
+// inherited from a parent, which only the parent can change.
+func constraintInfo(contype, def, onDelete, onUpdate, match string, local bool) *ConstraintInfo {
+	k := &ConstraintInfo{
+		Type:     map[string]string{"p": "primary", "u": "unique", "f": "foreign", "c": "check", "x": "exclusion"}[contype],
+		OnDelete: fkActions[onDelete], OnUpdate: fkActions[onUpdate],
+	}
+	if match == "f" {
+		k.Match = "FULL"
+	}
+	k.Editable = local && k.Type != "" && k.Type != "exclusion" && !strings.HasSuffix(def, " NOT ENFORCED")
+	if k.Type != "check" {
+		for _, x := range keyExtras {
+			if strings.Contains(def, x) {
+				k.Editable = false
+			}
+		}
+	}
+	return k
+}
+
+// TriggerInfo is a trigger, part by part.
+type TriggerInfo struct {
+	Timing      string   `json:"timing"` // BEFORE, AFTER, INSTEAD OF
+	Events      []string `json:"events"` // INSERT, UPDATE, DELETE, TRUNCATE
+	Columns     []string `json:"columns,omitempty"`
+	ForEach     string   `json:"forEach"` // ROW or STATEMENT
+	When        string   `json:"when,omitempty"`
+	Function    string   `json:"function"`       // schema-qualified and quoted
+	Args        string   `json:"args,omitempty"` // as written between the parentheses
+	Referencing string   `json:"referencing,omitempty"`
+	// Constraint: a CONSTRAINT TRIGGER, which CREATE OR REPLACE cannot replace.
+	Constraint bool `json:"constraint,omitempty"`
+}
+
+// The bits of pg_trigger.tgtype.
+const (
+	tgRow      = 1 << 0
+	tgBefore   = 1 << 1
+	tgInsert   = 1 << 2
+	tgDelete   = 1 << 3
+	tgUpdate   = 1 << 4
+	tgTruncate = 1 << 5
+	tgInstead  = 1 << 6
+)
+
+// triggerInfo reads a trigger's parts from its type bits, and what only its
+// definition holds (the WHEN condition, the arguments, REFERENCING) from the
+// text pg_get_triggerdef writes.
+func triggerInfo(tgtype int, columns []string, function string, constraint bool, def string) *TriggerInfo {
+	t := &TriggerInfo{Timing: "AFTER", ForEach: "STATEMENT", Columns: columns, Function: function, Constraint: constraint, Events: []string{}}
+	switch {
+	case tgtype&tgBefore != 0:
+		t.Timing = "BEFORE"
+	case tgtype&tgInstead != 0:
+		t.Timing = "INSTEAD OF"
+	}
+	if tgtype&tgRow != 0 {
+		t.ForEach = "ROW"
+	}
+	for _, e := range []struct {
+		bit  int
+		name string
+	}{{tgInsert, "INSERT"}, {tgUpdate, "UPDATE"}, {tgDelete, "DELETE"}, {tgTruncate, "TRUNCATE"}} {
+		if tgtype&e.bit != 0 {
+			t.Events = append(t.Events, e.name)
+		}
+	}
+	exec := strings.LastIndex(def, " EXECUTE FUNCTION ")
+	if exec < 0 {
+		return t
+	}
+	head := def[:exec]
+	if w := strings.Index(head, " WHEN ("); w >= 0 && strings.HasSuffix(head, ")") {
+		t.When = head[w+len(" WHEN (") : len(head)-1]
+		head = head[:w]
+	}
+	if r := strings.Index(head, " REFERENCING "); r >= 0 {
+		if f := strings.Index(head[r:], " FOR EACH "); f >= 0 {
+			t.Referencing = head[r+len(" REFERENCING ") : r+f]
+		}
+	}
+	call := def[exec+len(" EXECUTE FUNCTION "):]
+	if o := strings.Index(call, "("); o >= 0 && strings.HasSuffix(call, ")") {
+		t.Args = call[o+1 : len(call)-1]
+	}
+	return t
+}
+
+// setClauses are the SET lines of a pg_get_functiondef text, as Postgres
+// writes them: search_path's list quoting is its own to get right.
+func setClauses(def string) []string {
+	var out []string
+	for _, l := range strings.Split(def, "\n") {
+		if strings.HasPrefix(l, "AS ") || strings.HasPrefix(l, "BEGIN ATOMIC") {
+			break
+		}
+		if t := strings.TrimSpace(l); strings.HasPrefix(t, "SET ") {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // CatalogMember is something an extension installed.
@@ -189,7 +346,7 @@ func readCatalog(ctx context.Context, conn *pgx.Conn) (Catalog, error) {
 			}); err != nil {
 			return err
 		}
-		if err := add(`SELECT p.oid, n.nspname, p.proname, pg_get_function_identity_arguments(p.oid), p.prokind::text FROM pg_proc p
+		if err := add(`SELECT p.oid, n.nspname, p.proname, pg_get_function_identity_arguments(p.oid), p.prokind::text, p.prorettype = 'trigger'::regtype FROM pg_proc p
 			JOIN pg_namespace n ON n.oid = p.pronamespace
 			WHERE `+userSchemas+` AND p.prokind IN ('f','p')
 			  AND `+fmt.Sprintf(notExtensionMember, `'pg_proc'::regclass`, `p.oid`)+`
@@ -197,8 +354,12 @@ func readCatalog(ctx context.Context, conn *pgx.Conn) (Catalog, error) {
 			func(r pgx.Rows) (CatalogObject, error) {
 				var o CatalogObject
 				var k string
-				err := r.Scan(&o.OID, &o.Schema, &o.Name, &o.Args, &k)
+				var trig bool
+				err := r.Scan(&o.OID, &o.Schema, &o.Name, &o.Args, &k, &trig)
 				o.Kind = map[string]string{"f": "function", "p": "procedure"}[k]
+				if trig {
+					o.Sub = "trigger" // what a trigger's dialog offers (point 12.3)
+				}
 				return o, err
 			}); err != nil {
 			return err
@@ -374,20 +535,37 @@ func readRelation(ctx context.Context, tx pgx.Tx, d *ObjectDetail) error {
 		}
 		return nil
 	}
-	rows, err := tx.Query(ctx, `SELECT conname, contype::text, pg_get_constraintdef(oid, true) FROM pg_constraint
-		WHERE conrelid = $1::oid AND contype <> 'n'
-		ORDER BY array_position(ARRAY['p','u','f','c','x'], contype::text), conname`, d.OID)
+	rows, err := tx.Query(ctx, `SELECT c.conname, c.contype::text, pg_get_constraintdef(c.oid, true),
+		  c.confdeltype::text, c.confupdtype::text, c.confmatchtype::text, c.conislocal AND c.conparentid = 0,
+		  ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n, o)
+		        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.n ORDER BY k.o),
+		  ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n, o)
+		        JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = k.n ORDER BY k.o),
+		  coalesce(fn.nspname::text, ''), coalesce(f.relname::text, ''),
+		  c.condeferrable, c.condeferred, NOT c.convalidated, c.connoinherit,
+		  coalesce(CASE WHEN c.contype = 'c' THEN pg_get_expr(c.conbin, c.conrelid, true) END, '')
+		FROM pg_constraint c
+		LEFT JOIN pg_class f ON f.oid = c.confrelid
+		LEFT JOIN pg_namespace fn ON fn.oid = f.relnamespace
+		WHERE c.conrelid = $1::oid AND c.contype <> 'n'
+		ORDER BY array_position(ARRAY['p','u','f','c','x'], c.contype::text), c.conname`, d.OID)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var p CatalogPart
-		var k string
-		if err := rows.Scan(&p.Name, &k, &p.Def); err != nil {
+		var k, del, upd, match string
+		var local bool
+		var key ConstraintInfo
+		if err := rows.Scan(&p.Name, &k, &p.Def, &del, &upd, &match, &local, &key.Columns, &key.RefColumns, &key.RefSchema, &key.RefTable,
+			&key.Deferrable, &key.Deferred, &key.NotValid, &key.NoInherit, &key.Check); err != nil {
 			rows.Close()
 			return err
 		}
 		p.Kind = map[string]string{"p": "primary key", "u": "unique", "f": "foreign key", "c": "check", "x": "exclusion"}[k]
+		info := constraintInfo(k, p.Def, del, upd, match, local)
+		key.Type, key.OnDelete, key.OnUpdate, key.Match, key.Editable = info.Type, info.OnDelete, info.OnUpdate, info.Match, info.Editable
+		p.Key = &key
 		d.Constraints = append(d.Constraints, p)
 	}
 	rows.Close()
@@ -398,7 +576,10 @@ func readRelation(ctx context.Context, tx pgx.Tx, d *ObjectDetail) error {
 		return err
 	}
 	rows, err = tx.Query(ctx, `SELECT t.tgname, pg_get_triggerdef(t.oid, true), t.tgenabled = 'D',
-		  pn.nspname = 'bb' OR pn.nspname LIKE 'bb\_%'
+		  pn.nspname = 'bb' OR pn.nspname LIKE 'bb\_%', t.tgtype::int, t.tgconstraint <> 0,
+		  format('%I.%I', pn.nspname, p.proname),
+		  coalesce((SELECT array_agg(a.attname::text ORDER BY k.o) FROM unnest(t.tgattr::int2[]) WITH ORDINALITY AS k(n, o)
+		             JOIN pg_attribute a ON a.attrelid = t.tgrelid AND a.attnum = k.n), '{}')
 		FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid JOIN pg_namespace pn ON pn.oid = p.pronamespace
 		WHERE t.tgrelid = $1::oid AND NOT t.tgisinternal ORDER BY t.tgname`, d.OID)
 	if err != nil {
@@ -406,10 +587,15 @@ func readRelation(ctx context.Context, tx pgx.Tx, d *ObjectDetail) error {
 	}
 	for rows.Next() {
 		var p CatalogPart
-		if err := rows.Scan(&p.Name, &p.Def, &p.Disabled, &p.System); err != nil {
+		var tgtype int
+		var constraint bool
+		var fn string
+		var cols []string
+		if err := rows.Scan(&p.Name, &p.Def, &p.Disabled, &p.System, &tgtype, &constraint, &fn, &cols); err != nil {
 			rows.Close()
 			return err
 		}
+		p.Trigger = triggerInfo(tgtype, cols, fn, constraint, p.Def)
 		d.Triggers = append(d.Triggers, p)
 	}
 	rows.Close()
@@ -580,6 +766,17 @@ func readFunction(ctx context.Context, tx pgx.Tx, d *ObjectDetail) error {
 	}
 	d.Facts = append(d.Facts, [2]string{"language", lang})
 	d.DDL = strings.TrimRight(def, "\n") + ";\n"
+	r := &RoutineInfo{Arguments: args, Returns: result, Language: lang, Set: setClauses(def),
+		Volatility: map[string]string{"i": "immutable", "s": "stable", "v": "volatile"}[vol]}
+	var parallel string
+	if err := tx.QueryRow(ctx, `SELECT pg_get_function_identity_arguments(p.oid), p.prosrc, p.prosqlbody IS NOT NULL, p.proisstrict, p.prosecdef,
+		  p.proleakproof, p.prokind = 'w', p.proparallel::text, p.procost::float8, p.prorows::float8, p.prorettype = 'trigger'::regtype
+		FROM pg_proc p WHERE p.oid = $1::oid`, d.OID).Scan(&r.Identity, &r.Body, &r.Atomic, &r.Strict, &r.Definer,
+		&r.Leakproof, &r.Window, &parallel, &r.Cost, &r.Rows, &r.Trigger); err != nil {
+		return err
+	}
+	r.Parallel = map[string]string{"s": "safe", "r": "restricted", "u": "unsafe"}[parallel]
+	d.Routine = r
 	return readParams(ctx, tx, d)
 }
 

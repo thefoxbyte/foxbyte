@@ -121,11 +121,27 @@ Stack:
   mask lookups [--branch b] [--limit n] [--json]
                        Who looked a person up, when, by which column, how many found: never the value
   mask branches [--json] The masked branches: how far each one's making got, and what it found
+  vault [status] [--json] | kinds [--json]
+                       The vault for sensitive values, Aadhaar first: its HSM, kinds, keys, records and log (Enterprise)
+  vault setup [--yes] [--hsm-dir d --hsm-lib l --token t --pin-file f [--hsm-env N=V]]
+                       Set up the install's vault, with FoxByte's own software token or your HSM (Enterprise)
+  vault tokenise|find --kind k [--format legacy] <value>... | -
+                       Put values in the vault and get their reference keys, or find a value's key (Enterprise)
+  vault detokenise --kind k --purpose "why" <reference key>... | -
+                       Read values back, on this machine only, each call logged with its purpose (Enterprise)
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)
   pii unclassified | accept <column-id> [--note "…"]
                        What appeared since a branch's first scan, not reviewed; accept one as holding nothing
+  pii aadhaar run [--branch b] [--table-timeout 5m] [--logs] [--json]
+                       Read every row for Aadhaar numbers: where each is, by row and last four
+                       digits, grouped by person, and since when; never the number (Enterprise).
+                       --logs reads the branch's query history, audit text and Blackbox too
+  pii aadhaar [--branch b] [--json] | places [--person n] [--column s.t.c] [--gone] [--limit n]
+                       The latest exposure report, by column and by person; or its places
+  pii aadhaar places --logs [--source history|audit|blackbox] [--person n] [--gone]
+                       The log entries holding a number: which, who made it and when
   app [list|show <name>] [--json]
                        The applications that may say which of their users a transaction
                        acts for, and the "aud" their tokens name
@@ -434,6 +450,8 @@ func main() {
 		hardeningCmd(os.Args[2:])
 	case "mask":
 		maskCmd(os.Args[2:])
+	case "vault":
+		vaultCmd(os.Args[2:])
 	case "sessions":
 		sessionsCmd(os.Args[2:])
 	case "maintain":

@@ -36,7 +36,7 @@ func piiCmd(args []string) {
 	if b == "" {
 		b = "main"
 	}
-	ps := positionals(args, "--branch", "--sample", "--state", "--n", "--note")
+	ps := positionals(args, "--branch", "--sample", "--state", "--n", "--note", "--table-timeout", "--person", "--column", "--limit", "--source")
 	sub := "findings"
 	if len(ps) > 0 {
 		sub = ps[0]
@@ -175,6 +175,8 @@ func piiCmd(args []string) {
 			fmt.Fprintf(os.Stderr, "note: its table could not be marked for the audit log (%s); `%s audit-log table --personal-data --branch %s` marks it later.\n",
 				d.AuditMarkError, brand.CLI, b)
 		}
+	case "aadhaar":
+		aadhaarCmd(args, b, ps[1:])
 	default:
 		usagePII()
 	}
@@ -187,7 +189,11 @@ func usagePII() {
 		"       %[1]s pii samples <id> [--branch b] [--n 5] [--json]\n"+
 		"       %[1]s pii mark <id> confirm|reject|reopen [--note \"…\"] [--branch b]\n"+
 		"       %[1]s pii unclassified [--branch b] [--json]\n"+
-		"       %[1]s pii accept <column-id> [--note \"…\"] [--branch b]\n", brand.CLI)
+		"       %[1]s pii accept <column-id> [--note \"…\"] [--branch b]\n"+
+		"       %[1]s pii aadhaar run [--branch b] [--table-timeout 5m] [--logs] [--json]\n"+
+		"       %[1]s pii aadhaar [--branch b] [--json]\n"+
+		"       %[1]s pii aadhaar places [--branch b] [--person n] [--column schema.table.column] [--gone] [--limit n] [--json]\n"+
+		"       %[1]s pii aadhaar places --logs [--branch b] [--source history|audit|blackbox] [--person n] [--gone] [--limit n] [--json]\n", brand.CLI)
 	os.Exit(2)
 }
 

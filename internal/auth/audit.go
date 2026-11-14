@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -119,6 +120,9 @@ const (
 	// A new column or JSON path accepted as holding nothing to classify
 	// (point 4.7): who, and where.
 	EvPersonalDataAccepted = "personal-data.accepted"
+	// The Aadhaar exposure report run (point 4.5): which branch, and how much
+	// it found, as counts. Never a place, a row or a digit.
+	EvAadhaarExposure = "personal-data.aadhaar"
 	// The access review report produced (point 4.8): who asked, and what it
 	// covered. A report of who can reach what is itself worth knowing about.
 	EvAccessReviewed = "access.reviewed"
@@ -167,6 +171,11 @@ const (
 	EvSessionCancel = "session.cancel"
 	EvSessionEnd    = "session.end"
 	EvMaintenance   = "maintenance"
+	// The vault (point 13). EvVaultCall is every call to it, with the access
+	// log's head after the call, so the head is kept outside the vault, in a
+	// log FoxByte already anchors.
+	EvVaultSetup = "vault.setup"
+	EvVaultCall  = "vault.call"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence
@@ -385,6 +394,21 @@ func (s *Store) SecurityEventsOfKind(kind string) ([]SecurityEvent, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// LastSecurityEventOfKind returns the newest event of a kind, or nil when
+// there is none.
+func (s *Store) LastSecurityEventOfKind(kind string) (*SecurityEvent, error) {
+	var e SecurityEvent
+	err := s.db.QueryRow(`SELECT id,at,kind,actor,subject,ip,detail,prev_hash,row_hash FROM security_events WHERE kind = ? ORDER BY id DESC LIMIT 1`, kind).
+		Scan(&e.ID, &e.At, &e.Kind, &e.Actor, &e.Subject, &e.IP, &e.Detail, &e.PrevHash, &e.RowHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
 }
 
 // RecentSecurityEvents returns the newest events, newest first.

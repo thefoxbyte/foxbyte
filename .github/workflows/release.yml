@@ -350,7 +350,7 @@ jobs:
   # check is covered by the nightly's `update` suite against a real stack; what
   # is covered only here is the published artifact.
   release-verify:
-    needs: [release, image]
+    needs: [release, image, vault-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # promotes the release on success
@@ -464,7 +464,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -495,5 +495,56 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ghcr.io/thefoxbyte/postgres-walg
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # The vault service's image (point 13): the service built with cgo in the
+  # image's own first stage, from a minimal context (go.mod, go.sum and the
+  # vault's packages only), so it carries nothing of the engine. Tagged by its
+  # revision, which the engine asks for (internal/branch/vault.go,
+  # VaultImageRevision); an engine that cannot pull it builds it from a
+  # checkout instead.
+  vault-image:
+    needs: nightly-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Make the build context
+        run: bash enterprise/vault/image/context.sh "$PWD" "$RUNNER_TEMP/vault-ctx"
+      - name: Read the image's revision
+        id: rev
+        run: echo "rev=$(sed -n 's/^\tVaultImageRevision = \([0-9]*\)$/\1/p' internal/branch/vault.go)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the vault service (amd64 + arm64)
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ runner.temp }}/vault-ctx
+          file: ${{ runner.temp }}/vault-ctx/enterprise/vault/image/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          tags: |
+            ghcr.io/thefoxbyte/fox-vault:${{ steps.rev.outputs.rev }}
+            ghcr.io/thefoxbyte/fox-vault:${{ steps.rev.outputs.rev }}-${{ inputs.tag || github.ref_name }}
+      - name: Attest the image
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/thefoxbyte/fox-vault
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true

@@ -36,3 +36,56 @@ func TestParamsSQL(t *testing.T) {
 		}
 	}
 }
+
+// A trigger's parts, from its type bits and its definition (point 12.3).
+func TestTriggerInfo(t *testing.T) {
+	def := `CREATE TRIGGER trg BEFORE INSERT OR UPDATE OF v, w ON public.t FOR EACH ROW WHEN (old.v IS DISTINCT FROM new.v) EXECUTE FUNCTION public.f('a', 'b)')`
+	got := triggerInfo(tgRow|tgBefore|tgInsert|tgUpdate, []string{"v", "w"}, "public.f", false, def)
+	if got.Timing != "BEFORE" || got.ForEach != "ROW" || strings.Join(got.Events, ",") != "INSERT,UPDATE" || got.When != "old.v IS DISTINCT FROM new.v" || got.Args != "'a', 'b)'" || strings.Join(got.Columns, ",") != "v,w" {
+		t.Errorf("%+v", got)
+	}
+	ref := `CREATE TRIGGER s AFTER DELETE ON t REFERENCING OLD TABLE AS gone FOR EACH STATEMENT EXECUTE FUNCTION f()`
+	got = triggerInfo(tgDelete, nil, "public.f", false, ref)
+	if got.Timing != "AFTER" || got.ForEach != "STATEMENT" || got.Referencing != "OLD TABLE AS gone" || got.When != "" || got.Args != "" {
+		t.Errorf("%+v", got)
+	}
+	if got := triggerInfo(tgInstead|tgRow|tgInsert, nil, "f", false, "x"); got.Timing != "INSTEAD OF" {
+		t.Errorf("%+v", got)
+	}
+}
+
+// The SET clauses of a function's definition, and none from its body.
+func TestSetClauses(t *testing.T) {
+	def := "CREATE OR REPLACE FUNCTION public.f()\n RETURNS integer\n LANGUAGE sql\n SET search_path TO 'public', 'pg_temp'\n SET work_mem TO '1MB'\nAS $function$\nSET x TO 1;\n$function$\n"
+	if got := setClauses(def); strings.Join(got, "|") != "SET search_path TO 'public', 'pg_temp'|SET work_mem TO '1MB'" {
+		t.Errorf("%q", got)
+	}
+}
+
+func TestConstraintInfo(t *testing.T) {
+	k := constraintInfo("f", "FOREIGN KEY (a) REFERENCES t(id) ON DELETE CASCADE", "c", "a", "f", true)
+	if k.Type != "foreign" || k.OnDelete != "CASCADE" || k.OnUpdate != "" || k.Match != "FULL" || !k.Editable {
+		t.Errorf("%+v", k)
+	}
+	for _, c := range []struct {
+		contype, def string
+		local, want  bool
+	}{
+		{"p", "PRIMARY KEY (id)", true, true},
+		{"u", "UNIQUE (a)", true, true},
+		{"c", "CHECK (a > 0)", true, true},
+		// A check's expression is the person's: its words are not clauses.
+		{"c", "CHECK (a <> ' INCLUDE (')", true, true},
+		{"c", "CHECK (a > 0) NOT ENFORCED", true, false},
+		{"p", "PRIMARY KEY (id) INCLUDE (b)", true, false},
+		{"u", "UNIQUE NULLS NOT DISTINCT (a)", true, false},
+		{"u", "UNIQUE (a) WITH (fillfactor='70')", true, false},
+		{"f", "FOREIGN KEY (a, b) REFERENCES t(a, b) ON DELETE SET NULL (b)", true, false},
+		{"x", "EXCLUDE USING gist (r WITH &&)", true, false},
+		{"p", "PRIMARY KEY (id)", false, false},
+	} {
+		if got := constraintInfo(c.contype, c.def, " ", " ", " ", c.local).Editable; got != c.want {
+			t.Errorf("%s: editable = %v, want %v", c.def, got, c.want)
+		}
+	}
+}

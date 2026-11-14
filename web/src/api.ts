@@ -26,6 +26,7 @@ export type Feature =
   | 'access-review'
   | 'hardening'
   | 'masking'
+  | 'vault'
 
 export type Status = {
   mainReady: boolean
@@ -440,13 +441,29 @@ export type CatalogKind = 'schema' | 'table' | 'view' | 'sequence' | 'function' 
 export type CatalogObject = {
   kind: CatalogKind; oid: number; schema?: string; name: string; args?: string; sub?: string; system?: boolean
 }
-export type CatalogPart = { name: string; kind?: string; def: string; constraint?: boolean; system?: boolean; disabled?: boolean }
+export type TriggerInfo = {
+  timing: string; events: string[]; columns?: string[]; forEach: string; when?: string; function: string; args?: string; referencing?: string; constraint?: boolean
+}
+export type CatalogPart = { name: string; kind?: string; def: string; constraint?: boolean; system?: boolean; disabled?: boolean; trigger?: TriggerInfo; key?: KeyInfo }
+// A table constraint, part by part (point 12.3).
+export type KeyInfo = {
+  type: string; columns?: string[]; refSchema?: string; refTable?: string; refColumns?: string[]
+  onDelete?: string; onUpdate?: string; match?: string
+  deferrable?: boolean; deferred?: boolean; notValid?: boolean; noInherit?: boolean; check?: string; editable?: boolean
+}
+// A function or procedure, attribute by attribute (point 12.3).
+export type RoutineInfo = {
+  arguments: string; identity: string; returns?: string; language: string; body: string; atomic?: boolean
+  volatility: string; strict?: boolean; definer?: boolean; leakproof?: boolean; window?: boolean
+  parallel: string; cost: number; rows?: number; set?: string[]; trigger?: boolean
+}
 export type CatalogCol = { name: string; type: string; not_null?: boolean; default?: string; identity?: string; generated?: string; comment?: string }
 export type ObjectDetail = CatalogObject & {
   comment?: string; columns?: CatalogCol[]; constraints?: CatalogPart[]; indexes?: CatalogPart[]; triggers?: CatalogPart[]
   facts?: [string, string][]; values?: string[]; members?: { Kind: string; Name: string }[]; ddl: string
   // A function's or a procedure's arguments, in order (point 12.4).
   params?: FuncParam[]
+  routine?: RoutineInfo
 }
 export type FuncParam = { name?: string; type: string; mode: 'in' | 'out' | 'inout' | 'variadic' | 'table'; default?: boolean }
 export const getCatalog = (branch: string) =>
@@ -550,6 +567,168 @@ export const getUnclassified = (branch: string) =>
   req('GET', `${API}/api/branches/${branch}/personal-data/unclassified`) as Promise<{ branch: string; columns: PIIColumn[] | null }>
 export const acceptColumn = (branch: string, id: number, note = '') =>
   req('POST', `${API}/api/branches/${branch}/personal-data/columns/${id}/accept`, note ? { note } : {}) as Promise<PIIColumn>
+
+// The Aadhaar exposure report (point 4.5): every row read for Aadhaar
+// numbers; each place kept by its row's key and the number's last four digits,
+// grouped by person, never the number.
+export type AadhaarRun = {
+  id: number
+  started: string
+  finished: string
+  actor: string
+  tables: number
+  columns: number
+  rows: number
+  numbers: number
+  people: number
+  listed: number
+  skipped: { object: string; reason: string }[] | null
+  limits: string[] | null
+}
+export type AadhaarColumn = {
+  schema: string
+  table: string
+  column: string
+  path: string
+  numbers: number
+  rows: number
+  listed: number
+  capped: boolean
+  since: string | null
+}
+export type AadhaarPerson = {
+  person: number
+  masked: string
+  places: number
+  since: string
+  where: string[] | null
+  logs?: Partial<Record<AadhaarLogSource, number>> // places in each log, with the logs part
+}
+export type AadhaarReport = {
+  branch: string
+  run: AadhaarRun | null
+  columns: AadhaarColumn[] | null
+  people: AadhaarPerson[] | null
+  peopleListed: number
+  gone: number
+  logs?: AadhaarLogs // the logs part (4.5b): admins only, once a run has read them
+}
+
+// The logs part (point 4.5b): the branch's query history, the audit log's
+// statement text and its Blackbox, read with its tables. Admins only.
+export type AadhaarLogSource = 'history' | 'audit' | 'blackbox'
+export const aadhaarLogName: Record<AadhaarLogSource, string> = { history: 'query history', audit: 'audit log', blackbox: 'Blackbox' }
+export type AadhaarLogRun = {
+  id: number
+  branch: string
+  branchRun: number
+  started: string
+  finished: string
+  actor: string
+  read: Partial<Record<AadhaarLogSource, number>> | null
+  numbers: number
+  people: number
+  linked: number
+  listed: number
+  skipped: { source: AadhaarLogSource; reason: string }[] | null
+  limits: string[] | null
+}
+export type AadhaarLogs = {
+  run: AadhaarLogRun
+  linked: boolean // read with the latest run of the tables: its people are the report's
+  sources: { source: AadhaarLogSource; entries: number; places: number; since: string | null }[] | null
+  people: AadhaarPerson[] | null
+  gone: number
+}
+export type AadhaarLogPlace = {
+  id: number
+  source: AadhaarLogSource
+  entry: number
+  field: string
+  last4: string
+  masked: string
+  actor: string
+  at: string
+  person: number
+  firstSeen: string
+  lastSeen: string
+  gone: boolean
+}
+export type AadhaarLogFilter = { person?: number; source?: AadhaarLogSource; gone?: boolean; limit?: number }
+export type AadhaarPlace = {
+  id: number
+  schema: string
+  table: string
+  column: string
+  path: string
+  row: string
+  last4: string
+  masked: string
+  person: number
+  firstSeen: string
+  lastSeen: string
+  rowCreated: string | null
+  since: string
+  gone: boolean
+}
+export type AadhaarPlaceFilter = { person?: number; column?: string; gone?: boolean; limit?: number }
+const aadhaarURL = (branch: string) => `${API}/api/branches/${branch}/personal-data/aadhaar`
+export const getAadhaar = (branch: string) => req('GET', aadhaarURL(branch)) as Promise<AadhaarReport>
+export const runAadhaar = (branch: string, tableTimeout?: number, logs?: boolean) =>
+  req('POST', `${aadhaarURL(branch)}/run`, { ...(tableTimeout ? { tableTimeout } : {}), ...(logs ? { logs } : {}) }) as Promise<AadhaarReport>
+export const getAadhaarPlaces = (branch: string, f: AadhaarPlaceFilter) => {
+  const q = new URLSearchParams()
+  if (f.person) q.set('person', String(f.person))
+  if (f.column) q.set('column', f.column)
+  if (f.gone) q.set('gone', '1')
+  if (f.limit) q.set('limit', String(f.limit))
+  const qs = q.toString()
+  return req('GET', `${aadhaarURL(branch)}/places${qs ? '?' + qs : ''}`) as Promise<{ branch: string; places: AadhaarPlace[] | null }>
+}
+export const getAadhaarLogPlaces = (branch: string, f: AadhaarLogFilter) => {
+  const q = new URLSearchParams()
+  if (f.person) q.set('person', String(f.person))
+  if (f.source) q.set('source', f.source)
+  if (f.gone) q.set('gone', '1')
+  if (f.limit) q.set('limit', String(f.limit))
+  const qs = q.toString()
+  return req('GET', `${aadhaarURL(branch)}/log-places${qs ? '?' + qs : ''}`) as Promise<{ branch: string; places: AadhaarLogPlace[] | null }>
+}
+// Whether the signed-in account is an admin (GET /api/account).
+export const getAccount = () => req('GET', `${API}/api/account`) as Promise<{ admin: boolean }>
+
+// The vault (point 13): sensitive values, Aadhaar first, encrypted in an HSM;
+// reference keys in their place. Admins; Enterprise.
+export type VaultKey = {
+  label: string; role: 'data' | 'index'; current: boolean; destroyed: boolean; uses: number; records: number
+  sensitive: boolean; extractable: boolean; always_sensitive: boolean; never_extractable: boolean; local: boolean
+}
+export type VaultKindStatus = {
+  name: string; prefix: string; rules: string; hsm_required: boolean; compliant: string; records: number; keys: VaultKey[]
+}
+export type VaultServiceStatus = {
+  token: { label: string; maker: string; model: string; serial: string; software: boolean }
+  kinds: VaultKindStatus[]
+  log: { entries: number; broken_at: number; head: string }
+}
+export type VaultState = {
+  set_up: boolean
+  config?: { set_up_at: string; subnet: string; db_addr: string; service_addr: string; pg_major: string; token: string; hsm?: { dir: string; lib: string } }
+  database_running: boolean
+  service_running: boolean
+  image?: string
+  status?: VaultServiceStatus
+  status_error?: string
+  anchor: { recorded?: string; holds: boolean; note: string }
+}
+export type VaultKind = { name: string; prefix: string; check: string; legacy?: string; rules?: string; hsm_required: boolean }
+export type VaultReply = { refs?: string[]; new?: boolean[]; results?: string[]; error?: string }
+export const getVault = () => req('GET', `${API}/api/vault`) as Promise<VaultState>
+export const getVaultKinds = () => req('GET', `${API}/api/vault/kinds`) as Promise<VaultKind[]>
+export const vaultTokenise = (kind: string, values: string[], format?: 'opaque' | 'legacy') =>
+  req('POST', `${API}/api/vault/tokenise`, { kind, values, ...(format ? { format } : {}) }) as Promise<VaultReply>
+export const vaultFind = (kind: string, values: string[]) =>
+  req('POST', `${API}/api/vault/find`, { kind, values }) as Promise<VaultReply>
 
 // The data grid's save (point 12.2): rows added, changed and deleted, applied
 // together as you, or not at all.

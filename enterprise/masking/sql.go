@@ -350,13 +350,19 @@ func rekeyTable(schema, table string, cols []branch.MaskColumn, rules []branch.M
 	rk.Start = append(rk.Start, nw.shadowDDL(nm.next)...)
 	rk.Start = append(rk.Start, keepFn(nm.fn, []target{{nm.shadow, old}, {nm.next, nw}})...)
 	rk.Fill = nw.fill(nm.next)
-	rk.Swap = append(writesWait(nm),
+	// The view is replaced first, to read the new shadow, and keeps its grants.
+	// A masked read locks the view, then the table and the shadow it reads;
+	// the swap takes them in that order too. Renaming the shadow first held it
+	// while the view was still to be taken, and a read that had taken the view
+	// in between waited for the shadow: a deadlock, and the read failed. A view
+	// holds its tables by oid, so it reads the new shadow under its next name
+	// and under the shadow's name once renamed.
+	inNext := nm
+	inNext.shadow = nm.next
+	rk.Swap = append(writesWait(nm), viewSQL(inNext, cols, nw.own, nw.shadow, nw.k(), true)[0],
 		"ALTER TABLE "+nm.shadow+" RENAME TO "+ident(nm.shadowName+"__old"),
 		"ALTER TABLE "+nm.next+" RENAME TO "+ident(nm.shadowName),
 	)
-	// The view now reads the new shadow (by its name, now the shadow's), and
-	// keeps its grants.
-	rk.Swap = append(rk.Swap, viewSQL(nm, cols, nw.own, nw.shadow, nw.k(), true)[0])
 	rk.Swap = append(rk.Swap, keepFn(nm.fn, []target{{nm.shadow, nw}})...)
 	rk.Swap = append(rk.Swap, "DROP TABLE "+branch.MaskSchema+"."+ident(nm.shadowName+"__old"))
 	return rk, true, nil

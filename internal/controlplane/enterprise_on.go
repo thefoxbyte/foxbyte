@@ -21,6 +21,7 @@ import (
 	_ "github.com/thefoxbyte/foxbyte/enterprise/policy"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/promote"
 	_ "github.com/thefoxbyte/foxbyte/enterprise/schema"
+	_ "github.com/thefoxbyte/foxbyte/enterprise/vault/engine"
 
 	"github.com/thefoxbyte/foxbyte/enterprise/realtime"
 	"github.com/thefoxbyte/foxbyte/internal/access"

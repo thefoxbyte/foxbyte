@@ -183,7 +183,9 @@ func displayName(o controlplane.CatalogObject) string {
 	if o.Kind == "function" || o.Kind == "procedure" {
 		n += "(" + o.Args + ")"
 	}
-	if o.Sub != "" && o.Kind != "extension" {
+	// A function's sub says it is a trigger function, for the console's dialogs;
+	// the listing names functions by their arguments alone.
+	if o.Sub != "" && o.Kind != "extension" && o.Kind != "function" {
 		n += " [" + o.Sub + "]"
 	}
 	return n

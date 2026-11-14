@@ -3893,6 +3893,475 @@ assert_eq "…with Analyse it runs, measured, inside a transaction rolled back: 
   "$(python3 -c 'import json,sys; d=json.load(sys.stdin); r=[x for x in d["results"] if x.get("columns")==["QUERY PLAN"]][0]; v=r["rows"][0][0]; doc=json.loads(v) if isinstance(v, str) else v; p=doc[0]; print(p["Plan"]["Node Type"], p["Plan"]["Actual Rows"], "Execution Time" in p)' <<<"$EXA")|$(pg pg-main "SELECT count(*) FROM r_items")" "ModifyTable 0 True|2"
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS r_items CASCADE; DROP FUNCTION IF EXISTS r_add(integer, integer), r_series(integer), r_none(), r_sum(VARIADIC integer[]), r_upper(); DROP PROCEDURE IF EXISTS r_bump(integer, integer, text)" >/dev/null
 
+echo "### 11ap. create and edit dialogs for functions and triggers (point 12.3)"
+# The dialogs write SQL the person runs, so what is checked here is what the
+# engine gives an edit dialog, and that what the dialogs write runs and keeps
+# what it was not asked to change; the dialogs themselves are routines.spec.ts.
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS rd_items CASCADE; DROP FUNCTION IF EXISTS rd_full(integer), rd_atomic(), rd_full2(integer), rd_tf(); DROP PROCEDURE IF EXISTS rd_proc(integer)" >/dev/null
+printf 'password123\n' | $S user create dlg-other@foxbyte.dev >/dev/null 2>&1
+DO="$($S apikey create dlg-other@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+rd() { curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST -d "$(python3 -c 'import json,sys; print(json.dumps({"sql": sys.argv[1]}))' "$1")" https://localhost:8080/api/branches/main/query; }
+rderr() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error") or next((r["error"] for r in d.get("results",[]) if r.get("error")), ""))'; }
+assert_eq "what the New dialog writes makes the function, the procedure and the trigger function" \
+  "$(rd 'CREATE FUNCTION "public"."rd_full"(a integer DEFAULT 1)
+ RETURNS integer
+ LANGUAGE sql
+ STABLE
+ STRICT
+ SECURITY DEFINER
+ COST 50
+ SET search_path TO '"'"'public'"'"', '"'"'pg_temp'"'"'
+AS $body$
+SELECT a
+$body$' | rderr)|$(rd 'CREATE PROCEDURE "public"."rd_proc"(a integer)
+ LANGUAGE plpgsql
+AS $body$
+BEGIN NULL; END;
+$body$' | rderr)|$(rd 'CREATE FUNCTION "public"."rd_tf"()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $body$
+BEGIN RETURN NEW; END;
+$body$' | rderr)" "||"
+rd 'CREATE FUNCTION rd_atomic() RETURNS integer BEGIN ATOMIC SELECT 1; END' >/dev/null
+RCAT="$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/schema)"
+rdoid() { hjson "print([o['oid'] for o in d['objects'] if o['name']=='$1' and o['kind']=='$2'][0])" <<<"$RCAT"; }
+rout() { curl -sk -H "$AUTH" "https://localhost:8080/api/branches/main/schema/$2/$(rdoid "$1" "$2")"; }
+assert_eq "an edit dialog is given everything: arguments, identity, returns, language, body, and each attribute" \
+  "$(rout rd_full function | hjson "r=d['routine']; print(r['arguments'], '/', r['identity'], '/', r['returns'], r['language'], r['body'].strip(), r['volatility'], r.get('strict'), r.get('definer'), r['cost'], r['set'])")" \
+  "a integer DEFAULT 1 / a integer / integer sql SELECT a stable True True 50 [\"SET search_path TO 'public', 'pg_temp'\"]"
+assert_eq "…a trigger function is told apart in the list; BEGIN ATOMIC is said to have no body to edit" \
+  "$(hjson "print([o.get('sub') for o in d['objects'] if o['name']=='rd_tf'][0])" <<<"$RCAT")|$(rout rd_tf function | hjson "print(d['routine'].get('trigger'))")|$(rout rd_atomic function | hjson "print(d['routine'].get('atomic'))")" "trigger|True|True"
+assert_eq "what the Edit dialog writes changes the body and keeps every attribute" \
+  "$(rd 'CREATE OR REPLACE FUNCTION "public"."rd_full"(a integer DEFAULT 1)
+ RETURNS integer
+ LANGUAGE sql
+ STABLE
+ STRICT
+ SECURITY DEFINER
+ COST 50
+ SET search_path TO '"'"'public'"'"', '"'"'pg_temp'"'"'
+AS $body$
+SELECT a + 1
+$body$' | rderr)|$(rout rd_full function | hjson "r=d['routine']; print(r['body'].strip(), r.get('definer'), r['cost'], len(r['set']))")" "|SELECT a + 1 True 50 1"
+# log_ddl_drop does not record a procedure's or a trigger's drop; the catalog
+# scan does, as OBSERVED, so one is run before the drop and one after. It names
+# what it drops as it last saw it, so a trigger renamed between scans keeps its old name.
+$S ledger scan main >/dev/null 2>&1
+assert_eq "rename and drop, as written; each in the Blackbox, the procedure's drop by the catalog scan" \
+  "$(rd 'ALTER FUNCTION "public"."rd_full"(a integer) RENAME TO "rd_full2"' | rderr)|$(pg pg-main "SELECT to_regproc('rd_full2') IS NOT NULL, to_regproc('rd_full') IS NULL")|$(rd 'DROP PROCEDURE "public"."rd_proc"(a integer)' | rderr)|$($S ledger scan main >/dev/null 2>&1; pg pg-main "SELECT to_regproc('rd_proc') IS NULL, (SELECT count(*) FROM bb.schema_ledger WHERE object_identity LIKE '%rd_full%' AND command_tag = 'ALTER FUNCTION'), (SELECT count(*) FROM bb.schema_ledger WHERE object_identity = 'public.rd_proc(integer)' AND command_tag = 'DROP PROCEDURE' AND status = 'OBSERVED')")" \
+  "|t|t||t|1|1"
+# Accounts reach a branch through one database role, so what any of them made
+# is that role's; what it does not own, Postgres refuses, from a dialog as anywhere.
+pg pg-main "CREATE OR REPLACE FUNCTION rd_admin(a integer) RETURNS integer LANGUAGE sql AS 'SELECT a'" >/dev/null
+assert_eq "a dialog cannot change what the account's database role does not own" \
+  "$(curl -sk -H "Authorization: Bearer $DO" -H 'Content-Type: application/json' -X POST -d '{"sql":"DROP FUNCTION \"public\".\"rd_admin\"(a integer)"}' https://localhost:8080/api/branches/main/query | rderr | grep -c 'must be owner')|$(pg pg-main "SELECT to_regproc('rd_admin') IS NOT NULL")" "1|t"
+# Triggers.
+rd 'CREATE TABLE rd_items (id int PRIMARY KEY, v text, w int)' >/dev/null
+assert_eq "what the New trigger dialog writes makes it, UPDATE OF, a condition and arguments included" \
+  "$(rd 'CREATE TRIGGER "rd_t" BEFORE INSERT OR UPDATE OF "v", "w" ON "public"."rd_items"
+ FOR EACH ROW
+ WHEN (new.w > 0)
+ EXECUTE FUNCTION "public"."rd_tf"('"'"'a'"'"', '"'"'b'"'"')' | rderr)" ""
+RCAT="$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/schema)"
+trinfo() { rout rd_items table | hjson "t=[x for x in d['triggers'] if not x.get('system')]; print([(x['name'], x['trigger']['timing'], x['trigger']['events'], x['trigger'].get('columns'), x['trigger']['forEach'], x['trigger'].get('when'), x['trigger']['function'], x['trigger'].get('args'), x.get('disabled', False)) for x in t])"; }
+assert_eq "an edit dialog is given each part of a trigger" \
+  "$(trinfo)" "[('rd_t', 'BEFORE', ['INSERT', 'UPDATE'], ['v', 'w'], 'ROW', 'new.w > 0', 'public.rd_tf', \"'a', 'b'\", False)]"
+rd 'ALTER TABLE "public"."rd_items" DISABLE TRIGGER "rd_t"' >/dev/null
+assert_eq "what the Edit dialog writes replaces it, and one that was disabled stays so" \
+  "$(rd 'CREATE OR REPLACE TRIGGER "rd_t" AFTER UPDATE ON "public"."rd_items"
+ FOR EACH ROW
+ EXECUTE FUNCTION "public"."rd_tf"();
+ALTER TABLE "public"."rd_items" DISABLE TRIGGER "rd_t"' | rderr)|$(trinfo)" "|[('rd_t', 'AFTER', ['UPDATE'], None, 'ROW', None, 'public.rd_tf', None, True)]"
+$S ledger scan main >/dev/null 2>&1
+assert_eq "a trigger renamed and dropped, as written; the drop in the Blackbox by the catalog scan" \
+  "$(rd 'ALTER TRIGGER "rd_t" ON "public"."rd_items" RENAME TO "rd_t2"' | rderr)|$(trinfo | grep -c rd_t2)|$(rd 'DROP TRIGGER "rd_t2" ON "public"."rd_items"' | rderr)|$(trinfo)|$($S ledger scan main >/dev/null 2>&1; pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE object_identity LIKE 'rd_t% on public.rd_items' AND command_tag = 'DROP TRIGGER' AND status = 'OBSERVED'")" "|1||[]|1"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS rd_items CASCADE; DROP FUNCTION IF EXISTS rd_full2(integer), rd_atomic(), rd_tf(), rd_admin(integer)" >/dev/null
+$S user delete dlg-other@foxbyte.dev >/dev/null 2>&1
+
+echo "### 11aq. create and edit dialogs for tables, columns and keys (point 12.3)"
+# As in 11ap: what the dialogs write is run here and what the engine gives an
+# edit dialog is checked; the dialogs themselves are tables.spec.ts.
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS kt_child, kt_parent, kt_ex, kt_renamed, kt_inc CASCADE" >/dev/null
+assert_eq "what the New table dialog writes makes it: columns, not null, a default and a primary key of two" \
+  "$(rd 'CREATE TABLE "public"."kt_parent" (
+  "id" integer,
+  "sub" integer,
+  "label" text NOT NULL DEFAULT '"'"'x'"'"',
+  PRIMARY KEY ("id", "sub")
+)' | rderr)|$(pg pg-main "SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute WHERE attrelid = 'kt_parent'::regclass AND attnum > 0")|$(pg pg-main "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'kt_parent'::regclass AND contype = 'p'")" \
+  "|id,sub,label|PRIMARY KEY (id, sub)"
+rd 'CREATE TABLE "public"."kt_child" (id bigserial PRIMARY KEY, pid integer, psub integer, qty integer DEFAULT 1, note text)' >/dev/null
+pg pg-main "INSERT INTO kt_parent VALUES (1, 1, 'a')" >/dev/null
+pg pg-main "INSERT INTO kt_child (pid, psub, qty) VALUES (1, 1, 5)" >/dev/null
+kcat() { RCAT="$(curl -sk -H "$AUTH" https://localhost:8080/api/branches/main/schema)"; }
+kcat
+assert_eq "what the Add column dialog writes adds it" \
+  "$(rd 'ALTER TABLE "public"."kt_child" ADD COLUMN "extra" text NOT NULL DEFAULT '"'"'y'"'"'' | rderr)|$(pg pg-main "SELECT extra FROM kt_child")" "|y"
+assert_eq "what the Edit column dialog writes changes the type with its conversion, not null, the default and the name, together" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  ALTER COLUMN "qty" TYPE text USING qty::text || '"'"'!'"'"',
+  ALTER COLUMN "qty" SET NOT NULL,
+  ALTER COLUMN "qty" SET DEFAULT '"'"'0'"'"';
+ALTER TABLE "public"."kt_child" RENAME COLUMN "qty" TO "amount"' | rderr)|$(pg pg-main "SELECT amount FROM kt_child")|$(rout kt_child table | hjson "c=[x for x in d['columns'] if x['name']=='amount'][0]; print(c['type'], c.get('not_null'), c['default'])")" \
+  "|5!|text True '0'::text"
+assert_contains "…and a rename that cannot be done leaves the rest undone" \
+  "$(rd 'ALTER TABLE "public"."kt_child" ALTER COLUMN "note" SET DEFAULT '"'"'n'"'"';
+ALTER TABLE "public"."kt_child" RENAME COLUMN "note" TO "amount"' | rderr)" "already exists"
+assert_eq "…the column's default not applied" "$(pg pg-main "SELECT atthasdef FROM pg_attribute WHERE attrelid = 'kt_child'::regclass AND attname = 'note'")" "f"
+assert_eq "a column dropped, as written, in the Blackbox as an ALTER TABLE" \
+  "$(rd 'ALTER TABLE "public"."kt_child" DROP COLUMN "extra"' | rderr)|$(pg pg-main "SELECT count(*) FROM pg_attribute WHERE attrelid = 'kt_child'::regclass AND attname = 'extra' AND NOT attisdropped")|$(pg pg-main "SELECT count(*) > 0 FROM bb.schema_ledger WHERE command_tag = 'ALTER TABLE' AND statement LIKE '%kt_child%DROP COLUMN%'")" "|0|t"
+assert_eq "what the Add key dialog writes: unique, named or left to Postgres, foreign and check" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  ADD CONSTRAINT "kt_note_u" UNIQUE ("note") DEFERRABLE INITIALLY DEFERRED' | rderr)|$(rd 'ALTER TABLE "public"."kt_child"
+  ADD UNIQUE ("psub", "pid")' | rderr)|$(rd 'ALTER TABLE "public"."kt_child"
+  ADD CONSTRAINT "kt_fk" FOREIGN KEY ("pid", "psub") REFERENCES "public"."kt_parent" ("id", "sub") ON UPDATE RESTRICT ON DELETE CASCADE' | rderr)|$(rd 'ALTER TABLE "public"."kt_child"
+  ADD CONSTRAINT "kt_ck" CHECK (id > 0)' | rderr)|$(pg pg-main "SELECT string_agg(conname, ',' ORDER BY conname) FROM pg_constraint WHERE conrelid = 'kt_child'::regclass AND contype <> 'n'")" \
+  "||||kt_child_pkey,kt_child_psub_pid_key,kt_ck,kt_fk,kt_note_u"
+kparts() { rout kt_child table | hjson "print({x['name']: (x['key']['type'], x['key'].get('columns'), x['key'].get('refSchema'), x['key'].get('refTable'), x['key'].get('refColumns'), x['key'].get('onDelete'), x['key'].get('onUpdate'), x['key'].get('deferrable'), x['key'].get('deferred'), x['key'].get('check'), x['key'].get('editable')) for x in d['constraints']}['$1'])"; }
+assert_eq "an edit dialog is given a foreign key, part by part, its columns in the key's order" \
+  "$(kparts kt_fk)" "('foreign', ['pid', 'psub'], 'public', 'kt_parent', ['id', 'sub'], 'CASCADE', 'RESTRICT', None, None, None, True)"
+assert_eq "…a unique key, deferred, and in the order it was written" \
+  "$(kparts kt_note_u)|$(kparts kt_child_psub_pid_key)" "('unique', ['note'], None, None, None, None, None, True, True, None, True)|('unique', ['psub', 'pid'], None, None, None, None, None, None, None, None, True)"
+assert_eq "…a primary key and a check" \
+  "$(kparts kt_child_pkey)|$(kparts kt_ck)" "('primary', ['id'], None, None, None, None, None, None, None, None, True)|('check', ['id'], None, None, None, None, None, None, None, 'id > 0', True)"
+assert_eq "what the Edit key dialog writes replaces it in one statement, under its name" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  DROP CONSTRAINT "kt_fk",
+  ADD CONSTRAINT "kt_fk" FOREIGN KEY ("pid", "psub") REFERENCES "public"."kt_parent" ("id", "sub") ON DELETE SET NULL' | rderr)|$(kparts kt_fk)" \
+  "|('foreign', ['pid', 'psub'], 'public', 'kt_parent', ['id', 'sub'], 'SET NULL', None, None, None, None, True)"
+assert_contains "…one that fails keeps the key as it was" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  DROP CONSTRAINT "kt_ck",
+  ADD CONSTRAINT "kt_ck" CHECK (id < 0)' | rderr)" "violated by some row"
+assert_eq "…the check still there" "$(kparts kt_ck)" "('check', ['id'], None, None, None, None, None, None, None, 'id > 0', True)"
+assert_eq "a primary key replaced under its name, a new order of its columns" \
+  "$(rd 'ALTER TABLE "public"."kt_child"
+  DROP CONSTRAINT "kt_child_pkey",
+  ADD CONSTRAINT "kt_child_pkey" PRIMARY KEY ("pid", "id")' | rderr)|$(pg pg-main "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'kt_child_pkey'")" "|PRIMARY KEY (pid, id)"
+assert_contains "…one another table depends on is refused, and Postgres says why" \
+  "$(rd 'ALTER TABLE "public"."kt_parent"
+  DROP CONSTRAINT "kt_parent_pkey",
+  ADD CONSTRAINT "kt_parent_pkey" PRIMARY KEY ("sub", "id")' | rderr)" "depend on it"
+rd 'CREATE TABLE "public"."kt_ex" (id int, r int4range, b int, CONSTRAINT kt_ex_x EXCLUDE USING gist (r WITH &&), CONSTRAINT kt_ex_u UNIQUE (id) INCLUDE (b))' >/dev/null
+kcat
+assert_eq "what the key dialog cannot write again is not offered as an edit: an exclusion, and a key with INCLUDE" \
+  "$(rout kt_ex table | hjson "print(sorted((x['name'], x['key']['type'], bool(x['key'].get('editable'))) for x in d['constraints']))")" "[('kt_ex_u', 'unique', False), ('kt_ex_x', 'exclusion', False)]"
+assert_eq "a key renamed and dropped, as written" \
+  "$(rd 'ALTER TABLE "public"."kt_child" RENAME CONSTRAINT "kt_ck" TO "kt_ck2"' | rderr)|$(rd 'ALTER TABLE "public"."kt_child" DROP CONSTRAINT "kt_ck2"' | rderr)|$(pg pg-main "SELECT count(*) FROM pg_constraint WHERE conrelid = 'kt_child'::regclass AND conname LIKE 'kt_ck%'")" "||0"
+assert_eq "a table renamed, as written" \
+  "$(rd 'ALTER TABLE "public"."kt_ex" RENAME TO "kt_renamed"' | rderr)|$(pg pg-main "SELECT to_regclass('kt_ex') IS NULL, to_regclass('kt_renamed') IS NOT NULL")" "|t|t"
+assert_contains "DROP TABLE from its dialog meets the guardrail, as it does anywhere" \
+  "$(rd 'DROP TABLE "public"."kt_renamed"' | rderr)" "guardrail: DROP TABLE is blocked by policy"
+assert_eq "…and the table is still there; with the override, as the editor asks for it, it goes" \
+  "$(pg pg-main "SELECT to_regclass('kt_renamed') IS NOT NULL")|$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST -d '{"sql":"DROP TABLE \"public\".\"kt_renamed\"","allow_destructive":true}' https://localhost:8080/api/branches/main/query | rderr)|$(pg pg-main "SELECT to_regclass('kt_renamed') IS NULL")" "t||t"
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS kt_child, kt_parent, kt_ex, kt_renamed CASCADE" >/dev/null
+
+echo "### 11ar. the Aadhaar exposure report: whose Aadhaar is exposed, where, and since when (point 4.5)"
+# Synthetic numbers only, the same as 11r's: 234567890124, 345678901238 and
+# 456789012341 pass Verhoeff. 4111 1111 1111 1111 is the usual test card, a
+# sixteen-digit number that must not be read as an Aadhaar.
+$S branch delete aadt >/dev/null 2>&1
+$S branch create aadt >/dev/null 2>&1
+pg pg-aadt "CREATE TABLE customers (id int PRIMARY KEY, name text, aadhaar text);
+  INSERT INTO customers VALUES (1, 'A Person', '2345 6789 0124'), (2, 'B Person', '456789012341'), (3, 'C Person', NULL);
+  -- created_at already there, so tracking it (below) keeps when each row was made.
+  CREATE TABLE tickets (id int PRIMARY KEY, notes text, created_at timestamptz);
+  INSERT INTO tickets VALUES
+    (9, 'customer read out 234567890124 on the call', '2026-01-15 10:00+00'),
+    (10, 'card 4111 1111 1111 1111, phone +91 98765 43210', '2026-01-16 10:00+00'),
+    (12, 'again: 4567-8901-2341', '2026-02-01 10:00+00');
+  CREATE TABLE orders (id bigint PRIMARY KEY, meta jsonb);
+  INSERT INTO orders VALUES (1, '{\"kyc\": {\"uid\": 345678901238}, \"status\": \"open\"}'), (2, '{\"by\": {\"456789012341\": \"seen\"}}');
+  CREATE TABLE nokey (note text);
+  INSERT INTO nokey VALUES ('345678901238'), ('nothing here');" >/dev/null
+$S track tickets --branch aadt >/dev/null 2>&1
+LEDGER_BEFORE="$(pg pg-aadt "SELECT count(*) FROM bb.schema_ledger")"
+RUNS_LOGGED="$($S audit --limit 1000 | grep -c 'personal-data.aadhaar')"
+AR="$($S pii aadhaar run --branch aadt 2>&1)"; AR_RC=$?
+assert_eq "fox pii aadhaar run reads every table and exits 0" \
+  "$AR_RC|$(grep -c '^Aadhaar exposure on aadt: run [0-9]*' <<<"$AR")|$(grep -c '^[0-9]* table(s), [0-9]* column(s) read; [0-9]* row(s) held twelve digits in its shape. 7 number(s) found, 3 distinct; 7 place(s) kept.' <<<"$AR")" "0|1|1"
+# The branch is made from main, so main's tables are read too: the counts of
+# tables and rows are main's as well, and only what was found is pinned.
+grep -q ' 7 number(s) found, 3 distinct; 7 place(s) kept.' <<<"$AR" || { echo "--- what it said ---"; head -12 <<<"$AR"; echo "--- end ---"; }
+AJ="$($S pii aadhaar --branch aadt --json 2>/dev/null)"
+assert_eq "…finds each number by column, inside JSON path by path, a key holding one hidden as *; not a card or a phone" \
+  "$(hjson "print(' '.join(sorted(c['schema']+'.'+c['table']+'.'+c['column']+(' '+c['path'] if c['path'] else '')+':'+str(c['numbers']) for c in d['columns'])))" <<<"$AJ")" \
+  "public.customers.aadhaar:2 public.nokey.note:1 public.orders.meta $.by.*:1 public.orders.meta $.kyc.uid:1 public.tickets.notes:2"
+assert_eq "…groups the places of one number as one person, shown by its last four digits, the most places first" \
+  "$(hjson "print([(p['masked'], p['places']) for p in d['people']])" <<<"$AJ")" \
+  "[('XXXX XXXX 2341', 3), ('XXXX XXXX 0124', 2), ('XXXX XXXX 1238', 2)]"
+P2341="$(hjson "print(d['people'][0]['person'])" <<<"$AJ")"
+PJ2341="$($S pii aadhaar places --person "$P2341" --branch aadt --json 2>/dev/null)"
+assert_eq "fox pii aadhaar places names a person's rows by their primary key" \
+  "$(hjson "print(sorted(p['table']+(' '+p['path'] if p['path'] else '')+' '+p['row'] for p in d))" <<<"$PJ2341")" \
+  "['customers id=2', 'orders $.by.* id=2', 'tickets id=12']"
+P0124="$(hjson "print([p['person'] for p in d['people'] if p['masked'].endswith('0124')][0])" <<<"$AJ")"
+assert_eq "…since when: a tracked row's created_at, when it is earlier than the first run" \
+  "$(hjson "print([p['since'][:10] for p in d['people'] if p['masked'].endswith('0124')][0])" <<<"$AJ")|$($S pii aadhaar places --person "$P0124" --branch aadt --json | hjson "print(sorted((p['table'], p['rowCreated'] is not None) for p in d))")" \
+  "2026-01-15|[('customers', False), ('tickets', True)]"
+assert_eq "…a row of a table with no primary key named by its position, and the report says so" \
+  "$($S pii aadhaar places --column public.nokey.note --branch aadt --json | hjson "print([p['row'][:6] for p in d])")|$(grep -c 'no primary key are named by their physical position (ctid).*public.nokey' <<<"$AR")" "['ctid=(']|1"
+assert_eq "…and says what it cannot claim: the check digit, no vault yet, the logs not read" \
+  "$(grep -c 'not that it was issued' <<<"$AR")|$(grep -c 'every number it finds is outside the vault' <<<"$AR")|$(grep -c 'Query history, the audit log' <<<"$AR")" "1|1|1"
+# The point of the design: the report must not become one more copy of the
+# numbers it finds, or a way to find them again.
+assert_eq "no full number is stored, nor its first eight digits, in any of the report's tables" \
+  "$(pg pg-aadt "SELECT count(*) FROM (SELECT r::text t FROM bb.aadhaar_runs r UNION ALL SELECT c::text FROM bb.aadhaar_columns c UNION ALL SELECT p::text FROM bb.aadhaar_places p) x
+     WHERE regexp_replace(t, '[ -]', '', 'g') ~ '(23456789|45678901|34567890)'")" "0"
+assert_eq "…and a client role cannot read it" \
+  "$(sudo docker exec -e PGPASSWORD=foxbyte pg-aadt psql -U dbadmin -d appdb -tAc "SET ROLE db_client; SELECT count(*) FROM bb.aadhaar_places" 2>&1 | grep -c 'permission denied')" "1"
+assert_eq "a run reads only: the Blackbox records nothing for it" "$(pg pg-aadt "SELECT count(*) FROM bb.schema_ledger")" "$LEDGER_BEFORE"
+assert_eq "…and it is in the security log, with counts and no digit of a number" \
+  "$($S audit --limit 1000 | grep -c 'personal-data.aadhaar')|$($S audit --limit 1000 | grep 'personal-data.aadhaar' | grep -cE '0124|2341|1238')" "$((RUNS_LOGGED+1))|0"
+
+# A second run: a number removed is gone; a table it could not read is not.
+# customers is held locked past the run's lock wait, so it is skipped, and its
+# places are not looked for, which is not the same as not found.
+RUN1="$(hjson "print(d['run']['id'])" <<<"$AJ")"
+pg pg-aadt "UPDATE tickets SET notes = 'number removed' WHERE id = 9" >/dev/null
+sudo docker exec -e PGPASSWORD=foxbyte pg-aadt psql -U dbadmin -d appdb -qc "BEGIN; LOCK TABLE customers IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(25); COMMIT;" >/dev/null 2>&1 &
+LOCKER=$!
+sleep 2
+AR2="$($S pii aadhaar run --branch aadt 2>&1)"
+wait "$LOCKER" 2>/dev/null
+AJ2="$($S pii aadhaar --branch aadt --json 2>/dev/null)"
+assert_eq "a table locked past the run's wait is skipped and said so" \
+  "$(grep -c 'not read: public.customers (it was locked by another session for longer than 10s)' <<<"$AR2")" "1"
+assert_eq "…a number no longer there is gone, and the skipped table's places are not" \
+  "$(hjson "print(d['gone'])" <<<"$AJ2")|$($S pii aadhaar places --gone --branch aadt --json | hjson "print([(p['table'], p['row'], p['masked']) for p in d])")" \
+  "1|[('tickets', 'id=9', 'XXXX XXXX 0124')]"
+assert_eq "…and a place found again keeps when it was first found" \
+  "$(pg pg-aadt "SELECT first_run = $RUN1 AND last_run > $RUN1 FROM bb.aadhaar_places WHERE table_name = 'tickets' AND row_key = 'id=12'")" "t"
+assert_eq "a table's time limit outside 1s to 1h is refused" \
+  "$($S pii aadhaar run --branch aadt --table-timeout 500ms >/dev/null 2>&1; echo $?)|$(code "$KEY" -H 'Content-Type: application/json' -X POST -d '{"tableTimeout":4000}' https://localhost:8080/api/branches/aadt/personal-data/aadhaar/run)" "1|400"
+AU=https://localhost:8080/api/branches/aadt/personal-data/aadhaar
+assert_eq "the API runs and reads for the branch's owner or an admin, and no one else" \
+  "$(code "$KEY" -X POST "$AU/run")|$(code "$KEY" "$AU")|$(code "$KEY" "$AU/places?person=$P2341")|$(code "$KA" "$AU")|$(code "$KA" -X POST "$AU/run")|$(code "$KA" https://localhost:8080/api/branches/main/personal-data/aadhaar)|$(code "$KA" -X POST https://localhost:8080/api/branches/main/personal-data/aadhaar/run)" \
+  "200|200|200|404|404|403|403"
+assert_eq "…refusing a person that is not a number, or a column not written schema.table.column" \
+  "$(code "$KEY" "$AU/places?person=abc")|$(code "$KEY" "$AU/places?column=notes")|$(code "$KEY" "$AU/places?limit=20000")" "400|400|400"
+assert_eq "…answering with the report, by person, last four digits only" \
+  "$(as "$KEY" "$AU" | hjson "print(d['run']['actor'], d['people'][0]['masked'], len(d['columns']))")" "test@foxbyte.dev XXXX XXXX 2341 5"
+$S branch delete aadt2 >/dev/null 2>&1
+$S branch create aadt2 --from aadt >/dev/null 2>&1
+assert_eq "the report travels with the branch: one made from it carries it" \
+  "$($S pii aadhaar --branch aadt2 --json | hjson "print(d['run']['id'] == $(as "$KEY" "$AU" | hjson "print(d['run']['id'])"))")" "True"
+$S branch delete aadt2 >/dev/null 2>&1
+$S branch delete aadt >/dev/null 2>&1
+
+echo "### 11as. the Aadhaar exposure report's logs part: query history, the audit log's text, the Blackbox (point 4.5b)"
+# Synthetic numbers, each passing Verhoeff, used nowhere else in the suite:
+# the branch is made from main, and main's Blackbox keeps other sections'
+# statements, numbers and all. 298765432101 (A, in a table and in the logs),
+# 387654321095 (B, a table only), 476543210985 (C, a query's error only),
+# 565432109873 (D, the Blackbox only), 654321098763 (E, the audit log's text
+# only). alice owns the branch and is not an admin; test@ is the admin.
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+$S branch delete aadl >/dev/null 2>&1
+$S branch create aadl >/dev/null 2>&1
+$S branch owner aadl alice@foxbyte.dev >/dev/null 2>&1
+# One statement a call: the Blackbox keeps a DDL statement's whole query
+# string, and an INSERT run with the CREATE would put its numbers there too.
+pg pg-aadl "CREATE TABLE uids (id int PRIMARY KEY, uid text UNIQUE)" >/dev/null
+pg pg-aadl "INSERT INTO uids VALUES (1, '2987 6543 2101'), (2, '387654321095')" >/dev/null
+pg pg-aadl "GRANT ALL ON uids TO db_client" >/dev/null
+pg pg-aadl "ALTER TABLE uids ADD CONSTRAINT uid_not_test CHECK (uid <> '565432109873')" >/dev/null
+AQ=https://localhost:8080/api/branches/aadl
+as "$KA" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT id FROM uids WHERE uid = '2987 6543 2101'\"}" "$AQ/query" >/dev/null
+as "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT ('4765' || '43210985')::int\"}" "$AQ/query" >/dev/null
+code "$KEY" -X PUT -H 'Content-Type: application/json' -d '{}' "$AQ/audit/tables/public/uids" >/dev/null
+$S audit-log mode forensic --branch aadl --reason 'aadhaar logs test' --yes >/dev/null 2>&1
+PGPASSWORD="$KEY" psql "$GATEWAY/aadl?sslmode=require" -X -q -tA -c "UPDATE uids SET uid = uid WHERE uid IN ('2987 6543 2101', '654321098763')" >/dev/null 2>&1
+# The collector moves raw lines into the store once a minute; collect now.
+for i in $(seq 1 30); do $S audit-log collect >/dev/null 2>&1; forensic_all | grep -q '654321098763' && break; sleep 1; done
+assert_eq "(setup) the audit log kept the UPDATE's text" "$(forensic_all | grep -c '654321098763' | awk '{print ($1 >= 1)}')" "1"
+LEDGER_BEFORE="$(pg pg-aadl "SELECT count(*) FROM bb.schema_ledger")"
+LOGGED0="$($S audit --limit 1000 | grep -c 'personal-data.aadhaar')"
+AL="$($S pii aadhaar run --branch aadl --logs 2>&1)"; AL_RC=$?
+assert_eq "fox pii aadhaar run --logs reads the tables and the logs, and exits 0" \
+  "$AL_RC|$(grep -c '^The logs (admins only), read with run [0-9]*: [0-9]* query history entr(ies), [0-9]* audit statement text(s), [0-9]* Blackbox entr(ies).' <<<"$AL")|$(grep -c 'what they hold is in the logs part, for admins only' <<<"$AL")" "0|1|1"
+grep -q '^The logs (admins only)' <<<"$AL" || { echo "--- what it said ---"; tail -30 <<<"$AL"; echo "--- end ---"; }
+ALJ="$($S pii aadhaar --branch aadl --json 2>/dev/null)"
+who() { hjson "p=[p for p in d['people'] if p['masked'].endswith('$1')]; print(sorted(p[0]['where']) if p else None)" <<<"$ALJ"; }
+assert_eq "a number in a table and in the logs is one person, with each place it is" \
+  "$(who 2101)" "['audit log', 'public.uids.uid', 'query history']"
+assert_eq "…a number in the logs only is a person of its own: an error, the Blackbox, the audit log's text" \
+  "$(who 0985)|$(who 9873)|$(who 8763)" "['query history']|['Blackbox']|['audit log']"
+assert_eq "…a number in the tables only is not in the logs" "$(who 1095)" "['public.uids.uid']"
+assert_eq "…and the logs part is read with this run, so its people are the report's" \
+  "$(hjson "print(d['logs']['linked'], d['logs']['run']['branchRun'] == d['run']['id'], d['logs']['run']['skipped'])" <<<"$ALJ")" "True True []"
+PA="$(hjson "print([p['person'] for p in d['people'] if p['masked'].endswith('2101')][0])" <<<"$ALJ")"
+assert_eq "fox pii aadhaar places --logs --person names the entries: which log, who made it" \
+  "$($S pii aadhaar places --logs --person "$PA" --branch aadl --json | hjson "print(sorted((p['source'], p['field'], p['actor']) for p in d))")" \
+  "[('audit', '', 'test@foxbyte.dev'), ('history', 'sql', 'alice@foxbyte.dev')]"
+assert_eq "…a query's error is read too: it can quote a value the statement did not" \
+  "$($S pii aadhaar places --logs --source history --branch aadl --json | hjson "print([(p['field'], p['actor']) for p in d if p['last4'] == '0985'])")" \
+  "[('error', 'test@foxbyte.dev')]"
+assert_eq "…and the Blackbox entry is the one that added the constraint" \
+  "$($S pii aadhaar places --logs --source blackbox --branch aadl --json | hjson "print([p['entry'] for p in d if p['last4'] == '9873'])")" \
+  "[$(pg pg-aadl "SELECT id FROM bb.schema_ledger WHERE statement LIKE '%uid_not_test%'")]"
+assert_eq "…and prints them to read" \
+  "$($S pii aadhaar places --logs --person "$PA" --branch aadl | grep -c 'XXXX XXXX 2101  *query history  *[0-9]* (sql)  *alice@foxbyte.dev')" "1"
+assert_eq "no full number is kept in the install's store, nor its first eight digits" \
+  "$(python3 - "$HOME/$BRAND_STATE_DIR/auth.db" <<'PYA'
+import re,sqlite3,sys
+c=sqlite3.connect(sys.argv[1])
+rows=[str(r) for t in ('aadhaar_log_runs','aadhaar_log_places') for r in c.execute('SELECT * FROM '+t)]
+print(sum(1 for r in rows if re.search('(29876543|38765432|47654321|56543210|65432109)', r.replace(' ','').replace('-',''))), len(rows) > 0)
+PYA
+)" "0 True"
+assert_eq "…nor in the branch: the logs' places are not in its tables" \
+  "$(pg pg-aadl "SELECT count(*) FROM bb.aadhaar_places WHERE row_key ~ 'history|audit|blackbox'")" "0"
+assert_eq "a run reads only: the Blackbox records nothing for it" "$(pg pg-aadl "SELECT count(*) FROM bb.schema_ledger")" "$LEDGER_BEFORE"
+assert_eq "…and the security log has it, with the logs' counts and no digit of a number" \
+  "$(( $($S audit --limit 1000 | grep -c 'personal-data.aadhaar') - LOGGED0 ))|$($S audit --limit 1000 | grep 'personal-data.aadhaar' | grep -c '; logs: ')|$($S audit --limit 1000 | grep 'personal-data.aadhaar' | grep -cE 'XXXX|29876543|38765432|47654321|56543210|65432109')" "1|1|0"
+
+# The branch's owner, not an admin: the tables' report, never the logs.
+AU=https://localhost:8080/api/branches/aadl/personal-data/aadhaar
+printf 'password123\n' | $S user create aad-none@foxbyte.dev >/dev/null 2>&1
+KN="$($S apikey create aad-none@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+assert_eq "an owner who is not an admin may not read the logs, or run a read of them" \
+  "$(code "$KA" -H 'Content-Type: application/json' -X POST -d '{"logs":true}' "$AU/run")|$(code "$KA" "$AU/log-places")|$(as "$KA" "$AU" | hjson "print('logs' in d, d['run'] is not None)")" "403|403|False True"
+assert_eq "…their report has no log in it, though the tables' people are there" \
+  "$(as "$KA" "$AU" | hjson "print(sorted(w for p in d['people'] for w in p['where'] if not w.startswith('public.')), [p['masked'] for p in d['people'] if p['masked'].endswith('0985')])")" "[] []"
+assert_eq "…someone with no access to the branch gets nothing either" "$(code "$KN" "$AU/log-places")|$(code "$KN" "$AU")" "404|404"
+assert_eq "an owner's run reads the tables only" \
+  "$(code "$KA" -X POST "$AU/run")|$(as "$KA" "$AU" | hjson "print('logs' in d)")" "200|False"
+assert_eq "…after which an admin's report lists the logs' people apart: they were read with an earlier run" \
+  "$(as "$KEY" "$AU" | hjson "print(d['logs']['linked'], [p['masked'] for p in d['logs']['people'] if p['masked'].endswith('2101')], [w for p in d['people'] for w in p['where'] if not w.startswith('public.')])")" \
+  "False ['XXXX XXXX 2101'] []"
+assert_eq "…and fox pii aadhaar says so" \
+  "$($S pii aadhaar --branch aadl | grep -c 'before the latest, so its people are numbered apart')" "1"
+
+# Gone: alice deletes her history, and the next read with the logs no longer
+# finds her entry there; the audit text and the Blackbox are still there.
+as "$KA" -X DELETE "$HU/history" >/dev/null
+assert_eq "an admin runs it with the logs through the API" \
+  "$(code "$KEY" -H 'Content-Type: application/json' -X POST -d '{"logs":true}' "$AU/run")" "200"
+ALG="$(as "$KEY" "$AU")"
+assert_eq "…an entry deleted since is gone; the others are found again" \
+  "$(hjson "print(d['logs']['gone'], d['logs']['linked'], sorted(s['source'] for s in d['logs']['sources']))" <<<"$ALG")|$(as "$KEY" "$AU/log-places?gone=1" | hjson "print([(p['source'], p['actor'], p['masked'], p['gone']) for p in d['places']])")" \
+  "1 True ['audit', 'blackbox', 'history']|[('history', 'alice@foxbyte.dev', 'XXXX XXXX 2101', True)]"
+assert_eq "…a log the API does not know is refused" \
+  "$(code "$KEY" "$AU/log-places?source=gateway")|$(code "$KEY" "$AU/log-places?person=x")" "400|400"
+assert_eq "a run without --logs still says the logs were not read" \
+  "$($S pii aadhaar run --branch aadl 2>&1 | grep -c 'Query history, the audit log.s statement text and the Blackbox are not read by this run')" "1"
+$S audit-log mode default --branch aadl >/dev/null 2>&1
+$S branch delete aadl >/dev/null 2>&1
+$S audit-log off --yes >/dev/null 2>&1; main_up
+
+echo "### 11at. the vault: setup, the token and keys, tokenise, find, detokenise, its log anchored in the security log (point 13.1)"
+# The install's vault: its own database on an internal network, and the
+# service talking PKCS#11 to FoxByte's own software token. The image is built
+# from this checkout, as the database image is when it cannot be pulled.
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VA=https://localhost:8080/api/vault
+# A vault another suite set up on this VM (integration_ui.sh does) is taken
+# away first: this section starts from an install with none.
+sudo docker rm -fv fox-vault fox-vault-db >/dev/null 2>&1
+sudo docker volume rm fox-vault-db >/dev/null 2>&1
+sudo docker network rm fox-vault fox-vault-hsm >/dev/null 2>&1
+case "$HOME/$BRAND_STATE_DIR/vault" in */"$BRAND_STATE_DIR"/vault) rm -rf "${HOME:?}/$BRAND_STATE_DIR/vault" ;; esac
+printf 'password123\n' | $S user create vault-none@foxbyte.dev >/dev/null 2>&1
+KV="$($S apikey create vault-none@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+OUT="$($S vault status 2>&1)"
+assert_eq "before setup: not set up, and how to" "$(grep -c 'not set up' <<<"$OUT")|$(grep -c 'vault setup' <<<"$OUT")" "1|1"
+assert_eq "GET /api/vault: an admin reads it; anyone else is refused" \
+  "$(as "$KEY" "$VA" | jget set_up)|$(code "$KV" "$VA")|$(code "$KV" "$VA/kinds")" "False|403|403"
+OUT="$($S vault setup 2>&1)"
+assert_eq "setup without --yes says what it will do, and does nothing" \
+  "$(grep -c 'UIDAI requires an HSM' <<<"$OUT")|$(sudo docker ps -aq --filter name=^fox-vault | wc -l | tr -d ' ')|$([ -e "$HOME/$BRAND_STATE_DIR/vault" ] && echo made || echo none)" "1|0|none"
+SETUPS_BEFORE="$($S audit --limit 5000 | grep -c 'vault.setup')"
+OUT="$(FOX_VAULT_IMAGE_CONTEXT="$REPO_DIR" $S vault setup --yes 2>&1)"; RC=$?
+assert_eq "setup --yes: the image, the token, the networks, the database and the service" "$RC|$(grep -c 'Done: the vault is set up and running' <<<"$OUT")" "0|1"
+[ "$RC" = 0 ] || echo "$OUT" | tail -15
+assert_eq "both containers run, and carry the engine's label" \
+  "$(sudo docker ps --filter "label=$DB_MANAGED_LABEL" --format '{{.Names}}' | grep -cx 'fox-vault\|fox-vault-db')" "2"
+assert_eq "the vault's network is internal, and only the two are on it" \
+  "$(sudo docker network inspect -f '{{.Internal}}' fox-vault)|$(sudo docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' fox-vault | tr ' ' '\n' | grep -c .)" "true|2"
+VD="$HOME/$BRAND_STATE_DIR/vault"
+assert_eq "the socket is the engine user's own, mode 600; the secrets 600, in a directory of 700" \
+  "$(stat -c '%a %U' "$VD/run/vault.sock")|$(stat -c '%a' "$VD/secret/secret" "$VD/secret/pin" "$VD/secret/dsn" | sort -u | tr '\n' ' ')|$(stat -c '%a' "$VD/secret")" "600 $(id -un)|600 |700"
+assert_eq "the service runs as the engine's user, not root" "$(sudo docker inspect -f '{{.Config.User}}' fox-vault)" "$(id -u):$(id -g)"
+assert_eq "…and listens on no TCP port (Docker's DNS on 127.0.0.11 aside)" \
+  "$(sudo docker exec fox-vault sh -c "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '\$4 == \"0A\" && \$2 !~ /^0B00007F:/' | wc -l")" "0"
+assert_eq "the setup is in the security log" "$(( $($S audit --limit 5000 | grep -c 'vault.setup') - SETUPS_BEFORE ))" "1"
+OUT="$($S vault setup --yes 2>&1)"; RC=$?
+assert_eq "a second setup is refused" "$RC|$(grep -c 'set up already' <<<"$OUT")" "1|1"
+
+OUT="$($S vault status 2>&1)"
+assert_eq "status: the software token, said to be not compliant for Aadhaar" \
+  "$(grep -c 'SoftHSM project' <<<"$OUT")|$(grep -c '^aadhaar .*no: software token (trials and testing only)' <<<"$OUT")|$(grep -c '^text .*no rules mapped' <<<"$OUT")" "1|1|1"
+assert_eq "…four keys, each made in the token and never extractable" "$(grep -c 'made in the token, never extractable' <<<"$OUT")" "4"
+OUT="$($S vault kinds 2>&1)"
+assert_eq "kinds: Aadhaar under UIDAI's rules with its legacy format; text with none" \
+  "$(grep -c 'Verhoeff' <<<"$OUT")|$(grep -c 'UIDAI Circular No. 14 of 2025 (an HSM is required)' <<<"$OUT")|$(grep -c 'legacy:   none' <<<"$OUT")" "1|1|1"
+
+N1=298765432101; N2=387654321095
+OUT="$($S vault tokenise --kind aadhaar "$N1" 2>&1)"; RC=$?
+R1="$(awk '{print $1}' <<<"$OUT")"
+assert_eq "tokenise: a new number gets an opaque Aadhaar reference key" "$RC|$(grep -cE '^AR[0-9A-Z]{26}	new$' <<<"$OUT")" "0|1"
+assert_eq "…the same number with spaces gets the same key, not a new one" "$($S vault tokenise --kind aadhaar '2987 6543 2101' 2>&1)" "$R1"
+assert_eq "find gives it" "$($S vault find --kind aadhaar "$N1" 2>&1)" "$R1"
+OUT="$($S vault tokenise --kind aadhaar 123412341234 2>&1)"; RC=$?
+assert_eq "a number failing the check is refused, and the command fails" "$RC|$(grep -c '^(refused)$' <<<"$OUT")" "1|1"
+OUT="$($S vault tokenise --kind aadhaar --format legacy "$N2" 2>&1)"
+assert_eq "the legacy format: 12 digits starting with 1" "$(grep -cE '^1[0-9]{11}	new$' <<<"$OUT")" "1"
+OUT="$(printf '%s\n%s\n' "$N1" "$N2" | $S vault find --kind aadhaar - 2>&1)"
+assert_eq "values may come on standard input, one a line, so none sits in the shell's history" "$(head -1 <<<"$OUT")|$(wc -l <<<"$OUT" | tr -d ' ')" "$R1|2"
+OUT="$($S vault detokenise --kind aadhaar "$R1" 2>&1)"; RC=$?
+assert_eq "detokenise needs a purpose" "$RC|$(grep -c 'purpose is needed' <<<"$OUT")" "2|1"
+assert_eq "…and with one, gives the number back" "$($S vault detokenise --kind aadhaar --purpose 'integration: KYC check' "$R1" 2>&1)" "$N1"
+TR="$($S vault tokenise --kind text 'Asha Rao, 12 MG Road' 2>&1 | awk '{print $1}')"
+assert_eq "any text goes in under the text kind, and comes back as it was" \
+  "$(grep -cE '^TX[0-9A-Z]{26}$' <<<"$TR")|$($S vault detokenise --kind text --purpose integration "$TR" 2>&1)" "1|Asha Rao, 12 MG Road"
+
+H='Content-Type: application/json'
+OUT="$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\",\"$N2\"]}" "$VA/tokenise")"
+assert_eq "POST /api/vault/tokenise: an admin gets the same keys" "$(hjson 'print(d["refs"][0], d["new"][0])' <<<"$OUT")" "$R1 False"
+assert_eq "POST /api/vault/find: an admin finds them; anyone else is refused" \
+  "$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\"]}" "$VA/find" | hjson 'print(d["refs"][0])')|$(code "$KV" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\"]}" "$VA/find")" "$R1|403"
+OUT="$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$R1\"],\"purpose\":\"x\"}" "$VA/detokenise")"
+assert_eq "POST /api/vault/detokenise: refused even to an admin, until there are grants" \
+  "$(code "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$R1\"],\"purpose\":\"x\"}" "$VA/detokenise")|$(grep -c 'only the operator can' <<<"$OUT")|$(grep -c "$N1" <<<"$OUT")" "403|1|0"
+assert_eq "an unknown kind is a bad request" "$(code "$KEY" -H "$H" -X POST -d '{"kind":"pan","values":["x"]}' "$VA/tokenise")" "400"
+OUT="$(as "$KEY" "$VA")"
+assert_eq "GET /api/vault: running, the software token, 2 Aadhaar records (the API gave the same keys), 1 text" \
+  "$(hjson 'print(d["database_running"], d["service_running"], d["status"]["token"]["software"], [k["records"] for k in d["status"]["kinds"]])' <<<"$OUT")" "True True True [2, 1]"
+
+AUD="$($S audit --limit 3000)"
+assert_eq "every call is in the security log, with the vault's log head" \
+  "$(grep 'vault.call' <<<"$AUD" | grep -c '; head [0-9]*:[0-9a-f]\{64\}')" "$(grep -c 'vault.call' <<<"$AUD")"
+assert_eq "…the detokenise with its purpose" "$(grep 'vault.call' <<<"$AUD" | grep -c 'detokenise, 1 reference key, purpose "integration: KYC check": done 1')" "1"
+assert_eq "…and no number, no text value, anywhere in it" "$(grep -cE "$N1|$N2|2987 6543 2101|Asha Rao" <<<"$AUD")" "0"
+assert_eq "the vault database holds no number in the clear" \
+  "$(sudo docker exec fox-vault-db pg_dump -U postgres vault | grep -cE "$N1|$N2|Asha Rao")" "0"
+OUT="$($S vault status 2>&1)"
+assert_eq "the vault's log holds, and agrees with the head the security log saw" \
+  "$(grep -c 'the chain holds' <<<"$OUT")|$(grep -c 'Against the security log: entry [0-9]* is as the security log saw it' <<<"$OUT")" "1|1"
+
+# The host reaches an internal network through its bridge (design, section
+# 20): the database admits only the service's address.
+VPW="$(sed -n 's|^postgres://vault_svc:\([^@]*\)@.*|\1|p' "$VD/secret/dsn")"
+DBIP="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["db_addr"])' "$VD/vault.json")"
+OUT="$(sudo docker run --rm --network host -e PGPASSWORD="$VPW" -e PGCONNECT_TIMEOUT=3 postgres:18-bookworm psql -X -h "$DBIP" -U vault_svc -d vault -tAc 'SELECT 1' 2>&1)"
+assert_contains "the machine itself, with the service's password, is refused by the database" "$OUT" "pg_hba.conf"
+
+# Entries cut off the end of the vault's log, and the service restarted so it
+# forgets how long the log was: the chain still holds, and only the head kept
+# in the security log shows the cut.
+sudo docker exec fox-vault-db psql -X -q -U postgres -d vault -c "DELETE FROM vault.access_log WHERE seq > (SELECT max(seq) - 2 FROM vault.access_log)" >/dev/null
+sudo docker restart fox-vault >/dev/null; sleep 3
+for i in $(seq 1 30); do $S vault status >/dev/null 2>&1 && break; sleep 1; done
+OUT="$($S vault status 2>&1)"
+assert_eq "after a cut and a restart, the chain holds, but the security log's head does not" \
+  "$(grep -c 'the chain holds' <<<"$OUT")|$(grep -c 'DOES NOT HOLD: the security log saw entry [0-9]*, which the vault.s access log no longer holds: entries were cut off its end' <<<"$OUT")" "1|1"
+assert_eq "…and the console's API says so too" "$(as "$KEY" "$VA" | hjson 'print(d["anchor"]["holds"])')" "False"
+# The next call writes a new head; the vault goes on.
+$S vault find --kind aadhaar "$N1" >/dev/null 2>&1
+assert_eq "the vault goes on, its new head recorded" "$($S vault status 2>&1 | grep -c 'is as the security log saw it')" "1"
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.
@@ -3903,12 +4372,15 @@ assert_eq "…and keeps the storage pool" "$(sudo zpool list -H -o name "$DB_POO
 assert_eq "…and keeps archived WAL and base backups" \
   "$(sudo docker volume ls --format '{{.Name}}' | grep -cx "$DB_OBJECT_STORE-data")" "1"
 assert_eq "…and keeps accounts and secrets" "$([ -f "$HOME/$BRAND_STATE_DIR/secrets.json" ] && echo kept)" "kept"
+assert_eq "…and keeps the vault's database, takes its networks" \
+  "$(sudo docker volume ls --format '{{.Name}}' | grep -cx fox-vault-db)|$(sudo docker network ls --format '{{.Name}}' | grep -cx fox-vault)" "1|0"
 
 $S uninstall --yes >/tmp/uninstall-all.log 2>&1
 assert_eq "uninstall removes the storage pool" \
   "$(sudo zpool list -H -o name "$DB_POOL" 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_eq "…and the archived WAL and base backups" \
   "$(sudo docker volume ls --format '{{.Name}}' | grep -cx "$DB_OBJECT_STORE-data")" "0"
+assert_eq "…and the vault's database" "$(sudo docker volume ls --format '{{.Name}}' | grep -cx fox-vault-db)" "0"
 assert_eq "…and the accounts, keys and anchors" "$([ -d "$HOME/$BRAND_STATE_DIR" ] && echo present || echo gone)" "gone"
 assert_eq "…and says so" "$(grep -c "is removed" /tmp/uninstall-all.log)" "1"
 

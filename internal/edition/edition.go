@@ -45,6 +45,9 @@ const (
 	// (point 7): rules, masked readers, unmask and masked branches. Masks
 	// already made keep working in every edition.
 	Masking Feature = "masking"
+	// Vault is the vault for sensitive values, Aadhaar first (point 13):
+	// values kept encrypted in an HSM, reference keys in their place.
+	Vault Feature = "vault"
 )
 
 // descriptions are used in refusals, so each one says what the user is missing
@@ -61,6 +64,7 @@ var descriptions = map[Feature]string{
 	AccessReview: "the access review report",
 	Hardening:    "hardening fixes and profiles",
 	Masking:      "masking personal data",
+	Vault:        "the vault for sensitive values",
 }
 
 // Describe names a feature in a sentence. An unknown feature describes itself,
