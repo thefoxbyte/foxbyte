@@ -1,0 +1,17 @@
+{
+  "name": "foxbyte-realtime-crud",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A small todo list that writes through the FoxByte gateway and updates live from the change feed.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@foxbyte/client": "file:../../clients/typescript",
+    "pg": "^8.16.3"
+  }
+}
