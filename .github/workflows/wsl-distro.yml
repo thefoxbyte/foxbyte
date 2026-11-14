@@ -33,7 +33,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '>=1.26.11'
           check-latest: true  # newest 1.26.x, not the image's cached one
       # `make release-linux` runs `npm ci`, which re-downloads the whole
       # dependency tree on a cold runner. Cache it on the lockfile.

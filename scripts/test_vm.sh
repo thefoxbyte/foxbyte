@@ -16,7 +16,7 @@
 set -euo pipefail
 
 NAME="${FOX_TEST_VM:-fox-test}"
-GO_VERSION="${FOX_TEST_GO_VERSION:-1.26.9}"
+GO_VERSION="${FOX_TEST_GO_VERSION:-1.26.11}"
 MARKER=/etc/fox-test-instance
 # Lima forwards a VM's ports to the Mac's localhost. The test stack uses the
 # same ports as a real one (8080, 6432, 8088), so forwarding them could put the
