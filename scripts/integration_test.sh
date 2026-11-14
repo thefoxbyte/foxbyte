@@ -639,7 +639,11 @@ assert_contains "…and a peer that is a name rather than an address" \
   "$($S node expose --address 10.9.9.9 --peer db1.internal --yes 2>&1)" "not an IP address"
 # The real thing, on this VM's own address: a published port, TLS, and two
 # rules -- samenet for a standby here, hostssl for the one that is not.
-VMIP="$(ip -4 -o addr show dev eth0 | awk '{print $4}' | cut -d/ -f1)"
+# The default-route device, not eth0: cloud images and this suite's own
+# KVM guest name it ens* / enp*, and `ip addr show dev eth0` then fails the
+# whole expose block with "Device eth0 does not exist".
+VMIF="$(ip -4 route show default | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}')"
+VMIP="$(ip -4 -o addr show dev "$VMIF" | awk '{print $4}' | cut -d/ -f1)"
 $S node expose --address "$VMIP" --peer 10.9.9.10 --yes >/tmp/expose.log 2>&1
 assert_eq "expose exits 0" "$?" "0"
 assert_eq "…publishing the port on that address only, not every interface" \
