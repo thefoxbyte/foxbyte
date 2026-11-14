@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '>=1.26.11'
+          go-version: '>=1.26.11 <1.27.0'
           check-latest: true  # newest 1.26.x, not the image's cached one
       - name: Build
         run: go build ./...
@@ -82,7 +82,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '>=1.26.11'
+          go-version: '>=1.26.11 <1.27.0'
           check-latest: true  # newest 1.26.x, not the image's cached one
       # check-latest above is load-bearing here, not tidiness. On 9 Oct 2026 the
       # ubuntu-latest image still cached 1.26.8 while 1.26.9 was out, and
@@ -90,8 +90,10 @@ jobs:
       # advisories in net/http, net/textproto and crypto/tls, all of them
       # "Fixed in: go1.26.9". The floor is now 1.26.11: GO-2026-6859 (net/http)
       # and GO-2026-6809 (crypto/x509) are fixed there, and go.mod's toolchain
-      # line asks for the same. check-latest still moves to a newer 1.26 patch
-      # so the next stdlib CVE does not need a commit here before CI is green.
+      # line asks for the same. The range stops before 1.27: a bare >=1.26.11
+      # resolved to 1.27.4, whose encoding/json and image/png disagree with
+      # this tree. check-latest still moves to a newer 1.26 patch so the next
+      # stdlib CVE does not need a commit here before CI is green.
       # The files as they are now, not the history: the key committed on 18 Sep
       # is still in history, and has to be revoked where it was trusted, not
       # scanned for on every run.
