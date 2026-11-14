@@ -26,6 +26,7 @@ export type Feature =
   | 'access-review'
   | 'hardening'
   | 'masking'
+  | 'vault'
 
 export type Status = {
   mainReady: boolean
@@ -695,6 +696,39 @@ export const getAadhaarLogPlaces = (branch: string, f: AadhaarLogFilter) => {
 }
 // Whether the signed-in account is an admin (GET /api/account).
 export const getAccount = () => req('GET', `${API}/api/account`) as Promise<{ admin: boolean }>
+
+// The vault (point 13): sensitive values, Aadhaar first, encrypted in an HSM;
+// reference keys in their place. Admins; Enterprise.
+export type VaultKey = {
+  label: string; role: 'data' | 'index'; current: boolean; destroyed: boolean; uses: number; records: number
+  sensitive: boolean; extractable: boolean; always_sensitive: boolean; never_extractable: boolean; local: boolean
+}
+export type VaultKindStatus = {
+  name: string; prefix: string; rules: string; hsm_required: boolean; compliant: string; records: number; keys: VaultKey[]
+}
+export type VaultServiceStatus = {
+  token: { label: string; maker: string; model: string; serial: string; software: boolean }
+  kinds: VaultKindStatus[]
+  log: { entries: number; broken_at: number; head: string }
+}
+export type VaultState = {
+  set_up: boolean
+  config?: { set_up_at: string; subnet: string; db_addr: string; service_addr: string; pg_major: string; token: string; hsm?: { dir: string; lib: string } }
+  database_running: boolean
+  service_running: boolean
+  image?: string
+  status?: VaultServiceStatus
+  status_error?: string
+  anchor: { recorded?: string; holds: boolean; note: string }
+}
+export type VaultKind = { name: string; prefix: string; check: string; legacy?: string; rules?: string; hsm_required: boolean }
+export type VaultReply = { refs?: string[]; new?: boolean[]; results?: string[]; error?: string }
+export const getVault = () => req('GET', `${API}/api/vault`) as Promise<VaultState>
+export const getVaultKinds = () => req('GET', `${API}/api/vault/kinds`) as Promise<VaultKind[]>
+export const vaultTokenise = (kind: string, values: string[], format?: 'opaque' | 'legacy') =>
+  req('POST', `${API}/api/vault/tokenise`, { kind, values, ...(format ? { format } : {}) }) as Promise<VaultReply>
+export const vaultFind = (kind: string, values: string[]) =>
+  req('POST', `${API}/api/vault/find`, { kind, values }) as Promise<VaultReply>
 
 // The data grid's save (point 12.2): rows added, changed and deleted, applied
 // together as you, or not at all.

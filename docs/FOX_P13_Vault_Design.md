@@ -607,6 +607,12 @@ The results are in section 20.
 Each step comes with its CLI and console tests, an integration section in
 the test VM, and the docs, as every point has.
 
+**13.1 is built** (`feat/p13-vault-131`): the vault set up, started and
+stopped by the engine; `fox vault status|kinds|tokenise|find|detokenise`;
+`/api/vault` for admins; the console's Vault page; the head of the access log
+kept in the security log and checked by `status`. Detokenising stays the
+operator's, on the machine, until 13.2's grants.
+
 ---
 
 ## 20. What the prototype found (Gate 0)

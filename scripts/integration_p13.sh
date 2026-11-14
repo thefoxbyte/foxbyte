@@ -23,7 +23,6 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 IMG=fox-p13-vault:proto
-GO_IMG=golang:1.26.9-bookworm
 # The engine image's own base, pinned as internal/branch/images.go pins it.
 PG=postgres:18-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
 NET_V=fox-p13-vault
@@ -49,9 +48,6 @@ cleanup() {
   for c in "$SVC" "$VAULT_DB" "$APP" fox-p13-intruder fox-p13-readers; do d rm -fv "$c" >/dev/null 2>&1; done
   d network rm "$NET_V" "$NET_B" >/dev/null 2>&1
   d rmi -f "$IMG" >/dev/null 2>&1
-  if [ "${FOX_P13_KEEP_CACHE:-}" != 1 ]; then
-    d volume rm fox-p13-gomod fox-p13-gobuild >/dev/null 2>&1
-  fi
   sudo rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -59,18 +55,20 @@ cleanup_before() { for c in "$SVC" "$VAULT_DB" "$APP" fox-p13-intruder fox-p13-r
 cleanup_before
 
 # ---------------------------------------------------------------------------
-echo "### 0. Build: the service with cgo, in a Go image of the image's Debian release"
+echo "### 0. Build: the image, the service built with cgo inside it, from a minimal context"
+# The image's own Dockerfile builds the service in a Go image of the same
+# Debian release, from only go.mod, go.sum and the vault's packages
+# (enterprise/vault/image/context.sh), as the engine and the release do.
 mkdir -p "$WORK/ctx"
-if d run --rm -v "$REPO:/src:ro" -v "$WORK/ctx:/out" -v fox-p13-gomod:/go/pkg/mod -v fox-p13-gobuild:/root/.cache/go-build \
-     -w /src -e CGO_ENABLED=1 -e GOFLAGS=-buildvcs=false -e GOTOOLCHAIN=local "$GO_IMG" \
-     go build -tags enterprise -trimpath -o /out/fox-vault ./enterprise/vault/cmd/fox-vault >"$WORK/build.log" 2>&1; then
-  ok "the service builds with cgo and the enterprise tag"
+bash "$REPO/enterprise/vault/image/context.sh" "$REPO" "$WORK/ctx"
+assert_eq "the context holds the vault and the Aadhaar check, and nothing of the engine" \
+  "$(cd "$WORK/ctx" && find . -type d -name internal | wc -l | tr -d ' ')|$(ls "$WORK/ctx/enterprise" | tr '\n' ' ')" "0|idcheck vault "
+if d build -q -t "$IMG" -f "$WORK/ctx/enterprise/vault/image/Dockerfile" "$WORK/ctx" >"$WORK/image.log" 2>&1; then
+  ok "the vault image builds, and the service in it with cgo and the enterprise tag"
 else
-  bad "the service did not build: $(tail -5 "$WORK/build.log")"
+  bad "the vault image: $(tail -8 "$WORK/image.log")"
   echo "==== $PASS passed, $FAIL failed ===="; exit 1
 fi
-cp "$REPO/enterprise/vault/image/Dockerfile" "$REPO/enterprise/vault/image/softhsm2.conf" "$WORK/ctx/"
-if d build -q -t "$IMG" "$WORK/ctx" >"$WORK/image.log" 2>&1; then ok "the vault image builds"; else bad "the vault image: $(tail -5 "$WORK/image.log")"; exit 1; fi
 assert_eq "the binary links only the C library and libdl, no PKCS#11 library: that is loaded at run time" \
   "$(d run --rm --entrypoint sh "$IMG" -c 'ldd /usr/local/bin/fox-vault | grep -c -i -E "softhsm|pkcs"')" "0"
 

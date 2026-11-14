@@ -108,3 +108,14 @@ func pgEnvFile() string {
 	})
 	return pgEnvPath
 }
+
+// vaultDBEnvFile is the vault database's environment (point 13): its
+// superuser's password, for the first start, and the vault service's role's,
+// which the database's init script reads to make the role. Neither reaches a
+// command line.
+func vaultDBEnvFile(superPass, svcPass string) string {
+	// envFile, not writeEnvFile: the file is in a directory of its own, and
+	// writeEnvFile's temporary name is made from the name it is given.
+	return envFile(filepath.Join("vault", "db.env"),
+		fmt.Sprintf("POSTGRES_PASSWORD=%s\nFOX_VAULT_SVC_PASSWORD=%s\n", superPass, svcPass))
+}

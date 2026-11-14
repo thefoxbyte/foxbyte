@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/thefoxbyte/foxbyte/enterprise/pii"
+	"github.com/thefoxbyte/foxbyte/enterprise/idcheck"
 )
 
 // A Kind is what a value is (design, section 2). The vault's machinery is the
@@ -46,6 +46,9 @@ type Kind struct {
 	Display func(string) string
 	// MaxLen is the longest value accepted, in bytes, in normal form.
 	MaxLen int
+	// Describe says what Check accepts, and LegacyDescribe what Legacy
+	// makes, in a sentence a person reads.
+	Describe, LegacyDescribe string
 }
 
 // Random is a source of random bytes: the HSM's generator in the service.
@@ -62,10 +65,10 @@ var kinds = map[string]*Kind{
 		Name:   "aadhaar",
 		Prefix: "AR",
 		Normal: func(s string) (string, bool) {
-			d, ok := pii.Digits(s)
+			d, ok := idcheck.Digits(s)
 			return d, ok && len(d) == 12
 		},
-		Check:       pii.IsAadhaar,
+		Check:       idcheck.IsAadhaar,
 		Legacy:      aadhaarLegacy,
 		IsLegacy:    isAadhaarLegacy,
 		HSMRequired: true,
@@ -76,7 +79,9 @@ var kinds = map[string]*Kind{
 			}
 			return "XXXX XXXX " + s[len(s)-4:]
 		},
-		MaxLen: 12,
+		MaxLen:         12,
+		Describe:       "12 digits, the first 2 to 9, passing the Verhoeff check (spaces and hyphens allowed)",
+		LegacyDescribe: "12 digits starting with 1, which no Aadhaar number does",
 	},
 	"text": {
 		Name:   "text",
@@ -88,7 +93,8 @@ var kinds = map[string]*Kind{
 			n := utf8.RuneCountInString(s)
 			return fmt.Sprintf("(%d characters)", n)
 		},
-		MaxLen: 4096,
+		MaxLen:   4096,
+		Describe: "any text, up to 4,096 bytes, kept exactly as given",
 	},
 }
 
@@ -244,5 +250,5 @@ func SyntheticAadhaar(rnd Random) (string, error) {
 	for i := 1; i < 11; i++ {
 		d[i] = '0' + b[i]%10
 	}
-	return string(d) + string(pii.VerhoeffDigit(string(d))), nil
+	return string(d) + string(idcheck.VerhoeffDigit(string(d))), nil
 }

@@ -9,8 +9,12 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"os"
+
+	"github.com/thefoxbyte/foxbyte/enterprise/vault/hsm"
 )
 
 func main() {
@@ -31,6 +35,8 @@ func main() {
 		err = status(os.Args[2:])
 	case "call":
 		err = callCmd(os.Args[2:])
+	case "init-token":
+		err = initToken(os.Args[2:])
 	default:
 		usage()
 	}
@@ -41,7 +47,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fox-vault serve|bench|gen|migrate|status|call [flags]")
+	fmt.Fprintln(os.Stderr, "usage: fox-vault serve|init-token|status|call|bench|gen|migrate [flags]")
 	os.Exit(2)
 }
 
@@ -58,4 +64,32 @@ func readSecret(path string) (string, error) {
 		return "", fmt.Errorf("%s is empty", path)
 	}
 	return s, nil
+}
+
+// initToken makes FoxByte's own software token, its PINs read from files so
+// they never reach a command line. A token already made is left as it is.
+func initToken(args []string) error {
+	fs := flag.NewFlagSet("init-token", flag.ExitOnError)
+	lib := fs.String("pkcs11-lib", "/usr/lib/softhsm/libsofthsm2.so", "the PKCS#11 library")
+	label := fs.String("token", "fox-vault", "the token's label")
+	pinFile := fs.String("pin-file", "/etc/fox-vault/secret/pin", "the user's PIN")
+	soPinFile := fs.String("so-pin-file", "/etc/fox-vault/secret/so-pin", "the security officer's PIN")
+	_ = fs.Parse(args)
+	pin, err := readSecret(*pinFile)
+	if err != nil {
+		return err
+	}
+	so, err := readSecret(*soPinFile)
+	if err != nil {
+		return err
+	}
+	err = hsm.InitToken(*lib, *label, so, pin)
+	if errors.Is(err, hsm.ErrTokenExists) {
+		fmt.Printf("the token %q exists already\n", *label)
+		return nil
+	}
+	if err == nil {
+		fmt.Printf("made the token %q\n", *label)
+	}
+	return err
 }

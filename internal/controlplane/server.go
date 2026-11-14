@@ -124,6 +124,7 @@ func Serve(addr string) error {
 	registerPersonalDataReview(api)    // /api/branches/{name}/personal-data/findings/* (point 4.6)
 	registerPersonalDataInventory(api) // /api/branches/{name}/personal-data/{unclassified,columns/*} (point 4.7)
 	registerAadhaarExposure(api)       // /api/branches/{name}/personal-data/aadhaar* (point 4.5)
+	registerVault(api)                 // /api/vault* (admins; Enterprise; point 13)
 	registerEditionSwitch(api, store)  // /api/edition/switch (the Upgrade modal's Install button)
 	// The paid edition's routes. Compiled out of the Standard build entirely,
 	// where this call does nothing (internal/controlplane/enterprise_off.go).
