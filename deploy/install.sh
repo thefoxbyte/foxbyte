@@ -37,6 +37,10 @@
 #   FOX_LIMA_BASE_URL  macOS: where to download Lima's release from (a mirror must
 #                 serve the same files: they are checked against the checksums below)
 #   FOX_NO_SETUP  macOS: set to 1 to stop after installing, without running `fox setup`
+#   FOX_SETUP     macOS: set to 1 to run `fox setup` even with no terminal (unattended
+#                 provisioning), or on a FoxByte VM that already exists. Without it,
+#                 setup runs only from a terminal, and only when there is no VM yet.
+#   FOX_TTY       the terminal `fox setup` reads from (default /dev/tty)
 set -eu
 
 # generated from brand.json -- do not edit by hand, run `make brand`
@@ -363,15 +367,31 @@ ensure_lima() {
 	say "Lima is installed ($(limactl --version 2>/dev/null || echo limactl))"
 }
 
-# run_setup runs `fox setup` with the terminal as its input: under `curl | sh`
-# this script's own stdin is the pipe it is being read from.
+# The terminal, when there is one: under `curl | sh` this script's own stdin
+# is the pipe it is being read from, so `fox setup` reads from here instead.
+TTY_DEV="${FOX_TTY:-/dev/tty}"
+have_tty() { (exec <"$TTY_DEV") 2>/dev/null; }
+
+# run_setup runs `fox setup`, from the terminal when there is one.
 run_setup() {
 	say "Setting up $PRODUCT ($CLI setup)…"
-	if (exec </dev/tty) 2>/dev/null; then
-		"$BINDIR/$CLI" setup </dev/tty
+	if have_tty; then
+		"$BINDIR/$CLI" setup <"$TTY_DEV"
 	else
 		"$BINDIR/$CLI" setup </dev/null
 	fi
+}
+
+# next_steps ends an install that leaves `fox setup` to the person.
+next_steps() {
+	cat <<EOF
+
+Next step (one time, as yourself):
+  fox setup      # creates a local Linux VM, provisions it, and starts $PRODUCT
+
+Then day-to-day:
+  fox status · fox branch create qa · fox stop
+EOF
 }
 
 if [ "$os" = "darwin" ]; then
@@ -392,14 +412,46 @@ Install it yourself, then finish with fox setup:
 	fi
 	if [ "${FOX_NO_SETUP:-}" = "1" ] || [ "$(id -u)" -eq 0 ]; then
 		[ "$(id -u)" -eq 0 ] && [ "${FOX_NO_SETUP:-}" != "1" ] && warn "not running $CLI setup as root: the VM must belong to you, not root"
+		next_steps
+		exit 0
+	fi
+	# Which VM `fox setup` would use, and whether it is there already. Asked of
+	# the fox just installed, so the installer keeps no list of its own of the
+	# names setup looks for.
+	vm_line="$("$BINDIR/$CLI" setup --which 2>/dev/null || true)"
+	vm_name="${vm_line% *}"
+	vm_state="${vm_line##* }"
+	if [ "$vm_state" = "existing" ] && [ "$vm_name" = "default" ] && [ -z "${FOX_LIMA_INSTANCE:-}" ]; then
+		# A plain "default" VM may be the person's own, for other work: setup
+		# would install Docker and ZFS into it. Theirs to choose, every time.
+		warn "there is a Lima VM named \"default\" and no $PRODUCT VM: $CLI setup would use it, installing Docker and ZFS into it"
 		cat <<EOF
 
-Next step (one time, as yourself):
-  fox setup      # creates a local Linux VM, provisions it, and starts $PRODUCT
+$CLI and Lima are installed. Choose where $PRODUCT runs, then set it up:
+  FOX_LIMA_INSTANCE=$CLI fox setup      # a VM of its own (recommended)
+  FOX_LIMA_INSTANCE=default fox setup  # in your "default" VM
+EOF
+		exit 0
+	fi
+	if [ "$vm_state" = "existing" ] && [ "${FOX_SETUP:-}" != "1" ]; then
+		# An install that is already there: re-running the installer updates
+		# the command, and leaves the running VM as it is.
+		cat <<EOF
 
-Then day-to-day:
+$PRODUCT's VM "$vm_name" is already set up, so the installer left it as it is.
+To bring the engine inside it up to this version:
+  fox setup
+
+Day-to-day:
   fox status · fox branch create qa · fox stop
 EOF
+		exit 0
+	fi
+	if ! have_tty && [ "${FOX_SETUP:-}" != "1" ]; then
+		# No terminal (a CI job, a provisioning tool): setup takes several
+		# minutes and may want to ask things, so it is not started unasked.
+		say "No terminal here, so $CLI setup was not run (set FOX_SETUP=1 to run it unattended)"
+		next_steps
 		exit 0
 	fi
 	if ! run_setup; then

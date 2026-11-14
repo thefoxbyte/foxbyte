@@ -117,6 +117,18 @@ func forwardStdin(args []string, stdin io.Reader) error {
 	return cmd.Run()
 }
 
+// SetupVM names the Lima VM `fox setup` would use, and whether it exists
+// already, without touching it: the installer asks, so that it never runs
+// setup on an install that is already there, or on a VM of the person's own
+// (a plain "default" one) without them choosing to.
+func SetupVM() (name string, exists, ok bool) {
+	if _, err := exec.LookPath("limactl"); err != nil {
+		return "", false, false
+	}
+	name = instance()
+	return name, instanceExists(name), true
+}
+
 func setupDarwin() error {
 	if _, err := exec.LookPath("limactl"); err != nil {
 		return fmt.Errorf("Lima is required on macOS.\n"+
