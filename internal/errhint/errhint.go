@@ -40,7 +40,7 @@ var hints = []hint{
 	{regexp.MustCompile(`(?i)no (foxbyte )?vm yet|no (foxbyte )?wsl distro yet|instance .* does not exist`),
 		"This machine has no engine VM yet.\nCreate it once with: %s setup"},
 	{regexp.MustCompile(`(?i)lima is required|limactl: (command )?not found|executable file not found in \$path.*limactl`),
-		"Lima runs the engine VM on macOS and isn't installed.\nInstall it, then set up: brew install lima && %s setup"},
+		"Lima runs the engine VM on macOS and isn't installed.\nInstall it, then set up: brew install lima && %s setup\n(or re-run the installer, which installs Lima and runs setup)"},
 	{regexp.MustCompile(`(?i)wsl is required|wsl\.exe.*not found`),
 		"WSL2 runs the engine on Windows and isn't installed.\nInstall it (as administrator), reboot, then: %s setup"},
 	{regexp.MustCompile(`(?i)address already in use|bind: address already in use|port is already allocated`),

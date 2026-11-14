@@ -119,9 +119,10 @@ func forwardStdin(args []string, stdin io.Reader) error {
 
 func setupDarwin() error {
 	if _, err := exec.LookPath("limactl"); err != nil {
-		return fmt.Errorf("Lima is required on macOS.\n" +
-			"Install it with:\n  brew install lima\n" +
-			"then run `fox setup` again")
+		return fmt.Errorf("Lima is required on macOS.\n"+
+			"Install it with:\n  brew install lima\n"+
+			"then run `%[1]s setup` again. Or re-run the %[2]s installer: it installs Lima\n"+
+			"(even without Homebrew) and then runs `%[1]s setup` for you", brand.CLI, brand.Product)
 	}
 	// Fetch the latest engine build up front, so even an existing VM is updated
 	// (not just a freshly created one).

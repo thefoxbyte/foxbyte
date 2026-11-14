@@ -76,10 +76,8 @@ export default function Guide() {
       <h2>1 · Run FoxByte on your machine</h2>
       <p>Install the <code>fox</code> command — it sets up the rest (the local Linux VM on macOS,
         Docker, ZFS, the storage pool, and the image).</p>
-      <p><strong>macOS</strong> (needs <a href="https://lima-vm.io" target="_blank" rel="noreferrer">Lima</a>):</p>
-      <Code>{`brew install lima
-curl -fsSL https://get.thefoxbyte.com/install.sh | sh
-fox setup`}</Code>
+      <p><strong>macOS</strong> (installs <a href="https://lima-vm.io" target="_blank" rel="noreferrer">Lima</a> if needed, then runs <code>fox setup</code>):</p>
+      <Code>{`curl -fsSL https://get.thefoxbyte.com/install.sh | sh`}</Code>
       <p><strong>Linux</strong>:</p>
       <Code>{`curl -fsSL https://get.thefoxbyte.com/install.sh | sh
 sudo fox start`}</Code>
