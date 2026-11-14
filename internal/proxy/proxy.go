@@ -276,6 +276,52 @@ func maxConns() int {
 	return ConnectionCap(defaultMaxConnections, defaultSuperuserReserved)
 }
 
+// The role cache and the backend handshake, variables so a test can show a
+// branch that was deleted and created again while this process kept running.
+var (
+	forgetLoginRole     = branch.ForgetUserRole
+	ensureLoginRole     = branch.EnsureUserRole
+	authenticateBackend = backendAuth
+)
+
+// authNeedsRole reports a backend refusal that a missing or stale login role
+// produces. A wrong password and a role the clone does not have both look
+// like this; provisioning the role again fixes the second and leaves the
+// first refused.
+func authNeedsRole(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "28p01") || strings.Contains(s, "28000") ||
+		strings.Contains(s, "password authentication failed") ||
+		strings.Contains(s, "does not exist")
+}
+
+// reopenIfRoleMissing logs in, and when Postgres refuses because the role is
+// not the one this process remembers, forgets that memory, makes the role,
+// and tries once on a new connection. user is empty when this session is not
+// a per-user role.
+func reopenIfRoleMissing(backend net.Conn, redial func() (net.Conn, error), params map[string]string, password, branchName, user string, err error) (net.Conn, error) {
+	if err == nil || user == "" || !authNeedsRole(err) {
+		return backend, err
+	}
+	forgetLoginRole(branchName, user)
+	if e := ensureLoginRole(branchName, user); e != nil {
+		return backend, err
+	}
+	_ = backend.Close()
+	again, dialErr := redial()
+	if dialErr != nil {
+		return nil, err
+	}
+	if e := authenticateBackend(again, params, password); e != nil {
+		_ = again.Close()
+		return nil, e
+	}
+	return again, nil
+}
+
 // remoteHost is the address a client connected from.
 func remoteHost(c net.Conn) string {
 	if c == nil || c.RemoteAddr() == nil {
@@ -500,7 +546,20 @@ func handle(client net.Conn) {
 	// branch's DDL event triggers read via current_setting('foxbyte.*'). For a
 	// per-user login this is a fallback/display value; session_user is authoritative.
 	params["options"] = ledgerOptions(params["options"], actor, target, keyScope == "", agentKey)
-	if err := backendAuth(backend, params, backendPass); err != nil {
+	// Only a person's own role is reprovisioned. An agent role and the shared
+	// client role are made by other paths; EnsureUserRole on those names would
+	// create a second, ordinary role under the same name.
+	roleUser := ""
+	if !agentKey && keyScope == "" && actor != "" && loginUser == actor {
+		roleUser = actor
+	}
+	backend, err = reopenIfRoleMissing(backend, func() (net.Conn, error) {
+		var e error
+		var c net.Conn
+		c, addr, e = connectBackend(addr, route)
+		return c, e
+	}, params, backendPass, target, roleUser, backendAuth(backend, params, backendPass))
+	if err != nil {
 		log.Printf("backend auth %s: %v", addr, err)
 		sendError(client, "08006", fmt.Sprintf("branch %q authentication failed", target))
 		return

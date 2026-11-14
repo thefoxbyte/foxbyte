@@ -121,7 +121,14 @@ func backendAuth(backend net.Conn, params map[string]string, password string) er
 			return err
 		}
 		if typ == 'E' {
-			return fmt.Errorf("backend refused connection")
+			code, msg := errorFields(body)
+			if msg == "" {
+				return fmt.Errorf("backend refused connection")
+			}
+			if code == "" {
+				return fmt.Errorf("backend refused connection: %s", msg)
+			}
+			return fmt.Errorf("backend refused connection: %s: %s", code, msg)
 		}
 		if typ != 'R' || len(body) < 4 {
 			return fmt.Errorf("unexpected message %q during backend auth", typ)
@@ -149,6 +156,28 @@ func backendAuth(backend net.Conn, params map[string]string, password string) er
 			return fmt.Errorf("unsupported backend auth method %d", code)
 		}
 	}
+}
+
+// errorFields reads a Postgres ErrorResponse: a code byte, a NUL-terminated
+// value, repeated, ending in a NUL. C is the SQLSTATE, M the message.
+func errorFields(body []byte) (code, msg string) {
+	for len(body) > 0 && body[0] != 0 {
+		field := body[0]
+		body = body[1:]
+		i := bytes.IndexByte(body, 0)
+		if i < 0 {
+			break
+		}
+		val := string(body[:i])
+		body = body[i+1:]
+		switch field {
+		case 'C':
+			code = val
+		case 'M':
+			msg = val
+		}
+	}
+	return code, msg
 }
 
 func md5Password(user, password string, salt []byte) string {
