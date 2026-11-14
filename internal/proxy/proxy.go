@@ -237,13 +237,43 @@ func Serve(addr string, idle time.Duration) error {
 // time, would otherwise hold its slot for ever.
 const startupTimeout = 30 * time.Second
 
-// maxConns is FOX_GATEWAY_MAX_CONNS, 1000 by default: how many client
-// connections the Gateway serves at once.
+// Stock Postgres allows 100 connections and keeps 3 of them for superusers
+// (superuser_reserved_connections). Every gateway client is a non-superuser,
+// so the 97th is refused by Postgres itself, with a message about reserved
+// slots. The default sits one under that line: the gateway says 53300 first.
+const (
+	defaultMaxConnections    = 100
+	defaultSuperuserReserved = 3
+)
+
+// ConnectionCap is how many client sessions fit under Postgres's non-superuser
+// limit with one slot to spare, so the gateway refuses before Postgres does.
+// A non-positive max is the stock setting. The result is at least 1.
+func ConnectionCap(maxConn, reserved int) int {
+	if maxConn <= 0 {
+		maxConn = defaultMaxConnections
+	}
+	if reserved < 0 {
+		reserved = defaultSuperuserReserved
+	}
+	room := maxConn - reserved - 1
+	if room < 1 {
+		return 1
+	}
+	return room
+}
+
+// MaxConns is how many client connections the gateway serves at once:
+// FOX_GATEWAY_MAX_CONNS when that is set, otherwise ConnectionCap for a stock
+// Postgres (96).
+func MaxConns() int { return maxConns() }
+
+// maxConns is FOX_GATEWAY_MAX_CONNS, or the stock cap when it is unset.
 func maxConns() int {
 	if n, err := strconv.Atoi(strings.TrimSpace(brand.Getenv("GATEWAY_MAX_CONNS"))); err == nil && n > 0 {
 		return n
 	}
-	return 1000
+	return ConnectionCap(defaultMaxConnections, defaultSuperuserReserved)
 }
 
 // remoteHost is the address a client connected from.

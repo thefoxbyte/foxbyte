@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/license"
+	"github.com/thefoxbyte/foxbyte/internal/proxy"
 	"github.com/thefoxbyte/foxbyte/internal/version"
 	"github.com/thefoxbyte/foxbyte/web"
 )
@@ -78,6 +80,7 @@ func checks() []check {
 		one("main", checkMain),
 		group("servers", checkServers),
 		group("ports", checkPorts),
+		one("connections", checkConnections),
 		one("API over TLS", checkAPI),
 		one("API is closed", checkAPIClosed),
 		one("blackbox", checkBlackbox),
@@ -515,6 +518,48 @@ func checkPorts() []checkLine {
 		out = append(out, ok(p.label, "listening on "+addr))
 	}
 	return out
+}
+
+// checkConnections says how many clients the gateway will take, and whether
+// that sits under the sessions Postgres will actually give a non-superuser.
+// The gateway's own refusal (53300) is the one a client should see; past
+// max_connections minus the superuser reserve, Postgres refuses instead.
+func checkConnections() checkLine {
+	maxS, err1 := branch.Query("main", "SHOW max_connections")
+	resS, err2 := branch.Query("main", "SHOW superuser_reserved_connections")
+	var readErr error
+	if err1 != nil {
+		readErr = err1
+	} else if err2 != nil {
+		readErr = err2
+	}
+	maxC, e1 := strconv.Atoi(strings.TrimSpace(maxS))
+	resC, e2 := strconv.Atoi(strings.TrimSpace(resS))
+	if readErr == nil && (e1 != nil || e2 != nil) {
+		readErr = fmt.Errorf("could not read the numbers")
+	}
+	return connectionLine(proxy.MaxConns(), maxC, resC, readErr)
+}
+
+// connectionLine is the connections check as a pure function, so the
+// comparison can be tested without a running Postgres.
+func connectionLine(capN, maxConn, reserved int, readErr error) checkLine {
+	const name = "connections"
+	if readErr != nil {
+		return warn(name, fmt.Sprintf("gateway accepts %d; Postgres limits could not be read: %s", capN, firstLine(readErr.Error())),
+			fmt.Sprintf("%s start", brand.CLI))
+	}
+	nonSuper := maxConn - reserved
+	if nonSuper < 0 {
+		nonSuper = 0
+	}
+	detail := fmt.Sprintf("gateway accepts %d; Postgres allows %d non-superuser sessions (%d total, %d reserved for superusers)",
+		capN, nonSuper, maxConn, reserved)
+	if nonSuper > 0 && capN >= nonSuper {
+		return warn(name, detail+" — a client can be refused by Postgres before the gateway",
+			fmt.Sprintf("%s=%d %s start", brand.EnvName("GATEWAY_MAX_CONNS"), proxy.ConnectionCap(maxConn, reserved), brand.CLI))
+	}
+	return ok(name, detail)
 }
 
 // insecureClient talks to this install's own control plane. The certificate is

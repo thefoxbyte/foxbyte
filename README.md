@@ -663,7 +663,8 @@ A fresh install exposes nothing it does not have to:
   no account while sign-up is closed.
 - **Brakes on guessing and flooding.** Ten failed sign-ins for one address or
   one email in 15 minutes hold further attempts; request bodies are capped; the
-  Gateway serves at most `FOX_GATEWAY_MAX_CONNS` (1000) connections and gives a
+  Gateway serves at most `FOX_GATEWAY_MAX_CONNS` connections (96 by default,
+  one under Postgres's non-superuser limit) and gives a
   client 30 seconds to authenticate.
 - **Branches belong to whoever made them.** Every account may use `main`; a
   branch made through the console, the API, the Agent API or MCP is its

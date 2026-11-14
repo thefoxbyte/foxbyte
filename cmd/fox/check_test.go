@@ -705,3 +705,18 @@ func TestAuditFindingLine(t *testing.T) {
 		}
 	}
 }
+
+func TestConnectionLine(t *testing.T) {
+	okLine := connectionLine(96, 100, 3, nil)
+	if okLine.state != stateOK || !strings.Contains(okLine.detail, "gateway accepts 96") || !strings.Contains(okLine.detail, "97 non-superuser") {
+		t.Errorf("stock install should be fine: %+v", okLine)
+	}
+	over := connectionLine(1000, 100, 3, nil)
+	if over.state != stateWarn || !strings.Contains(over.detail, "refused by Postgres") || !strings.Contains(over.fix, "GATEWAY_MAX_CONNS=96") {
+		t.Errorf("a cap above the non-superuser limit should warn: %+v", over)
+	}
+	unread := connectionLine(96, 0, 0, errors.New("connection refused"))
+	if unread.state != stateWarn || !strings.Contains(unread.detail, "could not be read") {
+		t.Errorf("an unreadable Postgres should warn, not fail the install: %+v", unread)
+	}
+}
