@@ -34,7 +34,13 @@ func ExecSQL(target, sql string) error { return psqlExec(target, sql) }
 // untitled (psql -tAc) — the counterpart to ExecSQL, for the paid features that
 // ask the database a question rather than tell it something.
 func QuerySQL(target, sql string) (string, error) {
-	return capture("docker", "exec", container(target), "psql", "-U", pgUser, "-d", pgDatabase, "-tAc", sql)
+	var out string
+	err := retryIfStopped(target, func() error {
+		var e error
+		out, e = capture("docker", "exec", container(target), "psql", "-U", pgUser, "-d", pgDatabase, "-tAc", sql)
+		return e
+	})
+	return out, err
 }
 
 // ExecSQLAs is ExecSQL on behalf of a. For an ordinary account the SQL runs as
