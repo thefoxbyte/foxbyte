@@ -257,17 +257,21 @@ say("the write the feed should carry succeeded", res?.error ?? null, null)
 
 const until = Date.now() + 30000
 while (Date.now() < until && txs.length === 0) await new Promise(r => setTimeout(r, 100))
-const position = sub.position()
+// Close before reading the position. The feed can deliver another
+// transaction in the gap, and the position moves to that later commit
+// (it is set after onTransaction returns). The resume point is then one
+// of the transactions this client actually saw, not necessarily the first.
 sub.close()
+const position = sub.position()
 
 if (errs.length) say("the subscription reported no error", String(errs[0]).slice(0, 120), "none")
-say("a transaction reaches the TypeScript client", txs.length, 1)
+say("a transaction reaches the TypeScript client", txs.length >= 1, true)
 if (txs.length) {
   const tx = txs[0]
   say("it carries both rows", tx.changes.length, 2)
   say("under one transaction id", new Set(tx.changes.map(c => c.xid)).size, 1)
   say("and one boundary", new Set([tx.commitLsn, ...tx.changes.map(c => c.commit_lsn)]).size, 1)
-  say("which becomes the resume position", position, tx.commitLsn)
+  say("which becomes the resume position", txs.some(t => t.commitLsn === position), true)
   say("with values as strings", typeof tx.changes[0].new.bal, "string")
   const row = applyChange({ id: tx.changes[0].identity.id, bal: "100" }, tx.changes[0])
   say("and applyChange produces the new row", row.bal, tx.changes[0].new.bal)
