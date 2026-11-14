@@ -4259,7 +4259,7 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VA=https://localhost:8080/api/vault
 # A vault another suite set up on this VM (integration_ui.sh does) is taken
 # away first: this section starts from an install with none.
-sudo docker rm -f fox-vault fox-vault-db >/dev/null 2>&1
+sudo docker rm -fv fox-vault fox-vault-db >/dev/null 2>&1
 sudo docker volume rm fox-vault-db >/dev/null 2>&1
 sudo docker network rm fox-vault fox-vault-hsm >/dev/null 2>&1
 case "$HOME/$BRAND_STATE_DIR/vault" in */"$BRAND_STATE_DIR"/vault) rm -rf "${HOME:?}/$BRAND_STATE_DIR/vault" ;; esac
