@@ -1107,6 +1107,12 @@ func Up() error {
 	// the install's first minutes still has something to show.
 	ensureDemoData()
 	ensureFirstBackup()
+	// The vault, when the install has one (point 13). It never stops the rest
+	// of the stack starting: a database nobody can reach for want of the
+	// vault is worse than a vault that says why it is down.
+	if err := VaultUp(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: the vault did not start: %v\n", err)
+	}
 	return nil
 }
 

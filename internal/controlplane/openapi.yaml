@@ -31,6 +31,12 @@ security:
   - apiKey: []
 tags:
   - name: status
+  - name: vault
+    description: >-
+      The install's vault for sensitive values, Aadhaar first (point 13, Enterprise; admins). Values go in and
+      reference keys come out; each value is encrypted inside an HSM, in a database of the vault's own that only
+      the vault service reaches. Every call is in the vault's hash-chained access log and in the security log with
+      that log's head, never with a value. Setting the vault up is the operator's (fox vault setup).
   - name: branches
   - name: ledger
     description: >-
@@ -2376,6 +2382,101 @@ paths:
         "400": { description: Not a profile, or not a branch. }
         "403": { description: Not an admin, or not licensed for hardening fixes and profiles. }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/vault:
+    get:
+      tags: [vault]
+      summary: Where the vault stands (admins; Enterprise).
+      description: >-
+        Whether the install has a vault and how it was set up (FoxByte's own software token, or an HSM), whether
+        its database and service run, and, from the service, the token, each kind with its records and whether it
+        is compliant (Aadhaar on a software token is not: UIDAI requires an HSM), each key as the token reports it
+        back (made inside, never extractable), and the access log's length and whether its chain holds. anchor
+        compares the log's head the security log last saw with the log now, which shows entries cut off its end.
+      responses:
+        "200":
+          description: The vault's state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  set_up: { type: boolean }
+                  config: { type: object }
+                  database_running: { type: boolean }
+                  service_running: { type: boolean }
+                  image: { type: string }
+                  status: { type: object }
+                  status_error: { type: string }
+                  anchor:
+                    type: object
+                    properties:
+                      recorded: { type: string }
+                      holds: { type: boolean }
+                      note: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+  /api/vault/kinds:
+    get:
+      tags: [vault]
+      summary: The kinds of value the vault takes, what each accepts, and its rules (admins; Enterprise).
+      responses:
+        "200": { description: '[{"name", "prefix", "check", "legacy", "rules", "hsm_required"}]', content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+  /api/vault/tokenise:
+    post:
+      tags: [vault]
+      summary: Put values in the vault and get their reference keys (admins; Enterprise).
+      description: >-
+        One reference key per value within a kind: a value already in the vault gets the key it has. A value
+        failing the kind's check is refused and nothing is made for it. format legacy asks for a key shaped like
+        the kind's values that can never pass its check (Aadhaar: 12 digits starting with 1).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, values]
+              properties:
+                kind: { type: string, example: aadhaar }
+                values: { type: array, items: { type: string }, maxItems: 10000 }
+                format: { type: string, enum: [opaque, legacy] }
+      responses:
+        "200": { description: '{"refs": [...], "new": [...], "results": ["done"|"refused", ...]}, in the order of values', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No such kind, no legacy format for it, or not between 1 and 10,000 values }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+        "409": { description: The vault is not set up }
+  /api/vault/find:
+    post:
+      tags: [vault]
+      summary: Find values' reference keys without making any (admins; Enterprise).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, values]
+              properties:
+                kind: { type: string }
+                values: { type: array, items: { type: string }, maxItems: 10000 }
+      responses:
+        "200": { description: '{"refs": [...], "results": ["done"|"not found"|"refused", ...]}', content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+        "409": { description: The vault is not set up }
+  /api/vault/detokenise:
+    post:
+      tags: [vault]
+      summary: Read values back. Refused over the API for now.
+      description: >-
+        Reading values back is its own permission, which admins will grant per kind (step 13.2); being an admin is
+        not enough. Until then only the operator can, on the machine, with fox vault detokenise --purpose.
+      responses:
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Always, until detokenise grants exist }
   /api/masking:
     get:
       tags: [audit-log]

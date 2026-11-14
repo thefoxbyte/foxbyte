@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/thefoxbyte/foxbyte/enterprise/pii"
+	"github.com/thefoxbyte/foxbyte/enterprise/idcheck"
 )
 
 func rnd(n int) ([]byte, error) {
@@ -26,7 +26,7 @@ func TestSyntheticAadhaarPassesTheCheck(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !pii.IsAadhaar(v) {
+		if !idcheck.IsAadhaar(v) {
 			t.Fatalf("%s fails the scanner's check", v)
 		}
 		if _, err := k.Accept(v); err != nil {
@@ -64,7 +64,7 @@ func TestAadhaarLegacyNeverPassesTheCheck(t *testing.T) {
 		if len(r) != 12 || r[0] != '1' || !k.IsRef(r) {
 			t.Fatalf("%q is not 12 digits starting with 1", r)
 		}
-		if pii.IsAadhaar(r) {
+		if idcheck.IsAadhaar(r) {
 			t.Fatalf("%q passes the Aadhaar check", r)
 		}
 		if _, err := k.Accept(r); err == nil {

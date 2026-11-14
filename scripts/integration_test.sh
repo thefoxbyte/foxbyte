@@ -4103,7 +4103,7 @@ assert_eq "…since when: a tracked row's created_at, when it is earlier than th
 assert_eq "…a row of a table with no primary key named by its position, and the report says so" \
   "$($S pii aadhaar places --column public.nokey.note --branch aadt --json | hjson "print([p['row'][:6] for p in d])")|$(grep -c 'no primary key are named by their physical position (ctid).*public.nokey' <<<"$AR")" "['ctid=(']|1"
 assert_eq "…and says what it cannot claim: the check digit, no vault yet, the logs not read" \
-  "$(grep -c 'not that it was issued' <<<"$AR")|$(grep -c 'no Aadhaar vault in FoxByte yet' <<<"$AR")|$(grep -c 'Query history, the audit log' <<<"$AR")" "1|1|1"
+  "$(grep -c 'not that it was issued' <<<"$AR")|$(grep -c 'every number it finds is outside the vault' <<<"$AR")|$(grep -c 'Query history, the audit log' <<<"$AR")" "1|1|1"
 # The point of the design: the report must not become one more copy of the
 # numbers it finds, or a way to find them again.
 assert_eq "no full number is stored, nor its first eight digits, in any of the report's tables" \
@@ -4251,6 +4251,117 @@ $S audit-log mode default --branch aadl >/dev/null 2>&1
 $S branch delete aadl >/dev/null 2>&1
 $S audit-log off --yes >/dev/null 2>&1; main_up
 
+echo "### 11at. the vault: setup, the token and keys, tokenise, find, detokenise, its log anchored in the security log (point 13.1)"
+# The install's vault: its own database on an internal network, and the
+# service talking PKCS#11 to FoxByte's own software token. The image is built
+# from this checkout, as the database image is when it cannot be pulled.
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VA=https://localhost:8080/api/vault
+# A vault another suite set up on this VM (integration_ui.sh does) is taken
+# away first: this section starts from an install with none.
+sudo docker rm -f fox-vault fox-vault-db >/dev/null 2>&1
+sudo docker volume rm fox-vault-db >/dev/null 2>&1
+sudo docker network rm fox-vault fox-vault-hsm >/dev/null 2>&1
+case "$HOME/$BRAND_STATE_DIR/vault" in */"$BRAND_STATE_DIR"/vault) rm -rf "${HOME:?}/$BRAND_STATE_DIR/vault" ;; esac
+printf 'password123\n' | $S user create vault-none@foxbyte.dev >/dev/null 2>&1
+KV="$($S apikey create vault-none@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+OUT="$($S vault status 2>&1)"
+assert_eq "before setup: not set up, and how to" "$(grep -c 'not set up' <<<"$OUT")|$(grep -c 'vault setup' <<<"$OUT")" "1|1"
+assert_eq "GET /api/vault: an admin reads it; anyone else is refused" \
+  "$(as "$KEY" "$VA" | jget set_up)|$(code "$KV" "$VA")|$(code "$KV" "$VA/kinds")" "False|403|403"
+OUT="$($S vault setup 2>&1)"
+assert_eq "setup without --yes says what it will do, and does nothing" \
+  "$(grep -c 'UIDAI requires an HSM' <<<"$OUT")|$(sudo docker ps -aq --filter name=^fox-vault | wc -l | tr -d ' ')|$([ -e "$HOME/$BRAND_STATE_DIR/vault" ] && echo made || echo none)" "1|0|none"
+SETUPS_BEFORE="$($S audit --limit 5000 | grep -c 'vault.setup')"
+OUT="$(FOX_VAULT_IMAGE_CONTEXT="$REPO_DIR" $S vault setup --yes 2>&1)"; RC=$?
+assert_eq "setup --yes: the image, the token, the networks, the database and the service" "$RC|$(grep -c 'Done: the vault is set up and running' <<<"$OUT")" "0|1"
+[ "$RC" = 0 ] || echo "$OUT" | tail -15
+assert_eq "both containers run, and carry the engine's label" \
+  "$(sudo docker ps --filter "label=$DB_MANAGED_LABEL" --format '{{.Names}}' | grep -cx 'fox-vault\|fox-vault-db')" "2"
+assert_eq "the vault's network is internal, and only the two are on it" \
+  "$(sudo docker network inspect -f '{{.Internal}}' fox-vault)|$(sudo docker network inspect -f '{{range .Containers}}{{.Name}} {{end}}' fox-vault | tr ' ' '\n' | grep -c .)" "true|2"
+VD="$HOME/$BRAND_STATE_DIR/vault"
+assert_eq "the socket is the engine user's own, mode 600; the secrets 600, in a directory of 700" \
+  "$(stat -c '%a %U' "$VD/run/vault.sock")|$(stat -c '%a' "$VD/secret/secret" "$VD/secret/pin" "$VD/secret/dsn" | sort -u | tr '\n' ' ')|$(stat -c '%a' "$VD/secret")" "600 $(id -un)|600 |700"
+assert_eq "the service runs as the engine's user, not root" "$(sudo docker inspect -f '{{.Config.User}}' fox-vault)" "$(id -u):$(id -g)"
+assert_eq "…and listens on no TCP port (Docker's DNS on 127.0.0.11 aside)" \
+  "$(sudo docker exec fox-vault sh -c "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '\$4 == \"0A\" && \$2 !~ /^0B00007F:/' | wc -l")" "0"
+assert_eq "the setup is in the security log" "$(( $($S audit --limit 5000 | grep -c 'vault.setup') - SETUPS_BEFORE ))" "1"
+OUT="$($S vault setup --yes 2>&1)"; RC=$?
+assert_eq "a second setup is refused" "$RC|$(grep -c 'set up already' <<<"$OUT")" "1|1"
+
+OUT="$($S vault status 2>&1)"
+assert_eq "status: the software token, said to be not compliant for Aadhaar" \
+  "$(grep -c 'SoftHSM project' <<<"$OUT")|$(grep -c '^aadhaar .*no: software token (trials and testing only)' <<<"$OUT")|$(grep -c '^text .*no rules mapped' <<<"$OUT")" "1|1|1"
+assert_eq "…four keys, each made in the token and never extractable" "$(grep -c 'made in the token, never extractable' <<<"$OUT")" "4"
+OUT="$($S vault kinds 2>&1)"
+assert_eq "kinds: Aadhaar under UIDAI's rules with its legacy format; text with none" \
+  "$(grep -c 'Verhoeff' <<<"$OUT")|$(grep -c 'UIDAI Circular No. 14 of 2025 (an HSM is required)' <<<"$OUT")|$(grep -c 'legacy:   none' <<<"$OUT")" "1|1|1"
+
+N1=298765432101; N2=387654321095
+OUT="$($S vault tokenise --kind aadhaar "$N1" 2>&1)"; RC=$?
+R1="$(awk '{print $1}' <<<"$OUT")"
+assert_eq "tokenise: a new number gets an opaque Aadhaar reference key" "$RC|$(grep -cE '^AR[0-9A-Z]{26}	new$' <<<"$OUT")" "0|1"
+assert_eq "…the same number with spaces gets the same key, not a new one" "$($S vault tokenise --kind aadhaar '2987 6543 2101' 2>&1)" "$R1"
+assert_eq "find gives it" "$($S vault find --kind aadhaar "$N1" 2>&1)" "$R1"
+OUT="$($S vault tokenise --kind aadhaar 123412341234 2>&1)"; RC=$?
+assert_eq "a number failing the check is refused, and the command fails" "$RC|$(grep -c '^(refused)$' <<<"$OUT")" "1|1"
+OUT="$($S vault tokenise --kind aadhaar --format legacy "$N2" 2>&1)"
+assert_eq "the legacy format: 12 digits starting with 1" "$(grep -cE '^1[0-9]{11}	new$' <<<"$OUT")" "1"
+OUT="$(printf '%s\n%s\n' "$N1" "$N2" | $S vault find --kind aadhaar - 2>&1)"
+assert_eq "values may come on standard input, one a line, so none sits in the shell's history" "$(head -1 <<<"$OUT")|$(wc -l <<<"$OUT" | tr -d ' ')" "$R1|2"
+OUT="$($S vault detokenise --kind aadhaar "$R1" 2>&1)"; RC=$?
+assert_eq "detokenise needs a purpose" "$RC|$(grep -c 'purpose is needed' <<<"$OUT")" "2|1"
+assert_eq "…and with one, gives the number back" "$($S vault detokenise --kind aadhaar --purpose 'integration: KYC check' "$R1" 2>&1)" "$N1"
+TR="$($S vault tokenise --kind text 'Asha Rao, 12 MG Road' 2>&1 | awk '{print $1}')"
+assert_eq "any text goes in under the text kind, and comes back as it was" \
+  "$(grep -cE '^TX[0-9A-Z]{26}$' <<<"$TR")|$($S vault detokenise --kind text --purpose integration "$TR" 2>&1)" "1|Asha Rao, 12 MG Road"
+
+H='Content-Type: application/json'
+OUT="$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\",\"$N2\"]}" "$VA/tokenise")"
+assert_eq "POST /api/vault/tokenise: an admin gets the same keys" "$(hjson 'print(d["refs"][0], d["new"][0])' <<<"$OUT")" "$R1 False"
+assert_eq "POST /api/vault/find: an admin finds them; anyone else is refused" \
+  "$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\"]}" "$VA/find" | hjson 'print(d["refs"][0])')|$(code "$KV" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\"]}" "$VA/find")" "$R1|403"
+OUT="$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$R1\"],\"purpose\":\"x\"}" "$VA/detokenise")"
+assert_eq "POST /api/vault/detokenise: refused even to an admin, until there are grants" \
+  "$(code "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$R1\"],\"purpose\":\"x\"}" "$VA/detokenise")|$(grep -c 'only the operator can' <<<"$OUT")|$(grep -c "$N1" <<<"$OUT")" "403|1|0"
+assert_eq "an unknown kind is a bad request" "$(code "$KEY" -H "$H" -X POST -d '{"kind":"pan","values":["x"]}' "$VA/tokenise")" "400"
+OUT="$(as "$KEY" "$VA")"
+assert_eq "GET /api/vault: running, the software token, 2 Aadhaar records (the API gave the same keys), 1 text" \
+  "$(hjson 'print(d["database_running"], d["service_running"], d["status"]["token"]["software"], [k["records"] for k in d["status"]["kinds"]])' <<<"$OUT")" "True True True [2, 1]"
+
+AUD="$($S audit --limit 3000)"
+assert_eq "every call is in the security log, with the vault's log head" \
+  "$(grep 'vault.call' <<<"$AUD" | grep -c '; head [0-9]*:[0-9a-f]\{64\}')" "$(grep -c 'vault.call' <<<"$AUD")"
+assert_eq "…the detokenise with its purpose" "$(grep 'vault.call' <<<"$AUD" | grep -c 'detokenise, 1 reference key, purpose "integration: KYC check": done 1')" "1"
+assert_eq "…and no number, no text value, anywhere in it" "$(grep -cE "$N1|$N2|2987 6543 2101|Asha Rao" <<<"$AUD")" "0"
+assert_eq "the vault database holds no number in the clear" \
+  "$(sudo docker exec fox-vault-db pg_dump -U postgres vault | grep -cE "$N1|$N2|Asha Rao")" "0"
+OUT="$($S vault status 2>&1)"
+assert_eq "the vault's log holds, and agrees with the head the security log saw" \
+  "$(grep -c 'the chain holds' <<<"$OUT")|$(grep -c 'Against the security log: entry [0-9]* is as the security log saw it' <<<"$OUT")" "1|1"
+
+# The host reaches an internal network through its bridge (design, section
+# 20): the database admits only the service's address.
+VPW="$(sed -n 's|^postgres://vault_svc:\([^@]*\)@.*|\1|p' "$VD/secret/dsn")"
+DBIP="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["db_addr"])' "$VD/vault.json")"
+OUT="$(sudo docker run --rm --network host -e PGPASSWORD="$VPW" -e PGCONNECT_TIMEOUT=3 postgres:18-bookworm psql -X -h "$DBIP" -U vault_svc -d vault -tAc 'SELECT 1' 2>&1)"
+assert_contains "the machine itself, with the service's password, is refused by the database" "$OUT" "pg_hba.conf"
+
+# Entries cut off the end of the vault's log, and the service restarted so it
+# forgets how long the log was: the chain still holds, and only the head kept
+# in the security log shows the cut.
+sudo docker exec fox-vault-db psql -X -q -U postgres -d vault -c "DELETE FROM vault.access_log WHERE seq > (SELECT max(seq) - 2 FROM vault.access_log)" >/dev/null
+sudo docker restart fox-vault >/dev/null; sleep 3
+for i in $(seq 1 30); do $S vault status >/dev/null 2>&1 && break; sleep 1; done
+OUT="$($S vault status 2>&1)"
+assert_eq "after a cut and a restart, the chain holds, but the security log's head does not" \
+  "$(grep -c 'the chain holds' <<<"$OUT")|$(grep -c 'DOES NOT HOLD: the security log saw entry [0-9]*, which the vault.s access log no longer holds: entries were cut off its end' <<<"$OUT")" "1|1"
+assert_eq "…and the console's API says so too" "$(as "$KEY" "$VA" | hjson 'print(d["anchor"]["holds"])')" "False"
+# The next call writes a new head; the vault goes on.
+$S vault find --kind aadhaar "$N1" >/dev/null 2>&1
+assert_eq "the vault goes on, its new head recorded" "$($S vault status 2>&1 | grep -c 'is as the security log saw it')" "1"
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.
@@ -4261,12 +4372,15 @@ assert_eq "…and keeps the storage pool" "$(sudo zpool list -H -o name "$DB_POO
 assert_eq "…and keeps archived WAL and base backups" \
   "$(sudo docker volume ls --format '{{.Name}}' | grep -cx "$DB_OBJECT_STORE-data")" "1"
 assert_eq "…and keeps accounts and secrets" "$([ -f "$HOME/$BRAND_STATE_DIR/secrets.json" ] && echo kept)" "kept"
+assert_eq "…and keeps the vault's database, takes its networks" \
+  "$(sudo docker volume ls --format '{{.Name}}' | grep -cx fox-vault-db)|$(sudo docker network ls --format '{{.Name}}' | grep -cx fox-vault)" "1|0"
 
 $S uninstall --yes >/tmp/uninstall-all.log 2>&1
 assert_eq "uninstall removes the storage pool" \
   "$(sudo zpool list -H -o name "$DB_POOL" 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_eq "…and the archived WAL and base backups" \
   "$(sudo docker volume ls --format '{{.Name}}' | grep -cx "$DB_OBJECT_STORE-data")" "0"
+assert_eq "…and the vault's database" "$(sudo docker volume ls --format '{{.Name}}' | grep -cx fox-vault-db)" "0"
 assert_eq "…and the accounts, keys and anchors" "$([ -d "$HOME/$BRAND_STATE_DIR" ] && echo present || echo gone)" "gone"
 assert_eq "…and says so" "$(grep -c "is removed" /tmp/uninstall-all.log)" "1"
 

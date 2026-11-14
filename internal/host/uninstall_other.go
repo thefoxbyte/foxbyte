@@ -38,6 +38,11 @@ func uninstallSteps(o UninstallOptions) []removal {
 			`sudo docker rm -f -v $(sudo docker ps -aq --filter label=`+branch.ManagedLabel+`) 2>/dev/null || true; `+
 				`sudo docker rm -f -v `+branch.ObjStore+` $(sudo docker ps -a --format '{{.Names}}' | grep '^`+branch.ContainerPrefix+`') 2>/dev/null || true; `+
 				`sudo docker network rm `+branch.Network+` 2>/dev/null || true`, false),
+		// The vault's networks (point 13), when the install has a vault; its
+		// containers carry the managed label and went with the others.
+		sh("the vault's networks",
+			`sudo docker network inspect `+branch.VaultNetwork+` >/dev/null 2>&1 || sudo docker network inspect `+branch.VaultHSMNetwork+` >/dev/null 2>&1`,
+			`sudo docker network rm `+branch.VaultNetwork+` 2>/dev/null; sudo docker network rm `+branch.VaultHSMNetwork+` 2>/dev/null; true`, false),
 		sh("the storage service",
 			`test -f /etc/systemd/system/`+branch.Pool+`-storage.service`,
 			`sudo systemctl disable --now `+branch.Pool+`-storage.service 2>/dev/null || true; `+
@@ -53,6 +58,9 @@ func uninstallSteps(o UninstallOptions) []removal {
 			sh("archived WAL and base backups",
 				`[ -n "$(sudo docker volume ls -q --filter name=^`+branch.ObjStoreVolume+`$)" ]`,
 				`sudo docker volume rm -f `+branch.ObjStoreVolume+` 2>/dev/null || true`, true),
+			sh("the vault's database (every value in the vault, encrypted)",
+				`[ -n "$(sudo docker volume ls -q --filter name=^`+branch.VaultDBVolume+`$)" ]`,
+				`sudo docker volume rm -f `+branch.VaultDBVolume+` 2>/dev/null || true`, true),
 		)
 	}
 	return append(out, hostSteps(o)...)

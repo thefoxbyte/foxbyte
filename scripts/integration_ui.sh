@@ -139,6 +139,11 @@ printf '%s\n' "$PASSWORD" | "$S" user create e2e-masked@foxbyte.dev >/dev/null 2
 # masking.spec.ts's access-path test signs in as it and still reads masks.
 "$S" branch owner e2emask e2e-masked@foxbyte.dev >/dev/null 2>&1
 
+# The vault (point 13), with FoxByte's own software token, for vault.spec.ts.
+# Its image is built from this checkout when it cannot be pulled; a vault set
+# up by an earlier run is kept, and setup says so.
+FOX_VAULT_IMAGE_CONTEXT="$ROOT" "$S" vault setup --yes >/dev/null 2>&1 || "$S" vault status >/dev/null 2>&1 || echo "warning: the vault could not be set up; vault.spec.ts will fail"
+
 # Application identity (F1), for the Blackbox's "for" test: a table made on the
 # branch in a transaction that asserted alice, with a token signed by an
 # application registered for this account. Through the Gateway, as an

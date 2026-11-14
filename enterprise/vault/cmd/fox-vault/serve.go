@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -170,6 +171,7 @@ func serve(args []string) error {
 	mux.HandleFunc("/v1/delete", s.auth("delete", s.delete))
 	mux.HandleFunc("/v1/rotate", s.auth("rotate", s.rotate))
 	mux.HandleFunc("/v1/status", s.auth("status", s.status))
+	mux.HandleFunc("/v1/log", s.auth("log", s.logAt))
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
@@ -297,7 +299,12 @@ func (s *server) loadLog(ctx context.Context) error {
 	return err
 }
 
-func (s *server) record(ctx context.Context, e vault.Entry) error {
+// record appends an entry to the access log and, when w is a reply in the
+// making, names the log's new head in it (vault.HeadHeader), which the engine
+// copies into the install's security log: a chain shows an entry changed or
+// removed from its middle, and the head kept outside shows entries cut off
+// its end (design, section 10).
+func (s *server) record(ctx context.Context, w http.ResponseWriter, e vault.Entry) error {
 	if e.Refs == nil {
 		e.Refs = []string{}
 	}
@@ -313,6 +320,9 @@ func (s *server) record(ctx context.Context, e vault.Entry) error {
 		return fmt.Errorf("the access log: %w", err)
 	}
 	s.lastSeq, s.last = e.Seq, e.Hash
+	if w != nil {
+		w.Header().Set(vault.HeadHeader, vault.FormatHead(e.Seq, e.Hash))
+	}
 	return nil
 }
 
@@ -332,7 +342,7 @@ func (s *server) auth(action string, h func(http.ResponseWriter, *http.Request, 
 			if actor == "" || len(actor) > 200 {
 				actor = "unknown"
 			}
-			_ = s.record(r.Context(), vault.Entry{Actor: actor, Action: action, Result: "refused: not the engine"})
+			_ = s.record(r.Context(), w, vault.Entry{Actor: actor, Action: action, Result: "refused: not the engine"})
 			reply(w, http.StatusUnauthorized, vault.Response{Error: "not the engine"})
 			return
 		}
@@ -348,7 +358,7 @@ func (s *server) auth(action string, h func(http.ResponseWriter, *http.Request, 
 			}
 			k, ok := vault.KindOf(c.req.Kind)
 			if !ok {
-				_ = s.record(r.Context(), vault.Entry{Actor: actor, Action: action, Kind: c.req.Kind, Result: "refused: no such kind"})
+				_ = s.record(r.Context(), w, vault.Entry{Actor: actor, Action: action, Kind: c.req.Kind, Result: "refused: no such kind"})
 				reply(w, http.StatusBadRequest, vault.Response{Error: fmt.Sprintf("no kind %q", c.req.Kind)})
 				return
 			}
@@ -412,7 +422,7 @@ func (s *server) tokenise(w http.ResponseWriter, r *http.Request, c *call) {
 		return
 	}
 	if c.req.Format == vault.FormatLegacy && c.kind.Legacy == nil {
-		_ = s.record(ctx, vault.Entry{Actor: c.actor, Action: "tokenise", Kind: c.kind.Name, N: n, Result: "refused: no legacy format"})
+		_ = s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "tokenise", Kind: c.kind.Name, N: n, Result: "refused: no legacy format"})
 		reply(w, http.StatusBadRequest, vault.Response{Error: fmt.Sprintf("the %s kind has no legacy format", c.kind.Name)})
 		return
 	}
@@ -438,7 +448,7 @@ func (s *server) tokenise(w http.ResponseWriter, r *http.Request, c *call) {
 	if failed != nil {
 		res += "; failed: " + failed.Error()
 	}
-	if err := s.record(ctx, vault.Entry{Actor: c.actor, Action: "tokenise", Kind: c.kind.Name, Refs: refs, N: n, Result: res}); err != nil || failed != nil {
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "tokenise", Kind: c.kind.Name, Refs: refs, N: n, Result: res}); err != nil || failed != nil {
 		if err == nil {
 			err = failed
 		}
@@ -540,7 +550,7 @@ func (s *server) find(w http.ResponseWriter, r *http.Request, c *call) {
 			refs = append(refs, ref)
 		}
 	}
-	if err := s.record(ctx, vault.Entry{Actor: c.actor, Action: "find", Kind: c.kind.Name, Refs: refs, N: n, Result: summary(out.Results)}); err != nil || failed != nil {
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "find", Kind: c.kind.Name, Refs: refs, N: n, Result: summary(out.Results)}); err != nil || failed != nil {
 		if err == nil {
 			err = failed
 		}
@@ -555,7 +565,7 @@ func (s *server) detokenise(w http.ResponseWriter, r *http.Request, c *call) {
 	n := len(c.req.Refs)
 	purpose := strings.TrimSpace(c.req.Purpose)
 	if purpose == "" {
-		_ = s.record(ctx, vault.Entry{Actor: c.actor, Action: "detokenise", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Result: "refused: no purpose"})
+		_ = s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "detokenise", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Result: "refused: no purpose"})
 		reply(w, http.StatusBadRequest, vault.Response{Error: "detokenising needs a purpose"})
 		return
 	}
@@ -577,7 +587,7 @@ func (s *server) detokenise(w http.ResponseWriter, r *http.Request, c *call) {
 	})
 	// The log is written before a value leaves: a value nobody logged is never
 	// returned.
-	if err := s.record(ctx, vault.Entry{Actor: c.actor, Action: "detokenise", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Purpose: purpose, Result: summary(out.Results)}); err != nil || failed != nil {
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "detokenise", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Purpose: purpose, Result: summary(out.Results)}); err != nil || failed != nil {
 		if err == nil {
 			err = failed
 		}
@@ -635,7 +645,7 @@ func (s *server) delete(w http.ResponseWriter, r *http.Request, c *call) {
 			out.Results[i] = vault.ResultNotFound
 		}
 	}
-	if err := s.record(ctx, vault.Entry{Actor: c.actor, Action: "delete", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Result: summary(out.Results)}); err != nil {
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "delete", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Result: summary(out.Results)}); err != nil {
 		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
 		return
 	}
@@ -724,7 +734,7 @@ func (s *server) rotate(w http.ResponseWriter, r *http.Request, c *call) {
 			}
 		})
 		if failed != nil {
-			_ = s.record(ctx, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Result: "failed: " + failed.Error()})
+			_ = s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Result: "failed: " + failed.Error()})
 			reply(w, http.StatusInternalServerError, vault.Response{Error: failed.Error() + " (run it again: records already moved stay moved)"})
 			return
 		}
@@ -751,7 +761,7 @@ func (s *server) rotate(w http.ResponseWriter, r *http.Request, c *call) {
 		_, _ = s.db.Exec(ctx, `UPDATE vault.keys SET destroyed_at = now() WHERE label = $1`, l)
 	}
 	res := fmt.Sprintf("done: %d records moved to %s in %s; destroyed %s", moved, label, time.Since(start).Round(time.Millisecond), strings.Join(old, ", "))
-	if err := s.record(ctx, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Result: res}); err != nil {
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Result: res}); err != nil {
 		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
 		return
 	}
@@ -827,6 +837,9 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, c *call) {
 	rows.Close()
 	st.Log.Entries = int64(len(entries))
 	st.Log.BrokenAt = vault.Verify(entries)
+	if n := len(entries); n > 0 {
+		st.Log.Head = vault.FormatHead(entries[n-1].Seq, entries[n-1].Hash)
+	}
 	s.logMu.Lock()
 	last := s.lastSeq
 	s.logMu.Unlock()
@@ -836,4 +849,25 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, c *call) {
 		st.Log.BrokenAt = st.Log.Entries + 1
 	}
 	reply(w, http.StatusOK, st)
+}
+
+// logAt answers the hash of one entry of the access log, so the engine can
+// check a head it recorded earlier against the log as it is now.
+func (s *server) logAt(w http.ResponseWriter, r *http.Request, c *call) {
+	seq, err := strconv.ParseInt(r.URL.Query().Get("seq"), 10, 64)
+	if err != nil || seq < 1 {
+		reply(w, http.StatusBadRequest, vault.Response{Error: "seq is an entry's number"})
+		return
+	}
+	var hash []byte
+	err = s.db.QueryRow(r.Context(), `SELECT hash FROM vault.access_log WHERE seq = $1`, seq).Scan(&hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		reply(w, http.StatusNotFound, vault.Response{Error: "no such entry"})
+		return
+	}
+	if err != nil {
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	reply(w, http.StatusOK, vault.Response{Results: []string{vault.FormatHead(seq, hash)}})
 }

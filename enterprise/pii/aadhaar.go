@@ -563,7 +563,7 @@ func exposureLimits(e *exposure, st exposureStats, logs bool) []string {
 	l := []string{
 		"Every row of every text, number, array and JSON column was read. The database passed on only rows holding twelve digits in Aadhaar's shape (four, four and four, with or without a space or hyphen), and each was then checked by its check digit.",
 		"A check digit shows a number is well-formed, not that it was issued, or whose it is.",
-		"There is no Aadhaar vault in FoxByte yet (point 13), so every number found is outside one.",
+		"This report does not read FoxByte's vault (point 13): every number it finds is outside the vault, and reference keys in tables are not counted yet.",
 		onlyTables,
 		"Not read: views (they show what tables hold, and the tables are read), FoxByte's masks, binary columns, and dates, booleans and network addresses.",
 		"Since when is the first run that found a number in a place, or the row's created_at on a tracked table if that is earlier. A number there before the first run has no earlier date.",

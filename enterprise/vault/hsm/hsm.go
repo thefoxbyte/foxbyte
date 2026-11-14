@@ -388,3 +388,69 @@ func (t *Token) Close() {
 	_ = t.ctx.Finalize()
 	t.ctx.Destroy()
 }
+
+// ErrTokenExists is a token already labelled so.
+var ErrTokenExists = errors.New("a token with that label exists already")
+
+// InitToken makes a token: it initialises the first slot holding no token
+// yet, labels it, and sets its security officer's and user's PINs. It is how
+// FoxByte's own software token is made, so the PINs come from files and never
+// reach a command line.
+func InitToken(lib, label, soPin, pin string) error {
+	ctx := pkcs11.New(lib)
+	if ctx == nil {
+		return fmt.Errorf("could not load the PKCS#11 library %s", lib)
+	}
+	if err := ctx.Initialize(); err != nil {
+		return err
+	}
+	defer func() { _ = ctx.Finalize(); ctx.Destroy() }()
+	slots, err := ctx.GetSlotList(false)
+	if err != nil {
+		return err
+	}
+	free, found := uint(0), false
+	for _, s := range slots {
+		ti, err := ctx.GetTokenInfo(s)
+		if err != nil {
+			continue
+		}
+		inited := ti.Flags&pkcs11.CKF_TOKEN_INITIALIZED != 0
+		if inited && strings.TrimSpace(ti.Label) == label {
+			return ErrTokenExists
+		}
+		if !inited && !found {
+			free, found = s, true
+		}
+	}
+	if !found {
+		return errors.New("the PKCS#11 library offers no free slot")
+	}
+	if err := ctx.InitToken(free, soPin, label); err != nil {
+		return fmt.Errorf("initialising the token: %w", err)
+	}
+	// A software token moves to a slot of its own once initialised: find it
+	// again by its label.
+	if slots, err = ctx.GetSlotList(true); err != nil {
+		return err
+	}
+	for _, s := range slots {
+		ti, err := ctx.GetTokenInfo(s)
+		if err != nil || strings.TrimSpace(ti.Label) != label {
+			continue
+		}
+		sh, err := ctx.OpenSession(s, pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = ctx.CloseSession(sh) }()
+		if err := ctx.Login(sh, pkcs11.CKU_SO, soPin); err != nil {
+			return fmt.Errorf("logging in as the security officer: %w", err)
+		}
+		if err := ctx.InitPIN(sh, pin); err != nil {
+			return fmt.Errorf("setting the user's PIN: %w", err)
+		}
+		return ctx.Logout(sh)
+	}
+	return errors.New("the token was initialised but cannot be found by its label")
+}

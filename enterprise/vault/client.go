@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -38,6 +39,9 @@ type Response struct {
 	Values  []string `json:"values,omitempty"`
 	Results []string `json:"results,omitempty"`
 	Error   string   `json:"error,omitempty"`
+	// Head is the access log's head after the call (HeadHeader), "" when the
+	// call wrote no entry.
+	Head string `json:"-"`
 }
 
 // Results, per value or reference key.
@@ -62,6 +66,8 @@ type Status struct {
 		Entries int64 `json:"entries"`
 		// BrokenAt is the first entry that does not chain; 0 when all do.
 		BrokenAt int64 `json:"broken_at"`
+		// Head is the last entry, as FormatHead writes it.
+		Head string `json:"head"`
 	} `json:"log"`
 }
 
@@ -163,8 +169,77 @@ func (c *Client) do(r *http.Request) (*Response, int, error) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("%d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
+	out.Head = resp.Header.Get(HeadHeader)
 	if resp.StatusCode != http.StatusOK {
 		return &out, resp.StatusCode, fmt.Errorf("%d: %s", resp.StatusCode, out.Error)
 	}
 	return &out, resp.StatusCode, nil
+}
+
+// HeadHeader names the access log's head in a reply: the entry the call wrote.
+const HeadHeader = "X-Fox-Vault-Head"
+
+// FormatHead writes a head as "<seq>:<hash in hex>".
+func FormatHead(seq int64, hash []byte) string { return fmt.Sprintf("%d:%x", seq, hash) }
+
+// ParseHead reads FormatHead's output.
+func ParseHead(h string) (int64, string, bool) {
+	a, b, ok := strings.Cut(h, ":")
+	if !ok || len(b) != 64 {
+		return 0, "", false
+	}
+	var seq int64
+	if _, err := fmt.Sscanf(a, "%d", &seq); err != nil || seq < 1 {
+		return 0, "", false
+	}
+	return seq, b, true
+}
+
+// LogAt is the head as it was at entry seq: that entry's hash.
+func (c *Client) LogAt(seq int64) (string, error) {
+	r, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://vault/v1/log?seq=%d", seq), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, code, err := c.do(r)
+	if err != nil {
+		if code == http.StatusNotFound {
+			return "", ErrNoEntry
+		}
+		return "", err
+	}
+	if len(resp.Results) != 1 {
+		return "", fmt.Errorf("the vault answered %d heads", len(resp.Results))
+	}
+	return resp.Results[0], nil
+}
+
+// ErrNoEntry is an entry the access log does not hold.
+var ErrNoEntry = errors.New("the access log holds no such entry")
+
+// CallRaw posts a request already written as JSON and returns the reply's
+// body as it came, with the access log's head and the HTTP status: the
+// engine passes calls through without reading them twice.
+func (c *Client) CallRaw(path string, body []byte) ([]byte, string, int, error) {
+	r, err := http.NewRequest(http.MethodPost, "http://vault/v1/"+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, "", 0, err
+	}
+	c.sign(r)
+	resp, err := c.hc.Do(r)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	return b, resp.Header.Get(HeadHeader), resp.StatusCode, err
+}
+
+// StatusRaw is the service's status as JSON.
+func (c *Client) StatusRaw() ([]byte, error) {
+	st, err := c.Status()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(st)
 }
