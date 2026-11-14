@@ -226,17 +226,24 @@ setup always updates you to the newest version rather than reusing an old one.
 
 ### macOS
 
-Needs [Lima](https://lima-vm.io) for the local Linux VM.
-
 ```bash
-brew install lima
 curl -fsSL https://get.thefoxbyte.com/install.sh | sh
-fox setup
 ```
 
-`fox setup` creates a dedicated Lima VM, installs Docker + ZFS in it, and brings
-the stack up. Your first `fox setup` downloads Ubuntu (a few minutes); after that
-it's fast.
+That one command does the lot. It installs `fox`, installs
+[Lima](https://lima-vm.io) for the local Linux VM if it isn't there (with
+Homebrew when you have it, otherwise Lima's own release, checked against
+checksums the installer carries), and runs `fox setup`, which creates a dedicated
+Lima VM, installs Docker + ZFS in it, and brings the stack up. The first setup
+downloads Ubuntu (a few minutes); after that it's fast.
+
+`fox setup` runs only from a terminal, and only when there is no FoxByte VM
+yet: re-running the installer to update leaves a running VM as it is (run
+`fox setup` to bring the engine inside it up to date), and a Lima VM of your own
+named `default` is never used without you choosing it. `FOX_SETUP=1` runs setup
+anyway (unattended provisioning, or an existing VM), `FOX_LIMA=skip` leaves Lima
+to you, and `FOX_NO_SETUP=1` stops after installing. Lima is installed on macOS
+13 or later.
 
 ### Linux
 

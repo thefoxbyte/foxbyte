@@ -1,10 +1,11 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# FoxByte installer. Installs the `fox` command, then you run one more command:
+# FoxByte installer. Installs the `fox` command.
 #
-#   macOS:  fox setup      # creates a local Linux VM and brings everything up
-#   Linux:  sudo fox start # provisions ZFS/Docker/image and brings everything up
+#   macOS:  also installs Lima (the VM runner) if it is missing, then runs
+#           `fox setup`, which creates a local Linux VM and brings everything up
+#   Linux:  then run `sudo fox start` (provisions ZFS/Docker/image, brings everything up)
 #
 # Usage:
 #   curl -fsSL https://get.thefoxbyte.com/install.sh | sh
@@ -31,6 +32,15 @@
 #   FOX_NO_VERIFY set to 1 to skip checksum verification
 #   FOX_REQUIRE_SIGNATURE  set to 1 to refuse to install when the signature cannot be checked here
 #   FOX_ALLOW_UNSIGNED     set to 1 to install a release that is not signed (checksums are still checked)
+#   FOX_LIMA      macOS: auto | brew | release | skip   (default: auto — Homebrew if
+#                 present, else Lima's own release; skip leaves Lima to you)
+#   FOX_LIMA_BASE_URL  macOS: where to download Lima's release from (a mirror must
+#                 serve the same files: they are checked against the checksums below)
+#   FOX_NO_SETUP  macOS: set to 1 to stop after installing, without running `fox setup`
+#   FOX_SETUP     macOS: set to 1 to run `fox setup` even with no terminal (unattended
+#                 provisioning), or on a FoxByte VM that already exists. Without it,
+#                 setup runs only from a terminal, and only when there is no VM yet.
+#   FOX_TTY       the terminal `fox setup` reads from (default /dev/tty)
 set -eu
 
 # generated from brand.json -- do not edit by hand, run `make brand`
@@ -55,6 +65,12 @@ while [ $# -gt 0 ]; do
 		*) printf 'error: unknown argument: %s\n' "$1" >&2; exit 2 ;;
 	esac
 done
+
+LIMA_MODE="${FOX_LIMA:-auto}"
+case "$LIMA_MODE" in
+	auto|brew|release|skip) ;;
+	*) printf 'error: unknown FOX_LIMA: %s (expected auto, brew, release or skip)\n' "$LIMA_MODE" >&2; exit 2 ;;
+esac
 
 REPO="${FOX_REPO:-$DEFAULT_REPO}"
 VERSION="${FOX_VERSION:-latest}"
@@ -265,19 +281,188 @@ fi
 
 echo
 say "Installed $CLI $("$BINDIR/$CLI" version 2>/dev/null | awk '{print $2}') ($EDITION edition)"
-if [ "$os" = "darwin" ]; then
+
+# --- Lima (macOS) ------------------------------------------------------------
+# On macOS the engine runs in a Lima VM, so the installer sets Lima up too and
+# then runs `fox setup`: one command from nothing to a running FoxByte.
+#
+# Homebrew's Lima when brew is here, because brew then keeps it updated;
+# otherwise Lima's own release, pinned to the version and checksums below. The
+# checksums are part of this script, not fetched next to the download, so an
+# altered or truncated archive is refused the way a FoxByte binary is. To move
+# to a newer Lima, copy its Darwin lines from that release's SHA256SUMS.
+LIMA_VERSION="2.2.1"
+LIMA_SHA256_ARM64="9e9eacce88f37e185c346bad73aa6136f738d8cdf8c3bb23cd42b071824bc66e"
+LIMA_SHA256_X86_64="6b776e4bc41f358e6ee01fefcc78e2eb26f11635a0fcff632234af77a566c6c4"
+
+lima_from_brew() {
+	say "Installing Lima with Homebrew (brew install lima)…"
+	brew install lima || { warn "brew install lima failed"; return 1; }
+}
+
+lima_from_release() {
+	case "$arch" in
+		arm64) lima_arch="arm64";  want="$LIMA_SHA256_ARM64" ;;
+		*)     lima_arch="x86_64"; want="$LIMA_SHA256_X86_64" ;;
+	esac
+	lima_file="lima-$LIMA_VERSION-Darwin-$lima_arch.tar.gz"
+	lima_base="${FOX_LIMA_BASE_URL:-https://github.com/lima-vm/lima/releases/download/v$LIMA_VERSION}"
+	say "Downloading Lima $LIMA_VERSION ($lima_file)…"
+	fetch "$lima_base/$lima_file" "$tmp/$lima_file" || { warn "could not download $lima_file"; return 1; }
+	got="$(sha256_of "$tmp/$lima_file")"
+	if [ -z "$got" ] || [ "$got" != "$want" ]; then
+		rm -f "$tmp/$lima_file"
+		warn "checksum mismatch for $lima_file — the download is not Lima $LIMA_VERSION as released
+  expected $want
+  got      ${got:-(no sha256sum or shasum here)}"
+		return 1
+	fi
+	say "verified $lima_file"
+	# Unpacked here first, then copied in: extracting straight into $PREFIX would
+	# also apply the archive's own permissions to $PREFIX itself.
+	mkdir "$tmp/lima"
+	tar -xzf "$tmp/$lima_file" -C "$tmp/lima" || { warn "could not unpack $lima_file"; return 1; }
+	[ -f "$tmp/lima/bin/limactl" ] || { warn "$lima_file has no bin/limactl"; return 1; }
+	say "Installing Lima to $PREFIX"
+	for d in bin libexec share; do
+		[ -d "$tmp/lima/$d" ] || continue
+		$SUDO install -d "$PREFIX/$d" || return 1
+		$SUDO cp -R "$tmp/lima/$d/." "$PREFIX/$d/" || { warn "could not copy Lima into $PREFIX/$d"; return 1; }
+	done
+	case ":$PATH:" in
+		*":$BINDIR:"*) ;;
+		*) warn "$BINDIR is not on your PATH; add it, or $CLI will not find Lima's limactl" ;;
+	esac
+}
+
+# ensure_lima leaves limactl on PATH, or says why not and returns 1.
+ensure_lima() {
+	if command -v limactl >/dev/null 2>&1; then
+		say "Lima is already installed ($(limactl --version 2>/dev/null || echo limactl))"
+		return 0
+	fi
+	[ "$LIMA_MODE" = "skip" ] && return 1
+	mac_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+	if [ -n "$mac_major" ] && [ "$mac_major" -lt 13 ] 2>/dev/null; then
+		warn "this installer sets Lima up on macOS 13 or later, and this Mac runs macOS $mac_major"
+		return 1
+	fi
+	use_brew=0
+	case "$LIMA_MODE" in
+		brew)
+			command -v brew >/dev/null 2>&1 || { warn "FOX_LIMA=brew, but Homebrew is not installed"; return 1; }
+			use_brew=1 ;;
+		auto)
+			# Homebrew refuses to run as root, so a root install takes the release.
+			command -v brew >/dev/null 2>&1 && [ "$(id -u)" -ne 0 ] && use_brew=1 ;;
+	esac
+	if [ "$use_brew" = 1 ]; then
+		lima_from_brew || return 1
+	else
+		lima_from_release || return 1
+	fi
+	PATH="$BINDIR:$PATH"
+	export PATH
+	command -v limactl >/dev/null 2>&1 || { warn "Lima was installed, but limactl is not on PATH"; return 1; }
+	say "Lima is installed ($(limactl --version 2>/dev/null || echo limactl))"
+}
+
+# The terminal, when there is one: under `curl | sh` this script's own stdin
+# is the pipe it is being read from, so `fox setup` reads from here instead.
+TTY_DEV="${FOX_TTY:-/dev/tty}"
+have_tty() { (exec <"$TTY_DEV") 2>/dev/null; }
+
+# run_setup runs `fox setup`, from the terminal when there is one.
+run_setup() {
+	say "Setting up $PRODUCT ($CLI setup)…"
+	if have_tty; then
+		"$BINDIR/$CLI" setup <"$TTY_DEV"
+	else
+		"$BINDIR/$CLI" setup </dev/null
+	fi
+}
+
+# next_steps ends an install that leaves `fox setup` to the person.
+next_steps() {
 	cat <<EOF
 
-Next step (one time):
-  fox setup      # creates a local Linux VM, provisions it, and starts FoxByte
+Next step (one time, as yourself):
+  fox setup      # creates a local Linux VM, provisions it, and starts $PRODUCT
 
 Then day-to-day:
   fox status · fox branch create qa · fox stop
 EOF
-	command -v limactl >/dev/null 2>&1 || cat <<EOF
+}
 
-Note: macOS needs Lima (the VM runner). Install it first:
+if [ "$os" = "darwin" ]; then
+	if ! ensure_lima; then
+		if [ "$LIMA_MODE" = "skip" ]; then
+			cat <<EOF
+
+FOX_LIMA=skip: Lima (the VM runner macOS needs) was left to you. Then:
   brew install lima
+  fox setup      # creates a local Linux VM, provisions it, and starts $PRODUCT
+EOF
+			exit 0
+		fi
+		err "$CLI is installed, but Lima (the VM runner macOS needs) is not.
+Install it yourself, then finish with fox setup:
+  brew install lima
+  fox setup"
+	fi
+	if [ "${FOX_NO_SETUP:-}" = "1" ] || [ "$(id -u)" -eq 0 ]; then
+		[ "$(id -u)" -eq 0 ] && [ "${FOX_NO_SETUP:-}" != "1" ] && warn "not running $CLI setup as root: the VM must belong to you, not root"
+		next_steps
+		exit 0
+	fi
+	# Which VM `fox setup` would use, and whether it is there already. Asked of
+	# the fox just installed, so the installer keeps no list of its own of the
+	# names setup looks for.
+	vm_line="$("$BINDIR/$CLI" setup --which 2>/dev/null || true)"
+	vm_name="${vm_line% *}"
+	vm_state="${vm_line##* }"
+	if [ "$vm_state" = "existing" ] && [ "$vm_name" = "default" ] && [ -z "${FOX_LIMA_INSTANCE:-}" ]; then
+		# A plain "default" VM may be the person's own, for other work: setup
+		# would install Docker and ZFS into it. Theirs to choose, every time.
+		warn "there is a Lima VM named \"default\" and no $PRODUCT VM: $CLI setup would use it, installing Docker and ZFS into it"
+		cat <<EOF
+
+$CLI and Lima are installed. Choose where $PRODUCT runs, then set it up:
+  FOX_LIMA_INSTANCE=$CLI fox setup      # a VM of its own (recommended)
+  FOX_LIMA_INSTANCE=default fox setup  # in your "default" VM
+EOF
+		exit 0
+	fi
+	if [ "$vm_state" = "existing" ] && [ "${FOX_SETUP:-}" != "1" ]; then
+		# An install that is already there: re-running the installer updates
+		# the command, and leaves the running VM as it is.
+		cat <<EOF
+
+$PRODUCT's VM "$vm_name" is already set up, so the installer left it as it is.
+To bring the engine inside it up to this version:
+  fox setup
+
+Day-to-day:
+  fox status · fox branch create qa · fox stop
+EOF
+		exit 0
+	fi
+	if ! have_tty && [ "${FOX_SETUP:-}" != "1" ]; then
+		# No terminal (a CI job, a provisioning tool): setup takes several
+		# minutes and may want to ask things, so it is not started unasked.
+		say "No terminal here, so $CLI setup was not run (set FOX_SETUP=1 to run it unattended)"
+		next_steps
+		exit 0
+	fi
+	if ! run_setup; then
+		err "$CLI setup did not finish. $CLI and Lima are installed: run
+  fox setup
+again to pick up where it stopped."
+	fi
+	cat <<EOF
+
+$PRODUCT is running. Day-to-day:
+  fox status · fox branch create qa · fox stop
 EOF
 else
 	cat <<EOF

@@ -357,6 +357,21 @@ func main() {
 	case "version", "-v", "--version":
 		fmt.Println(versionLine())
 	case "setup":
+		// --which: the VM setup would use, and "existing" or "new", for the
+		// installer, which leaves an existing one alone. Nothing is touched.
+		if len(os.Args) > 2 && os.Args[2] == "--which" {
+			name, exists, ok := host.SetupVM()
+			if !ok {
+				fmt.Fprintln(os.Stderr, "setup --which names the macOS VM setup would use; this host has none, or Lima is not installed")
+				os.Exit(2)
+			}
+			state := "new"
+			if exists {
+				state = "existing"
+			}
+			fmt.Println(name, state)
+			return
+		}
 		must(host.Setup())
 	case "vm":
 		must(host.VM(os.Args[2:]))
