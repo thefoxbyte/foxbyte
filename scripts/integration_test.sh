@@ -1289,7 +1289,17 @@ assert_eq "…and the disk under the pool's file and Docker's data" \
   "$(grep -c "^ok    disk / .*free of .*holding the storage pool's file and Docker's images and volumes" <<<"$CHECK")" "1"
 FILLER=/var/tmp/fox-it-disk-filler
 AVAIL_K="$(df -P -k / | awk 'NR==2 {print $4}')"
-FILL_K=$((AVAIL_K - 3500 * 1024))
+SIZE_K="$(df -P -k / | awk 'NR==2 {print $2}')"
+# Leave the filesystem in the warning band, not the failure band. `fox check`
+# fails below 2 GiB or below 3% of the filesystem, whichever it hits first, and
+# warns below 5 GiB or below 10%. A fixed 3.5 GiB is under 3% once the disk is
+# larger than about 117 GiB, which is how this assertion failed on the nightly
+# runner (exit 1, no "filling up" warning). Stay a comfortable step above both
+# failure lines: at least 3 GiB, and at least 5% of the disk.
+TARGET_K=$((3 * 1024 * 1024))
+PCT_K=$((SIZE_K * 5 / 100))
+if [ "$PCT_K" -gt "$TARGET_K" ]; then TARGET_K=$PCT_K; fi
+FILL_K=$((AVAIL_K - TARGET_K))
 if [ "$FILL_K" -gt 0 ] && sudo fallocate -l "${FILL_K}K" "$FILLER"; then
   CHECK="$($S check 2>&1)"; CHECK_RC=$?
   sudo rm -f "$FILLER"

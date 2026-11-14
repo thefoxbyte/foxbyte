@@ -48,7 +48,10 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 # Our entries, and nothing else: "<hash>  <basename>".
-checksum "$@" | awk '{ name = $2; sub(/^\*/, "", name); sub(/.*\//, "", name); print $1 "  " name }' | sort -k2 > "$work/$asset"
+# C collation: the signed bytes have to be the same on every runner. en_US
+# ignores hyphens, so `foxbyte-` sorts before `fox-` and the checksum test
+# (and a release cut on such a machine) disagrees with a C.UTF-8 runner.
+checksum "$@" | awk '{ name = $2; sub(/^\*/, "", name); sub(/.*\//, "", name); print $1 "  " name }' | LC_ALL=C sort -k2 > "$work/$asset"
 
 "$sign" sign "$work/$asset" "$work/$asset.sig"
 gh release upload "$tag" "$work/$asset" "$work/$asset.sig" --clobber
