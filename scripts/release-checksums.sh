@@ -26,6 +26,19 @@
 # FOX_RELEASE_SIGNING_KEY). It is required: clients refuse an unsigned
 # SHA256SUMS, so publishing one would only break the release.
 #
+# When FOX_RELEASE_SIGNING_KEY_P256 is set too, the same bytes are also signed
+# with the P-256 release key, as <asset>.p256.sig: the signature macOS's
+# LibreSSL and Windows PowerShell can check, where Ed25519 is out of their
+# reach. Without the secret nothing changes, so a release cut before the
+# maintainer has made that key still goes out.
+#
+# The first line of the file names the tag (finding SUP-4): the tag itself is
+# not signed, so without this an old signed release could be republished under
+# a newer tag. It is written as a checksum line of 64 zeros for a "file" called
+# VERSION=<tag>, the one shape every verifier already released passes over:
+# they look files up by name, and `sha256sum -c --ignore-missing` skips a file
+# that is not there. internal/update/checksums.go explains it in full.
+#
 # Needs gh (GH_TOKEN set) and sha256sum or shasum. Files may be given with a
 # directory; entries use the base name, as the installers expect.
 set -euo pipefail
@@ -51,10 +64,21 @@ trap 'rm -rf "$work"' EXIT
 # C collation: the signed bytes have to be the same on every runner. en_US
 # ignores hyphens, so `foxbyte-` sorts before `fox-` and the checksum test
 # (and a release cut on such a machine) disagrees with a C.UTF-8 runner.
-checksum "$@" | awk '{ name = $2; sub(/^\*/, "", name); sub(/.*\//, "", name); print $1 "  " name }' | LC_ALL=C sort -k2 > "$work/$asset"
+case "$tag" in
+	*[!A-Za-z0-9._-]*) echo "error: tag $tag has characters a version line cannot carry" >&2; exit 2 ;;
+esac
+{
+	printf '%s  VERSION=%s\n' 0000000000000000000000000000000000000000000000000000000000000000 "$tag"
+	checksum "$@" | awk '{ name = $2; sub(/^\*/, "", name); sub(/.*\//, "", name); print $1 "  " name }' | LC_ALL=C sort -k2
+} > "$work/$asset"
 
 "$sign" sign "$work/$asset" "$work/$asset.sig"
-gh release upload "$tag" "$work/$asset" "$work/$asset.sig" --clobber
+uploads=("$work/$asset" "$work/$asset.sig")
+if [ -n "${FOX_RELEASE_SIGNING_KEY_P256:-}" ]; then
+	"$sign" sign-p256 "$work/$asset" "$work/$asset.p256.sig"
+	uploads+=("$work/$asset.p256.sig")
+fi
+gh release upload "$tag" "${uploads[@]}" --clobber
 
 attempts="${CHECKSUM_ATTEMPTS:-3}"
 settle="${CHECKSUM_SETTLE_SECONDS:-10}"
@@ -64,7 +88,10 @@ for attempt in $(seq 1 "$attempts"); do
 	if gh release download "$tag" -p "$asset" -O "$work/published/$asset" --clobber >/dev/null 2>&1 &&
 		gh release download "$tag" -p "$asset.sig" -O "$work/published/$asset.sig" --clobber >/dev/null 2>&1 &&
 		cmp -s "$work/$asset" "$work/published/$asset" &&
-		cmp -s "$work/$asset.sig" "$work/published/$asset.sig"; then
+		cmp -s "$work/$asset.sig" "$work/published/$asset.sig" &&
+		{ [ ! -f "$work/$asset.p256.sig" ] ||
+			{ gh release download "$tag" -p "$asset.p256.sig" -O "$work/published/$asset.p256.sig" --clobber >/dev/null 2>&1 &&
+				cmp -s "$work/$asset.p256.sig" "$work/published/$asset.p256.sig"; }; }; then
 		cat "$work/$asset"
 		exit 0
 	fi

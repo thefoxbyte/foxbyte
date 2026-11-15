@@ -912,8 +912,60 @@ ALTER DEFAULT PRIVILEGES FOR ROLE dbadmin IN SCHEMA public GRANT ALL ON SEQUENCE
 -- The ledger: read only. History is written by the SECURITY DEFINER triggers,
 -- not by the client, so a client can read its history and run `verify` but has no
 -- INSERT/UPDATE/DELETE on the table at all — it cannot forge or rewrite entries.
+-- bb.schema_ledger is granted column by column, in the section below.
 GRANT USAGE ON SCHEMA bb TO db_client;
-GRANT SELECT ON bb.schema_ledger, bb.policy, bb.policy_history TO db_client;
+GRANT SELECT ON bb.policy, bb.policy_history TO db_client;
+
+-- ── Statement text (audit PRIV-3) ───────────────────────────────────────────
+-- An entry's statement is the SQL as it was sent, literals and all: an agent's
+-- UPDATE of the customers table carries the values it wrote. Every client role
+-- could read every entry's text, so anyone with a login could read values from
+-- tables their own grants and row-level security keep from them.
+--
+-- So clients read every column but the text. The table-wide grant is taken
+-- back first (which takes any column grants with it) and the columns are
+-- granted again, on every start, so an install that had the old grant loses it.
+-- A column added to the table later is not readable until it is listed here.
+REVOKE SELECT ON bb.schema_ledger FROM PUBLIC, db_client;
+GRANT SELECT (id, at, actor, actor_kind, tool, session, branch, command_tag,
+              object_type, object_identity, status, risk, prev_hash, row_hash)
+  ON bb.schema_ledger TO db_client;
+
+-- The text, for whoever may see it: the superuser and db_admin members (the
+-- people who may already override a guardrail, bb._may_override) see all of
+-- it, and anyone else the text of their own entries. "Their own" is an entry
+-- whose actor is the login role itself (a per-user or per-agent role), which a
+-- session cannot change. The shared roles' actor is whatever the gateway or
+-- the session put in bb.actor, so on those an entry is nobody's own. NULL when
+-- withheld, or for no such entry.
+CREATE OR REPLACE FUNCTION bb.ledger_statement(entry_id bigint) RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT l.statement FROM bb.schema_ledger l
+  WHERE l.id = entry_id
+    AND (bb._may_override()
+         OR (session_user NOT IN ('dbadmin', 'db_client', 'db_agent') AND l.actor = session_user));
+$$;
+REVOKE ALL ON FUNCTION bb.ledger_statement(bigint) FROM PUBLIC;
+
+-- Verifying the chain means hashing every entry's text, which a client can no
+-- longer read. This does it as the owner and gives back only the outcome:
+-- entries before chaining, entries chained, entries that fail, and the first
+-- that fails. The same check as `fox ledger verify` (internal/branch).
+CREATE OR REPLACE FUNCTION bb.ledger_verify(
+  OUT legacy bigint, OUT chained bigint, OUT broken bigint, OUT first_broken text
+) LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  WITH v AS (
+    SELECT id, prev_hash, row_hash, bb._ledger_hash(s.*) AS recomputed,
+           lag(row_hash) OVER (ORDER BY id) AS prev_link
+    FROM bb.schema_ledger s WHERE row_hash IS NOT NULL)
+  SELECT (SELECT count(*) FROM bb.schema_ledger WHERE row_hash IS NULL),
+         count(*),
+         count(*) FILTER (WHERE row_hash <> recomputed OR prev_hash IS DISTINCT FROM coalesce(prev_link,'')),
+         coalesce(min(id) FILTER (WHERE row_hash <> recomputed OR prev_hash IS DISTINCT FROM coalesce(prev_link,''))::text,'')
+  FROM v;
+$$;
+REVOKE ALL ON FUNCTION bb.ledger_verify() FROM PUBLIC;
+-- ── end of statement text ───────────────────────────────────────────────────
 
 -- Functions. A SECURITY DEFINER function runs as the Blackbox's owner, so being
 -- able to call one is being able to do what it does: bb._record_impact takes its
@@ -924,7 +976,8 @@ GRANT SELECT ON bb.schema_ledger, bb.policy, bb.policy_history TO db_client;
 --
 -- So: no client may call a SECURITY DEFINER function here unless it is listed.
 -- The list is every function a client, the gateway or the console calls itself,
--- SECURITY DEFINER or not (bb.act_for is the only one that is today); nothing
+-- SECURITY DEFINER or not (bb.act_for is one, and bb.ledger_statement and
+-- bb.ledger_verify, which check the caller themselves, are the others); nothing
 -- else a client reaches needs its own grant. Trigger and event-trigger functions
 -- are not on it: Postgres checks EXECUTE only when a trigger is made, and they
 -- are made here, by the owner, so they fire for any client. So are the nested
@@ -937,6 +990,7 @@ LANGUAGE sql IMMUTABLE AS $$
     '_ledger_hash', '_ext_hash',                                     -- verifying the record
     'track_table', 'untrack_table', 'tracked_tables', 'track_row',   -- row tracking, by a table's owner
     'policy_check', 'blast_radius',                                  -- previews in the console and MCP
+    'ledger_statement', 'ledger_verify',                             -- statement text, checked inside (PRIV-3)
     'ledger_v2_version', 'blackbox_provenance_version',
     'blackbox_policy_version', 'blackbox_impact_version'
   ]::name[];

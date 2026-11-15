@@ -160,7 +160,10 @@ Durability / time-travel:
   backup prune [--keep N]  Delete all but the newest N full backups (the schedule keeps FOX_BACKUP_RETAIN, 7)
   backup verify        Prove a restore works: probe row -> WAL archive -> restore -> read it back
                        (the control plane also does this on a schedule, FOX_RESTORE_CHECK_INTERVAL)
-  backup target        Where backups go; set s3://bucket[/prefix] --endpoint <url> --access-key <key> [--region r] [--path-style] [--allow-http]; local
+  backup target        Where backups go; set s3://bucket[/prefix] --endpoint <https-url> --access-key <key> [--region r] [--path-style]
+                       [--encrypt|--no-encrypt] [--allow-insecure-http]; local. A new remote archive is encrypted client-side
+  backup key export    Print the backup encryption key, for disaster recovery: without it encrypted backups are lost
+  backup key import [--replace]  Install that key (read from stdin) on a machine that is to restore them
   restore --to <ts>    PITR into a disposable container on port 5433 (ts or 'latest')
   backup export [--out <file>] [--branch <name>]...
                        Portable copy of every non-agent branch (pg_dump + roles + Blackbox),
@@ -255,7 +258,7 @@ Migration:
 High availability:
   ha enable            Provision a hot standby streaming from main
   ha status            Show replication status (primary + standby)
-  ha failover          Promote the standby to primary (reroutes 'main')
+  ha failover [--force]  Stop the old primary, confirm it stopped, then promote the standby (reroutes 'main')
   ha disable           Remove the standby
   ha failback          After a failover: move 'main' back to its own container, keeping every write
 
@@ -278,11 +281,13 @@ Auth (admin):
   user create <email>            Create an account (prompts for a password)
   user passwd <email>            Set a new password when one is forgotten — a password cannot be
                                  recovered, only replaced. Signs that account out everywhere.
-  user list | delete <email>     List accounts, or delete one
+  user list | delete <email>     List accounts, or delete one (its security-log events get a pseudonym)
   setup-token                    Show the token the web sign-up needs for the first account
   audit [--limit N]              The security log: sign-ins, keys, passwords, accounts, admins, refusals
   audit verify [--pubkey <file>] Check the security log's hash chain, its anchors and their signatures
   audit checkpoint               Anchor the security log's new events now (the control plane does it on a schedule)
+  audit prune                    Remove events older than FOX_SECURITY_LOG_RETENTION now (unset: keep everything)
+  audit pseudonym <email>        The token a deleted account's email became in the security log
   apikey create <email> [name] [--agent]
                                  Mint an API key (shown once); --agent mints
                                  one to give an AI agent, recorded as an agent
@@ -481,7 +486,7 @@ func main() {
 		demoCmd(os.Args[2:])
 	case "backup":
 		if len(os.Args) < 3 {
-			fmt.Println("usage: fox backup <create|list|prune|verify|target|export|restore>")
+			fmt.Println("usage: fox backup <create|list|prune|verify|target|key|export|restore>")
 			os.Exit(2)
 		}
 		switch os.Args[2] {
@@ -517,6 +522,8 @@ func main() {
 				c.BaseBackup, c.Seconds, c.Tables, c.Target)
 		case "target":
 			backupTargetCmd(os.Args[3:])
+		case "key":
+			backupKeyCmd(os.Args[3:])
 		case "export":
 			must(exportCmd(os.Args[3:], true))
 		case "restore":
@@ -896,8 +903,18 @@ func haCmd(args []string) {
 	case "status":
 		must(branch.HAStatus())
 	case "failover":
-		// --force is for a primary on another machine that the operator has
-		// already stopped or isolated. It never skips stopping a local one.
+		// The old primary is stopped, and seen stopped, before the standby is
+		// promoted. --force promotes when that cannot be confirmed: a local
+		// one docker could not stop, or a remote one that still answers. It
+		// risks writes still being committed on the old primary, then lost.
+		if hasFlag(args, "-h") || hasFlag(args, "--help") {
+			fmt.Printf("usage: %s ha failover [--force]\n\n"+
+				"Stops the old primary, waits until docker reports it stopped, and only then promotes\n"+
+				"the standby and routes 'main' to it. Refused when the old primary cannot be confirmed\n"+
+				"stopped. --force promotes anyway: if the old primary is in fact still running, writes\n"+
+				"its sessions commit are not on the new primary and are lost.\n", brand.CLI)
+			return
+		}
 		must(branch.HAFailover(hasFlag(args, "--force")))
 	case "disable":
 		must(branch.HADisable())
@@ -929,7 +946,7 @@ func haCmd(args []string) {
 func haWatchCmd(args []string) {
 	if hasFlag(args, "-h") || hasFlag(args, "--help") {
 		fmt.Printf("usage: %s ha watch --witness https://<host:port>/ha/primary --token T [--witness-fingerprint F]\n"+
-			"                   [--after 60s] [--every 10s] [--once] [--dry-run]\n\n"+
+			"                   [--after 60s] [--every 10s] [--once] (--accept-unfenced | --dry-run)\n\n"+
 			"Runs on a standby that joined a primary elsewhere. Every round it asks two\n"+
 			"questions — can I reach the primary, and can the witness — and promotes only\n"+
 			"when both say no for --after. One opinion is never enough: two machines cannot\n"+
@@ -939,7 +956,10 @@ func haWatchCmd(args []string) {
 			"--token (or %s) is required and must match the witness's: every\n"+
 			"answer is signed with it, and one that does not check out counts as no answer.\n"+
 			"--witness-fingerprint pins the witness's certificate, as the witness prints it.\n"+
-			"--dry-run prints every decision and acts on none, which is how to try this.\n",
+			"--dry-run prints every decision and acts on none, which is how to try this.\n"+
+			"--accept-unfenced is required to promote. The primary is on another machine, which\n"+
+			"this one cannot stop or confirm stopped; if it is still serving clients neither\n"+
+			"observer can see, the writes it takes after the promotion are lost.\n",
 			brand.CLI, brand.CLI, brand.EnvName("HA_WITNESS_TOKEN"))
 		return
 	}
@@ -950,9 +970,10 @@ func haWatchCmd(args []string) {
 		Interval:    durFlag(args, "--every", -1),
 		// Negative means "not given", so `--after 0s` can mean what it says:
 		// promote as soon as both observers agree, which is how a drill asks.
-		After:  durFlag(args, "--after", -1),
-		Once:   hasFlag(args, "--once"),
-		DryRun: hasFlag(args, "--dry-run"),
+		After:          durFlag(args, "--after", -1),
+		Once:           hasFlag(args, "--once"),
+		DryRun:         hasFlag(args, "--dry-run"),
+		AcceptUnfenced: hasFlag(args, "--accept-unfenced"),
 	}))
 }
 
@@ -1398,7 +1419,7 @@ func backupTargetCmd(args []string) {
 		}
 	case "set":
 		if len(args) < 2 {
-			fmt.Printf("usage: %s backup target set s3://bucket[/prefix] --endpoint <https-url> --access-key <key> [--region <r>] [--path-style] [--allow-http]\n", brand.CLI)
+			fmt.Printf("usage: %s backup target set s3://bucket[/prefix] --endpoint <https-url> --access-key <key> [--region <r>] [--path-style] [--encrypt|--no-encrypt] [--allow-insecure-http]\n", brand.CLI)
 			os.Exit(2)
 		}
 		bucket, prefix, err := branch.ParseTargetURL(args[1])
@@ -1417,9 +1438,11 @@ func backupTargetCmd(args []string) {
 			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			t.SecretKey = strings.TrimSpace(line)
 		}
-		must(branch.SetBackupTarget(t, hasFlag(args, "--allow-http")))
+		opts, err := targetSetOptions(args)
+		must(err)
+		must(branch.SetBackupTarget(t, opts))
 	case "local":
-		must(branch.SetBackupTarget(branch.Target{Kind: "local"}, false))
+		must(branch.SetBackupTarget(branch.Target{Kind: "local"}, branch.TargetOptions{}))
 	default:
 		fmt.Printf("usage: %[1]s backup target [show] | %[1]s backup target set s3://… | %[1]s backup target local\n", brand.CLI)
 		os.Exit(2)
@@ -1505,8 +1528,11 @@ func auditCmd(args []string) {
 			return
 		}
 		fmt.Printf("security log anchored: events %d–%d, signed by key %s\n", a.FromID, a.ToID, a.KeyID)
+	case "prune", "pseudonym":
+		auditPrivacyCmd(s, sub, args[1:])
 	default:
-		fmt.Printf("usage: %[1]s audit [--limit N] | %[1]s audit verify [--pubkey <file>] | %[1]s audit checkpoint\n", brand.CLI)
+		fmt.Printf("usage: %[1]s audit [--limit N] | %[1]s audit verify [--pubkey <file>] | %[1]s audit checkpoint\n"+
+			"       %[1]s audit prune | %[1]s audit pseudonym <email>\n", brand.CLI)
 		os.Exit(2)
 	}
 }
@@ -1593,6 +1619,12 @@ func userCmd(args []string) {
 			fmt.Fprintf(os.Stderr, "note: could not revoke %s's admin grant on main: %v\n", u.Email, err)
 		}
 		fmt.Printf("deleted %s: its sessions, keys and pipelines are gone; its branches are now an admin's\n", u.Email)
+		// Last, so the record of the deletion is pseudonymised with the rest.
+		if res, err := s.PseudonymiseSecurityLog(u.Email, cliActor()); err != nil {
+			fmt.Fprintf(os.Stderr, "note: its security-log events still name it: %v\n", err)
+		} else {
+			fmt.Printf("security log: %d events now name %s instead\n", res.Events, res.Pseudonym)
+		}
 	default:
 		usage()
 	}

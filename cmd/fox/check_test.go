@@ -20,7 +20,7 @@ import (
 // the product says so unprompted, so what it says matters.
 func TestBackupTargetLine(t *testing.T) {
 	t.Run("the local store warns, and says what it costs", func(t *testing.T) {
-		got := backupTargetLine(branch.Target{Kind: "local"}, nil)
+		got := backupTargetLine(branch.Target{Kind: "local"}, nil, nil)
 		if got.state != stateWarn {
 			t.Fatalf("state %d, want a warning", got.state)
 		}
@@ -38,16 +38,46 @@ func TestBackupTargetLine(t *testing.T) {
 		}
 	})
 
-	t.Run("a remote target is fine, and is described", func(t *testing.T) {
-		got := backupTargetLine(branch.Target{
-			Kind: "s3", Bucket: "acme-fox-backups", Endpoint: "https://s3.eu-west-1.amazonaws.com",
-			Region: "eu-west-1", AccessKey: "AKIA…",
-		}, nil)
+	remote := branch.Target{
+		Kind: "s3", Bucket: "acme-fox-backups", Endpoint: "https://s3.eu-west-1.amazonaws.com",
+		Region: "eu-west-1", AccessKey: "AKIA…", Encrypted: true, KeyID: "test-key-id",
+	}
+	t.Run("an encrypted remote target is fine, and is described", func(t *testing.T) {
+		got := backupTargetLine(remote, nil, nil)
 		if got.state != 0 {
 			t.Fatalf("state %d, want ok: %s", got.state, got.detail)
 		}
-		if !strings.Contains(got.detail, "acme-fox-backups") {
-			t.Errorf("detail %q does not name the bucket", got.detail)
+		for _, want := range []string{"acme-fox-backups", "encrypted client-side"} {
+			if !strings.Contains(got.detail, want) {
+				t.Errorf("detail %q does not mention %q", got.detail, want)
+			}
+		}
+	})
+
+	// A target set before encryption existed keeps working, and says so.
+	t.Run("an unencrypted remote target warns", func(t *testing.T) {
+		plain := remote
+		plain.Encrypted, plain.KeyID = false, ""
+		got := backupTargetLine(plain, nil, nil)
+		if got.state != stateWarn || !strings.Contains(got.detail, "in the clear") {
+			t.Fatalf("state %d: %s", got.state, got.detail)
+		}
+	})
+
+	t.Run("plain HTTP to another machine warns", func(t *testing.T) {
+		h := remote
+		h.Endpoint = "http://minio.example.net:9000"
+		got := backupTargetLine(h, nil, nil)
+		if got.state != stateWarn || !strings.Contains(got.detail, "plain HTTP") {
+			t.Fatalf("state %d: %s", got.state, got.detail)
+		}
+	})
+
+	// Without its key an encrypted archive is neither written nor read.
+	t.Run("an encrypted target without its key fails", func(t *testing.T) {
+		got := backupTargetLine(remote, nil, errTargetForTest{})
+		if got.state != stateFail || !strings.Contains(got.fix, "backup key import") {
+			t.Fatalf("state %d: %s / %s", got.state, got.detail, got.fix)
 		}
 	})
 
@@ -55,7 +85,7 @@ func TestBackupTargetLine(t *testing.T) {
 	// go somewhere the owner did not choose, which is the one outcome this
 	// check exists to prevent.
 	t.Run("an unreadable target fails rather than guessing", func(t *testing.T) {
-		got := backupTargetLine(branch.Target{}, errTargetForTest{})
+		got := backupTargetLine(branch.Target{}, errTargetForTest{}, nil)
 		if got.state != stateFail {
 			t.Fatalf("state %d, want a failure", got.state)
 		}

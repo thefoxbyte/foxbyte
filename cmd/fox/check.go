@@ -921,12 +921,16 @@ func anchorTargetLine(a branch.AnchorTarget, set bool, err error, backup branch.
 	return ok("anchor target", detail)
 }
 
-func checkBackupTarget() checkLine { return backupTargetLine(branch.CurrentTarget()) }
+func checkBackupTarget() checkLine {
+	t, err := branch.CurrentTarget()
+	return backupTargetLine(t, err, t.KeyProblem())
+}
 
 // backupTargetLine is the judgement, separated from reading the file so it can
 // be table-tested: the state directory is resolved once per process, so a test
 // cannot redirect it, and the decision is the part worth holding still anyway.
-func backupTargetLine(t branch.Target, err error) checkLine {
+// keyErr is the target's KeyProblem: an encrypted archive without its key.
+func backupTargetLine(t branch.Target, err, keyErr error) checkLine {
 	if err != nil {
 		return fail("backup target", err.Error(),
 			fmt.Sprintf("%s backup target show", brand.CLI))
@@ -944,6 +948,25 @@ func backupTargetLine(t branch.Target, err error) checkLine {
 	// line that costs a container and a network round trip is still the wrong
 	// price for a question `backup target show` answers on demand, along with
 	// the bucket's reachability.
+	//
+	// What is checked instead is what the file alone says. A missing or
+	// different key is a failure: wal-g is refused the archive (target.go,
+	// encryptionEnv), so WAL is piling up unarchived. Plain HTTP and an
+	// unencrypted archive are warnings: a target set before either rule existed
+	// keeps working, as it must, but its owner should hear about it every time.
+	if keyErr != nil {
+		return fail("backup target", keyErr.Error(), fmt.Sprintf("%s backup key import --replace", brand.CLI))
+	}
+	if t.InsecureHTTP() {
+		return warn("backup target",
+			t.Describe()+" — over plain HTTP to another machine: the bucket's secret key crosses the network readable, and anyone on the path can read or change what is sent",
+			fmt.Sprintf("%s backup target set s3://… --endpoint <https-url> (an empty prefix is encrypted)", brand.CLI))
+	}
+	if !t.Encrypted {
+		return warn("backup target",
+			t.Describe()+" — the backups hold the database in the clear unless the bucket encrypts them",
+			fmt.Sprintf("%s backup target set s3://bucket/<new-prefix> --endpoint <https-url> --access-key <key> (a new, empty prefix is encrypted)", brand.CLI))
+	}
 	return ok("backup target", t.Describe())
 }
 

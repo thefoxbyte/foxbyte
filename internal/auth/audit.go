@@ -74,6 +74,25 @@ const (
 	// door they came through.
 	EvChangeRequested = "branch.change_requested"
 	EvChangeDecided   = "branch.change_decided"
+	// A decision and an apply each record their intent before they happen and
+	// their outcome after (see BeginPrivileged). EvChangeDecided stays the
+	// decision's success; EvChangeApplied is the statements going in.
+	EvChangeDecideStarted = "branch.change_decide_started"
+	EvChangeDecideFailed  = "branch.change_decide_failed"
+	EvChangeApplyStarted  = "branch.change_apply_started"
+	EvChangeApplied       = "branch.change_applied"
+	EvChangeApplyFailed   = "branch.change_apply_failed"
+	// The intent and failure halves of the admin mutations above, whose success
+	// keeps its existing kind (EvAdminGranted, EvAdminRevoked, EvAccountDeleted,
+	// EvEditionSwitch), so AdminEpoch and anything reading those is unchanged.
+	EvAdminGrantStarted    = "admin.grant_started"
+	EvAdminGrantFailed     = "admin.grant_failed"
+	EvAdminRevokeStarted   = "admin.revoke_started"
+	EvAdminRevokeFailed    = "admin.revoke_failed"
+	EvAccountDeleteStarted = "account.delete_started"
+	EvAccountDeleteFailed  = "account.delete_failed"
+	EvEditionSwitchAsked   = "edition.switch_requested"
+	EvEditionSwitchFailed  = "edition.switch_failed"
 	// Licensing: when this install's paid entitlement changed, and to what.
 	//
 	// Recorded by the engine rather than by the command someone typed. On macOS
@@ -231,6 +250,11 @@ type SecurityEvent struct {
 	Detail   string `json:"detail,omitempty"`
 	PrevHash string `json:"prev_hash"`
 	RowHash  string `json:"row_hash"`
+	// Seals vouch for an event that was pseudonymised, and Issued are the
+	// seals a pseudonymisation event wrote (seclogprivacy.go). Filled in by
+	// SecurityEvents for verifying; not part of the event as shown.
+	Seals  []EventSeal `json:"-"`
+	Issued []EventSeal `json:"-"`
 }
 
 // EventHash is an event's row hash: SHA-256 over prev_hash and its fields,
@@ -253,6 +277,59 @@ func (s *Store) Audit(kind, actor, subject, ip, detail string) {
 	if err != nil {
 		log.Printf("security log: could not record %s (%s): %v", kind, subject, err)
 	}
+}
+
+// ErrSecurityLogUnavailable is returned by BeginPrivileged when the intent
+// could not be recorded. The caller refuses the action.
+var ErrSecurityLogUnavailable = errors.New("the security log could not record this action, so it was not done")
+
+// Privileged is a privileged action whose intent is in the security log. Done
+// records how it ended.
+type Privileged struct {
+	s                  *Store
+	succeeded, failed  string
+	actor, subject, ip string
+	done               bool
+}
+
+// BeginPrivileged records that actor is about to take a privileged action
+// (applying a change request, granting admin, deleting an account, …), as an
+// event of kind started, and returns the handle that records the outcome.
+//
+// It fails closed, unlike Audit. Audit is written after an action and never
+// stops it, which is right for a sign-in but means an approval or a grant could
+// happen with nothing in the log at all if the store was unwritable at that
+// moment. An intent written first means the log always holds at least the
+// attempt; when it cannot be written, the caller does not act.
+func (s *Store) BeginPrivileged(started, succeeded, failed, actor, subject, ip, detail string) (*Privileged, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrSecurityLogUnavailable
+	}
+	if err := retryBusy(func() error { return s.appendEvent(started, actor, subject, ip, detail) }); err != nil {
+		log.Printf("security log: could not record %s (%s), refusing it: %v", started, subject, err)
+		return nil, fmt.Errorf("%w: %v", ErrSecurityLogUnavailable, err)
+	}
+	return &Privileged{s: s, succeeded: succeeded, failed: failed, actor: actor, subject: subject, ip: ip}, nil
+}
+
+// Done records the outcome: succeeded with detail when err is nil, otherwise
+// failed with the error after detail. The action has happened (or not) by
+// now, so this cannot refuse anything; a write that fails is logged, as Audit
+// does. A second call does nothing, so a deferred Done after an explicit one
+// is safe.
+func (p *Privileged) Done(err error, detail string) {
+	if p == nil || p.done {
+		return
+	}
+	p.done = true
+	if err == nil {
+		p.s.Audit(p.succeeded, p.actor, p.subject, p.ip, detail)
+		return
+	}
+	if detail != "" {
+		detail += ": "
+	}
+	p.s.Audit(p.failed, p.actor, p.subject, p.ip, detail+err.Error())
 }
 
 // HasRecentEvent reports whether an event of this kind was recorded at or after
@@ -388,7 +465,10 @@ func (s *Store) SecurityEvents(after int64, limit int) ([]SecurityEvent, error) 
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, s.attachSeals(out)
 }
 
 // SecurityEventsOfKind returns one kind's events, oldest first: what the
@@ -488,7 +568,7 @@ func CheckEventChainFrom(evs []SecurityEvent, lastID int64, prev string) (int64,
 			return e.ID, fmt.Sprintf("event %d follows %d: events are missing", e.ID, lastID)
 		case e.PrevHash != prev:
 			return e.ID, fmt.Sprintf("event %d does not chain to the event before it", e.ID)
-		case EventHash(e) != e.RowHash:
+		case !EventIntact(e): // its own hash, or its seal once pseudonymised
 			return e.ID, fmt.Sprintf("event %d has been changed", e.ID)
 		}
 		prev, lastID = e.RowHash, e.ID

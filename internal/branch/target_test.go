@@ -32,13 +32,35 @@ func TestTargetValidate(t *testing.T) {
 	if err := ok.Validate(false); err != nil {
 		t.Fatalf("a good target: %v", err)
 	}
-	plain := ok
-	plain.Endpoint = "http://minio.internal:9000"
-	if err := plain.Validate(false); err == nil || !strings.Contains(err.Error(), "--allow-http") {
-		t.Errorf("plain HTTP without --allow-http: %v", err)
+	// Plain HTTP to another machine is refused unless asked for by name.
+	for _, ep := range []string{"http://minio.internal:9000", "http://10.0.0.5:9000", "http://s3.example.com"} {
+		plain := ok
+		plain.Endpoint = ep
+		if !plain.InsecureHTTP() {
+			t.Errorf("%s is not counted as insecure", ep)
+		}
+		if err := plain.Validate(false); err == nil || !strings.Contains(err.Error(), "--allow-insecure-http") {
+			t.Errorf("%s without --allow-insecure-http: %v", ep, err)
+		}
+		// The escape hatch.
+		if err := plain.Validate(true); err != nil {
+			t.Errorf("%s with --allow-insecure-http: %v", ep, err)
+		}
 	}
-	if err := plain.Validate(true); err != nil {
-		t.Errorf("plain HTTP with --allow-http: %v", err)
+	// Plain HTTP that never leaves the machine — loopback, or the engine's own
+	// object store on the docker network — needs no permission.
+	for _, ep := range []string{"http://127.0.0.1:9000", "http://localhost:9000", "http://[::1]:9000", "http://127.0.0.2", objStoreEndpoint} {
+		local := ok
+		local.Endpoint = ep
+		if local.InsecureHTTP() {
+			t.Errorf("%s is counted as insecure", ep)
+		}
+		if err := local.Validate(false); err != nil {
+			t.Errorf("%s refused: %v", ep, err)
+		}
+	}
+	if ok.InsecureHTTP() || localTarget().InsecureHTTP() {
+		t.Error("https, or the local store, counted as insecure")
 	}
 	noKey := ok
 	noKey.SecretKey = ""

@@ -210,6 +210,10 @@ func initSchemaOnce(db *sql.DB) error {
 		_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		return err
 	}
+	if _, err := conn.ExecContext(ctx, requestMetaSchema); err != nil {
+		_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		return err
+	}
 	if err := migrate(ctx, conn); err != nil {
 		_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		return err
@@ -272,7 +276,8 @@ func migrate(ctx context.Context, db *sql.Conn) error {
 )`); err != nil {
 		return err
 	}
-	return nil
+	// The security log's seals and its controlled prune (seclogprivacy.go).
+	return migrateSecurityLogPrivacy(ctx, db)
 }
 
 func hasColumn(ctx context.Context, db *sql.Conn, table, column string) (bool, error) {

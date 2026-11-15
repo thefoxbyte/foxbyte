@@ -112,7 +112,14 @@ inherited by every branch, capture **every** schema change and attribute it:
   all, and over time each agent may change at most 1,000 rows of a table per
   hour across all its statements. `fox guardrail limit` and `fox guardrail
   budget` change them, per table if needed; an admin can let one statement
-  through.
+  through. An agent's transactions on one table take turns with the budget,
+  so holding several open at once does not multiply it.
+
+**Who can read it.** Every client login can read who changed what, when, and
+the hashes. The statement text can hold the values a change wrote, so a client
+reads only the text of its own entries (`bb.ledger_statement(id)`, for a
+per-user or per-agent login); the superuser and admins (`fox admin grant`)
+read all of it, and `bb.ledger_verify()` checks the chain for anyone.
 
 ```bash
 fox blackbox            # every schema change on this branch, most recent first
@@ -204,14 +211,45 @@ What is applied is the Blackbox's own record of what ran on `dev`, so `main` end
 up holding the same statements, each attributed to whoever wrote it, with the
 approver beside it. It is refused if both branches changed the same object since
 they split, if `main`'s policy gate would block a statement, or if there is
-nothing to promote. **Schema only — no data is moved.** An agent can ask
-(MCP `request_changes`) and cannot approve its own: approving needs the right to
-manage the target. There is a **Requests** page in the console.
+nothing to promote. **Schema only, unless you ask.** The Blackbox records an
+agent's data changes too, and on its branch those are usually test rows, so a
+request leaves out every INSERT, UPDATE, DELETE, MERGE, TRUNCATE and COPY and
+lists what it left out; a statement that would change rows inside a schema
+change's text is refused. `fox branch request dev --include-data` (API and MCP:
+`include_data`) carries them, and the request says so in capitals to whoever
+approves it.
+
+A request is applied once. The apply writes the request's id into the target's
+own `bb.applied_requests` in the same transaction as the changes, and an id
+already there is refused; the transaction also checks again that the target has
+not changed the same objects since the fork. If the changes committed but
+recording the outcome failed, the next request from that branch reads the
+target's record and marks the request applied rather than offering its
+statements again. Asking twice for exactly the same changes while a request is
+open returns the open one. Approving, rejecting and applying are each written to
+the security log before they happen and again with the outcome; if the first
+write fails, nothing is decided.
+
+An agent can ask (MCP `request_changes`) and cannot approve its own: approving
+needs the right to manage the target. There is a **Requests** page in the
+console.
 
 Beside it, a **security log** records what happens at the doors — sign-ins and
 failed ones, sign-ups, API keys made and revoked, password changes, deleted
 accounts, admin grants and every refused request — chained and anchored the
 same way: `fox audit`, `fox audit verify`, and `GET /api/audit` for admins.
+
+It keeps everything until you say otherwise. **Set `FOX_SECURITY_LOG_RETENTION`
+(for example `400d`) to the period your own policy requires**; there is no
+default, because how long sign-in records are kept is your decision to make.
+Older events are removed after they are anchored, and the log records where it
+now starts, so `fox audit verify` still checks everything that is left. When an
+account is deleted — by an admin, by `fox user delete`, or by its holder from
+`DELETE /api/account` — its email and the addresses it signed in from are
+replaced in the log by a keyed pseudonym, without breaking the chain. Account
+holders can download their own data from `GET /api/account/export`. For access
+and erasure requests about people in your databases, see
+[docs/data-subject-requests.md](docs/data-subject-requests.md).
 
 ---
 
@@ -291,25 +329,101 @@ keeps your locally-built engine instead of downloading a release.
 
 Every release's `SHA256SUMS` is signed with the FoxByte release key
 (`SHA256SUMS.sig`, Ed25519). `install.sh` checks the signature against the key
-it carries — which comes from this repository, not from the release — wherever
-`openssl` can do Ed25519 (OpenSSL 3; macOS's LibreSSL cannot, and the installer
-says so; `FOX_REQUIRE_SIGNATURE=1` refuses instead). `fox update` checks it on
-every update, `fox setup` on the engine it downloads, and neither installs a
+it carries wherever `openssl` can do Ed25519 (OpenSSL 3). `fox update` checks it
+on every update, `fox setup` on the engine it downloads, and neither installs a
 release that fails. The Windows distro image, built by its own workflow, has
-its own signed `SHA256SUMS.distro`. Each file also has a
-GitHub build attestation and the release an SBOM (`foxbyte-sbom.spdx.json`):
+its own signed `SHA256SUMS.distro`.
+
+Releases can also carry a second signature, `SHA256SUMS.p256.sig` (ECDSA P-256
+over SHA-256), because macOS's LibreSSL and Windows PowerShell cannot check
+Ed25519. `install.sh` tries Ed25519 first and then P-256; `install.ps1` checks
+P-256. Until the P-256 key is made (below), those machines install on checksums
+alone and say so (`FOX_REQUIRE_SIGNATURE=1` refuses instead on macOS). Once it
+is made, they refuse a release they cannot check, unless `FOX_ALLOW_UNSIGNED=1`.
+
+The signed `SHA256SUMS` also names the release it belongs to, in a first line
+that older verifiers read as the checksum of a file nobody asks for:
+
+```
+0000000000000000000000000000000000000000000000000000000000000000  VERSION=v2.3.0
+```
+
+fox and both installers refuse a release whose line names a different tag (an
+old release republished under a newer tag), and, from v2.3.0 on, a release with
+no line at all. Older releases never had it and still install when you name
+them (`FOX_VERSION=v2.2.1`). `fox update` never moves to an older version;
+going back is a reinstall with the installer and `FOX_VERSION`.
+
+To check a download by hand, `sha256sum -c --ignore-missing SHA256SUMS` passes
+over the version line, and the signatures check with
+`openssl pkeyutl -verify -rawin` (Ed25519) or `openssl dgst -sha256 -verify`
+(P-256). Each file also has a GitHub build attestation and the release an SBOM
+(`foxbyte-sbom.spdx.json`):
 
 ```bash
 gh attestation verify fox-darwin-arm64 --repo thefoxbyte/foxbyte
 gh attestation verify oci://ghcr.io/thefoxbyte/postgres-walg:18 --repo thefoxbyte/foxbyte
 ```
 
-For maintainers: the release key's private half is the `FOX_RELEASE_SIGNING_KEY`
-Actions secret (and a password manager); `make release-key` made it once, and
-replacing it would stop released builds from updating. The Actions are pinned
-by commit and the images by digest; Dependabot proposes Action and module
-updates, and `scripts/check-image-digests.sh` reports image pins that have
-fallen behind their tags.
+The one-line installers come from the latest release (`install.sh` and
+`install.ps1` are release assets, listed in the signed `SHA256SUMS`), not from
+`main`: `get.thefoxbyte.com` redirects to them. See `deploy/get/README.md`.
+
+### Release signing (maintainers)
+
+The Ed25519 key's private half is the `FOX_RELEASE_SIGNING_KEY` secret (and a
+password manager); `make release-key` made it once, and replacing it would stop
+released builds from updating. The Actions are pinned by commit and the images
+by digest; Dependabot proposes Action and module updates, and
+`scripts/check-image-digests.sh` reports image pins that have fallen behind
+their tags.
+
+**Turning on the P-256 signature.** Nothing in the repository holds that key
+yet: `internal/update/signing.go`, `deploy/install.sh` and `deploy/install.ps1`
+carry an empty one, and releases go out without `SHA256SUMS.p256.sig` until it
+is made. To make it, once:
+
+```sh
+go run ./cmd/releasesign generate-p256 --write
+gh secret set FOX_RELEASE_SIGNING_KEY_P256 --env release < release-signing-p256.key
+# put release-signing-p256.key in the password manager, then delete it
+git add internal/update/signing.go deploy/install.sh deploy/install.ps1   # the public key
+```
+
+Set the secret before the commit is released: from then on the release
+workflow fails rather than publish a release without the P-256 signature,
+because installers carrying the key would refuse it. Releases cut before that
+have no P-256 signature, so installing one of them on a Mac with LibreSSL or on
+Windows needs `FOX_ALLOW_UNSIGNED=1` once the key is in the installer.
+
+**GitHub settings, by hand.** The workflows do what code can do: the signing
+jobs (`release` in release.yml, `distro` in wsl-distro.yml) run only for a `v*`
+tag, in an environment named `release`, and a manual run must be started from
+the tag ("Use workflow from" → Tags). The rest is repository settings:
+
+1. **Environment.** Settings → Environments → New environment `release`. Add
+   required reviewers (a maintainer other than the one tagging, where there is
+   one), and under Deployment branches and tags choose "Selected branches and
+   tags" with the tag rule `v*`.
+2. **Secrets into the environment.** Add `FOX_RELEASE_SIGNING_KEY` (and
+   `FOX_RELEASE_SIGNING_KEY_P256`) as environment secrets of `release`, then
+   delete the repository secrets of the same name, so no other job or branch
+   can read them.
+3. **Tags.** Settings → Rules → Rulesets → New tag ruleset targeting `v*`:
+   restrict creation, updates and deletion to maintainers, and block force
+   pushes. A tag that can be moved can be re-pointed at other code after the
+   review.
+4. **main.** A branch ruleset (or branch protection) on `main`: pull requests
+   with a review, required status checks, no force pushes or deletion. The
+   installers' pinned keys and the workflows live there.
+5. **Workflow token.** Settings → Actions → General → Workflow permissions:
+   "Read repository contents". Jobs that publish ask for `contents: write`
+   themselves; any other workflow then cannot upload release assets, which
+   matters now that the install host serves the installers from them.
+6. **Vercel.** The install host's project deploys `deploy/get` from `main`.
+   Before that change reaches it, upload the installers to the current latest
+   release (`gh release upload <tag> deploy/install.sh deploy/install.ps1`), or
+   the one-liner 404s until the next release.
 
 ---
 
@@ -427,7 +541,8 @@ fox backup create               # base backup -> object storage
 fox backup list
 fox backup target               # where backups go (the local store, or a bucket)
 fox backup target set s3://my-bucket/fox --endpoint https://s3.eu-west-1.amazonaws.com \
-    --access-key AKIA… --region eu-west-1   # asks for the secret key
+    --access-key AKIA… --region eu-west-1   # asks for the secret key; encrypted client-side
+fox backup key export           # the backup encryption key: keep it off this machine and the bucket
 fox backup prune --keep 7       # delete all but the newest 7 full backups
 fox restore --to latest         # PITR into a disposable container on port 5433
 fox restore --to '2026-08-24 15:07:00+00'
@@ -458,6 +573,36 @@ Object Lock; AWS S3 and other providers are expected to work the same way.
 Moving the target restarts main and takes a first backup there; backups left on
 the old target stay there, and are restorable after moving back.
 
+**Backups in a bucket are encrypted before they leave.** A remote target set
+on an empty prefix is encrypted client-side by wal-g (libsodium) with a key
+FoxByte makes once and keeps at `~/.fox/backup-encryption.key` (0600) — never
+in the bucket, so whoever can read the bucket cannot read the database. Every
+wal-g run gets the key the same way the bucket's keys arrive, in a 0600 env
+file and never on a command line: WAL archiving, base backups, point-in-time
+restores, `fox backup verify` and the HA standby.
+
+- **Export the key now, and keep it off this machine and out of the bucket.**
+  `fox backup key export` prints it; a password manager or a sealed record is
+  the place for it. Lose it and the backups are lost — nobody can decrypt them,
+  including FoxByte. On a replacement machine, `fox backup key import` (it reads
+  the key from stdin) before setting the same target again.
+- **One archive is all encrypted or all plain.** wal-g, given a key, decrypts
+  everything it reads, and an object written without a key does not open. So
+  encryption is decided when the target is set, never switched on in place: a
+  target set before this release stays unencrypted and keeps restoring, and
+  `fox check` warns about it until it is moved to a new prefix. Setting a
+  target whose prefix already holds backups asks you to say how they were
+  written: `--no-encrypt` for plain ones, `--encrypt` for ones encrypted with
+  this install's key. Backups on an old target stay readable only with the
+  setting they were written with.
+- **HTTPS only, off this machine.** A plain `http://` endpoint is refused
+  unless it is this machine (loopback, or the engine's own object store);
+  `--allow-insecure-http` accepts one anyway, with a warning, and `fox check`
+  and `fox start` keep warning while it is in force. The bucket's secret key
+  would cross the network readable.
+- The local object store beside main is not encrypted: the key would sit on the
+  same disk as the backups, and the host's disk encryption is the control there.
+
 **Branches are disposable.** Only `main` archives WAL; a branch is a
 copy-on-write clone for experiments and agents. If a branch holds work that
 matters, `fox backup export --branch <name>` keeps a copy.
@@ -485,7 +630,7 @@ fox node expose --address A --peer B --yes   # let a standby on another machine 
 fox node join <token>           # on the other machine: become its standby
 fox node unexpose | leave | status | token
 fox ha witness --primary H:5432 --token T              # on a third host: the second opinion
-fox ha watch --witness https://W:7070/ha/primary --token T   # on the standby: automatic failover
+fox ha watch --witness https://W:7070/ha/primary --token T --accept-unfenced   # on the standby: automatic failover
 ```
 
 `fox node expose` is the only thing that puts Postgres on a network, and it is
@@ -512,12 +657,25 @@ then works as it does on one machine: `fox ha status` shows how far behind it is
 `fox ha failover` promotes it, and `fox ha drill` measures what a failover costs.
 That machine's own `main` sits idle while it follows another primary.
 
+`fox ha failover` fences before it promotes. On one machine it stops the old
+primary, waits until docker reports it stopped, and only then promotes the
+standby and routes `main` to it. When docker cannot confirm the stop, it refuses
+and names the container to stop by hand. `--force` promotes anyway, at the risk
+it states: sessions still connected to the old primary can commit writes the new
+primary never sees, and those are lost. `fox up` never starts the old main
+beside a promoted standby, and stops it if something else did. A failover or
+failback interrupted by a crash is settled at the next `fox up`, by asking which
+server is out of recovery, before anything starts as primary.
+
 `fox ha failover` on a machine that follows a remote primary refuses while that
 primary still answers — promoting would make a second primary and the two copies
 would diverge, and this command cannot stop a database on another machine. Stop
 it first, or pass `--force` if something else already has. The check cannot tell
 a dead primary from one it merely cannot reach, so a network partition still
-needs a failover manager to arbitrate.
+needs a failover manager to arbitrate. A promotion past it is recorded as not
+fenced, and `fox ha status` says so until a failback. `fox ha watch` will only
+promote with `--accept-unfenced` (or watch with `--dry-run`), because a primary
+on another machine can never be confirmed stopped from this one.
 
 Replication is asynchronous by default: commits never wait, and losing the
 machine costs up to a minute of writes (`archive_timeout=60`). `fox ha sync on`
@@ -735,7 +893,15 @@ A fresh install exposes nothing it does not have to:
 
 - **Backups can leave the machine.** `fox backup target set` sends the WAL
   archive, base backups and anchor copies to an S3 bucket (see
-  [Durability](#usage)); the keys never appear on a command line.
+  [Durability](#usage)); the keys never appear on a command line. A new
+  remote archive is encrypted client-side with a key kept on this machine
+  (`fox backup key export` for disaster recovery), and an `http://` endpoint
+  on another machine is refused without `--allow-insecure-http`.
+- **Secrets on disk are plain files, readable only by their owner.** The
+  install's passwords and keys (`~/.fox/secrets.json`, the backup target, the
+  backup encryption key, the env files handed to docker) are 0600 files, not
+  encrypted at rest. Encrypt the host's disk: that is the control for them, and
+  for the databases and the local backup store beside them.
 
 ## What FoxByte is not
 
@@ -806,6 +972,23 @@ features need a licence — without one it behaves exactly like Standard.
 | ETL pipelines (`fox import` is free: migrating in is onboarding, not ETL) | — | yes |
 | Scanning for personal data (`fox pii scan`); reading what earlier scans found | — / yes | yes |
 | The access review report (`fox access review`) | — | yes |
+
+**Which columns the change feed carries.** `fox realtime enable <table>` streams
+every column unless you name them: `--columns id,status,total` sends only those,
+plus the primary key, which always streams because updates and deletes are
+located by it. On PostgreSQL 15 and later (every major FoxByte runs) the list goes
+into the publication, so the other columns never leave Postgres; the decoder drops
+them again in any case, and is the only filter on an older major or under
+`REPLICA IDENTITY FULL`. A table with a primary key sends only the key as the old
+row of an update or delete; `--old-values` asks for the whole previous row
+(REPLICA IDENTITY FULL, which costs WAL on every update). A table with columns
+that `fox pii` review confirmed, or that have a masking rule, is refused until
+those columns are left out or you pass `--allow-pii`, which is recorded in the
+security log: masking does not apply to a change feed. Tables enabled before this
+keep streaming every column; `fox realtime status`, `tables` and `doctor` warn
+about any that send confirmed personal data. The console API takes the same
+choice as `columns`, `old_values` and `allow_pii` on `POST
+/api/branches/{name}/realtime/enable`.
 
 ```sh
 curl -fsSL https://get.thefoxbyte.com/install.sh \

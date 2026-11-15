@@ -4,6 +4,7 @@ package auth
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -149,5 +150,120 @@ func TestForgetBranchAlsoForgetsRequests(t *testing.T) {
 	}
 	if len(left) != 0 {
 		t.Errorf("an open request outlived its branch: %+v", left)
+	}
+}
+
+// Two open requests for exactly the same changes are two chances to apply
+// them. The second ask gets the first request back.
+func TestADuplicateOpenRequestReturnsTheExistingOne(t *testing.T) {
+	s := testStore(t)
+	n := NewChangeRequest{Source: "dev", Target: "main", ForkAfterID: 4, Entries: `[{"id":5},{"id":6}]`,
+		EntryKey: "5,6", Omitted: `[{"id":7}]`, OmittedCount: 1}
+	first, existing, err := s.OpenChangeRequest(CLIUser, n)
+	if err != nil || existing {
+		t.Fatalf("first: %v, existing=%v", err, existing)
+	}
+	if first.IncludeData || first.OmittedCount != 1 || first.Omitted != `[{"id":7}]` {
+		t.Errorf("what was left out is not kept: %+v", first)
+	}
+	second, existing, err := s.OpenChangeRequest(CLIUser, n)
+	if err != nil || !existing || second.ID != first.ID {
+		t.Fatalf("second: #%d, existing=%v, %v; want #%d back", second.ID, existing, err, first.ID)
+	}
+	// A different set of entries, another target, or a source with a decided
+	// request is a new request.
+	other := n
+	other.EntryKey = "5,6,8"
+	if c, existing, _ := s.OpenChangeRequest(CLIUser, other); existing || c.ID == first.ID {
+		t.Error("a request for more entries was merged into a smaller one")
+	}
+	elsewhere := n
+	elsewhere.Target = "staging"
+	if _, existing, _ := s.OpenChangeRequest(CLIUser, elsewhere); existing {
+		t.Error("a request to another target was merged")
+	}
+	if _, err := s.ClaimChangeRequest(first.ID, CLIUser, RequestRejected, ""); err != nil {
+		t.Fatal(err)
+	}
+	if again, existing, _ := s.OpenChangeRequest(CLIUser, n); existing || again.ID == first.ID {
+		t.Error("a decided request was handed back as if still open")
+	}
+	all, _ := s.ChangeRequests("", "")
+	if len(all) != 4 {
+		t.Errorf("%d requests, want 4", len(all))
+	}
+}
+
+// A request made with data included says so wherever it is read.
+func TestIncludeDataIsRecorded(t *testing.T) {
+	s := testStore(t)
+	c, _, err := s.OpenChangeRequest(CLIUser, NewChangeRequest{Source: "dev", Target: "main", Entries: `[{"id":1}]`,
+		EntryKey: "1", IncludeData: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ChangeRequest(c.ID)
+	if err != nil || !got.IncludeData {
+		t.Fatalf("include_data lost: %+v, %v", got, err)
+	}
+	// One made the old way reads as schema only, with nothing listed.
+	old, err := s.CreateChangeRequest(CLIUser, "dev", "main", 0, `[{"id":2}]`)
+	if err != nil || old.IncludeData || old.OmittedCount != 0 {
+		t.Fatalf("%+v, %v", old, err)
+	}
+}
+
+// When applying committed and noting so did not, the target's own record is
+// what the store is reconciled from: the request reads as applied, and the
+// next request from the same source does not offer its entries again.
+func TestReconcileMarksAnUnrecordedApplyAsApplied(t *testing.T) {
+	s := testStore(t)
+	c, _ := s.CreateChangeRequest(CLIUser, "dev", "main", 0, `[{"id":1},{"id":2}]`)
+	if _, err := s.ClaimChangeRequest(c.ID, CLIUser, RequestApproved, "ok"); err != nil {
+		t.Fatal(err)
+	}
+	// Finish never ran: approved, nothing applied.
+	if err := s.ReconcileChangeRequest(c.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.ChangeRequest(c.ID)
+	if got.Status != RequestApproved || got.Applied != 2 || !strings.Contains(got.Note, reconciledNote) {
+		t.Fatalf("not reconciled: %+v", got)
+	}
+	// A count already recorded is never overwritten.
+	if err := s.ReconcileChangeRequest(c.ID, 9); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ChangeRequest(c.ID); got.Applied != 2 {
+		t.Errorf("a recorded count was overwritten: %d", got.Applied)
+	}
+
+	// A request whose commit was not confirmed is recorded as failed; the
+	// target's record turns it into applied.
+	f, _ := s.CreateChangeRequest(CLIUser, "dev", "main", 0, `[{"id":3}]`)
+	if _, err := s.ClaimChangeRequest(f.ID, CLIUser, RequestApproved, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishChangeRequest(f.ID, 0, "the commit was not confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReconcileChangeRequest(f.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ChangeRequest(f.ID); got.Status != RequestApproved || got.Applied != 1 {
+		t.Errorf("a failed-but-applied request was not reconciled: %+v", got)
+	}
+
+	// An open or rejected request is never marked applied.
+	o, _ := s.CreateChangeRequest(CLIUser, "dev", "main", 0, `[{"id":4}]`)
+	if err := s.ReconcileChangeRequest(o.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ChangeRequest(o.ID); got.Status != RequestOpen || got.Applied != 0 {
+		t.Errorf("an open request was marked applied: %+v", got)
+	}
+	hist, err := s.RequestsFrom("dev", "main", RequestApproved, RequestFailed)
+	if err != nil || len(hist) != 2 {
+		t.Errorf("history = %d, %v; want the two applied requests", len(hist), err)
 	}
 }

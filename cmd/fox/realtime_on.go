@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/thefoxbyte/foxbyte/enterprise/realtime"
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
@@ -57,7 +58,8 @@ func realtimeEnterpriseCmd(args []string) bool {
 
 func realtimeEnterpriseUsage() string {
 	return fmt.Sprintf(`
-%[1]s realtime enable <table> [--branch b] [--events insert,update,delete] [--replica-identity=full]
+%[1]s realtime enable <table> [--branch b] [--events insert,update,delete] [--columns a,b,c]
+                       [--old-values] [--replica-identity=full] [--allow-pii]
 %[1]s realtime disable <table> [--branch b]
 %[1]s realtime tables [--branch b]
 %[1]s realtime doctor [--branch b]            what can stream, what needs changing, what cannot
@@ -77,16 +79,51 @@ func realtimeEnable(args []string) error {
 	req := realtime.Request{
 		Table:        realtime.Table{Schema: schema, Name: table},
 		FullIdentity: hasFlag(args, "--replica-identity=full"),
+		OldValues:    hasFlag(args, "--old-values"),
+		AllowPII:     hasFlag(args, "--allow-pii"),
+		Actor:        cliActor(),
 	}
-	if ev := optValue(args, "--events"); ev != "" {
+	if ev := flagValue(args, "--events"); ev != "" {
 		req.Events = strings.Split(ev, ",")
 	}
+	if cols := flagValue(args, "--columns"); cols != "" {
+		req.Columns = strings.Split(cols, ",")
+	}
+	// Streaming personal data on purpose is recorded in the security log, so
+	// a log that cannot be opened refuses the opt-in rather than lose it.
+	store := historyStore()
+	if store != nil {
+		defer store.Close()
+	} else if req.AllowPII {
+		return fmt.Errorf("--allow-pii is recorded in the security log, which could not be opened; nothing was changed")
+	}
 	name := branchFlag(args)
-	if err := realtime.Enable(name, req); err != nil {
+	res, err := realtime.Enable(name, req)
+	if err != nil {
 		return err
 	}
-	fmt.Printf("Streaming %s.%s on %q (%s).\n", schema, table, name, strings.Join(req.EventList(), ", "))
+	if store != nil {
+		store.Audit(auth.EvRealtimeEnabled, cliActor(), name, "", realtime.AuditDetail(res))
+	}
+	cols := "every column"
+	if len(res.Columns) > 0 {
+		cols = strings.Join(res.Columns, ", ")
+	}
+	fmt.Printf("Streaming %s on %q (%s): %s.\n", res.Table, name, strings.Join(res.Events, ", "), cols)
+	for _, n := range res.Notes {
+		fmt.Printf("  %s.\n", strings.TrimSuffix(n, "."))
+	}
 	return nil
+}
+
+// flagValue reads `--flag value` or `--flag=value`.
+func flagValue(args []string, flag string) string {
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, flag+"="); ok {
+			return v
+		}
+	}
+	return optValue(args, flag)
 }
 
 func realtimeDisable(args []string) error {
@@ -114,21 +151,78 @@ func realtimeTables(args []string) error {
 		fmt.Printf("Nothing is streamed on %q. Add a table with:\n  %s realtime enable <table>\n", name, brand.CLI)
 		return nil
 	}
-	for _, t := range tables {
-		fmt.Println(t)
+	// The column choice beside each table, from the survey. If it cannot be
+	// read the names alone still answer what this command is for.
+	about := map[string]realtime.Verdict{}
+	var streaming []realtime.Verdict
+	if vs, err := realtime.Survey(name, nil); err == nil {
+		for _, v := range vs {
+			if v.State == realtime.Streaming {
+				about[v.Table.Qualified()] = v
+				streaming = append(streaming, v)
+			}
+		}
 	}
+	for _, t := range tables {
+		v, ok := about[t]
+		switch {
+		case !ok:
+			fmt.Println(t)
+		case len(v.Table.StreamColumns) > 0:
+			fmt.Printf("%-40s columns: %s\n", t, strings.Join(v.Table.StreamColumns, ", "))
+		default:
+			fmt.Printf("%-40s every column\n", t)
+		}
+	}
+	printPIIWarnings(streaming)
 	return nil
 }
 
-// splitTable reads `schema.table` or a bare `table`, which means public.
-func splitTable(args []string) (string, string, error) {
-	raw := ""
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") {
-			raw = a
-			break
+// printPIIWarnings names each streaming table that sends confirmed personal
+// data. A table enabled before column choice existed streams every column
+// and keeps doing so after an upgrade; this is where its admin finds out what
+// that includes.
+func printPIIWarnings(vs []realtime.Verdict) {
+	first := true
+	for _, v := range vs {
+		w := v.PIIWarning()
+		if w == "" {
+			continue
+		}
+		if first {
+			fmt.Println()
+			first = false
+		}
+		fmt.Printf("! %s\n", w)
+	}
+}
+
+// realtimePIIStatus is `fox realtime status`'s warning about personal data,
+// for main: the branch a realtime key is usually for.
+func realtimePIIStatus() {
+	if !edition.Has(edition.Realtime) {
+		return
+	}
+	vs, err := realtime.Survey("main", nil)
+	if err != nil {
+		return
+	}
+	var streaming []realtime.Verdict
+	for _, v := range vs {
+		if v.State == realtime.Streaming {
+			streaming = append(streaming, v)
 		}
 	}
+	printPIIWarnings(streaming)
+}
+
+func init() { realtimeStatusExtra = realtimePIIStatus }
+
+// splitTable reads `schema.table` or a bare `table`, which means public.
+func splitTable(args []string) (string, string, error) {
+	// The value of a flag is not the table: `--columns a,b orders` names
+	// orders.
+	raw := firstPositional(args, "--branch", "--events", "--columns")
 	if raw == "" {
 		return "", "", fmt.Errorf("which table? usage:%s", realtimeEnterpriseUsage())
 	}
@@ -201,6 +295,7 @@ func realtimeDoctor(args []string) error {
 		fmt.Printf(" · %d system tables not listed", system)
 	}
 	fmt.Println()
+	printPIIWarnings(rows)
 	if fixable > 0 {
 		fmt.Printf("\n%s realtime prepare --all        the free changes, on every table that needs them\n", brand.CLI)
 		fmt.Printf("%s realtime prepare <table>      one table, including the ones with a cost\n", brand.CLI)

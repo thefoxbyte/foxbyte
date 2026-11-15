@@ -63,8 +63,16 @@ func realtimeStatus() error {
 		fmt.Printf("\nNo licence covers the feed itself on this install, so nothing is streaming.\n"+
 			"The setting above is harmless; `%s realtime teardown` puts it back.\n", brand.CLI)
 	}
+	if realtimeStatusExtra != nil {
+		realtimeStatusExtra()
+	}
 	return nil
 }
+
+// realtimeStatusExtra is what the Enterprise build adds to status: a warning
+// for each table streaming confirmed personal data. It reads findings only
+// that build has, so the Standard build leaves it nil.
+var realtimeStatusExtra func()
 
 // setup is the one way in, and it says what it will do before doing it.
 //

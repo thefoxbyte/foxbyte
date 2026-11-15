@@ -3,6 +3,7 @@
 package branch
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -70,6 +71,10 @@ func haInfoWithin(d time.Duration) HAState {
 // Note: this is a single-VM demonstration of the mechanism (replication +
 // promotion + rerouting). Production HA additionally needs multi-host
 // deployment, automatic failure detection, and fencing to prevent split-brain.
+//
+// A failover fences before it promotes: on one machine the old primary is
+// stopped and seen stopped first (promoteFenced). Across machines that cannot
+// be confirmed, and the promotion says so (fenceRemotePrimary, watch.go).
 
 const (
 	standbyDataset = "dbpool/standby"
@@ -453,6 +458,12 @@ func HAStatus() error {
 		fmt.Printf("=== this machine ===\n%s\n", d)
 		fmt.Printf("its own 'main' is idle while it follows that primary\n")
 	}
+	if b, err := os.ReadFile(unfencedFile()); err == nil {
+		fmt.Printf("=== fencing ===\nthe last failover promoted without confirming the old primary had stopped:\n%s\n", strings.TrimSpace(string(b)))
+	}
+	if b, err := os.ReadFile(promotingFile()); err == nil {
+		fmt.Printf("=== fencing ===\na promotion of %q was interrupted; `%s up` settles which server is the primary\n", strings.TrimSpace(string(b)), brand.CLI)
+	}
 	fmt.Println("=== durability ===")
 	switch {
 	case SyncActive() && syncQuorumMet():
@@ -488,14 +499,42 @@ func HAStatus() error {
 
 // HAFailover promotes the standby to primary and reroutes "main" to it.
 //
-// The old primary is stopped first, which is the whole of fencing while both
-// are containers on this machine. It is not enough when the primary is on
-// another machine — see fenceRemotePrimary, which refuses rather than making a
-// second one.
+// The old primary is fenced first: stopped, and seen to be stopped, before the
+// standby is promoted. It used to be the other way round, with a stop whose
+// failure was ignored. For that window, or for good when the stop failed,
+// sessions still connected to the old primary went on committing writes the
+// promoted standby never saw, and those writes were then lost.
 //
-// force skips that refusal, for a primary an operator has already isolated by
-// other means. It does not skip stopping the local one.
-func HAFailover(force bool) error {
+// On one machine, fencing is stopping the old primary's container and waiting
+// for docker to report it stopped. When that cannot be confirmed the failover
+// is refused; force promotes anyway, and says what that risks. When the
+// primary is on another machine (a node that joined it), nothing here can stop
+// it, so fencing is never confirmed: fenceRemotePrimary refuses while it still
+// answers, and a promotion past that is recorded as unfenced.
+//
+// "main" is routed to the standby only once it has been promoted: the marker
+// the gateway reads is written after pg_promote has finished.
+func HAFailover(force bool) error { return haFailover(failoverAsk{force: force}) }
+
+// failoverAsk is who is asking for a failover, and on what grounds.
+type failoverAsk struct {
+	force bool // promote although the old primary could not be confirmed stopped
+	// unattended is `ha watch`. It never forces. Its primary is always on
+	// another machine, where fencing cannot be confirmed, so it promotes only
+	// with the witness's agreement and the operator's --accept-unfenced.
+	unattended     bool
+	witnessAgreed  bool
+	acceptUnfenced bool
+}
+
+func haFailover(ask failoverAsk) error {
+	// Both containers change role, so both branches are held: nothing may
+	// wake, suspend, reset or delete either while this runs.
+	unlock, err := lockHA("failed over")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	old := PrimaryContainer()
 	// Whether this promotion is of a copy taken from another install, which
 	// decides whether its role passwords have to be rewritten. Read before the
@@ -504,21 +543,15 @@ func HAFailover(force bool) error {
 	if err := haGuard("failover", old); err != nil {
 		return err
 	}
-	if ContainerState("standby") != "running" {
+	if st, _ := haDocker.state(container("standby")); st != "running" {
 		return fmt.Errorf("no running standby to promote — run 'foxbyte ha enable' first")
 	}
-	// Before the promotion, not after: a refusal has to come while there is
-	// still only one primary.
-	if err := fenceRemotePrimary(force); err != nil {
+	unfenced, err := promoteFenced(old, ask)
+	if err != nil {
 		return err
 	}
-	if err := run("docker", "exec", "--env-file", pgEnvFile(), container("standby"),
-		"psql", "-U", pgUser, "-d", pgDatabase, "-c", "SELECT pg_promote();"); err != nil {
-		return err
-	}
-	quiet("docker", "stop", old) // the old primary steps down
-	if err := setPrimary("standby"); err != nil {
-		return err
+	if unfenced != "" {
+		fmt.Printf("\nWARNING: %s\n\n", unfenced)
 	}
 	// A promoted standby follows nobody: it is the primary now.
 	//
@@ -623,6 +656,10 @@ func HADisable() error {
 // `fox stop` removed its container) and the stale old main is left stopped —
 // starting it would make a second writable primary.
 func ensurePromotedStandby() error {
+	// First, before the standby serves anything: the old main must be down.
+	if err := stepDownGuard(); err != nil {
+		return err
+	}
 	store := activeStorage()
 	switch ContainerState("standby") {
 	case "running":
@@ -659,6 +696,11 @@ func ensurePromotedStandby() error {
 // stopped and main has replayed everything it wrote. Until that moment the
 // standby stays the primary, so a failure part-way loses nothing.
 func HAFailback() error {
+	unlock, err := lockHA("failed back")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := haGuard("failback", PrimaryContainer()); err != nil {
 		return err
 	}
@@ -725,8 +767,10 @@ func HAFailback() error {
 
 	fmt.Println("3/5 stopping the standby and waiting for main to replay its last writes…")
 	// A clean shutdown sends all remaining WAL, up to the shutdown checkpoint, to
-	// the connected replica before the server exits.
-	if err := run("docker", "stop", standby); err != nil {
+	// the connected replica before the server exits. And it is the fence for
+	// this direction: main is promoted only once docker says the standby has
+	// stopped, so nothing can still be committing on it.
+	if _, err := fenceLocal(standby); err != nil {
 		return restart(err)
 	}
 	out, err := capture("docker", "run", "--rm", "--user", pgUID,
@@ -745,14 +789,15 @@ func HAFailback() error {
 	}
 
 	fmt.Println("4/5 promoting main…")
-	if err := run("docker", "exec", "--env-file", pgEnvFile(), container("main"),
-		"psql", "-U", pgUser, "-d", pgDatabase, "-c", "SELECT pg_promote();"); err != nil {
+	if err := promoteRecorded("main"); err != nil {
+		if errors.Is(err, errPromotionUnknown) {
+			// main may be a primary already: starting the standby again
+			// could make two. `fox up` settles it (settlePromotion).
+			return err
+		}
 		return restart(err)
 	}
 	// From here main is a primary: never start the standby again.
-	if err := setPrimary("main"); err != nil {
-		return err
-	}
 	if err := waitRecovered("main"); err != nil {
 		return fmt.Errorf("main was promoted but isn't ready yet: %w — check `fox status`", err)
 	}
@@ -760,6 +805,9 @@ func HAFailback() error {
 	fmt.Println("5/5 removing the old standby…")
 	removeContainer(standby)
 	store.destroyStandby()
+	// Whatever a failover could not confirm about the old primary is moot:
+	// main has just been rebuilt from the standby.
+	_ = os.Remove(unfencedFile())
 	// main is a primary again with no standby, so nothing may be waiting for
 	// one. The marker stays: `ha enable` below puts the mode back.
 	if SyncActive() {
@@ -829,4 +877,333 @@ func parseControlCheckpoint(out string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("pg_controldata didn't report the latest checkpoint location")
+}
+
+// --- fencing ---
+
+// haDocker is how a failover and a failback stop, start and look at the two
+// containers and promote one. A variable so a test can stand in for docker,
+// see the order things happen in, and play a docker that does not answer.
+var haDocker = struct {
+	stop       func(cont string) error
+	start      func(cont string) error
+	state      func(cont string) (string, error) // "absent", nil when there is no such container
+	promote    func(cont string) error           // returns once the server is out of recovery
+	inRecovery func(cont string) (bool, error)
+}{
+	stop: func(cont string) error {
+		if out, err := captureCombined("docker", "stop", cont); err != nil {
+			return fmt.Errorf("%w %s", err, strings.TrimSpace(out))
+		}
+		return nil
+	},
+	start: func(cont string) error {
+		if out, err := captureCombined("docker", "start", cont); err != nil {
+			return fmt.Errorf("%w %s", err, strings.TrimSpace(out))
+		}
+		return nil
+	},
+	state: func(cont string) (string, error) {
+		// Not containerStateWithin, which reads every failure as "absent": a
+		// docker that did not answer has not said the container is gone.
+		out, err := captureWithin(execProbe, "docker", "inspect", "-f", "{{.State.Status}}", cont)
+		if err != nil {
+			if strings.Contains(err.Error(), "No such object") || strings.Contains(err.Error(), "No such container") {
+				return "absent", nil
+			}
+			return "", err
+		}
+		return strings.TrimSpace(out), nil
+	},
+	promote: func(cont string) error {
+		// pg_promote waits (up to 60 s) and says whether it finished; psql
+		// exits 0 either way, so the answer is read rather than assumed.
+		out, err := captureCombined("docker", "exec", "--env-file", pgEnvFile(), cont,
+			"psql", "-U", pgUser, "-d", pgDatabase, "-tAq", "-v", "ON_ERROR_STOP=1", "-c", "SELECT pg_promote(true, 60)")
+		if err != nil {
+			return fmt.Errorf("%w %s", err, strings.TrimSpace(out))
+		}
+		if strings.TrimSpace(out) != "t" {
+			return fmt.Errorf("pg_promote did not report the promotion finished within 60 seconds (%q)", strings.TrimSpace(out))
+		}
+		return nil
+	},
+	inRecovery: func(cont string) (bool, error) {
+		out, err := captureCombined("docker", "exec", "--env-file", pgEnvFile(), cont,
+			"psql", "-U", pgUser, "-d", pgDatabase, "-tAq", "-c", "SELECT pg_is_in_recovery()")
+		switch strings.TrimSpace(out) {
+		case "t":
+			return true, nil
+		case "f":
+			return false, nil
+		}
+		if err == nil {
+			err = fmt.Errorf("unexpected answer %q", strings.TrimSpace(out))
+		}
+		return false, err
+	},
+}
+
+// fenceWait is how long a failover waits for docker to report the old primary
+// stopped, and fencePoll how often it asks. docker stop itself gives Postgres
+// ten seconds before it kills it, so this is that and room to spare.
+var (
+	fenceWait = 30 * time.Second
+	fencePoll = 500 * time.Millisecond
+)
+
+// stoppedState is a docker state in which a container runs no process, so a
+// Postgres in it can commit nothing. "paused" is not one: a paused server
+// still holds its sessions, and carries on with them when unpaused.
+func stoppedState(st string) bool {
+	switch st {
+	case "exited", "dead", "created", "absent":
+		return true
+	}
+	return false
+}
+
+// fenceLocal stops a container on this machine and waits, up to fenceWait,
+// for docker to say it has stopped. stoppedHere is whether it had to be
+// stopped (false when it was down already), so a failover that goes no
+// further knows to start it again.
+func fenceLocal(cont string) (stoppedHere bool, err error) {
+	if st, err := haDocker.state(cont); err == nil && stoppedState(st) {
+		return false, nil
+	}
+	stopErr := haDocker.stop(cont)
+	deadline := time.Now().Add(fenceWait)
+	for {
+		st, err := haDocker.state(cont)
+		if err == nil && stoppedState(st) {
+			return true, nil
+		}
+		if time.Now().After(deadline) {
+			seen := fmt.Sprintf("docker reports it %q", st)
+			if err != nil {
+				seen = fmt.Sprintf("docker could not be asked (%v)", err)
+			}
+			if stopErr != nil {
+				seen += fmt.Sprintf(", and `docker stop` failed (%v)", stopErr)
+			}
+			return true, fmt.Errorf("%s could not be confirmed stopped within %s: %s", cont, fenceWait, seen)
+		}
+		time.Sleep(fencePoll)
+	}
+}
+
+// lockHA holds the branch locks of both containers a failover or a failback
+// changes, always main first, so two of them cannot each hold one and wait
+// for the other.
+func lockHA(op string) (func(), error) {
+	unlockMain, err := lockBranch("main", op)
+	if err != nil {
+		return nil, err
+	}
+	unlockStandby, err := lockBranch("standby", op)
+	if err != nil {
+		unlockMain()
+		return nil, err
+	}
+	return func() { unlockStandby(); unlockMain() }, nil
+}
+
+// promoteFenced fences the old primary and then promotes the standby. It
+// returns, when the promotion went ahead on a primary elsewhere that could
+// not be fenced, what was not confirmed, for the caller to say.
+func promoteFenced(old string, ask failoverAsk) (unfenced string, err error) {
+	if j, remote := CurrentJoin(); remote {
+		// Nothing on this machine can stop a database on another, or see that
+		// it has stopped. A person who runs `ha failover` here is the judge of
+		// that; an unattended watcher may only promote with the witness's
+		// agreement and the operator's explicit acceptance.
+		if ask.unattended && !(ask.witnessAgreed && ask.acceptUnfenced) {
+			return "", fmt.Errorf("%s", unattendedRefusal(j))
+		}
+		if err := fenceRemotePrimary(ask.force && !ask.unattended); err != nil {
+			return "", err
+		}
+		// This machine's own main is an idle database while it follows
+		// another. Stopped as before, so it is not left running beside the
+		// new primary; it is not the fence, which would be the remote one.
+		_ = haDocker.stop(old)
+		if err := promoteRecorded("standby"); err != nil {
+			return "", err
+		}
+		unfenced = fmt.Sprintf("fencing was not confirmed. The old primary at %s:%d is on another machine; it did not\n"+
+			"answer from here, but this command cannot stop it or see that it has stopped. If it is still\n"+
+			"running and serving clients, every write it accepts from now on is not on this machine and\n"+
+			"will be lost. It must not be started as a primary again: bring it back with `%s node join`.",
+			j.Address, j.Port, brand.CLI)
+		recordUnfenced(unfenced)
+		return unfenced, nil
+	}
+
+	stoppedHere, ferr := fenceLocal(old)
+	if ferr != nil {
+		if !ask.force || ask.unattended {
+			return "", fmt.Errorf("refusing to promote the standby: %v.\n\n"+
+				"While %s may still be running, sessions connected to it can go on committing writes\n"+
+				"that the promoted standby would never see, and those writes would be lost. Make sure it\n"+
+				"has stopped (docker stop %s, or docker kill %s), then run `%s ha failover` again.\n"+
+				"--force promotes anyway, accepting exactly that risk", ferr, old, old, old, brand.CLI)
+		}
+		fmt.Printf("\nWARNING: --force: promoting although %v.\n"+
+			"If %s is still running, sessions connected to it can go on committing writes that the\n"+
+			"promoted standby never sees. Those writes will be lost, and the two copies cannot be merged.\n"+
+			"Stop it now (docker kill %s), and never start it as a primary again: `%s ha failback`\n"+
+			"rebuilds it from the standby.\n\n", ferr, old, old, brand.CLI)
+	}
+	if err := promoteRecorded("standby"); err != nil {
+		if errors.Is(err, errPromotionUnknown) || !stoppedHere {
+			return "", err
+		}
+		// The standby is still a standby, so the old primary is still the
+		// only primary: put it back rather than leave nothing serving.
+		if serr := haDocker.start(old); serr != nil {
+			return "", fmt.Errorf("%w; starting %s again failed too (%v): start it with `%s up`", err, old, serr, brand.CLI)
+		}
+		return "", fmt.Errorf("%w; %s was started again and is still the primary", err, old)
+	}
+	if ferr != nil {
+		recordUnfenced(fmt.Sprintf("--force: promoted although %v", ferr))
+	}
+	return "", nil
+}
+
+// unattendedRefusal is what `ha watch` is told when it would promote over a
+// primary on another machine without the operator having accepted that.
+func unattendedRefusal(j Joined) string {
+	return fmt.Sprintf("not promoting: the primary at %s:%d is on another machine, and this one cannot stop it\n"+
+		"or confirm that it has stopped. The witness agreeing that it is unreachable is necessary, not\n"+
+		"sufficient: a primary still serving clients that neither can see would keep taking writes that\n"+
+		"are then lost. Run `%s ha watch` with --accept-unfenced to accept that risk, or promote by hand\n"+
+		"with `%s ha failover` once you know it is down", j.Address, j.Port, brand.CLI, brand.CLI)
+}
+
+// errPromotionUnknown: a promotion failed in a way that leaves it unknown
+// whether the server became a primary, so nothing may be undone on the
+// assumption that it did not.
+var errPromotionUnknown = errors.New("the promotion may or may not have happened")
+
+// promotingFile records a promotion in progress: the branch being promoted.
+// Written before pg_promote and removed once the primary marker names the
+// new primary, so a crash between the two is found at the next start
+// (settlePromotion) instead of the old primary being started beside a new one.
+func promotingFile() string { return brand.StatePath("promoting") }
+
+// promoteRecorded promotes target ("standby" for a failover, "main" for a
+// failback), with the intent recorded before and the new primary recorded
+// after, each written so that a crash leaves one whole version.
+func promoteRecorded(target string) error {
+	if err := writeStateAtomic(promotingFile(), []byte(target)); err != nil {
+		return fmt.Errorf("recording the promotion before starting it: %w", err)
+	}
+	cont := container(target)
+	if err := haDocker.promote(cont); err != nil {
+		// pg_promote can stop waiting for a promotion that then finishes, so
+		// a failure is only a failure once the server says it is still a
+		// standby.
+		if rec, qerr := haDocker.inRecovery(cont); qerr == nil && rec {
+			_ = os.Remove(promotingFile())
+			return fmt.Errorf("promoting %s: %w (it is still a standby)", cont, err)
+		}
+		return fmt.Errorf("%w: promoting %s failed (%v), and whether it became a primary cannot be told.\n"+
+			"Nothing has been started again. `%s up` finds out and routes 'main' to whichever is the primary",
+			errPromotionUnknown, cont, err, brand.CLI)
+	}
+	// Only now does the gateway route "main" here.
+	if err := setPrimary(target); err != nil {
+		return fmt.Errorf("%w: %s was promoted, but recording it failed (%v). `%s up` records it",
+			errPromotionUnknown, cont, err, brand.CLI)
+	}
+	_ = os.Remove(promotingFile())
+	return nil
+}
+
+// settlePromotion finishes the record of a promotion a crash interrupted. It
+// runs at the start of `fox up`, before anything is started as primary.
+//
+// The promoting record names the server being promoted. If that server is out
+// of recovery it is the primary, whatever the marker says, and the marker is
+// made to say so. If it is still a standby the promotion never happened, and
+// the marker already names the primary. If that cannot be told, nothing is
+// started: a wrong guess makes two primaries.
+func settlePromotion() error {
+	b, err := os.ReadFile(promotingFile())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", promotingFile(), err)
+	}
+	target := strings.TrimSpace(string(b))
+	if target != "main" && target != "standby" {
+		return fmt.Errorf("%s names %q, which is neither main nor standby; remove it once you know which server is the primary", promotingFile(), target)
+	}
+	cont := container(target)
+	if st, _ := haDocker.state(cont); st != "running" {
+		_ = haDocker.start(cont)
+	}
+	var rec bool
+	deadline := time.Now().Add(fenceWait)
+	for {
+		rec, err = haDocker.inRecovery(cont)
+		if err == nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(fencePoll)
+	}
+	if err != nil {
+		return fmt.Errorf("a promotion of %s was interrupted, and whether it finished cannot be told (%v).\n"+
+			"Nothing has been started as primary, because a wrong guess would make two. Once %s answers,\n"+
+			"run `%s up` again; if it never can, remove %s to keep the primary the marker names",
+			cont, err, cont, brand.CLI, promotingFile())
+	}
+	if rec {
+		fmt.Printf("note: a promotion of %s was interrupted before it happened; %s is still the primary\n", cont, PrimaryContainer())
+		return os.Remove(promotingFile())
+	}
+	if err := setPrimary(target); err != nil {
+		return err
+	}
+	if target == "main" {
+		// A failback that promoted main and stopped there: the standby it
+		// came from was the primary until a moment before, and stays down.
+		if _, err := fenceLocal(container("standby")); err != nil {
+			return fmt.Errorf("main was promoted by an interrupted failback, but the old primary %w", err)
+		}
+	}
+	fmt.Printf("note: an interrupted promotion of %s had finished; it is the primary now\n", cont)
+	return os.Remove(promotingFile())
+}
+
+// stepDownGuard keeps the old main down while the promoted standby is the
+// primary. `fox up` never starts main then, but its container can be started
+// by other means, and one running beside the standby is a second primary. It
+// comes back only as a copy of the standby, through failback.
+func stepDownGuard() error {
+	st, err := haDocker.state(container("main"))
+	if err == nil && stoppedState(st) {
+		return nil
+	}
+	if _, err := fenceLocal(container("main")); err != nil {
+		return fmt.Errorf("'main' is served by the promoted standby, but the old main is running beside it and %w.\n"+
+			"Stop it (docker stop %s) before anything connects to it: it would accept writes the primary never sees",
+			err, container("main"))
+	}
+	fmt.Printf("stopped the old main, which was running beside the promoted standby: it must not serve as a primary.\n"+
+		"`%s ha failback` brings it back as a copy of the standby.\n", brand.CLI)
+	return nil
+}
+
+// unfencedFile records the last promotion made without fencing confirmed, so
+// `ha status` keeps saying so. A failback removes it.
+func unfencedFile() string { return brand.StatePath("ha-unfenced") }
+
+func recordUnfenced(what string) {
+	line := time.Now().UTC().Format(time.RFC3339) + " " + what + "\n"
+	if err := writeStateAtomic(unfencedFile(), []byte(line)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not record that fencing was not confirmed: %v\n", err)
+	}
 }

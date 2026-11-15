@@ -1408,7 +1408,10 @@ paths:
         shown. Nothing is applied here. Refused when both branches changed the same object since they
         split (409), when the target's policy gate would block a statement (422), or when there is nothing
         to promote (400). Entries the guardrail refused on the source are left out: a blocked change never
-        happened.
+        happened. Data changes (INSERT, UPDATE, DELETE, MERGE, TRUNCATE, COPY) are left out too unless
+        include_data is set, and the request lists them under omitted; a schema-only request whose
+        statements would change rows in their text is refused (422). Asking again for exactly the same
+        entries while a request for them is open returns that request (200, existing) instead of a new one.
       parameters:
         - { $ref: "#/components/parameters/BranchName" }
       requestBody:
@@ -1419,7 +1422,16 @@ paths:
               type: object
               properties:
                 target: { type: string, default: main, description: The branch the changes would be applied to }
+                include_data:
+                  type: boolean
+                  default: false
+                  description: Carry the source's data changes as well. The request shows it to the approver.
       responses:
+        "200":
+          description: A request for exactly these entries is already open; it is returned with existing set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangeRequest" }
         "201":
           description: The request was recorded; nothing has been applied.
           content:
@@ -1470,7 +1482,11 @@ paths:
         Each statement is recorded in the target's Blackbox attributed to whoever ran it on the source,
         with the approver named in the entry's tool and the request id in its session. One transaction, so
         the target is never left half-merged. Needs the right to manage the target. A request can only be
-        decided once.
+        decided once, and is applied at most once: the same transaction writes its id into the target's
+        bb.applied_requests, and an id already there is refused (409) and recorded as applied. The
+        transaction also checks again that the target has not changed the same objects since the fork.
+        The decision and the apply are each written to the security log before they happen; if that
+        write fails, nothing is decided (503).
       parameters:
         - { $ref: "#/components/parameters/RequestID" }
       requestBody:
@@ -1490,8 +1506,9 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: Only the target's owner or an admin may decide. }
         "404": { description: No such request. }
-        "409": { description: It has already been decided. }
-        "500": { description: Applying it failed; nothing was committed and the request is marked failed. }
+        "409": { description: It has already been decided, or the target's record shows it already applied. }
+        "500": { description: Applying it failed and the request is marked failed, or it applied and recording that failed. }
+        "503": { description: The security log could not record the decision, so nothing was decided. }
 
   /api/requests/{id}/reject:
     post:
@@ -2130,6 +2147,35 @@ paths:
           content:
             application/json:
               schema: { type: object, properties: { user: { type: object }, admin: { type: boolean } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [accounts]
+      summary: Delete your own account.
+      description: >-
+        Needs the current password, or a console sign-in made in the last 10 minutes; an API key alone is not
+        enough. Refused for the only admin. Deletes the account's sessions, keys, provider sign-ins, pipelines,
+        query history and saved queries; the branches it owned stay, reachable by admins only. Its email, and
+        the addresses it signed in from, are then replaced in the security log by a keyed pseudonym.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { password: { type: string } } }
+      responses:
+        "200": { description: Deleted. securityLog says what happened to its security-log events. }
+        "403": { description: The password is wrong, or neither it nor a recent sign-in was given. }
+        "409": { description: The only admin, or this machine's accounts are an HA copy of the primary's. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/account/export:
+    get:
+      tags: [accounts]
+      summary: A copy of your own account's data, as JSON.
+      description: >-
+        The profile, linked GitHub or Google sign-ins, API keys (described, never their secrets), the branches
+        the account owns, its open sessions (when they began and end, never a token), and the security-log
+        events where it acted or was acted on. An address is shown only on events that were this account's own.
+      responses:
+        "200": { description: The export. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/account/password:
@@ -3243,8 +3289,25 @@ components:
         personal_unmarked: { type: array, items: { type: string }, description: For POST …/personal-data only. }
     ChangeRequest:
       type: object
-      description: A branch's schema changes, offered for review. Schema only — no data is moved.
+      description: >-
+        A branch's schema changes, offered for review. Schema only unless include_data was asked for:
+        the source's data changes are left out and listed in omitted.
       properties:
+        include_data: { type: boolean, description: The asker chose to carry data changes; approving runs them on the target }
+        omitted_count: { type: integer, description: How many data changes were left out }
+        omitted:
+          type: array
+          description: The data changes left out, at most 200 of them; omitted_count is the full count.
+          items:
+            type: object
+            properties:
+              id: { type: integer, format: int64 }
+              actor: { type: string }
+              kind: { type: string, enum: [human, agent] }
+              command: { type: string, example: DELETE }
+              object: { type: string, example: public.orders }
+              reason: { type: string }
+        existing: { type: boolean, description: Set when asking returned an open request instead of making one }
         id: { type: integer, format: int64 }
         source: { type: string, description: The branch the changes were made on }
         target: { type: string, description: The branch they would be applied to }

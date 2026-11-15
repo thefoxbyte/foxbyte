@@ -9,11 +9,15 @@ name: release
 on:
   push:
     tags: ['v*']
+  # A manual run must be started from the tag itself ("Use workflow from" ->
+  # Tags -> v…), not from a branch: the signing job only runs for a v* tag ref,
+  # so the release environment's tag rule and the code that signs are both the
+  # tag's (see "Release signing" in the README).
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build and attach to (e.g. v0.1.0)'
-        required: true
+        description: 'The tag this run is for (e.g. v0.1.0); must be the tag chosen under "Use workflow from"'
+        required: false
       allow_red_nightly:
         description: 'Release even though the nightly suites are red or stale (say why in the release notes)'
         required: false
@@ -39,6 +43,24 @@ jobs:
       actions: read
       contents: read
     steps:
+      # Everything after this gate publishes something (binaries, signatures,
+      # images), so a run that is not for a release tag stops here, loudly,
+      # rather than reaching the signing job and being skipped there.
+      - name: The run must be for a v* tag
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$REF" in
+            refs/tags/v*) ;;
+            *) echo "::error::$REF is not a v* tag. Start a manual run from the tag (Use workflow from -> Tags), not from a branch."; exit 1 ;;
+          esac
+          if [ -n "$INPUT_TAG" ] && [ "$INPUT_TAG" != "$REF_NAME" ]; then
+            echo "::error::the tag input ($INPUT_TAG) is not the tag this run was started from ($REF_NAME)"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # the ancestry check below needs history
@@ -109,8 +131,16 @@ jobs:
             fi
           fi
 
+  # The signing job (finding SUP-3). It runs only for a v* tag, and in the
+  # `release` environment, so the signing secrets can live in that environment
+  # rather than the repository: then only a run the environment's rules admit
+  # (required reviewers, deployment tags v*) can read them, and a workflow
+  # pushed to some other branch cannot. The settings themselves are made by
+  # hand; the README's "Release signing" lists them.
   release:
     needs: nightly-gate
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -226,6 +256,13 @@ jobs:
       # GitHub build attestations: signed (Sigstore, keyless) statements that
       # each file was built by this workflow from this commit. Check one with
       #   gh attestation verify fox-linux-amd64 --repo thefoxbyte/foxbyte
+      # The installers ship with the release (SUP-3): the install host redirects
+      # to the latest release's copies, so the one-liner runs a script from a
+      # signed release, not whatever main holds at that moment. They are the
+      # tag's own deploy/ files, listed in SHA256SUMS like everything else.
+      - name: Stage the installers
+        run: cp deploy/install.sh deploy/install.ps1 dist/
+
       - name: Attest the release files
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -233,17 +270,30 @@ jobs:
             dist/fox-*
             dist/foxbyte-docker-context.tar.gz
             dist/foxbyte-sbom.spdx.json
+            dist/install.sh
+            dist/install.ps1
 
       # SHA256SUMS is signed with the release key (audit v2 G22): fox update and
       # install.sh refuse a release whose signature does not check. A missing
       # secret fails the release here, rather than publishing one nobody can
       # install. (cmd/releasesign also refuses a key fox would not accept.)
+      #
+      # FOX_RELEASE_SIGNING_KEY_P256 is optional: when it is set, SHA256SUMS is
+      # also signed with the P-256 key, the signature macOS and Windows can
+      # check (SHA256SUMS.p256.sig). Once that key is pinned in the installers
+      # they refuse a release without it, so the secret is checked against the
+      # pinned key here, before anything is published.
       - name: Build the release signer
         env:
           FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
+          FOX_RELEASE_SIGNING_KEY_P256: ${{ secrets.FOX_RELEASE_SIGNING_KEY_P256 }}
         run: |
           test -n "$FOX_RELEASE_SIGNING_KEY" || { echo "::error::the FOX_RELEASE_SIGNING_KEY secret is not set (see cmd/releasesign)"; exit 1; }
           go build -o "$RUNNER_TEMP/releasesign" ./cmd/releasesign
+          if grep -q "^var releaseP256PublicKey = \"..*\"$" internal/update/signing.go && [ -z "$FOX_RELEASE_SIGNING_KEY_P256" ]; then
+            echo "::error::fox and the installers carry a P-256 release key, but the FOX_RELEASE_SIGNING_KEY_P256 secret is not set: macOS and Windows installs would refuse this release"
+            exit 1
+          fi
 
       # Created as a prerelease and left as a draft-free placeholder so
       # wsl-zfs.yml can upload the ZFS bundle into it. The release-verify job
@@ -295,15 +345,16 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
           RELEASE_SIGN: ${{ runner.temp }}/releasesign
           FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
+          FOX_RELEASE_SIGNING_KEY_P256: ${{ secrets.FOX_RELEASE_SIGNING_KEY_P256 }}
         run: |
           cd dist
-          bash ../scripts/release-checksums.sh "$TAG" SHA256SUMS fox-* foxbyte-docker-context.tar.gz foxbyte-sbom.spdx.json
+          bash ../scripts/release-checksums.sh "$TAG" SHA256SUMS fox-* foxbyte-docker-context.tar.gz foxbyte-sbom.spdx.json install.sh install.ps1
 
       - name: Attach binaries
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
-        run: gh release upload "$TAG" dist/fox-* dist/foxbyte-docker-context.tar.gz dist/foxbyte-sbom.spdx.json --clobber
+        run: gh release upload "$TAG" dist/fox-* dist/foxbyte-docker-context.tar.gz dist/foxbyte-sbom.spdx.json dist/install.sh dist/install.ps1 --clobber
 
       # `fox update` only offers a release that has every file it needs for the
       # user's platform, listed in SHA256SUMS. Fail here rather than publish a

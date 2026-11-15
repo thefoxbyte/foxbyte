@@ -43,7 +43,7 @@ func anchorTargetCmd(args []string) {
 		fmt.Printf("  %d of %d anchor(s) copied there\n", c.Total-c.Waiting, c.Total)
 	case "set":
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
-			fmt.Printf("usage: %s blackbox anchor-target set s3://bucket[/prefix] --endpoint <https-url> --access-key <key> [--region <r>] [--retention-days N] [--path-style] [--allow-http]\n", brand.CLI)
+			fmt.Printf("usage: %s blackbox anchor-target set s3://bucket[/prefix] --endpoint <https-url> --access-key <key> [--region <r>] [--retention-days N] [--path-style] [--allow-insecure-http]\n", brand.CLI)
 			os.Exit(2)
 		}
 		bucket, prefix, err := branch.ParseTargetURL(args[1])
@@ -70,7 +70,7 @@ func anchorTargetCmd(args []string) {
 			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			t.SecretKey = strings.TrimSpace(line)
 		}
-		must(branch.SetAnchorTarget(t, days, hasFlag(args, "--allow-http")))
+		must(branch.SetAnchorTarget(t, days, allowInsecureHTTP(args)))
 	case "none":
 		must(branch.RemoveAnchorTarget())
 		fmt.Println("no anchor target: new anchors stay on this machine" + backupCopyNote() + ".")

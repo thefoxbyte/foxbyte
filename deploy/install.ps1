@@ -17,7 +17,8 @@
 # Env overrides: FOX_VERSION (default "latest"), FOX_REPO, FOX_PREFIX,
 # FOX_EDITION ("standard" or "enterprise"; default standard),
 # FOX_NO_SETUP (skip `fox setup`), FOX_NO_ELEVATE (never prompt for admin),
-# FOX_NO_VERIFY (skip checksum verification).
+# FOX_NO_VERIFY (skip checksum verification), FOX_ALLOW_UNSIGNED (install a
+# release whose signature cannot be checked; checksums are still checked).
 #
 # The Enterprise edition (paid) is a different binary from the same release and
 # needs a licence to unlock its features:
@@ -56,6 +57,22 @@ switch ($Edition) {
 }
 $HostAsset   = "$BinName-windows-amd64.exe"
 $EngineAsset = "$BinName-linux-amd64"
+
+# The P-256 release key's public half: base64 of the 65-byte uncompressed
+# point (0x04, X, Y). Releases sign SHA256SUMS with it as well as with Ed25519,
+# because Windows PowerShell and .NET can check ECDSA P-256 and cannot check
+# Ed25519 (finding SUP-5). Written by `go run ./cmd/releasesign generate-p256
+# --write`, with fox's and install.sh's copies.
+#
+# Empty until the maintainer makes that key (README, "Verifying a release").
+# While it is empty this installer checks checksums only, and says so; once it
+# is set, a release whose signature does not check is refused (unless
+# FOX_ALLOW_UNSIGNED=1).
+$ReleaseP256PublicKey = ''
+
+# The first release whose signed SHA256SUMS names its own version (finding
+# SUP-4). Keep in step with internal/update/select.go and install.sh.
+$FirstVersionedRelease = '2.3.0'
 
 # Ubuntu publishes WSL rootfs tarballs directly; pulling from upstream keeps our
 # own release small and avoids redistributing Ubuntu. Note the path: only
@@ -119,6 +136,28 @@ function Test-RebootPending {
     return $false
 }
 
+# Get-ResumeCommand is what runs after the reboot: the installer of a release,
+# never main (findings SUP-3 and SUP-8). This one carries the pinned release
+# key, and main is only whatever was merged last; it also used to mean the
+# resumed install could be a different installer, of a different release,
+# from the one the person started. So it resumes the same release (and
+# edition), with the installer published with that release -- or, for a
+# release from before installers were published with it, the latest
+# release's installer, still pinned to the same release.
+function Get-ResumeCommand {
+    $tag = $script:Version
+    $url = "https://github.com/$Repo/releases/latest/download/install.ps1"
+    $pin = ''
+    if ($tag -and $tag -ne 'latest' -and $tag -match '^[A-Za-z0-9._-]+$') {
+        $pin = "`$env:FOX_VERSION='$tag'; "
+        $c = Compare-FoxVersion $tag $FirstVersionedRelease
+        if ($null -ne $c -and $c -ge 0) {
+            $url = "https://github.com/$Repo/releases/download/$tag/install.ps1"
+        }
+    }
+    return "$pin`$env:FOX_EDITION='$Edition'; irm $url | iex"
+}
+
 # Register-Resume arranges for this installer to run again after a reboot, so a
 # machine that needed WSL enabled finishes on its own. It is a convenience, never
 # the only path: re-running the one-liner by hand always works.
@@ -131,10 +170,9 @@ function Register-Resume {
     #
     # It fetches from GitHub directly, not from $InstallUrl: nobody reads this
     # command, and at logon it is one fewer service that has to be up.
-    $url = 'https://raw.githubusercontent.com/thefoxbyte/foxbyte/main/deploy/install.ps1'
     $cmd = "for (`$i=0; `$i -lt 60; `$i++) { " +
-           "if (Test-Connection -ComputerName raw.githubusercontent.com -Count 1 -Quiet) { break }; " +
-           "Start-Sleep -Seconds 5 }; irm $url | iex"
+           "if (Test-Connection -ComputerName github.com -Count 1 -Quiet) { break }; " +
+           "Start-Sleep -Seconds 5 }; " + (Get-ResumeCommand)
     $run = "powershell -NoExit -NoProfile -ExecutionPolicy Bypass -Command `"$cmd`""
     try {
         New-ItemProperty -Force -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' `
@@ -270,53 +308,238 @@ function Assert-UpstreamChecksum([string]$Path, [string]$SumsUrl, [string]$Name)
 }
 
 # --- FoxByte's own releases ----------------------------------------------
-# Authorship: releases also publish SHA256SUMS.sig, an Ed25519 signature by the
-# FoxByte release key (audit v2 G22). PowerShell and .NET have no Ed25519, so
-# this installer checks checksums only; fox.exe checks the signature on every
-# `fox update`, and `gh attestation verify fox-windows-amd64.exe --repo
-# thefoxbyte/foxbyte` proves where a download came from.
 # Every release publishes SHA256SUMS beside its assets. It travels over the same
 # TLS connection as the files, so it proves integrity (a complete, unaltered
-# download), not authorship -- signatures would be needed for that. The files
-# below are executed as root inside the distro, so an unverifiable one is not
-# installed. FOX_NO_VERIFY=1 skips the check deliberately.
+# download), not authorship. The files below are executed as root inside the
+# distro, so an unverifiable one is not installed. FOX_NO_VERIFY=1 skips the
+# check deliberately.
+#
+# Authorship (audit v2 G22, finding SUP-5): SHA256SUMS is signed. The Ed25519
+# signature (SHA256SUMS.sig) is out of reach here -- PowerShell and .NET have no
+# Ed25519 -- so this installer checks the P-256 one, SHA256SUMS.p256.sig,
+# against $ReleaseP256PublicKey above. fox.exe checks Ed25519 on every
+# `fox update`, and `gh attestation verify fox-windows-amd64.exe --repo
+# thefoxbyte/foxbyte` proves where a download came from.
 #
 # The distro image is built by its own workflow, on its own schedule, so its
-# checksum is in SHA256SUMS.distro. Releases made before that file existed list
-# the image in SHA256SUMS, which is why both are looked at for it, and only for it.
+# checksum is in SHA256SUMS.distro, signed on its own. Releases made before that
+# file existed list the image in SHA256SUMS, which is why both are looked at for
+# it, and only for it.
 $script:FoxSums = $null
 $script:FoxDistroSums = $null
+
+# Get-FoxBytes downloads a small file as the exact bytes served: a signature is
+# over bytes, and turning them into a string and back could change them.
+function Get-FoxBytes([string]$Url) {
+    $timeout = $script:WebTimeout
+    $r = Invoke-WebRequest -UseBasicParsing -Uri $Url @timeout
+    return ,($r.RawContentStream.ToArray())
+}
+
+# Compare-FoxVersion returns -1, 0 or 1, ordered as fox orders versions (a
+# pre-release sorts before its release), or $null if either is not a version.
+function Compare-FoxVersion([string]$A, [string]$B) {
+    $parsed = @()
+    foreach ($s in $A, $B) {
+        if ($s -notmatch '^[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-(.+))?$') { return $null }
+        $parsed += ,@([int64]$Matches[1], [int64]("0" + $Matches[2]), [int64]("0" + $Matches[3]), [string]$Matches[4])
+    }
+    $x = $parsed[0]; $y = $parsed[1]
+    for ($i = 0; $i -lt 3; $i++) {
+        if ($x[$i] -ne $y[$i]) { if ($x[$i] -lt $y[$i]) { return -1 } else { return 1 } }
+    }
+    if ($x[3] -ceq $y[3]) { return 0 }
+    if (-not $x[3]) { return 1 }
+    if (-not $y[3]) { return -1 }
+    if ([string]::CompareOrdinal($x[3], $y[3]) -lt 0) { return -1 }
+    return 1
+}
+
+# Get-FoxSignedVersion returns the version a listing names in its version line
+# ("<64 zeros>  VERSION=<tag>", written by scripts/release-checksums.sh), or ''
+# for a release made before the line existed. It is a checksum line so that
+# installers already released, which look files up by name, pass over it.
+function Get-FoxSignedVersion([string]$Listing) {
+    $found = @()
+    foreach ($line in ($Listing -split "`n")) {
+        if ($line -match '^0{64}\s+\*?VERSION=([^\s]+)\s*$') {
+            if ($found -notcontains $Matches[1]) { $found += $Matches[1] }
+        }
+    }
+    if ($found.Count -gt 1) { throw "SHA256SUMS of $Version names more than one version -- nothing was installed." }
+    if ($found.Count -eq 1) { return $found[0] }
+    return ''
+}
+
+# Assert-FoxVersion holds the version a listing names to the tag being
+# installed (finding SUP-4): the tag is not signed, so an old release put up
+# again under a newer tag would otherwise install. From $FirstVersionedRelease
+# on, every release names its version, so one that does not is refused; older
+# ones never did, and stay installable by naming them with FOX_VERSION.
+function Assert-FoxVersion([string]$Listing, [string]$Tag) {
+    $signed = Get-FoxSignedVersion $Listing
+    if (-not $Tag -or $Tag -eq 'latest') { return }
+    if ($signed) {
+        if ((Compare-FoxVersion $signed $Tag) -ne 0) {
+            throw "SHA256SUMS of $Tag is signed for $signed -- it is a different release, published under the $Tag tag. Nothing was installed."
+        }
+        return
+    }
+    if ((Compare-FoxVersion $Tag $FirstVersionedRelease) -ne -1) {
+        throw "SHA256SUMS of $Tag does not say which version it is, and every release from v$FirstVersionedRelease on does. It may be an older release published again under a newer tag. Nothing was installed."
+    }
+}
+
+# ConvertFrom-DerSignature turns an ASN.1 DER ECDSA signature, which is what
+# `openssl dgst -sign` and Go write, into the 64-byte r||s form .NET checks.
+# $null for anything that is not a well-formed P-256 signature.
+function ConvertFrom-DerSignature([byte[]]$Der) {
+    if ($null -eq $Der -or $Der.Length -lt 8 -or $Der.Length -gt 72 -or $Der[0] -ne 0x30) { return $null }
+    if ($Der[1] -ne $Der.Length - 2) { return $null }
+    $out = New-Object byte[] 64
+    $i = 2
+    foreach ($k in 0, 1) {
+        if ($i + 2 -gt $Der.Length -or $Der[$i] -ne 0x02) { return $null }
+        $n = [int]$Der[$i + 1]
+        $i += 2
+        if ($n -lt 1 -or $n -gt 33 -or $i + $n -gt $Der.Length) { return $null }
+        $start = $i
+        while ($start -lt $i + $n - 1 -and $Der[$start] -eq 0) { $start++ }
+        $len = $i + $n - $start
+        if ($len -gt 32) { return $null }
+        [Array]::Copy($Der, $start, $out, $k * 32 + 32 - $len, $len)
+        $i += $n
+    }
+    if ($i -ne $Der.Length) { return $null }
+    return ,$out
+}
+
+# Test-FoxSignature checks a P-256 signature (DER) over $Data with the key
+# given as the base64 uncompressed point. Windows PowerShell 5.1 imports the
+# point through CNG (ECDsaCng, any .NET Framework from 4.6.1); elsewhere, the
+# portable ECParameters path is used.
+function Test-FoxSignature([byte[]]$Data, [byte[]]$DerSig, [string]$KeyB64 = $ReleaseP256PublicKey) {
+    $sig = ConvertFrom-DerSignature $DerSig
+    if ($null -eq $sig) { return $false }
+    $point = [Convert]::FromBase64String($KeyB64)
+    if ($point.Length -ne 65 -or $point[0] -ne 4) { throw "the P-256 release key in this installer is malformed" }
+    $x = New-Object byte[] 32; [Array]::Copy($point, 1, $x, 0, 32)
+    $y = New-Object byte[] 32; [Array]::Copy($point, 33, $y, 0, 32)
+    $sha256 = [System.Security.Cryptography.HashAlgorithmName]::SHA256
+    $ecdsa = $null
+    try {
+        # BCRYPT_ECCPUBLIC_BLOB: magic "ECS1" (ECDSA P-256 public), key length 32, X, Y.
+        $blob = New-Object byte[] 72
+        [Array]::Copy([byte[]](0x45, 0x43, 0x53, 0x31, 0x20, 0, 0, 0), 0, $blob, 0, 8)
+        [Array]::Copy($x, 0, $blob, 8, 32)
+        [Array]::Copy($y, 0, $blob, 40, 32)
+        $key = [System.Security.Cryptography.CngKey]::Import($blob, [System.Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob)
+        $ecdsa = New-Object System.Security.Cryptography.ECDsaCng($key)
+    } catch {
+        $p = New-Object System.Security.Cryptography.ECParameters
+        $p.Curve = [System.Security.Cryptography.ECCurve+NamedCurves]::nistP256
+        $q = New-Object System.Security.Cryptography.ECPoint
+        $q.X = $x; $q.Y = $y
+        $p.Q = $q
+        $ecdsa = [System.Security.Cryptography.ECDsa]::Create()
+        $ecdsa.ImportParameters($p)
+    }
+    try { return [bool]$ecdsa.VerifyData($Data, $sig, $sha256) } finally { $ecdsa.Dispose() }
+}
+
+# Assert-FoxSignature checks a listing's P-256 signature, $SigName, and stops
+# the install if it does not check. While this installer carries no P-256 key
+# it can only warn (once), which is what it did before the key existed.
+function Assert-FoxSignature([byte[]]$Data, [string]$SigName, [bool]$Quiet = $false) {
+    if ($env:FOX_ALLOW_UNSIGNED -eq '1') {
+        if (-not $Quiet) { Write-Warning "FOX_ALLOW_UNSIGNED=1: not checking who published $Version (every file is still checked against SHA256SUMS)" }
+        return
+    }
+    if (-not $ReleaseP256PublicKey) {
+        if (-not $Quiet) {
+            Write-Warning "the signature of $Version was not checked: this installer has no P-256 release key yet. Every file is still checked against SHA256SUMS, and fox checks signatures on every update."
+        }
+        return
+    }
+    try { $sig = Get-FoxBytes (Get-FoxAsset $SigName) } catch {
+        throw "$Version has no $SigName, so who published it cannot be checked here -- nothing was installed.`n(Releases from before the P-256 signature have none: set FOX_ALLOW_UNSIGNED=1 to install one on checksums alone.)"
+    }
+    $ok = $false
+    try { $ok = Test-FoxSignature $Data $sig } catch { throw "could not check the signature of $Version ($($_.Exception.Message)) -- nothing was installed.`nSet FOX_ALLOW_UNSIGNED=1 to install on checksums alone." }
+    if (-not $ok) {
+        throw "$SigName does not match: $Version was not published by $Product, or it was altered. Nothing was installed."
+    }
+}
 
 function Get-FoxSums {
     if ($env:FOX_NO_VERIFY -eq '1') { return $null }
     if ($null -ne $script:FoxSums) { return $script:FoxSums }
     try {
-        $timeout = $script:WebTimeout
-        $body = (Invoke-WebRequest -UseBasicParsing -Uri (Get-FoxAsset 'SHA256SUMS') @timeout).Content
+        $bytes = Get-FoxBytes (Get-FoxAsset 'SHA256SUMS')
     } catch {
         throw "could not fetch SHA256SUMS for $Version -- nothing was installed.`nRetry, or set FOX_NO_VERIFY=1 to install without checking (not recommended)."
     }
-    $script:FoxSums = if ($body -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($body) } else { [string]$body }
+    Assert-FoxSignature $bytes 'SHA256SUMS.p256.sig'
+    $listing = [System.Text.Encoding]::UTF8.GetString($bytes)
+    Assert-FoxVersion $listing $Version
+    if ($ReleaseP256PublicKey -and $env:FOX_ALLOW_UNSIGNED -ne '1') { Write-Host "  SHA256SUMS is signed with the $Product release key (P-256)" }
+    $script:FoxSums = $listing
     return $script:FoxSums
 }
 
 # Get-FoxDistroSums returns the distro image's own listing, or '' for a release
 # without one (the distro workflow has not finished, or the release predates it).
+# A listing that fails its signature or names another version counts as none:
+# the image is then looked up in SHA256SUMS, and without it the install falls
+# back to the Ubuntu rootfs rather than trust it.
 function Get-FoxDistroSums {
     if ($null -ne $script:FoxDistroSums) { return $script:FoxDistroSums }
     try {
-        $timeout = $script:WebTimeout
-        $body = (Invoke-WebRequest -UseBasicParsing -Uri (Get-FoxAsset 'SHA256SUMS.distro') @timeout).Content
-        $script:FoxDistroSums = if ($body -is [byte[]]) { [System.Text.Encoding]::UTF8.GetString($body) } else { [string]$body }
+        $bytes = Get-FoxBytes (Get-FoxAsset 'SHA256SUMS.distro')
     } catch {
+        $script:FoxDistroSums = ''
+        return $script:FoxDistroSums
+    }
+    try {
+        Assert-FoxSignature $bytes 'SHA256SUMS.distro.p256.sig' $true
+        $listing = [System.Text.Encoding]::UTF8.GetString($bytes)
+        Assert-FoxVersion $listing $Version
+        $script:FoxDistroSums = $listing
+    } catch {
+        Write-Warning "ignoring SHA256SUMS.distro: $($_.Exception.Message)"
         $script:FoxDistroSums = ''
     }
     return $script:FoxDistroSums
 }
 
-# Find-FoxChecksum returns the SHA256 a listing gives for $Name, or $null.
+# Resolve-FoxLatestTag turns "latest" into the tag it stands for, before
+# anything is fetched: the signed SHA256SUMS names its version, and that is
+# only worth something against the tag being installed. It also keeps one
+# install on one release should a new one be promoted part-way through.
+# GitHub answers /releases/latest with a redirect to /releases/tag/<tag>,
+# which is read without following it.
+function Resolve-FoxLatestTag {
+    $url = "https://github.com/$Repo/releases/latest"
+    $loc = $null
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($url)
+        $req.AllowAutoRedirect = $false
+        $req.Timeout = 30000
+        $req.UserAgent = "$Slug-installer"
+        $resp = $req.GetResponse()
+        try { $loc = $resp.Headers['Location'] } finally { $resp.Close() }
+    } catch [System.Net.WebException] {
+        if ($_.Exception.Response) { $loc = $_.Exception.Response.Headers['Location'] }
+    } catch { }
+    if ($loc -and $loc -match '/releases/tag/([A-Za-z0-9._-]+)$') { return $Matches[1] }
+    throw "could not find which release is the latest one of $Repo -- nothing was installed.`nRetry, or name the release with FOX_VERSION=<tag>."
+}
+
+# Find-FoxChecksum returns the SHA256 a listing gives for $Name, or $null. The
+# version line is not a file, and is never an answer.
 function Find-FoxChecksum([string]$Listing, [string]$Name) {
     foreach ($line in ($Listing -split "`n")) {
+        if ($line -match '^0{64}\s+\*?VERSION=') { continue }
         if ($line -match '^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$' -and $Matches[2] -eq $Name) {
             return $Matches[1].ToLower()
         }
@@ -387,6 +610,10 @@ function Invoke-Install {
     }
     Write-Host ""
     Write-Host "FoxByte installer" -ForegroundColor Cyan
+    if ($script:Version -eq 'latest') {
+        $script:Version = Resolve-FoxLatestTag
+        Write-Host "  Installing $($script:Version), the latest release"
+    }
 
     # 1. WSL. Done first because everything else is pointless without it -- and
     #    because it is the only step that can require a reboot.

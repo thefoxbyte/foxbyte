@@ -22,6 +22,11 @@ required=(
 	fox-enterprise-windows-amd64.exe
 	foxbyte-docker-context.tar.gz
 )
+# The installers the install host redirects to (deploy/get), published with
+# each release so the one-liner runs the script of a signed release rather
+# than whatever is on main. Listed in SHA256SUMS so they are covered by the
+# signature too.
+installers=(install.sh install.ps1)
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -48,6 +53,19 @@ check() {
 			missing=1
 		fi
 	done
+	for name in "${installers[@]}"; do
+		if ! grep -qxF "$name" <<<"$attached" ||
+			! awk -v n="$name" '{ f = $2; sub(/^\*/, "", f); sub(/\r$/, "", f) } f == n { found = 1 } END { exit !found }' "$tmp/SHA256SUMS"; then
+			echo "::error::$tag does not publish $name, attached and listed in SHA256SUMS (the install host serves it from the latest release)"
+			missing=1
+		fi
+	done
+	# The signed version line (SUP-4): from FirstVersionedRelease on, fox and
+	# the installers refuse a release whose SHA256SUMS does not name its tag.
+	if ! awk -v t="VERSION=$tag" '$1 == "0000000000000000000000000000000000000000000000000000000000000000" { f = $2; sub(/\r$/, "", f); if (f == t) found = 1 } END { exit !found }' "$tmp/SHA256SUMS"; then
+		echo "::error::SHA256SUMS of $tag does not name its version (no VERSION=$tag line): fox update and the installers would refuse it"
+		missing=1
+	fi
 	return "$missing"
 }
 

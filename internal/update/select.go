@@ -243,9 +243,49 @@ type signatureError struct{ error }
 
 func (e signatureError) Unwrap() error { return e.error }
 
+// FirstVersionedRelease is the first release whose signed SHA256SUMS names its
+// own version (VersionLine). A release tagged this or newer without that line
+// is refused: it is either an older release put up under a newer tag, or not
+// one this project published. Releases older than this never had the line and
+// stay installable by naming them (FOX_VERSION, `fox update --version`).
+//
+// It is the next minor version after v2.2.1, the newest release when the line
+// was introduced. The line is written by whatever release is cut next, so any
+// tag from here on carries it; the minor rather than the next patch leaves room
+// for a v2.2.x fix cut from an older checkout without the line, which would
+// otherwise be refused everywhere. Moving it later only widens the window in
+// which an unversioned release is believed; never move it earlier than a
+// release that has already shipped without the line.
+const FirstVersionedRelease = "2.3.0"
+
+// checkSignedVersion holds the version a release's signed SHA256SUMS names to
+// the tag it was found under.
+func checkSignedVersion(tag, signed string) error {
+	tv, err := ParseVersion(tag)
+	if err != nil {
+		return fmt.Errorf("release tag %q is not a version", tag)
+	}
+	if signed == "" {
+		cutoff, _ := ParseVersion(FirstVersionedRelease)
+		if tv.Compare(cutoff) >= 0 {
+			return fmt.Errorf("release %s: its signed %s does not say which version it is, and every release from v%s on does — it may be an older release published again under a newer tag", tag, SumsAsset, FirstVersionedRelease)
+		}
+		return nil
+	}
+	sv, err := ParseVersion(signed)
+	if err != nil {
+		return fmt.Errorf("release %s: its signed %s names version %q, which is not a version", tag, SumsAsset, signed)
+	}
+	if sv.Compare(tv) != 0 {
+		return fmt.Errorf("release %s: its signed %s is for %s — it is a different release published under this tag", tag, SumsAsset, signed)
+	}
+	return nil
+}
+
 // verifiedSums is the only way a release's checksums are read: it fetches
-// SHA256SUMS and its signature, and parses the list only once the signature
-// checks out, because nothing in SHA256SUMS is trusted before that.
+// SHA256SUMS and its signatures, and parses the list only once they check out,
+// because nothing in SHA256SUMS is trusted before that. The version the signed
+// file names must then be the tag's: the tag itself is not signed.
 func (c *Client) verifiedSums(ctx context.Context, r Release) (Checksums, error) {
 	sa, ok := r.Asset(SumsAsset)
 	if !ok {
@@ -263,12 +303,28 @@ func (c *Client) verifiedSums(ctx context.Context, r Release) (Checksums, error)
 	if err != nil {
 		return nil, fmt.Errorf("%s: fetching %s: %w", r.Tag, SigAsset, err)
 	}
-	if err := VerifySums(body, sig); err != nil {
+	// The P-256 signature is optional (releases before it have none), but one
+	// that is listed and cannot be fetched is an error rather than skipped:
+	// otherwise withholding it would be a way round it.
+	var p256 []byte
+	if pa, ok := r.Asset(SigP256Asset); ok {
+		if key, _ := ReleaseP256PublicKey(); key != nil {
+			if p256, err = c.fetchSmall(ctx, pa.URL, 1024); err != nil {
+				return nil, fmt.Errorf("%s: fetching %s: %w", r.Tag, SigP256Asset, err)
+			}
+		}
+	}
+	if err := VerifyRelease(body, sig, p256); err != nil {
 		return nil, signatureError{fmt.Errorf("release %s: %w", r.Tag, err)}
 	}
-	sums, err := ParseChecksums(bytes.NewReader(body))
+	sums, version, err := ParseSignedSums(bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", r.Tag, err)
+	}
+	// Reported like a bad signature: a mismatch is a forgery or a mistake, and
+	// passing over it in silence would read as "up to date".
+	if err := checkSignedVersion(r.Tag, version); err != nil {
+		return nil, signatureError{err}
 	}
 	return sums, nil
 }
@@ -347,6 +403,15 @@ func (c *Client) Resolve(ctx context.Context, current Version, t Target, pin str
 			continue
 		}
 		v, _ := ParseVersion(r.Tag)
+		// Candidates compared the tag with what runs here; verifiedSums has
+		// since held the tag to the signed version, so this repeats that check
+		// on signed data. An update never goes to an older version, pinned or
+		// not: going back is a reinstall with the installer and FOX_VERSION,
+		// which says what it is doing.
+		if c := v.Compare(current); c < 0 || (c == 0 && !t.switching()) {
+			lastErr = fmt.Errorf("%s is not newer than the installed %s — to go back to an older version, reinstall it with the installer (FOX_VERSION=%s)", r.Tag, current, r.Tag)
+			continue
+		}
 		return &Offer{Release: r, Version: v, Sums: sums, Required: required}, nil
 	}
 	if pin != "" && lastErr != nil {

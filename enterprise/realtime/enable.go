@@ -5,8 +5,8 @@
 package realtime
 
 import (
+	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
@@ -33,49 +33,56 @@ func Facts(branchName, schema, table string) (Table, error) {
 	return v.Table, nil
 }
 
-// Enable adds a table to the branch's publication, after the preflight.
-func Enable(branchName string, req Request) error {
+// Enable adds a table to the branch's publication, after the preflight, with
+// the columns the request names (all of them when it names none). Enabling a
+// table that already streams replaces its column choice and its events.
+func Enable(branchName string, req Request) (Result, error) {
 	// Resolved once, here: after a failover the container serving "main" is the
 	// promoted standby, and every statement below reaches Postgres by container
 	// name. See branch.ServingBranch.
 	branchName = branch.ServingBranch(branchName)
 	t, err := Facts(branchName, req.Table.Schema, req.Table.Name)
 	if err != nil {
-		return err
+		return Result{}, err
 	}
+	// The refusals that do not depend on columns come first: a system table
+	// should be told it is one, not that it has no column called x.
+	if v := Assess(t, req.Events, false); v.State == Impossible {
+		return Result{}, errors.New(v.Reason)
+	}
+	cols, err := readTableColumns(branchName, t.Schema, t.Name)
+	if err != nil {
+		return Result{}, err
+	}
+	pii, err := personalData(branchName, t.Schema, t.Name)
+	if err != nil {
+		// Not knowing is not the same as knowing there is none, so this
+		// refuses rather than streams.
+		return Result{}, fmt.Errorf("checking %s for confirmed personal data: %w", t.Qualified(), err)
+	}
+	plan, err := planEnable(t, cols, pii[t.Qualified()], req)
+	if err != nil {
+		return Result{}, err
+	}
+	// The preflight sees the columns that will stream, so a column db_client
+	// cannot read is only a problem when it is one of them.
+	t.StreamColumns = plan.Columns
 	req.Table = t
 	if err := Preflight(req); err != nil {
-		return err
+		return Result{}, err
 	}
-	// REPLICA IDENTITY FULL is a schema change like any other, and is recorded
-	// in the Blackbox as one. Done before the publication, so a failure here
-	// leaves nothing half-enabled.
-	if req.FullIdentity && t.ReplicaIdentity != 'f' {
-		if err := branch.ExecSQL(branchName, fmt.Sprintf("ALTER TABLE %s.%s REPLICA IDENTITY FULL",
-			branch.QuoteIdent(t.Schema), branch.QuoteIdent(t.Name))); err != nil {
-			return fmt.Errorf("setting REPLICA IDENTITY FULL on %s: %w", t.Qualified(), err)
-		}
+	if err := branch.ExecSQL(branchName, plan.SQL); err != nil {
+		return Result{}, fmt.Errorf("enabling %s: %w", t.Qualified(), err)
 	}
-	// The publication that carries exactly these events. See PublicationFor:
-	// `publish` belongs to the publication, not to a table in it.
-	pub := branch.PublicationFor(req.EventList())
-	// Never FOR ALL TABLES: that would publish bb.schema_ledger, and with it the
-	// recorded text of every statement ever run.
-	if err := branch.ExecSQL(branchName, fmt.Sprintf(
-		`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = %s) THEN
-		   EXECUTE format('CREATE PUBLICATION %%I WITH (publish = %%L)', %s, %s);
-		 END IF; END $$`,
-		branch.BodyLiteral(pub), branch.BodyLiteral(pub),
-		branch.BodyLiteral(strings.Join(req.EventList(), ",")))); err != nil {
-		return fmt.Errorf("creating the publication: %w", err)
-	}
-	return branch.ExecSQL(branchName, fmt.Sprintf("ALTER PUBLICATION %s ADD TABLE %s.%s",
-		branch.QuoteIdent(pub), branch.QuoteIdent(t.Schema), branch.QuoteIdent(t.Name)))
+	return plan.Result, nil
 }
 
 // Disable takes a table back out of the publication. It does not undo a REPLICA
 // IDENTITY FULL: that is a schema change somebody asked for, it costs only WAL,
 // and reverting it silently would be a second change nobody asked for.
+// The column choice in bb.realtime_columns stays too: it applies only to a
+// table that is published, and the next enable replaces it.
+//
 // Disable takes a table out of whichever publication carries it. A table can
 // only be in one of them -- Enable adds it to the one for its event set -- but
 // the caller does not have to remember which, so this looks.

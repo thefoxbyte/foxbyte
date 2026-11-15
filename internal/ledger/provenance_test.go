@@ -35,3 +35,25 @@ func TestSchemaProvenance(t *testing.T) {
 		}
 	}
 }
+
+// The record of applied change requests is what refuses a second apply of the
+// same request, so a client must be able to add to it and never take from it.
+func TestAppliedRequestsIsAppendOnlyForClients(t *testing.T) {
+	s := lf(SchemaProvenance)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS bb.applied_requests",
+		"request_id  bigint PRIMARY KEY",
+		"BEFORE UPDATE OR DELETE ON bb.applied_requests",
+		"BEFORE TRUNCATE ON bb.applied_requests",
+		"REVOKE ALL ON bb.applied_requests FROM PUBLIC;",
+		"REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON bb.applied_requests FROM db_client;",
+		"GRANT SELECT, INSERT ON bb.applied_requests TO db_client;",
+	} {
+		if !regexp.MustCompile(regexp.QuoteMeta(want)).MatchString(s) {
+			t.Errorf("provenance.sql is missing %q", want)
+		}
+	}
+	if regexp.MustCompile(`(?i)grant\s[^;]*\b(update|delete|truncate|all)\b[^;]*\bon\s+bb\.applied_requests`).MatchString(s) {
+		t.Error("db_client is granted a way to change or remove an applied-request record")
+	}
+}

@@ -37,7 +37,8 @@ func TestRolePasswordsAreDistinct(t *testing.T) {
 	}
 }
 
-// The superuser password, and the object store's secret key, are never an argument on a command line: the engine
+// The superuser password, the object store's secret key, and the backup
+// encryption key, are never an argument on a command line: the engine
 // hands it to docker in an env file (pgenv.go). A new call site that passes it
 // with -e would put it back in the process list.
 func TestNoPasswordOnCommandLines(t *testing.T) {
@@ -55,7 +56,8 @@ func TestNoPasswordOnCommandLines(t *testing.T) {
 			// than passing one (importsecret.go), and carries no secret.
 			line := strings.ReplaceAll(line, `"PGPASSWORD="`, ``)
 			if strings.Contains(line, `"PGPASSWORD=`) || strings.Contains(line, `"POSTGRES_PASSWORD=`) ||
-				strings.Contains(line, `"AWS_SECRET_ACCESS_KEY=`) || strings.Contains(line, `"MINIO_ROOT_PASSWORD=`) {
+				strings.Contains(line, `"AWS_SECRET_ACCESS_KEY=`) || strings.Contains(line, `"MINIO_ROOT_PASSWORD=`) ||
+				strings.Contains(line, `"WALG_LIBSODIUM_KEY=`) {
 				t.Errorf("%s:%d passes a password as an argument: %s", f, i+1, strings.TrimSpace(line))
 			}
 		}
