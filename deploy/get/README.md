@@ -11,27 +11,24 @@ irm https://get.thefoxbyte.com/install.ps1 | iex
 ```
 
 This folder is the whole site: a Vercel project with no build and no files of
-its own. `vercel.json` redirects `/install.sh` and `/install.ps1` to the copies
-published with the latest release
-(`https://github.com/thefoxbyte/foxbyte/releases/latest/download/install.sh`),
-which release.yml uploads and lists in the signed `SHA256SUMS`. `/` sends a
-browser to the README's install section.
+its own. Today `vercel.json` rewrites `/install.sh` and `/install.ps1` to the
+copies on GitHub's `main` branch, so the domain serves exactly what is merged.
+`/` sends a browser to the README's install section.
 
-Why a release and not `main` (finding SUP-3): the installer is what carries the
-pinned release keys, so serving it from `main` made those keys only as safe as
-the newest merged commit. A release's copy is the one its tag was built and
-signed from, and a prerelease (a release still being verified) is never
-"latest". A static Vercel config cannot name "the latest tag" itself, so it
-redirects to GitHub's latest-release download, which redirects again to the
-file; `curl -L` and `irm` both follow. The installer then resolves "latest" to
-a tag of its own and installs everything from that one release.
+**Planned switch (finding SUP-3).** The installer carries the pinned release
+keys, so serving it from `main` makes those keys only as safe as the newest
+merged commit. From the next release on, release.yml uploads `install.sh` and
+`install.ps1` as release assets, listed in the signed `SHA256SUMS`. Once a
+release that carries them is the latest one, change `vercelFile` in
+`internal/brand/gen/gen.go` to redirect both paths to
+`https://github.com/thefoxbyte/foxbyte/releases/latest/download/<script>`
+(`curl -L` and `irm` both follow redirects), run `make brand`, and update
+`TestInstallHostServesTheInstallers`. Switching earlier would make the
+one-liner answer 404, because v2.2.1 and older releases have no installer
+assets.
 
 `vercel.json` is generated from `brand.json` (`install_host`, `repo`) by
 `make brand`. Do not edit it by hand.
-
-The first deploy of this redirect needs the installers on the current latest
-release, which predates them: `gh release upload <tag> deploy/install.sh
-deploy/install.ps1`. Every release after that carries its own.
 
 ## What it protects
 
