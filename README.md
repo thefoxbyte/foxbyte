@@ -427,7 +427,8 @@ fox backup create               # base backup -> object storage
 fox backup list
 fox backup target               # where backups go (the local store, or a bucket)
 fox backup target set s3://my-bucket/fox --endpoint https://s3.eu-west-1.amazonaws.com \
-    --access-key AKIA… --region eu-west-1   # asks for the secret key
+    --access-key AKIA… --region eu-west-1   # asks for the secret key; encrypted client-side
+fox backup key export           # the backup encryption key: keep it off this machine and the bucket
 fox backup prune --keep 7       # delete all but the newest 7 full backups
 fox restore --to latest         # PITR into a disposable container on port 5433
 fox restore --to '2026-08-24 15:07:00+00'
@@ -457,6 +458,36 @@ expires, not even by whoever controls this machine. Tested against MinIO with
 Object Lock; AWS S3 and other providers are expected to work the same way.
 Moving the target restarts main and takes a first backup there; backups left on
 the old target stay there, and are restorable after moving back.
+
+**Backups in a bucket are encrypted before they leave.** A remote target set
+on an empty prefix is encrypted client-side by wal-g (libsodium) with a key
+FoxByte makes once and keeps at `~/.fox/backup-encryption.key` (0600) — never
+in the bucket, so whoever can read the bucket cannot read the database. Every
+wal-g run gets the key the same way the bucket's keys arrive, in a 0600 env
+file and never on a command line: WAL archiving, base backups, point-in-time
+restores, `fox backup verify` and the HA standby.
+
+- **Export the key now, and keep it off this machine and out of the bucket.**
+  `fox backup key export` prints it; a password manager or a sealed record is
+  the place for it. Lose it and the backups are lost — nobody can decrypt them,
+  including FoxByte. On a replacement machine, `fox backup key import` (it reads
+  the key from stdin) before setting the same target again.
+- **One archive is all encrypted or all plain.** wal-g, given a key, decrypts
+  everything it reads, and an object written without a key does not open. So
+  encryption is decided when the target is set, never switched on in place: a
+  target set before this release stays unencrypted and keeps restoring, and
+  `fox check` warns about it until it is moved to a new prefix. Setting a
+  target whose prefix already holds backups asks you to say how they were
+  written: `--no-encrypt` for plain ones, `--encrypt` for ones encrypted with
+  this install's key. Backups on an old target stay readable only with the
+  setting they were written with.
+- **HTTPS only, off this machine.** A plain `http://` endpoint is refused
+  unless it is this machine (loopback, or the engine's own object store);
+  `--allow-insecure-http` accepts one anyway, with a warning, and `fox check`
+  and `fox start` keep warning while it is in force. The bucket's secret key
+  would cross the network readable.
+- The local object store beside main is not encrypted: the key would sit on the
+  same disk as the backups, and the host's disk encryption is the control there.
 
 **Branches are disposable.** Only `main` archives WAL; a branch is a
 copy-on-write clone for experiments and agents. If a branch holds work that
@@ -735,7 +766,15 @@ A fresh install exposes nothing it does not have to:
 
 - **Backups can leave the machine.** `fox backup target set` sends the WAL
   archive, base backups and anchor copies to an S3 bucket (see
-  [Durability](#usage)); the keys never appear on a command line.
+  [Durability](#usage)); the keys never appear on a command line. A new
+  remote archive is encrypted client-side with a key kept on this machine
+  (`fox backup key export` for disaster recovery), and an `http://` endpoint
+  on another machine is refused without `--allow-insecure-http`.
+- **Secrets on disk are plain files, readable only by their owner.** The
+  install's passwords and keys (`~/.fox/secrets.json`, the backup target, the
+  backup encryption key, the env files handed to docker) are 0600 files, not
+  encrypted at rest. Encrypt the host's disk: that is the control for them, and
+  for the databases and the local backup store beside them.
 
 ## What FoxByte is not
 

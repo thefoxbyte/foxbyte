@@ -1167,6 +1167,7 @@ func Up() error {
 	if err := Provision(); err != nil {
 		return err
 	}
+	warnTargetAtStart()
 	if err := ensureNetwork(); err != nil {
 		return err
 	}

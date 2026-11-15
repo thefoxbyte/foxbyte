@@ -160,7 +160,10 @@ Durability / time-travel:
   backup prune [--keep N]  Delete all but the newest N full backups (the schedule keeps FOX_BACKUP_RETAIN, 7)
   backup verify        Prove a restore works: probe row -> WAL archive -> restore -> read it back
                        (the control plane also does this on a schedule, FOX_RESTORE_CHECK_INTERVAL)
-  backup target        Where backups go; set s3://bucket[/prefix] --endpoint <url> --access-key <key> [--region r] [--path-style] [--allow-http]; local
+  backup target        Where backups go; set s3://bucket[/prefix] --endpoint <https-url> --access-key <key> [--region r] [--path-style]
+                       [--encrypt|--no-encrypt] [--allow-insecure-http]; local. A new remote archive is encrypted client-side
+  backup key export    Print the backup encryption key, for disaster recovery: without it encrypted backups are lost
+  backup key import [--replace]  Install that key (read from stdin) on a machine that is to restore them
   restore --to <ts>    PITR into a disposable container on port 5433 (ts or 'latest')
   backup export [--out <file>] [--branch <name>]...
                        Portable copy of every non-agent branch (pg_dump + roles + Blackbox),
@@ -481,7 +484,7 @@ func main() {
 		demoCmd(os.Args[2:])
 	case "backup":
 		if len(os.Args) < 3 {
-			fmt.Println("usage: fox backup <create|list|prune|verify|target|export|restore>")
+			fmt.Println("usage: fox backup <create|list|prune|verify|target|key|export|restore>")
 			os.Exit(2)
 		}
 		switch os.Args[2] {
@@ -517,6 +520,8 @@ func main() {
 				c.BaseBackup, c.Seconds, c.Tables, c.Target)
 		case "target":
 			backupTargetCmd(os.Args[3:])
+		case "key":
+			backupKeyCmd(os.Args[3:])
 		case "export":
 			must(exportCmd(os.Args[3:], true))
 		case "restore":
@@ -1398,7 +1403,7 @@ func backupTargetCmd(args []string) {
 		}
 	case "set":
 		if len(args) < 2 {
-			fmt.Printf("usage: %s backup target set s3://bucket[/prefix] --endpoint <https-url> --access-key <key> [--region <r>] [--path-style] [--allow-http]\n", brand.CLI)
+			fmt.Printf("usage: %s backup target set s3://bucket[/prefix] --endpoint <https-url> --access-key <key> [--region <r>] [--path-style] [--encrypt|--no-encrypt] [--allow-insecure-http]\n", brand.CLI)
 			os.Exit(2)
 		}
 		bucket, prefix, err := branch.ParseTargetURL(args[1])
@@ -1417,9 +1422,11 @@ func backupTargetCmd(args []string) {
 			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			t.SecretKey = strings.TrimSpace(line)
 		}
-		must(branch.SetBackupTarget(t, hasFlag(args, "--allow-http")))
+		opts, err := targetSetOptions(args)
+		must(err)
+		must(branch.SetBackupTarget(t, opts))
 	case "local":
-		must(branch.SetBackupTarget(branch.Target{Kind: "local"}, false))
+		must(branch.SetBackupTarget(branch.Target{Kind: "local"}, branch.TargetOptions{}))
 	default:
 		fmt.Printf("usage: %[1]s backup target [show] | %[1]s backup target set s3://… | %[1]s backup target local\n", brand.CLI)
 		os.Exit(2)

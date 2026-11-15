@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/secrets"
 )
 
 // Where backups go (audit v2 G18). By default the WAL archive and every base
@@ -36,6 +38,19 @@ type Target struct {
 	AccessKey string `json:"access_key"`       //
 	SecretKey string `json:"secret_key"`       //
 	PathStyle bool   `json:"path_style"`       // bucket in the path, not the host name (MinIO and most non-AWS stores)
+
+	// Encrypted means wal-g encrypts everything it writes here with the
+	// install's backup key (secrets.BackupKey), and decrypts everything it
+	// reads. KeyID names that key, so a different one is refused before it
+	// writes a single object the rest of the archive cannot be read with.
+	//
+	// It is fixed when the target is set and never changed in place: with a
+	// key configured, wal-g decrypts every object it reads and cannot tell one
+	// that was never encrypted, so one archive is either all encrypted or all
+	// plain. A target file from before encryption existed has neither field,
+	// stays plain, and keeps restoring exactly as it did.
+	Encrypted bool   `json:"encrypted,omitempty"`
+	KeyID     string `json:"key_id,omitempty"`
 }
 
 func targetPath() string { return brand.StatePath("backup-target.json") }
@@ -94,7 +109,66 @@ func (t Target) Describe() string {
 	if !t.Remote() {
 		return "the local object store (" + objStore + ", on this machine)"
 	}
-	return fmt.Sprintf("%s at %s (region %s, key %s)", t.Root(), t.Endpoint, t.Region, t.AccessKey)
+	enc := "not encrypted by FoxByte"
+	if t.Encrypted {
+		enc = "encrypted client-side, key id " + t.KeyID
+	}
+	return fmt.Sprintf("%s at %s (region %s, key %s; %s)", t.Root(), t.Endpoint, t.Region, t.AccessKey, enc)
+}
+
+// InsecureHTTP reports a target reached over plain HTTP somewhere other than
+// this machine: the secret key, and every backup of a target that is not
+// encrypted, cross the network readable by anyone on the path. Loopback and the
+// engine's own object store on the docker network never leave the machine, so
+// plain HTTP loses nothing there.
+func (t Target) InsecureHTTP() bool {
+	u, err := url.Parse(t.Endpoint)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	return !localHost(u.Hostname())
+}
+
+// localHost is a host name that stays on this machine.
+func localHost(h string) bool {
+	if h == objStore || strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+// warnTargetAtStart says, as the stack comes up, what `fox check` says about a
+// target set before the rules for it existed: plain HTTP to another machine,
+// or an encrypted archive whose key is not here. Neither stops the start —
+// refusing would take down an install that was working.
+func warnTargetAtStart() {
+	t, err := CurrentTarget()
+	if err != nil || !t.Remote() {
+		return
+	}
+	if t.InsecureHTTP() {
+		fmt.Fprintf(os.Stderr, "WARNING: backups go to %s over plain HTTP: the bucket's secret key crosses the network readable. Set an https endpoint with `%s backup target set`.\n", t.Endpoint, brand.CLI)
+	}
+	if err := t.KeyProblem(); err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: backup target: %v. WAL is not being archived until it is.\n", err)
+	}
+}
+
+// KeyProblem says why the target's archive could not be read or written with
+// the key on this machine, or nil. Only an encrypted target can have one.
+func (t Target) KeyProblem() error {
+	if !t.Remote() || !t.Encrypted {
+		return nil
+	}
+	k, err := secrets.BackupKey()
+	if err != nil {
+		return fmt.Errorf("the backups are encrypted but the key cannot be read: %w — install it with `%s backup key import`", err, brand.CLI)
+	}
+	if id := secrets.BackupKeyID(k); id != t.KeyID {
+		return fmt.Errorf("the backups are encrypted with key id %s, and the key on this machine is %s — install the right one with `%s backup key import --replace`", t.KeyID, id, brand.CLI)
+	}
+	return nil
 }
 
 var (
@@ -119,15 +193,16 @@ func ParseTargetURL(s string) (bucket, prefix string, err error) {
 	return bucket, prefix, nil
 }
 
-// Validate checks a remote target's fields. allowHTTP permits an endpoint
-// without TLS, which sends the secret key and every backup in the clear.
-func (t Target) Validate(allowHTTP bool) error {
+// Validate checks a remote target's fields. allowInsecureHTTP permits an
+// endpoint without TLS on another machine, which sends the secret key across
+// the network in the clear; plain HTTP to this machine needs no permission.
+func (t Target) Validate(allowInsecureHTTP bool) error {
 	u, err := url.Parse(t.Endpoint)
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return fmt.Errorf("the endpoint must be an http(s) URL, not %q", t.Endpoint)
 	}
-	if u.Scheme == "http" && !allowHTTP {
-		return fmt.Errorf("%s is not HTTPS: the secret key and every backup would cross the network in the clear (pass --allow-http to accept that)", t.Endpoint)
+	if t.InsecureHTTP() && !allowInsecureHTTP {
+		return fmt.Errorf("%s is not HTTPS: the secret key would cross the network in the clear, and anyone on the path could read or change what is sent (pass --allow-insecure-http to accept that)", t.Endpoint)
 	}
 	if !bucketRe.MatchString(t.Bucket) {
 		return fmt.Errorf("%q is not a bucket name", t.Bucket)
@@ -176,7 +251,35 @@ func s3EnvContent(t Target) string {
 		"AWS_SECRET_ACCESS_KEY=" + t.SecretKey + "\n" +
 		"AWS_ENDPOINT=" + t.Endpoint + "\n" +
 		"AWS_S3_FORCE_PATH_STYLE=" + pathStyle + "\n" +
-		"AWS_REGION=" + t.Region + "\n"
+		"AWS_REGION=" + t.Region + "\n" +
+		encryptionEnv(t)
+}
+
+// missingKeyPath is a key file that does not exist. It is what wal-g is given
+// when an encrypted target's key cannot be had: wal-g then fails every upload
+// and download with an error, and Postgres keeps the WAL it could not archive
+// and tries again. Leaving the key out instead would have wal-g write plain
+// objects into an encrypted archive, and a restore that later read them would
+// fail part way through.
+const missingKeyPath = "/nonexistent/foxbyte-backup-key-missing"
+
+// encryptionEnv is the wal-g encryption settings for a target: the backup key,
+// in the env file (never an argument, which anyone listing processes can read),
+// or nothing for a plain target. Every wal-g run takes its environment from
+// this file through walgEnvFor — archive_command and backup-push in main,
+// backup-fetch and wal-fetch in a point-in-time restore, the restore check, and
+// the standby's restore_command — so all of them read and write the archive
+// the same way.
+func encryptionEnv(t Target) string {
+	if !t.Remote() || !t.Encrypted {
+		return ""
+	}
+	if err := t.KeyProblem(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: backup target: %v\n", err)
+		return "WALG_LIBSODIUM_KEY_PATH=" + missingKeyPath + "\nWALG_LIBSODIUM_KEY_TRANSFORM=hex\n"
+	}
+	k, _ := secrets.BackupKey()
+	return "WALG_LIBSODIUM_KEY=" + k + "\nWALG_LIBSODIUM_KEY_TRANSFORM=hex\n"
 }
 
 // mcEnvContent is the MinIO client's environment for a target: alias "t".

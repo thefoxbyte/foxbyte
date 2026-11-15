@@ -14,6 +14,7 @@ import (
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/safego"
+	"github.com/thefoxbyte/foxbyte/internal/secrets"
 )
 
 // ---- setting the target ----
@@ -39,14 +40,97 @@ func CheckTarget(t Target) (lock string, err error) {
 	return out, nil
 }
 
+// TargetOptions are the choices `fox backup target set` leaves to its caller.
+type TargetOptions struct {
+	// AllowInsecureHTTP accepts a plain-HTTP endpoint on another machine.
+	AllowInsecureHTTP bool
+	// Encrypt is EncryptOn, EncryptOff, or "" to let chooseEncryption decide.
+	Encrypt string
+}
+
+const (
+	EncryptOn  = "on"
+	EncryptOff = "off"
+)
+
+// targetHoldsArchive reports whether a bucket location already holds a wal-g
+// archive: base backups or WAL at its root, or one level down (the prefix each
+// upgraded cluster archives under; see walArchiveFile). Read with the target's
+// own credentials, before anything is saved.
+func targetHoldsArchive(t Target) (bool, error) {
+	env := envFile("mc-check.env", mcEnvContent(t))
+	defer os.Remove(env)
+	// The root passed ParseTargetURL and bucketRe, so it is safe in a shell
+	// word. Directory names from the bucket are only ever quoted.
+	root := "t/" + strings.TrimPrefix(t.Root(), "s3://")
+	out, err := captureCombined("docker", "run", "--rm", "--network", network, "--env-file", env,
+		"--entrypoint", "sh", mcImage(), "-c",
+		// A prefix nothing was ever written under does not exist, and mc says
+		// so: that is an empty location, not a failure. Any other error is.
+		fmt.Sprintf(`top=$(mc ls %[1]s/ 2>&1) || { case "$top" in *"not exist"*) exit 0;; esac; echo "$top"; exit 3; }; `+
+			`echo "$top"; echo "$top" | awk '{print $NF}' | grep '/$' | while read -r d; do mc ls "%[1]s/$d" 2>/dev/null; done`, root))
+	if err != nil {
+		return false, fmt.Errorf("cannot list %s: %s", t.Root(), strings.TrimSpace(out))
+	}
+	return listingHoldsArchive(out), nil
+}
+
+// listingHoldsArchive reads `mc ls` output for wal-g's own directories.
+func listingHoldsArchive(out string) bool {
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasSuffix(l, "basebackups_005/") || strings.HasSuffix(l, "wal_005/") {
+			return true
+		}
+	}
+	return false
+}
+
+// chooseEncryption decides whether the new target t is encrypted.
+//
+// wal-g, with a key configured, decrypts every object it reads; an object that
+// was written without one does not open, and nothing marks which is which. So
+// encryption is a property of a whole archive, decided once, when the target
+// is set:
+//
+//   - an explicit choice wins, since only the operator knows how an archive
+//     already in the bucket was written;
+//   - setting the target in force again (new keys, say) keeps its setting;
+//   - an empty location is encrypted: nothing in it can be read the wrong way;
+//   - a location that already holds an archive, or that could not be listed,
+//     needs the choice made out loud, because guessing wrong makes that
+//     archive unreadable to every restore.
+func chooseEncryption(t, cur Target, choice string, holds bool, listErr error) (bool, error) {
+	switch choice {
+	case EncryptOn:
+		return true, nil
+	case EncryptOff:
+		return false, nil
+	case "":
+	default:
+		return false, fmt.Errorf("encryption is %q or %q, not %q", EncryptOn, EncryptOff, choice)
+	}
+	if cur.Remote() && cur.Root() == t.Root() && cur.Endpoint == t.Endpoint {
+		return cur.Encrypted, nil
+	}
+	if listErr != nil {
+		return false, fmt.Errorf("could not tell whether %s already holds backups (%v): pass --encrypt for a new archive, or --no-encrypt for one written without encryption", t.Root(), listErr)
+	}
+	if holds {
+		return false, fmt.Errorf("%s already holds backups. FoxByte cannot tell whether they were encrypted, and choosing wrong makes them unreadable: pass --no-encrypt if they were written without encryption (FoxByte before client-side encryption, or --no-encrypt), --encrypt if they were written encrypted with this install's key — or use an empty prefix", t.Root())
+	}
+	return true, nil
+}
+
 // SetBackupTarget moves the WAL archive and base backups to t: it checks the
 // bucket, saves the target, restarts main so its archive_command uses it,
 // takes the first base backup there, and copies the anchors across. The old
 // target's backups stay where they are; restores read from the target in
-// force, so a point before the move is restored after moving back.
-func SetBackupTarget(t Target, allowHTTP bool) error {
+// force, so a point before the move is restored after moving back — with the
+// encryption setting those backups were written with.
+func SetBackupTarget(t Target, o TargetOptions) error {
 	if t.Remote() {
-		if err := t.Validate(allowHTTP); err != nil {
+		if err := t.Validate(o.AllowInsecureHTTP); err != nil {
 			return err
 		}
 	}
@@ -54,6 +138,9 @@ func SetBackupTarget(t Target, allowHTTP bool) error {
 		return fmt.Errorf("high availability is on: its standby archives too — run `%s ha disable` first", brand.CLI)
 	}
 	if t.Remote() {
+		if t.InsecureHTTP() {
+			fmt.Fprintf(os.Stderr, "warning: %s is plain HTTP to another machine: the bucket's secret key crosses the network readable, and anyone on the path can read or change what is sent.\n", t.Endpoint)
+		}
 		fmt.Printf("Checking %s …\n", t.Root())
 		lock, err := CheckTarget(t)
 		if err != nil {
@@ -64,6 +151,28 @@ func SetBackupTarget(t Target, allowHTTP bool) error {
 			fmt.Println("  For backups that cannot be deleted, create the bucket with Object Lock and a default retention.")
 		} else {
 			fmt.Printf("  reachable, with Object Lock: %s\n", firstLine(lock))
+		}
+		cur, _ := CurrentTarget()
+		holds, listErr := false, error(nil)
+		if o.Encrypt == "" {
+			holds, listErr = targetHoldsArchive(t)
+		}
+		enc, err := chooseEncryption(t, cur, o.Encrypt, holds, listErr)
+		if err != nil {
+			return err
+		}
+		t.Encrypted, t.KeyID = enc, ""
+		if enc {
+			k, err := secrets.EnsureBackupKey()
+			if err != nil {
+				return fmt.Errorf("the backup encryption key: %w", err)
+			}
+			t.KeyID = secrets.BackupKeyID(k)
+			fmt.Printf("  encrypted client-side with this install's backup key (id %s), kept at %s and never in the bucket.\n", t.KeyID, secrets.BackupKeyPath())
+			fmt.Printf("  Losing that key loses these backups: run `%s backup key export` now and keep it somewhere that is neither this machine nor the bucket.\n", brand.CLI)
+		} else {
+			fmt.Println("  NOT encrypted by FoxByte: the bucket holds the database in the clear unless the bucket encrypts it.")
+			fmt.Println("  Backups already here are readable only while this target stays unencrypted; a new, empty prefix can be encrypted.")
 		}
 	}
 	if err := SaveTarget(t); err != nil {
