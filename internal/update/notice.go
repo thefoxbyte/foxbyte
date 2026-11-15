@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // EnvNoCheck turns off the check `fox start` makes for a newer release.
@@ -136,6 +138,9 @@ func BackgroundCheck(c *Client, current string, t Target, timeout time.Duration)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	ch := make(chan string, 1)
 	go func() {
+		// A panic here costs only the notice: the caller stops waiting at the
+		// deadline and prints nothing, as it does when offline.
+		defer safego.Catch("update check", nil)
 		o, err := c.Available(ctx, cur, t)
 		if err != nil {
 			ch <- "" // offline or rate limited: silent, and not remembered
