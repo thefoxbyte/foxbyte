@@ -16,6 +16,7 @@ import (
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // Proving the backups restore.
@@ -375,17 +376,21 @@ func StartRestoreVerifier() {
 		time.Sleep(5 * time.Minute)
 		for {
 			var err error
-			if due(iv) {
-				var c RestoreCheck
-				c, err = VerifyRestore(func(f string, a ...any) { log.Printf("restore check: "+strings.TrimRight(f, "\n"), a...) })
-				switch {
-				case errors.Is(err, ErrPrimaryUnavailable):
-					log.Printf("restore check: not run: %v; trying again in %s", err, nextLook(err))
-				case err != nil:
-					log.Printf("restore check: FAILED after %ds: %v", c.Seconds, err)
-				default:
-					log.Printf("restore check: the backups restore (%ds, from %s)", c.Seconds, c.BaseBackup)
+			if perr := safego.Run("restore check", func() {
+				if due(iv) {
+					var c RestoreCheck
+					c, err = VerifyRestore(func(f string, a ...any) { log.Printf("restore check: "+strings.TrimRight(f, "\n"), a...) })
+					switch {
+					case errors.Is(err, ErrPrimaryUnavailable):
+						log.Printf("restore check: not run: %v; trying again in %s", err, nextLook(err))
+					case err != nil:
+						log.Printf("restore check: FAILED after %ds: %v", c.Seconds, err)
+					default:
+						log.Printf("restore check: the backups restore (%ds, from %s)", c.Seconds, c.BaseBackup)
+					}
 				}
+			}); perr != nil {
+				err = perr
 			}
 			time.Sleep(nextLook(err))
 		}

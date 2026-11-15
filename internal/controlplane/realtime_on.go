@@ -18,6 +18,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // GET /api/branches/{name}/realtime — the change feed, as server-sent events.
@@ -330,8 +331,24 @@ func startHub(name string, since, floor pglogrepl.LSN) (h *realtime.Hub, started
 	ctx, cancel := context.WithCancel(context.Background())
 	hubs.m[name] = h
 	hubs.cancel[name] = cancel
-	go realtime.Supervise(ctx, name, branch.SlotName(name, "stream"),
-		branch.RealtimeRolePassword(), h, since)
+	go func() {
+		// A panic in the decoder costs this branch's feed, not the control
+		// plane. Its subscribers are told, as for any decoder that gave up,
+		// and the hub is dropped so the next subscriber starts a fresh one.
+		defer safego.Catch("change feed "+name, func(error) {
+			h.Close(realtime.Notice{Type: "error", Code: realtime.CodeDecoderFailed,
+				Detail: "the change feed stopped on an internal error; subscribe again"})
+			hubs.mu.Lock()
+			if hubs.m[name] == h {
+				hubs.cancel[name]()
+				delete(hubs.cancel, name)
+				delete(hubs.m, name)
+			}
+			hubs.mu.Unlock()
+		})
+		realtime.Supervise(ctx, name, branch.SlotName(name, "stream"),
+			branch.RealtimeRolePassword(), h, since)
+	}()
 	return h, true
 }
 

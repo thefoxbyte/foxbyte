@@ -22,7 +22,7 @@ func quietDecoder(t *testing.T, slot string) (*Decoder, *Subscriber) {
 	h := NewHub()
 	s := h.Subscribe()
 	t.Cleanup(s.Close)
-	d := &Decoder{hub: h, slot: slot, relations: map[uint32]Relation{}}
+	d := &Decoder{hub: h, slot: slot, relations: map[uint32]Relation{}, catalog: &fakeCatalog{}}
 	d.relations[1] = Relation{Schema: "public", Name: "t", ReplicaIdentity: 'd',
 		Columns: []Column{{Name: "id", TypeOID: 20, Key: true}}}
 	return d, s

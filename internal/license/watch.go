@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // Keeping a running process's entitlement in step with the licence file.
@@ -86,7 +88,9 @@ func Watch(onChange func(Status)) {
 	if after := Install(); changed(before, after) && onChange != nil {
 		onChange(after)
 	}
-	go watch(path, prev, watchEvery, reevaluateEvery, onChange, nil)
+	// A panic would stop the watch (the entitlement then stays as it last
+	// was) rather than the whole process.
+	safego.Go("licence watch", func() { watch(path, prev, watchEvery, reevaluateEvery, onChange, nil) })
 }
 
 // watch is the loop, starting from a look already taken, and stoppable for

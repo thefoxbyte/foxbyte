@@ -53,18 +53,26 @@ type Decoder struct {
 	// Only this is reported to Postgres, so WAL behind it stays reclaimable and
 	// WAL ahead of it stays available for a subscriber that reconnects.
 	acked pglogrepl.LSN
+
+	// catalog is how the decoder asks whether a table may still stream, and
+	// verdicts holds the answers by table: "" may stream, anything else is why
+	// not. A table with no entry is asked about before its next change is
+	// sent. See guard.go.
+	catalog  Catalog
+	verdicts map[string]string
 }
 
 // NewDecoder opens a replication connection. dsn must carry
 // `replication=database`; the caller builds it, because the credentials are the
-// engine's business rather than this package's.
-func NewDecoder(ctx context.Context, dsn, slot, publication string, hub *Hub) (*Decoder, error) {
+// engine's business rather than this package's. catalog is what the decoder
+// checks its tables against while it runs; without one it streams nothing.
+func NewDecoder(ctx context.Context, dsn, slot, publication string, hub *Hub, catalog Catalog) (*Decoder, error) {
 	conn, err := pgconn.Connect(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening a replication connection: %w", err)
 	}
 	return &Decoder{conn: conn, slot: slot, publication: publication, hub: hub,
-		relations: map[uint32]Relation{}}, nil
+		relations: map[uint32]Relation{}, catalog: catalog, verdicts: map[string]string{}}, nil
 }
 
 // EnsureSlot creates the slot if it is not there. Idempotent, because a
@@ -134,6 +142,11 @@ func (d *Decoder) Run(ctx context.Context, since pglogrepl.LSN) error {
 				ErrResumeAhead, since, sys.XLogPos)
 		}
 	}
+	// Before anything is streamed: a table that gained RLS or lost a grant
+	// while no decoder was running is caught here, not at its first row.
+	if err := d.recheckAll(); err != nil {
+		return err
+	}
 	d.acked = since
 	noteQuietStart(d.slot, since, d.hub.Floor())
 	if err := pglogrepl.StartReplication(ctx, d.conn, d.slot, since,
@@ -144,7 +157,14 @@ func (d *Decoder) Run(ctx context.Context, since pglogrepl.LSN) error {
 	}
 
 	next := time.Now().Add(StandbyInterval)
+	recheck := time.Now().Add(RecheckInterval)
 	for {
+		if time.Now().After(recheck) {
+			if err := d.recheckAll(); err != nil {
+				return err
+			}
+			recheck = time.Now().Add(RecheckInterval)
+		}
 		if time.Now().After(next) {
 			// Only what subscribers have been given. See the note on acked.
 			if err := pglogrepl.SendStandbyStatusUpdate(ctx, d.conn,
@@ -154,7 +174,11 @@ func (d *Decoder) Run(ctx context.Context, since pglogrepl.LSN) error {
 			next = time.Now().Add(StandbyInterval)
 		}
 
-		recvCtx, cancel := context.WithDeadline(ctx, next)
+		wake := next
+		if recheck.Before(wake) {
+			wake = recheck
+		}
+		recvCtx, cancel := context.WithDeadline(ctx, wake)
 		msg, err := d.conn.ReceiveMessage(recvCtx)
 		cancel()
 		if err != nil {
@@ -287,31 +311,54 @@ func (d *Decoder) handleMessage(m pglogrepl.Message, lsn string) error {
 
 	case *pglogrepl.RelationMessage:
 		rel := relationFrom(msg)
+		old, seen := d.relations[msg.RelationID]
+		d.relations[msg.RelationID] = rel
+		// Postgres describes a table again after its definition, grants or RLS
+		// setting change, so this is where the catalog is asked again — before
+		// the change that follows it is sent.
+		reason, wasBlocked, err := d.recheckRelation(msg.RelationID, rel)
+		if err != nil {
+			return err
+		}
+		if reason != "" {
+			// Not even the shape: a column added for other roles to read is
+			// itself something this table's subscribers should not learn.
+			return nil
+		}
 		// Re-announce only when the shape actually changed, or every
 		// transaction would repeat the schema for no reason.
-		if old, seen := d.relations[msg.RelationID]; !seen || !sameShape(old, rel) {
+		if !seen || wasBlocked || !sameShape(old, rel) {
 			d.hub.Publish(Schema{Type: "schema", Table: rel.Qualified(), Columns: rel.Columns})
 		}
-		d.relations[msg.RelationID] = rel
 
 	case *pglogrepl.InsertMessage:
-		if rel, ok := d.relations[msg.RelationID]; ok {
-			d.publishChange(BuildChange(rel, "insert", d.commitLSN(lsn), nil, tupleFrom(msg.Tuple)), lsn)
+		rel, ok, err := d.sendable(msg.RelationID)
+		if !ok {
+			return err
 		}
+		d.publishChange(BuildChange(rel, "insert", d.commitLSN(lsn), nil, tupleFrom(msg.Tuple)), lsn)
 	case *pglogrepl.UpdateMessage:
-		if rel, ok := d.relations[msg.RelationID]; ok {
-			d.publishChange(BuildChange(rel, "update", d.commitLSN(lsn),
-				tupleFrom(msg.OldTuple), tupleFrom(msg.NewTuple)), lsn)
+		rel, ok, err := d.sendable(msg.RelationID)
+		if !ok {
+			return err
 		}
+		d.publishChange(BuildChange(rel, "update", d.commitLSN(lsn),
+			tupleFrom(msg.OldTuple), tupleFrom(msg.NewTuple)), lsn)
 	case *pglogrepl.DeleteMessage:
-		if rel, ok := d.relations[msg.RelationID]; ok {
-			d.publishChange(BuildChange(rel, "delete", d.commitLSN(lsn), tupleFrom(msg.OldTuple), nil), lsn)
+		rel, ok, err := d.sendable(msg.RelationID)
+		if !ok {
+			return err
 		}
+		d.publishChange(BuildChange(rel, "delete", d.commitLSN(lsn), tupleFrom(msg.OldTuple), nil), lsn)
 	case *pglogrepl.TruncateMessage:
 		// One event per relation, with no row data — there is none to send. It
 		// almost never fires: datachanges.sql blocks TRUNCATE by default.
 		for _, id := range msg.RelationIDs {
-			if rel, ok := d.relations[id]; ok {
+			rel, ok, err := d.sendable(id)
+			if err != nil {
+				return err
+			}
+			if ok {
 				d.publishChange(Change{Type: "change", Table: rel.Qualified(),
 					Action: "truncate", CommitLSN: d.commitLSN(lsn), Identity: map[string]Value{}}, lsn)
 			}

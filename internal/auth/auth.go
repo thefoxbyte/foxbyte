@@ -14,7 +14,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"log"
 	"os"
@@ -259,6 +258,20 @@ func migrate(ctx context.Context, db *sql.Conn) error {
 	if _, err := db.ExecContext(ctx, `DELETE FROM sessions WHERE length(token) <> 64`); err != nil {
 		return err
 	}
+	// Accounts whose email nobody has proven (emailproof.go). It lists the
+	// exceptions rather than adding a flag to users, for two reasons. Every
+	// account that existed before this table was made by an admin, the setup
+	// token or a provider sign-in, or was let in under the old rules, and an
+	// empty table treats them all as proven, so an upgrade signs nobody out
+	// and wipes no password. And the HA standby is sent users with a fixed
+	// set of columns (shared.go): a new column there would make an older node
+	// refuse the whole document mid-upgrade, while a new table rides along as
+	// an optional one.
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS unproven_emails (
+  user_id INTEGER PRIMARY KEY, since INTEGER NOT NULL
+)`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -376,7 +389,18 @@ func randToken(n int) string {
 // ---- users ----
 
 // CreateUser creates an account (password may be "" for OAuth-only users).
+//
+// The account's email counts as proven: this is how an admin adds someone
+// (`fox user create`), and the admin is vouching for the address. Open
+// self sign-up goes through Register, which does not.
 func (s *Store) CreateUser(email, password string) (User, error) {
+	return s.createUser(email, password, true)
+}
+
+// createUser makes the account, recording in the same transaction whether its
+// email is proven (see emailproof.go), so an unproven account never exists for
+// a moment looking proven.
+func (s *Store) createUser(email, password string, proven bool) (User, error) {
 	email, err := normalizeEmail(email)
 	if err != nil {
 		return User{}, err
@@ -389,11 +413,10 @@ func (s *Store) CreateUser(email, password string) (User, error) {
 		}
 		hash = string(h)
 	}
-	res, err := s.db.Exec(`INSERT INTO users(email, pw_hash, created) VALUES(?,?,?)`, email, hash, time.Now().Unix())
+	id, err := s.insertUser(email, hash, proven)
 	if err != nil {
-		return User{}, fmt.Errorf("email already registered")
+		return User{}, err
 	}
-	id, _ := res.LastInsertId()
 	u := User{ID: id, Email: email}
 	// The first account is the one with the lowest id. Counting before the
 	// insert let two sign-ups at the same moment both see an empty store and
@@ -411,15 +434,21 @@ func (s *Store) CreateUser(email, password string) (User, error) {
 // Register creates an account from the sign-up form. The first account on an
 // install needs the setup token (see setup.go); later ones need sign-up to be
 // open. `fox user create` calls CreateUser directly and needs neither.
+//
+// Only the first account's email counts as proven. Whoever holds the setup
+// token owns the install, so their word for their own address is as good as
+// an admin's. An open sign-up proves nothing: anyone can type any address,
+// and FoxByte sends no mail to check it.
 func (s *Store) Register(email, password, setupToken string) (User, error) {
 	if !s.HasAnyUser() {
 		if !checkSetupToken(setupToken) {
 			return User{}, ErrSetupToken
 		}
+		return s.createUser(email, password, true)
 	} else if !s.cfg.SignupOpen {
 		return User{}, ErrSignupClosed
 	}
-	return s.CreateUser(email, password)
+	return s.createUser(email, password, false)
 }
 
 // Login verifies email + password.
@@ -553,6 +582,51 @@ func (s *Store) RevokeScopeKeys(scope string) error {
 	return err
 }
 
+// RevokeBranchKeys is RevokeScopeKeys for a branch that has gone or is being
+// made again, and says how many keys it revoked. Each revocation is written to
+// the security log like any other key revoked, with why, so a key that stopped
+// working can be traced to the delete that ended it.
+func (s *Store) RevokeBranchKeys(branch, actor, why string) (int, error) {
+	if strings.TrimSpace(branch) == "" {
+		return 0, nil
+	}
+	rows, err := s.db.Query(`SELECT id, prefix FROM api_keys WHERE scope=?`, branch)
+	if err != nil {
+		return 0, err
+	}
+	type key struct{ id, prefix string }
+	var keys []key
+	for rows.Next() {
+		var k key
+		if err := rows.Scan(&k.id, &k.prefix); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, k := range keys {
+		var res sql.Result
+		err := retryBusy(func() error {
+			var e error
+			res, e = s.db.Exec(`DELETE FROM api_keys WHERE id=? AND scope=?`, k.id, branch)
+			return e
+		})
+		if err != nil {
+			return n, err
+		}
+		if c, _ := res.RowsAffected(); c > 0 {
+			n++
+			s.Audit(EvKeyRevoked, actor, "key "+k.id+" ("+k.prefix+"…) scoped to branch "+branch, "", why)
+		}
+	}
+	return n, nil
+}
+
 // VerifyKey resolves an API key to its user and its scope. A false result means
 // "not authenticated"; a genuine store failure (as opposed to an unknown key) is
 // logged so it is diagnosable rather than silently masquerading as a bad key.
@@ -658,7 +732,11 @@ var errOAuthUnverified = errors.New("the email on that account is not verified w
 // account with that email, or — only when sign-up is open and the install
 // already has its first account — becomes a new account. The first account is
 // made with the setup token, which a provider sign-in cannot carry.
-func (s *Store) upsertOAuth(provider, subject, email string, verified bool) (User, error) {
+//
+// Joining an account whose email was never proven takes it over (linkOAuth):
+// the provider has just proven the address, which nothing before it had. ip is
+// the caller's address, for the security log.
+func (s *Store) upsertOAuth(provider, subject, email string, verified bool, ip string) (User, error) {
 	var uid int64
 	if err := s.db.QueryRow(`SELECT user_id FROM oauth_identities WHERE provider=? AND subject=?`, provider, subject).Scan(&uid); err == nil {
 		return s.userByID(uid)
@@ -672,15 +750,18 @@ func (s *Store) upsertOAuth(provider, subject, email string, verified bool) (Use
 			return User{}, errOAuthNoAccount
 		}
 	}
-	{
-		var u User
-		if e := s.db.QueryRow(`SELECT id,email FROM users WHERE email=?`, email).Scan(&u.ID, &u.Email); e == nil {
-			_, _ = s.db.Exec(`INSERT INTO oauth_identities(provider,subject,user_id) VALUES(?,?,?)`, provider, subject, u.ID)
+	if u, ok, err := s.linkOAuth(provider, subject, email, ip); err != nil || ok {
+		return u, err
+	}
+	// The provider verified the address, so the new account's email is proven.
+	nu, err := s.createUser(email, "", true)
+	if err != nil {
+		// Somebody registered this email between the lookup and the insert.
+		// Join that account the same way, so a sign-up that wins the race is
+		// treated exactly like one made earlier.
+		if u, ok, lerr := s.linkOAuth(provider, subject, email, ip); lerr == nil && ok {
 			return u, nil
 		}
-	}
-	nu, err := s.CreateUser(email, "")
-	if err != nil {
 		return User{}, err
 	}
 	_, _ = s.db.Exec(`INSERT INTO oauth_identities(provider,subject,user_id) VALUES(?,?,?)`, provider, subject, nu.ID)

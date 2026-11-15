@@ -310,67 +310,17 @@ func CheckChain(pred *Row, rows []Row) error {
 // Verify checks a whole ledger (all rows) against its anchors. The anchors are
 // the source of truth: a ledger whose hash chain was rewritten consistently still
 // fails here, because its rows no longer produce the anchored Merkle roots.
+//
+// It sorts the rows and hands them to a Verifier, which is what a caller
+// reading the ledger as a stream uses directly.
 func Verify(rows []Row, anchors []Anchor) Report {
-	rep := Report{Problems: []string{}, Notes: []string{}}
 	rows = append([]Row(nil), rows...)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
-	rep.Rows = len(rows)
-
-	c := chainCheck(rows, "")
-	rep.ChainedRows, rep.LegacyRows, rep.FirstBrokenID = c.chained, c.legacy, c.firstBroken
-	for _, p := range c.problems {
-		rep.problem("%s", p)
+	v := NewVerifier(anchors)
+	for _, r := range rows {
+		_ = v.Add(r) // sorted, so never out of order
 	}
-
-	anchors = append([]Anchor(nil), anchors...)
-	sort.Slice(anchors, func(i, j int) bool { return anchors[i].ToID < anchors[j].ToID })
-	rep.Checkpoints = len(anchors)
-	for i, a := range anchors {
-		label := fmt.Sprintf("checkpoint %d (ledger ids %d–%d)", a.CheckpointID, a.FromID, a.ToID)
-		if a.Format != AnchorFormat {
-			rep.problem("%s: unknown anchor format %q", label, a.Format)
-			continue
-		}
-		if i > 0 {
-			p := anchors[i-1]
-			if a.FromID != p.ToID+1 {
-				rep.problem("%s does not continue checkpoint %d (ids %d–%d): anchors are missing or overlap", label, p.CheckpointID, p.FromID, p.ToID)
-			}
-			if a.PrevRoot != p.MerkleRoot {
-				rep.problem("%s: anchor chain broken (prev_root does not match checkpoint %d)", label, p.CheckpointID)
-			}
-		} else if a.PrevRoot != "" {
-			rep.Notes = append(rep.Notes, fmt.Sprintf("the earliest anchor here (%s) continues an older checkpoint whose anchor file is not present; rows before id %d are only hash-chain checked", label, a.FromID))
-		}
-		lo := sort.Search(len(rows), func(k int) bool { return rows[k].ID >= a.FromID })
-		hi := sort.Search(len(rows), func(k int) bool { return rows[k].ID > a.ToID })
-		in := rows[lo:hi]
-		rep.AnchoredRows += len(in)
-		if len(in) != a.EntryCount {
-			rep.problem("%s: %d rows were anchored but the ledger now has %d in that range (rows deleted or inserted)", label, a.EntryCount, len(in))
-			continue
-		}
-		if rootOf(in) != a.MerkleRoot {
-			rep.problem("%s: the rows no longer match what was anchored (Merkle root mismatch)", label)
-			continue
-		}
-		if RowHash(in[len(in)-1]) != a.LastRowHash {
-			rep.problem("%s: the last anchored row differs from its anchor", label)
-		}
-	}
-
-	if len(anchors) == 0 {
-		rep.UnanchoredRows = len(rows)
-	} else {
-		first, last := anchors[0].FromID, anchors[len(anchors)-1].ToID
-		for _, r := range rows {
-			if r.ID < first || r.ID > last {
-				rep.UnanchoredRows++
-			}
-		}
-	}
-	rep.Intact = len(rep.Problems) == 0
-	return rep
+	return v.Report()
 }
 
 // Summary renders the report for a terminal. The first line starts with

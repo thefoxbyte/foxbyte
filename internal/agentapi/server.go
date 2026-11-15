@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 	"log"
 	"net/http"
 	"net/url"
@@ -53,9 +54,12 @@ func reapLoop(ttl time.Duration) {
 	}
 	for {
 		time.Sleep(interval)
-		if n, err := branch.ReapAgentBranches(ttl); err == nil && n > 0 {
-			log.Printf("reaped %d expired agent branch(es)", n)
-		}
+		// One round in Run: a panic is logged and the next round still comes.
+		safego.Run("agent branch reaper", func() {
+			if n, err := branch.ReapAgentBranches(ttl); err == nil && n > 0 {
+				log.Printf("reaped %d expired agent branch(es)", n)
+			}
+		})
 	}
 }
 
@@ -102,6 +106,17 @@ func Serve(addr string) error {
 		var p branch.Provenance
 		_ = json.NewDecoder(r.Body).Decode(&p)
 		u, _ := auth.UserFrom(r.Context())
+		// The account's branch limit and create rate; admins pass.
+		if err := branch.AllowBranchCreate(u.ID, acl.Admin(u)); err != nil {
+			code := http.StatusForbidden
+			if errors.Is(err, branch.ErrCreateRate) {
+				code = http.StatusTooManyRequests
+			} else if !errors.Is(err, branch.ErrBranchQuota) {
+				code = http.StatusInternalServerError
+			}
+			writeErr(w, code, err)
+			return
+		}
 		if !p.Requested() {
 			info, err := branch.CreateAgentBranchFor(u.ID, r.PathValue("id"))
 			if err != nil {
@@ -174,8 +189,12 @@ func Serve(addr string) error {
 
 	// The Agent API answers machines only, so nothing it returns may load or be framed.
 	// A change a browser sends from another site is refused, as on the control plane.
-	handler := httpx.SecurityHeaders(httpx.APIPolicy)(httpx.CORS(store.WebOrigin())(httpx.RefuseCrossSite(store.WebOrigin())(
-		logging(httpx.LimitBodies(httpx.MaxBody, nil)(mux)))))
+	// Every route here is an ordinary one, under one read and write deadline
+	// (FOX_HTTP_TIMEOUT), so a client that stops reading or sending is cut off.
+	t := httpx.RequestTimeout()
+	handler := httpx.Deadlines(func(*http.Request) httpx.Budget { return httpx.Budget{Read: t, Write: t} })(
+		httpx.SecurityHeaders(httpx.APIPolicy)(httpx.CORS(store.WebOrigin())(httpx.RefuseCrossSite(store.WebOrigin())(
+			logging(httpx.LimitBodies(httpx.MaxBody, nil)(mux))))))
 	srv := httpx.Server(addr, handler)
 	cert, key, tlsErr := tlsutil.EnsureCert()
 	if tlsErr != nil {

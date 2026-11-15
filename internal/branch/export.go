@@ -454,6 +454,13 @@ func RestoreExport(archive, from, into string) error {
 	if !validName(into) {
 		return fmt.Errorf("invalid branch name %q", into)
 	}
+	// The whole restore holds the new branch's lock: nothing may wake, suspend
+	// or make it while it is half made.
+	unlock, err := lockBranch(into, "restored")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	store := activeStorage()
 	if store.exists(into) {
 		return fmt.Errorf("branch %q already exists — restore into a new name", into)
@@ -461,6 +468,8 @@ func RestoreExport(archive, from, into string) error {
 	if err := checkNoContainer(into, ContainerState(into)); err != nil {
 		return err
 	}
+	// A new branch under this name: no earlier branch's key may open it.
+	revokeBranchKeys(into, "a branch was restored under this name")
 	dir, err := os.MkdirTemp("", "fox-restore-")
 	if err != nil {
 		return err

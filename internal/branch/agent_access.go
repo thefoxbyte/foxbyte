@@ -136,19 +136,34 @@ func mintAgentKey(branchName string, owner int64) (string, error) {
 	return key, nil
 }
 
-// revokeAgentKeys deletes the keys scoped to a branch, so an agent's credential
-// does not outlive the branch it was issued for. Best-effort: failing to revoke
-// must not stop the branch being deleted, but it must not pass unnoticed — the
-// key would still open a branch that is about to stop existing.
-func revokeAgentKeys(branchName string) {
+// revokeBranchKeys deletes the keys scoped to a branch name, and records it in
+// the security log, so a branch-scoped credential never outlives the branch it
+// was issued for and never opens a later branch of the same name. Delete calls
+// it, and Create for a name not in use, so every door — the console, the CLI,
+// the Agent API, MCP — gets it without having to remember.
+//
+// Best-effort: failing to revoke must not stop the branch being deleted, but it
+// must not pass unnoticed either.
+func revokeBranchKeys(branchName, why string) {
 	store, err := auth.OpenFromEnv()
 	if err != nil {
-		log.Printf("agent branch %s: opening the key store to revoke its key: %v", branchName, err)
+		log.Printf("branch %s: opening the key store to revoke its branch-scoped keys: %v", branchName, err)
 		return
 	}
 	defer store.Close()
-	if err := store.RevokeScopeKeys(branchName); err != nil {
-		log.Printf("agent branch %s: could not revoke its branch-scoped key: %v", branchName, err)
+	if _, err := store.RevokeBranchKeys(branchName, "engine", why); err != nil {
+		log.Printf("branch %s: could not revoke its branch-scoped keys: %v", branchName, err)
 	}
+}
+
+// forgetAgentBranch drops what the store holds about a deleted agent branch:
+// its owner, and the rest auth.Store.ForgetBranch lists.
+func forgetAgentBranch(branchName string) {
+	store, err := auth.OpenFromEnv()
+	if err != nil {
+		log.Printf("agent branch %s: opening the store to forget it: %v", branchName, err)
+		return
+	}
+	defer store.Close()
 	_ = store.ForgetBranch(branchName)
 }

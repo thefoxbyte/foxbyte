@@ -13,6 +13,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/edition"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // Masking over HTTP (F5, point 4.6). Admins only: the status names the
@@ -373,6 +374,11 @@ func createMaskedBranch(w http.ResponseWriter, r *http.Request, name, from strin
 	}
 	ip := remoteIP(r)
 	go func() {
+		// Off the request, so net/http's recovery does not reach here. A panic
+		// is still written to the security log as a refusal.
+		defer safego.Catch("masking "+name, func(err error) {
+			secLog.Audit(auth.EvMaskBranch, u.Email, name, ip, "refused: "+err.Error())
+		})
 		rec, err := branch.CreateMasked(name, from, u.Email, nil)
 		what := fmt.Sprintf("opened, a masked branch of %s: %d table(s), %d row(s) masked", from, rec.Tables, rec.Rows)
 		if err != nil {

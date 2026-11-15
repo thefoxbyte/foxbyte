@@ -102,6 +102,9 @@ func registerLedgerV2(mux *http.ServeMux) {
 			Name string `json:"name"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !allowCreate(w, r) {
+			return
+		}
 		res, err := branch.BranchBeforeEntry(r.PathValue("name"), id, body.Name, nil)
 		if err == nil {
 			err = own(r, res.Branch)
@@ -122,7 +125,7 @@ func registerLedgerV2(mux *http.ServeMux) {
 		}
 	})
 
-	mux.HandleFunc("GET /api/branches/{name}/ledger/export", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/branches/{name}/ledger/export", exportSlots.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		if !requireFeature(w, edition.Export) {
 			return
 		}
@@ -144,5 +147,5 @@ func registerLedgerV2(mux *http.ServeMux) {
 			// Headers may be out already; the truncated body plus the log is all we can do.
 			http.Error(w, err.Error(), 500)
 		}
-	})
+	}))
 }

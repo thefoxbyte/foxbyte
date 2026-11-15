@@ -26,7 +26,8 @@ func TestNormalisePeer(t *testing.T) {
 	}
 	// A name cannot be a pg_hba address, and saying so beats a rule that
 	// silently matches nothing.
-	for _, bad := range []string{"", "   ", "db1.internal", "not-an-address", "10.0.0.0/99"} {
+	// And a range of every address is the rule this exists to avoid.
+	for _, bad := range []string{"", "   ", "db1.internal", "not-an-address", "10.0.0.0/99", "0.0.0.0/0", "::/0"} {
 		if _, err := normalisePeer(bad); err == nil {
 			t.Errorf("normalisePeer(%q) was accepted", bad)
 		}
@@ -35,7 +36,7 @@ func TestNormalisePeer(t *testing.T) {
 
 // Refused before anything restarts, rather than after.
 func TestValidateExposeAddress(t *testing.T) {
-	for _, ok := range []string{"192.168.105.2", "db1.internal", "fd00::2"} {
+	for _, ok := range []string{"192.168.105.2", "fd00::2"} {
 		if err := validateExposeAddress(ok); err != nil {
 			t.Errorf("validateExposeAddress(%q) = %v", ok, err)
 		}
@@ -45,6 +46,8 @@ func TestValidateExposeAddress(t *testing.T) {
 		{"127.0.0.1", "loopback: another machine cannot reach it"},
 		{"::1", "loopback"},
 		{"0.0.0.0", "every interface: the certificate could not name one"},
+		{"db1.internal", "a name cannot be bound, and binding every interface instead is not what was asked"},
+		{"10.0.0.1/24", "not an address"},
 	} {
 		if err := validateExposeAddress(bad.in); err == nil {
 			t.Errorf("validateExposeAddress(%q) was accepted (%s)", bad.in, bad.because)
@@ -84,11 +87,20 @@ func TestExposePublishBindsOneAddress(t *testing.T) {
 	if exposePublish(NodeExposure{Address: "1.2.3.4", Port: 5432}, false) != nil {
 		t.Error("an unpublished install was given a host port")
 	}
-	// A hostname cannot be a bind address, so it falls back to every interface
-	// — and the pg_hba rule and TLS are the narrowing, as they are anyway.
-	got = strings.Join(exposePublish(NodeExposure{Address: "db1.internal", Port: 5555}, true), " ")
-	if got != "-p 0.0.0.0:5555:5432" {
-		t.Errorf("a hostname published as %q", got)
+	// A hostname or every-interface address cannot be a bind address. There is
+	// no fallback to every interface, and main still starts: just unpublished.
+	for _, bad := range []string{"db1.internal", "0.0.0.0", "::", ""} {
+		if got := exposePublish(NodeExposure{Address: bad, Port: 5555}, true); got != nil {
+			t.Errorf("exposePublish(%q) = %q, want main left unpublished", bad, got)
+		}
+	}
+	for _, bad := range []string{"db1.internal", "", "not an address", "0.0.0.0", "::"} {
+		if _, err := exposeBindAddress(NodeExposure{Address: bad, Port: 5432}); err == nil {
+			t.Errorf("exposeBindAddress(%q) was accepted", bad)
+		}
+	}
+	if a, err := exposeBindAddress(NodeExposure{Address: " 192.168.105.2 ", Port: 5432}); err != nil || a != "192.168.105.2" {
+		t.Errorf("exposeBindAddress of a plain address = %q, %v", a, err)
 	}
 }
 
@@ -188,5 +200,36 @@ func TestOnlyTheKeyChangesHands(t *testing.T) {
 	// And the key is handed over by name.
 	if !strings.Contains(body, `run("chown", pgUID+":"+pgUID, key)`) {
 		t.Error("the private key is never given to the database user, so Postgres will refuse it")
+	}
+}
+
+// The rules are written into the running main before its port is published,
+// and put back only after the port is gone. Otherwise there is a window, on
+// either side, in which the published port carries the stock rules.
+func TestExposeNarrowsBeforePublishingAndRestoresAfter(t *testing.T) {
+	src, err := os.ReadFile("node.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	fn := func(name string) string {
+		i := strings.Index(body, "func "+name+"(")
+		if i < 0 {
+			t.Fatalf("%s is gone", name)
+		}
+		s := body[i:]
+		return s[:strings.Index(s, "\n}\n")]
+	}
+	exp := fn("NodeExpose")
+	narrow := strings.Index(exp, "allowReplicationFor(PrimaryContainer(), cidr)")
+	restart := strings.Index(exp, `startContainer("main", true)`)
+	if narrow < 0 || restart < 0 || narrow > restart {
+		t.Error("NodeExpose publishes the port before narrowing pg_hba.conf")
+	}
+	un := fn("NodeUnexpose")
+	restart = strings.LastIndex(un, `startContainer("main", true)`)
+	restore := strings.LastIndex(un, `allowReplicationFor(PrimaryContainer(), "")`)
+	if restart < 0 || restore < 0 || restore < restart {
+		t.Error("NodeUnexpose puts the stock rules back while the port is still published")
 	}
 }

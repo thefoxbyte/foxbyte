@@ -154,7 +154,7 @@ func toolList() []map[string]any {
 		tool("list_branches", "List the active agent branches and their DSNs.", nil, nil),
 		tool("delete_branch", "Delete an agent's branch and all of its data.",
 			map[string]any{"agent_id": str("identifier for the agent")}, []string{"agent_id"}),
-		tool("run_sql", "Run SQL on a branch (default 'main') and return the result.",
+		tool("run_sql", "Run SQL on a branch (default 'main') and return the result. At most 1,000 rows per statement and 256 KiB in all are returned, and the answer says when rows were left out; a statement is stopped after a minute by default.",
 			map[string]any{
 				"branch": str("branch name (default main)"),
 				"sql":    str("the SQL to run"),
@@ -281,6 +281,16 @@ var (
 	mcpSession string
 )
 
+// allowCreate holds a tool that makes a branch to the account's branch limit
+// and create rate (branch/quota.go). Admins pass. Without an access checker
+// there is no account to count against.
+func allowCreate() error {
+	if acl == nil {
+		return nil
+	}
+	return branch.AllowBranchCreate(me.User.ID, acl.Admin(me.User))
+}
+
 func sessionID() (string, error) {
 	if mcpSession == "" {
 		id, err := branch.NewSessionID("mcp")
@@ -354,6 +364,9 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		_ = json.Unmarshal(args, &a)
 		if a.AgentID == "" {
 			return "", fmt.Errorf("agent_id is required")
+		}
+		if err := allowCreate(); err != nil {
+			return "", err
 		}
 		info, err := branch.CreateAgentBranchFor(me.User.ID, a.AgentID)
 		if err != nil {
@@ -608,6 +621,9 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		// The restore starts containers through helpers that echo to stdout, which
 		// here carries the protocol. Requests are handled one at a time and the
 		// encoder holds the real stdout, so point os.Stdout at stderr meanwhile.
+		if err := allowCreate(); err != nil {
+			return "", err
+		}
 		stdout := os.Stdout
 		os.Stdout = os.Stderr
 		res, err := branch.BranchBeforeEntry(a.Branch, a.EntryID, a.Name, nil)

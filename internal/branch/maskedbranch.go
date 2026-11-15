@@ -280,7 +280,7 @@ type MaskedBranchWork struct {
 // rules is refused with ErrNothingToMask. A failure leaves the branch closed,
 // its record saying why. Enterprise.
 func CreateMasked(name, from, actor string, say func(string)) (MaskedBranch, error) {
-	rec, err := createMasked(name, from, actor, say)
+	rec, err := createMasked(name, from, actor, say, false)
 	// A reservation (ReserveMasked) the making never got past is taken back:
 	// nothing was made.
 	if err != nil && rec.Name == "" {
@@ -311,7 +311,7 @@ func ReserveMasked(name, from, actor string) error {
 		State: MaskedMaking, Step: reservedStep, PID: os.Getpid()})
 }
 
-func createMasked(name, from, actor string, say func(string)) (MaskedBranch, error) {
+func createMasked(name, from, actor string, say func(string), keepKeys bool) (MaskedBranch, error) {
 	if err := requireMasker(); err != nil {
 		return MaskedBranch{}, err
 	}
@@ -340,7 +340,7 @@ func createMasked(name, from, actor string, say func(string)) (MaskedBranch, err
 		// Never opened: started again from the source.
 		say("the earlier making of " + name + " did not finish: starting again from " + from)
 		if activeStorage().exists(name) {
-			if err := Delete(name); err != nil {
+			if err := deleteBranch(name, keepKeys); err != nil {
 				return MaskedBranch{}, err
 			}
 		}
@@ -358,7 +358,7 @@ func createMasked(name, from, actor string, say func(string)) (MaskedBranch, err
 	// A masked branch's copy is masked already.
 	if maskedBranchOpen(from) {
 		say(from + " is a masked branch: its copy is masked already")
-		if err := Create(name, from); err != nil {
+		if err := createBranch(name, from, keepKeys); err != nil {
 			return MaskedBranch{}, err
 		}
 		r, _ := MaskedBranchOf(name)
@@ -410,7 +410,7 @@ func createMasked(name, from, actor string, say func(string)) (MaskedBranch, err
 	if err := step("copying " + from); err != nil {
 		return MaskedBranch{}, err
 	}
-	if err := Create(name, from); err != nil {
+	if err := createBranch(name, from, keepKeys); err != nil {
 		forgetMaskedBranch(name)
 		return MaskedBranch{}, err
 	}

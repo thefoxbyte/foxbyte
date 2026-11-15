@@ -484,14 +484,27 @@ fox ha drill --yes              # kill the primary for real, and report what it 
 fox node expose --address A --peer B --yes   # let a standby on another machine copy this one
 fox node join <token>           # on the other machine: become its standby
 fox node unexpose | leave | status | token
+fox ha witness --primary H:5432 --token T              # on a third host: the second opinion
+fox ha watch --witness https://W:7070/ha/primary --token T   # on the standby: automatic failover
 ```
 
 `fox node expose` is the only thing that puts Postgres on a network, and it is
-off until you ask. It publishes on the one address you name, over TLS with a
+off until you ask. It publishes on the one IP address you name, over TLS with a
 certificate that standby verifies, admitting only `db_replica` — which can copy
-the database and read none of it — and only from the one peer address. The join
-token it prints carries that CA and that role's password, and deliberately not
-the install secret. `fox check` reports the exposure on every run.
+the database and read none of it — and only from the one peer address. While
+published, main's `pg_hba.conf` admits nothing else from outside its own docker
+network: every other role and address is rejected, and `fox node unexpose` puts
+the previous rules back. The join token it prints carries that CA and that
+role's password, and deliberately not the install secret. `fox check` reports
+the exposure on every run. After upgrading from a release before this rule
+change, run `fox node expose` again on a published install.
+
+`fox ha witness` and `fox ha watch` need the same token (`--token` or
+`FOX_HA_WITNESS_TOKEN`, at least 16 characters): every witness answer is signed
+with it and served over HTTPS, and an answer that does not verify never leads to
+a promotion. A setup from an older release without a token stops with an error
+saying how to set one; its `--witness` URL also changes from `http://` to
+`https://`.
 
 On the second machine, `fox node join <token>` copies that primary over TLS and
 runs the copy as a standby, verifying the primary's certificate. Everything else
@@ -660,18 +673,56 @@ A fresh install exposes nothing it does not have to:
 - **The first account needs the setup token**, and sign-up is closed after it:
   an admin adds people with `fox user create`, or `FOX_SIGNUP=open` lets them
   register. Signing in with GitHub or Google needs a verified email, and makes
-  no account while sign-up is closed.
+  no account while sign-up is closed. An open sign-up's email is unproven, so
+  the first GitHub or Google sign-in with that verified email takes the account
+  over: its password, sessions and API keys are removed, and the security log
+  records it (`account.claimed`).
 - **Brakes on guessing and flooding.** Ten failed sign-ins for one address or
   one email in 15 minutes hold further attempts; request bodies are capped; the
   Gateway serves at most `FOX_GATEWAY_MAX_CONNS` connections (96 by default,
   one under Postgres's non-superuser limit) and gives a
-  client 30 seconds to authenticate.
+  client 30 seconds to authenticate. Within that, at most
+  `FOX_GATEWAY_MAX_PREAUTH_CONNS` may still be authenticating (half the cap,
+  48 by default), one address may hold `FOX_GATEWAY_MAX_CONNS_PER_IP` (two
+  thirds of the cap, 64; IPv6 counted per /64; connections from this machine
+  are exempt) and one API key `FOX_GATEWAY_MAX_CONNS_PER_KEY` (64). Every
+  refusal is `53300 too_many_connections`. Many clients behind one NAT or load
+  balancer share an address, so raise the per-address cap for that. Sessions
+  are never closed for being idle unless you set `FOX_GATEWAY_IDLE_TIMEOUT`
+  (`30m`, or seconds): pooled connections sit silent for hours, and TCP
+  keepalive already frees a slot whose client has vanished.
+- **Every request has a deadline.** An ordinary API request has
+  `FOX_HTTP_TIMEOUT` (5m) to send its body and receive its answer, a file
+  import's upload `FOX_UPLOAD_TIMEOUT` (2h), an export `FOX_EXPORT_TIMEOUT`
+  (1h); a progress or change stream may run on, but a reader that stops
+  reading is dropped after a minute. At most `FOX_MAX_IMPORTS` imports and
+  `FOX_MAX_EXPORTS` exports (4 each) run at once; past that the answer is 429.
+- **Queries stop on the server.** A console query runs for at most
+  `FOX_CONSOLE_STATEMENT_TIMEOUT` (60s), on connections pooled per branch and
+  per login (`FOX_CONSOLE_POOL_SIZE`, 4; `0` turns pooling off) and reset
+  before reuse. MCP `run_sql` returns at most 1,000 rows a statement and
+  256 KiB in all, says when it left rows out, and stops a statement after
+  `FOX_MCP_STATEMENT_TIMEOUT` (60s). Apps connecting through the Gateway get
+  no statement timeout: long queries and migrations are legitimate work.
 - **Branches belong to whoever made them.** Every account may use `main`; a
   branch made through the console, the API, the Agent API or MCP is its
   maker's to use and delete; an admin (the first account, or anyone given
   `fox admin grant`) may do anything. Other people's branches are not listed,
   and answer "not found" — through the Gateway too. A branch made with the CLI
   is an admin's.
+- **A limit on branches per account.** Each branch is a whole Postgres, so an
+  account may own at most `FOX_MAX_BRANCHES_PER_ACCOUNT` branches (20 by
+  default; `0` for no limit), and may start at most
+  `FOX_BRANCH_CREATES_PER_MINUTE` creates, imports and point-in-time branches a
+  minute (10 by default; `0` for no limit; over it the API answers 429). Admins
+  and the CLI are exempt.
+- **A branch's keys go with it.** Deleting a branch, by any route, revokes the
+  keys scoped to it, and making a branch under a name revokes any key still
+  scoped to that name; each revocation is in the security log.
+- **One change to a branch at a time.** A wake, suspend, create, delete, reset
+  or restore holds a lock on the branch, so they cannot overlap across
+  processes; one that waits longer than `FOX_BRANCH_LOCK_TIMEOUT` (2m by
+  default) gives up with an error saying the branch is busy.
 - **A password per database role.** Each account, each agent and the client
   role log in to Postgres with their own password, derived from the install
   secret; the secret itself is the superuser's alone and never appears on a

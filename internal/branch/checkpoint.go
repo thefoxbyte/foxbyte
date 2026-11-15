@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,8 +85,7 @@ func ledgerLines(name, sql string) ([]string, error) {
 }
 
 func ledgerLinesOnce(name, sql string) ([]string, error) {
-	cmd, ctx, cancel := sudoCmd(execQuick, "docker", "exec", "--env-file", pgEnvFile(), container(name),
-		"psql", "-U", pgUser, "-d", pgDatabase, "-X", "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-c", sql)
+	cmd, ctx, cancel := ledgerPsql(name, sql)
 	defer cancel()
 	out, err := cmd.Output()
 	if err != nil {
@@ -113,25 +113,6 @@ func ledgerV2Tables(name string) (ext, checkpoints bool, err error) {
 	}
 	f := strings.Split(lines[0], "|")
 	return f[0] == "true", len(f) > 1 && f[1] == "true", nil
-}
-
-func loadLedgerRows(name string, withExt bool, where string) ([]ledger.Row, error) {
-	lines, err := ledgerLines(name, ledger.RowsQuery(withExt, where))
-	if err != nil {
-		return nil, err
-	}
-	rows := make([]ledger.Row, 0, len(lines))
-	for _, l := range lines {
-		if !strings.HasPrefix(l, "{") {
-			continue
-		}
-		r, err := ledger.DecodeRowJSON([]byte(l))
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, r)
-	}
-	return rows, nil
 }
 
 // Checkpoint anchors a branch's ledger entries added since its last checkpoint.
@@ -194,16 +175,20 @@ func Integrity(name string) (ledger.Report, error) {
 	if err != nil {
 		return ledger.Report{}, err
 	}
-	rows, err := loadLedgerRows(name, withExt, "")
-	if err != nil {
-		return ledger.Report{}, err
-	}
+	// The anchors are read first because the verifier checks each row against
+	// them as it arrives, rather than after the whole ledger is in memory
+	// (ledgerstream.go). A failure to read them is still reported after a
+	// failure to read the ledger, as it always was.
 	dir := AnchorDir(name)
-	anchors, err := ledger.LoadAnchors(dir)
-	if err != nil {
+	anchors, anchorsErr := ledger.LoadAnchors(dir)
+	v := ledger.NewVerifier(anchors)
+	if err := streamLedgerRows(name, withExt, "", v.Add); err != nil {
 		return ledger.Report{}, err
 	}
-	rep := ledger.Verify(rows, anchors)
+	if anchorsErr != nil {
+		return ledger.Report{}, anchorsErr
+	}
+	rep := v.Report()
 	if pub, err := ledger.ReadPublicKey(AnchorKeyPath() + ".pub"); err == nil {
 		ledger.VerifySignatures(&rep, anchors, pub)
 	}
@@ -307,57 +292,60 @@ func StartCheckpointer() {
 			log.Printf("security log checkpoints: %v", serr)
 		}
 		for range t.C {
-			// The security log, on the same schedule as the branches.
-			if store != nil && time.Since(last[secLogAnchorDir]) >= interval {
-				last[secLogAnchorDir] = time.Now()
-				if a, err := CheckpointSecurityLog(store); err != nil {
-					log.Printf("security log checkpoint: %v", err)
-				} else if a != nil {
-					log.Printf("security log checkpoint: events %d–%d", a.FromID, a.ToID)
+			// One tick in Run: a panic costs this tick, and the next still comes.
+			safego.Run("ledger checkpoints", func() {
+				// The security log, on the same schedule as the branches.
+				if store != nil && time.Since(last[secLogAnchorDir]) >= interval {
+					last[secLogAnchorDir] = time.Now()
+					if a, err := CheckpointSecurityLog(store); err != nil {
+						log.Printf("security log checkpoint: %v", err)
+					} else if a != nil {
+						log.Printf("security log checkpoint: events %d–%d", a.FromID, a.ToID)
+					}
 				}
-			}
-			// The branch ledgers' half, and only this half. The security
-			// log above keeps anchoring in every edition.
-			if !edition.Has(edition.Anchors) {
-				saidWhyNotAnchoring.Do(func() {
-					log.Printf("ledger checkpoints: not anchoring branch ledgers — %v "+
-						"(the security log is still anchored, and existing anchors still verify)",
-						ErrAnchorsNotLicensed)
-				})
-				continue
-			}
-			// The audit log's chain (F6 step 6), on the same schedule.
-			if time.Since(last[auditAnchorDirName]) >= interval {
-				last[auditAnchorDirName] = time.Now()
-				if a, err := CheckpointAuditLog(); err != nil {
-					log.Printf("audit log checkpoint: %v", err)
-				} else if a != nil {
-					log.Printf("audit log checkpoint: records %d–%d", a.FromID, a.ToID)
+				// The branch ledgers' half, and only this half. The security
+				// log above keeps anchoring in every edition.
+				if !edition.Has(edition.Anchors) {
+					saidWhyNotAnchoring.Do(func() {
+						log.Printf("ledger checkpoints: not anchoring branch ledgers — %v "+
+							"(the security log is still anchored, and existing anchors still verify)",
+							ErrAnchorsNotLicensed)
+					})
+					return
 				}
-			}
-			names, err := RunningBranches()
-			if err != nil {
-				continue
-			}
-			for _, n := range names {
-				pending, err := pendingCheckpointRows(n)
-				if err != nil || pending <= 0 {
-					continue
+				// The audit log's chain (F6 step 6), on the same schedule.
+				if time.Since(last[auditAnchorDirName]) >= interval {
+					last[auditAnchorDirName] = time.Now()
+					if a, err := CheckpointAuditLog(); err != nil {
+						log.Printf("audit log checkpoint: %v", err)
+					} else if a != nil {
+						log.Printf("audit log checkpoint: records %d–%d", a.FromID, a.ToID)
+					}
 				}
-				if pending < threshold && time.Since(last[n]) < interval {
-					continue
-				}
-				last[n] = time.Now()
-				a, _, err := Checkpoint(n)
+				names, err := RunningBranches()
 				if err != nil {
-					log.Printf("ledger checkpoint %s: %v", n, err)
-					continue
+					return
 				}
-				if a != nil {
-					log.Printf("ledger checkpoint %s #%d: ids %d–%d (%d entries), root %s",
-						n, a.CheckpointID, a.FromID, a.ToID, a.EntryCount, a.MerkleRoot)
+				for _, n := range names {
+					pending, err := pendingCheckpointRows(n)
+					if err != nil || pending <= 0 {
+						continue
+					}
+					if pending < threshold && time.Since(last[n]) < interval {
+						continue
+					}
+					last[n] = time.Now()
+					a, _, err := Checkpoint(n)
+					if err != nil {
+						log.Printf("ledger checkpoint %s: %v", n, err)
+						continue
+					}
+					if a != nil {
+						log.Printf("ledger checkpoint %s #%d: ids %d–%d (%d entries), root %s",
+							n, a.CheckpointID, a.FromID, a.ToID, a.EntryCount, a.MerkleRoot)
+					}
 				}
-			}
+			})
 		}
 	}()
 }

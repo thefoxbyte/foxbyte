@@ -233,16 +233,24 @@ func scramSHA256(backend net.Conn, mechanisms []byte, password string) error {
 	serverFirst := string(body[4:])
 	attrs := scramAttrs(serverFirst)
 	serverNonce, salt64, iterStr := attrs["r"], attrs["s"], attrs["i"]
-	if !strings.HasPrefix(serverNonce, clientNonce) {
+	// The server must add its own part to the nonce (RFC 5802); one that only
+	// echoes ours back is not doing SCRAM.
+	if len(serverNonce) <= len(clientNonce) || !strings.HasPrefix(serverNonce, clientNonce) {
 		return fmt.Errorf("server nonce mismatch")
 	}
 	salt, err := base64.StdEncoding.DecodeString(salt64)
 	if err != nil {
 		return err
 	}
+	if len(salt) == 0 {
+		return fmt.Errorf("SCRAM server sent no salt")
+	}
 	iters, err := strconv.Atoi(iterStr)
 	if err != nil {
 		return err
+	}
+	if iters < 1 {
+		return fmt.Errorf("SCRAM iteration count %d out of range", iters)
 	}
 
 	saltedPassword := pbkdf2.Key([]byte(password), salt, iters, sha256.Size, sha256.New)

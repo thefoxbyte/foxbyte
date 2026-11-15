@@ -29,6 +29,7 @@ import (
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 	"github.com/thefoxbyte/foxbyte/internal/version"
 )
 
@@ -366,7 +367,7 @@ func StartCatalogScanner() {
 		time.Sleep(first)
 		said := map[string]string{}
 		for {
-			scanRunningBranches(said)
+			safego.Run("blackbox scan", func() { scanRunningBranches(said) })
 			time.Sleep(interval)
 		}
 	}()

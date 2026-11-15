@@ -10,6 +10,8 @@ import (
 	"io"
 	"regexp"
 	"strings"
+
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // As says whose import, or whose pipeline run, this is.
@@ -89,6 +91,8 @@ func (a As) restricted(r io.Reader) io.Reader {
 	}
 	pr, pw := io.Pipe()
 	go func() {
+		// A panic must still close the pipe, or psql would wait on it for ever.
+		defer safego.Catch("import: confining a script", func(err error) { pw.CloseWithError(err) })
 		br := bufio.NewReader(r)
 		w := bufio.NewWriter(pw)
 		fmt.Fprintf(w, "\\restrict %s\n", restrictKey())

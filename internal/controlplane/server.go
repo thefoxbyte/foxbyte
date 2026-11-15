@@ -164,8 +164,11 @@ func Serve(addr string) error {
 	// …and a change a browser sends from another site is refused (cross-site
 	// request forgery; matters most when FOX_WEB_ORIGIN makes the cookie
 	// SameSite=None).
-	handler := httpx.SecurityHeaders("")(httpx.CORS(store.WebOrigin())(httpx.RefuseCrossSite(store.WebOrigin())(
-		logging(httpx.LimitBodies(httpx.MaxBody, isUpload)(mux)))))
+	// And each request has its own read and write deadlines (deadlines.go): a
+	// body that trickles in, or a reader that stops reading, is cut off rather
+	// than held for ever.
+	handler := httpx.Deadlines(routeBudgets())(httpx.SecurityHeaders("")(httpx.CORS(store.WebOrigin())(httpx.RefuseCrossSite(store.WebOrigin())(
+		logging(httpx.LimitBodies(httpx.MaxBody, isUpload)(mux))))))
 
 	// TLS when a certificate is available (self-signed on first run, or a real
 	// one via FOX_TLS_CERT/KEY), so API keys and session tokens are never
@@ -261,7 +264,7 @@ func readStatusFacts() (statusFacts, error) {
 
 // isUpload is the one route whose body is a file rather than JSON; it has its
 // own, larger cap (maxUpload).
-func isUpload(r *http.Request) bool { return r.URL.Path == "/api/import/file" }
+func isUpload(r *http.Request) bool { return apiPath(r) == "/api/import/file" }
 
 // maxUpload caps a file import's upload: FOX_MAX_UPLOAD_MB, 4096 MiB by
 // default. The part of an upload that does not fit in memory is written to a
@@ -351,6 +354,9 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 404, fmt.Errorf("%w: %q", branch.ErrParentNotFound, body.From))
 			return
 		}
+		if !allowCreate(w, r) {
+			return
+		}
 		if body.Masked {
 			createMaskedBranch(w, r, body.Name, body.From)
 			return
@@ -375,6 +381,8 @@ func registerAPI(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("DELETE /api/branches/{name}", func(w http.ResponseWriter, r *http.Request) {
+		// The console's pooled sessions first: they would hold the branch open.
+		closeConsolePools(r.PathValue("name"))
 		if err := branch.Delete(r.PathValue("name")); err != nil {
 			writeErr(w, 500, err)
 			return
@@ -389,6 +397,9 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 400, fmt.Errorf("refusing to suspend the primary 'main'"))
 			return
 		}
+		// And its pooled console sessions, which would otherwise count as a
+		// client using it.
+		closeConsolePools(name)
 		if err := branch.Suspend(name); err != nil {
 			writeErr(w, 500, err)
 			return
@@ -405,7 +416,7 @@ func registerAPI(mux *http.ServeMux) {
 	})
 
 	// The whole result of one statement, streamed as a file (point 1.3).
-	mux.HandleFunc("POST /api/branches/{name}/export", handleExport)
+	mux.HandleFunc("POST /api/branches/{name}/export", exportSlots.Wrap(handleExport))
 
 	// The object browser (point 12.1): what the branch holds, and each
 	// object's CREATE script.
@@ -473,7 +484,7 @@ func registerAPI(mux *http.ServeMux) {
 	// Migration: import a source database into a new instance from a connection
 	// string. The web wizard accepts a URL source (no arbitrary server file paths
 	// from a browser); file imports (.sql/.csv/.json) go through /api/import/file.
-	mux.HandleFunc("POST /api/import", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/import", importSlots.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Source     string `json:"source"`
 			Target     string `json:"target"`
@@ -481,6 +492,10 @@ func registerAPI(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		body.Source = strings.TrimSpace(body.Source)
+		// Before the stream opens, so a refusal is a plain 429 or 403.
+		if !allowCreate(w, r) {
+			return
+		}
 		send, p, ok := newSSE(w)
 		if !ok {
 			writeErr(w, 500, fmt.Errorf("streaming is not supported by this server"))
@@ -520,7 +535,7 @@ func registerAPI(mux *http.ServeMux) {
 			return
 		}
 		send("done", map[string]any{"status": status, "target": target, "tables": branch.TableCount(target)})
-	})
+	}))
 
 	// Base backups in object storage: what a point-in-time restore can start
 	// from. Read-only -- a restore itself is `fox restore --to`, which needs a
@@ -584,8 +599,12 @@ func registerAPI(mux *http.ServeMux) {
 
 	// Migration via file upload: a .sql/.csv/.json file streamed from the browser
 	// into a new instance (kind inferred from the filename). Progress streams as SSE.
-	mux.HandleFunc("POST /api/import/file", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/import/file", importSlots.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxUpload())
+		// Before the upload is read or the stream opens.
+		if !allowCreate(w, r) {
+			return
+		}
 		file, hdr, ferr := r.FormFile("file")
 		send, p, ok := newSSE(w)
 		if !ok {
@@ -616,7 +635,7 @@ func registerAPI(mux *http.ServeMux) {
 			return
 		}
 		send("done", map[string]any{"status": "imported", "target": target, "tables": branch.TableCount(target)})
-	})
+	}))
 
 	// Blackbox (RECORD layer): the queryable history of DDL changes on a
 	// branch, filterable by actor/table/risk/status/kind/time.
@@ -793,16 +812,19 @@ type queryAs struct {
 }
 
 // runQuery executes SQL against a branch backend and returns columns/rows (or an
-// error message the console can render). Capped and time-bounded.
+// error message the console can render). Capped at RowCap rows a statement, and
+// time-bounded on the server (FOX_CONSOLE_STATEMENT_TIMEOUT) and here, a little
+// later, so the server's own message is what normally says a query ran too long.
+// The session comes from the console's pool (consolepool.go).
 func runQuery(addr, sql string, as queryAs) map[string]any {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), consoleStatementTimeout()+5*time.Second)
 	defer cancel()
 
-	conn, err := openSession(ctx, addr, as)
+	conn, release, err := acquireSession(ctx, addr, as)
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	defer conn.Close(ctx)
+	defer release()
 	if as.ActFor != "" {
 		return runActingFor(ctx, conn, sql, as.ActFor, as.ActForRequired)
 	}
@@ -917,6 +939,23 @@ var ensureUserRole = branch.EnsureUserRole
 var errNoOwnRole = errors.New("could not log you in as your own role")
 
 func openSession(ctx context.Context, addr string, as queryAs) (*pgx.Conn, error) {
+	cfg, err := sessionConfig(addr, as)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := connectSession(ctx, cfg, as.Branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := prepareSession(ctx, conn, as); err != nil {
+		conn.Close(ctx)
+		return nil, err
+	}
+	return conn, nil
+}
+
+// sessionConfig is the login a console session uses: the role, and its password.
+func sessionConfig(addr string, as queryAs) (*pgx.ConnConfig, error) {
 	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/%s", addr, branch.Database))
 	if err != nil {
 		return nil, err
@@ -943,41 +982,43 @@ func openSession(ctx context.Context, addr string, as queryAs) (*pgx.Conn, error
 		}
 		cfg.User, cfg.Password = as.Actor, branch.UserRolePassword(as.Actor)
 	}
-	conn, err := connectSession(ctx, cfg, as.Branch)
-	if err != nil {
-		return nil, err
-	}
-	fail := func(err error) (*pgx.Conn, error) { conn.Close(ctx); return nil, err }
+	return cfg, nil
+}
 
+// prepareSession gives a connected session the settings this run asked for.
+// They are session settings, so a pooled connection has them taken off again
+// before anyone else is given it (consolepool.go).
+func prepareSession(ctx context.Context, conn *pgx.Conn, as queryAs) error {
 	// Attribute console DDL in the Blackbox to the signed-in user — our own
 	// tool should not be the blind spot. The engine's reads skip this.
 	if as.Actor != "" {
 		if _, err := conn.Exec(ctx,
 			"SELECT set_config('bb.actor',$1,false), set_config('bb.actor_kind','human',false), set_config('application_name','console',false)",
 			as.Actor); err != nil {
-			return fail(err)
+			return err
 		}
 	}
 	if as.Actor == "" && as.Label != "" {
 		if _, err := conn.Exec(ctx, "SELECT set_config('bb.actor',$1,false), set_config('application_name',$2,false)",
 			as.Label, as.App); err != nil {
-			return fail(err)
+			return err
 		}
 	}
-	// Each console run is its own connection, so a SET typed in one run is gone
-	// by the next; the override has to travel with the query it is meant for.
+	// Each console run starts from a clean session, a new one or a pooled one
+	// reset, so a SET typed in one run is gone by the next; the override has to
+	// travel with the query it is meant for.
 	if len(as.AllowRules) > 0 {
 		if _, err := conn.Exec(ctx, "SELECT set_config('bb.policy_allow',$1,false)", strings.Join(as.AllowRules, ",")); err != nil {
-			return fail(err)
+			return err
 		}
 	}
 	if as.AllowDestructive {
 		if _, err := conn.Exec(ctx, "SELECT set_config('bb.allow_destructive','on',false)"); err != nil {
-			return fail(err)
+			return err
 		}
 	}
 
-	return conn, nil
+	return nil
 }
 
 // queryErr renders a failed query for the console: the message, and where
@@ -1521,8 +1562,7 @@ func (f writeFunc) Write(b []byte) (int, error) { return f(b) }
 // events) and item-level steps (as `progress` events). ok is false if the server
 // can't stream (no http.Flusher).
 func newSSE(w http.ResponseWriter) (send func(string, any), p *branch.Progress, ok bool) {
-	fl, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok = w.(http.Flusher); !ok {
 		return nil, nil, false
 	}
 	h := w.Header()
@@ -1533,8 +1573,13 @@ func newSSE(w http.ResponseWriter) (send func(string, any), p *branch.Progress, 
 	w.WriteHeader(http.StatusOK)
 	send = func(event string, data any) {
 		b, _ := json.Marshal(data)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
-		fl.Flush()
+		// Each event under its own write deadline: a stream may run for hours,
+		// but a reader that stops reading is dropped after a minute, and the
+		// failed write ends the request's context so the handler stops too.
+		_ = httpx.StreamWrite(w, func() error {
+			_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+			return err
+		})
 	}
 	p = &branch.Progress{
 		Log: writeFunc(func(b []byte) (int, error) {

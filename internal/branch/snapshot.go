@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // The dashboard asks what every branch is doing, and the import page which of
@@ -150,6 +152,7 @@ func forEachBounded(n int, f func(i int)) {
 		sem <- struct{}{}
 		go func() {
 			defer func() { <-sem; wg.Done() }()
+			defer safego.Catch("probing branches", nil)
 			f(i)
 		}()
 	}
