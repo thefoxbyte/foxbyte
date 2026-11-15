@@ -17,7 +17,7 @@ func TestLedgerPlanSwapsTheStatementColumn(t *testing.T) {
 	}
 
 	sql, how := ledgerPlan(false, false, q)
-	if how != ledgerAsCaller || !strings.Contains(sql, ledgerStatementSQL) || strings.Contains(sql, " statement, ") {
+	if how != ledgerAsCaller || !strings.Contains(sql, ledgerStatementSQL) || strings.Contains(sql, "object_identity, statement,") {
 		t.Errorf("a reader who does not manage the branch: how=%d\n%s", how, sql)
 	}
 
