@@ -167,6 +167,9 @@ func SetAnchorTarget(t Target, retentionDays int, allowHTTP bool) error {
 	if err := t.Validate(allowHTTP); err != nil {
 		return err
 	}
+	if t.InsecureHTTP() {
+		fmt.Fprintf(os.Stderr, "warning: %s is plain HTTP to another machine: the bucket's secret key crosses the network readable.\n", t.Endpoint)
+	}
 	if retentionDays <= 0 {
 		retentionDays = DefaultAnchorRetentionDays
 	}
