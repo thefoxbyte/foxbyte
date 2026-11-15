@@ -34,7 +34,7 @@ func TestClientsCannotCallTheHelpers(t *testing.T) {
 		t.Error("ledger.sql grants the whole of schema bb again")
 	}
 	for _, want := range []string{
-		"format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, db_client', f::regprocedure)",
+		"format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, db_client, db_main_reader', f::regprocedure)",
 		"AND p.prosecdef AND NOT p.proname = ANY (bb._client_callable())",
 		"WHEN TAG IN ('CREATE FUNCTION', 'ALTER FUNCTION', 'CREATE PROCEDURE', 'ALTER PROCEDURE', 'ALTER ROUTINE')",
 		"ALTER EVENT TRIGGER bb_seal_functions ENABLE ALWAYS;",

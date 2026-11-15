@@ -93,6 +93,17 @@ const (
 	EvAccountDeleteFailed  = "account.delete_failed"
 	EvEditionSwitchAsked   = "edition.switch_requested"
 	EvEditionSwitchFailed  = "edition.switch_failed"
+	// Who may change main (mainwrite.go): the install's mode, and an account's
+	// grant of write. Each an intent, then its outcome (BeginPrivileged).
+	EvMainWriteModeStarted   = "main-write.mode_started"
+	EvMainWriteModeSet       = "main-write.mode_set"
+	EvMainWriteModeFailed    = "main-write.mode_failed"
+	EvMainWriteGrantStarted  = "main-write.grant_started"
+	EvMainWriteGranted       = "main-write.granted"
+	EvMainWriteGrantFailed   = "main-write.grant_failed"
+	EvMainWriteRevokeStarted = "main-write.revoke_started"
+	EvMainWriteRevoked       = "main-write.revoked"
+	EvMainWriteRevokeFailed  = "main-write.revoke_failed"
 	// Licensing: when this install's paid entitlement changed, and to what.
 	//
 	// Recorded by the engine rather than by the command someone typed. On macOS

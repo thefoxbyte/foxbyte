@@ -308,6 +308,10 @@ var (
 	forgetLoginRole     = branch.ForgetUserRole
 	ensureLoginRole     = branch.EnsureUserRole
 	authenticateBackend = backendAuth
+	// mainWriteRefusal says whether an account whose own role could not be
+	// had may be given the shared client role instead: never on main when
+	// main is read-only for it.
+	mainWriteRefusal = branch.MainWriteRefusal
 )
 
 // authNeedsRole reports a backend refusal that a missing or stale login role
@@ -562,6 +566,13 @@ func handleAdmitted(client net.Conn, t *ticket) {
 			if masked {
 				log.Printf("per-user role %q on %s: %v (masked: refused)", actor, target, err)
 				sendError(client, "28000", fmt.Sprintf("could not log %s in to branch %q as its masked role", actor, target))
+				return
+			}
+			// Nor an account main is read-only for: the shared role writes
+			// main (branch/mainwrite.go).
+			if refusal := mainWriteRefusal(target, actor); refusal != nil {
+				log.Printf("per-user role %q on %s: %v (refused: %v)", actor, target, err, refusal)
+				sendError(client, "28000", fmt.Sprintf("could not log %s in to branch %q as its own role, and %v", actor, target, refusal))
 				return
 			}
 			log.Printf("per-user role %q on %s: %v (using %s)", actor, target, err, realUser)

@@ -276,6 +276,10 @@ func migrate(ctx context.Context, db *sql.Conn) error {
 )`); err != nil {
 		return err
 	}
+	// Who may change main, recorded once (mainwrite.go).
+	if err := migrateMainWrite(ctx, db); err != nil {
+		return err
+	}
 	// The security log's seals and its controlled prune (seclogprivacy.go).
 	return migrateSecurityLogPrivacy(ctx, db)
 }

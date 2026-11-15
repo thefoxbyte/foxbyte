@@ -511,7 +511,8 @@ func runAllowedTool(tool, name string, args json.RawMessage) (string, error) {
 			}
 			return branch.QueryText(a.Branch, a.SQL)
 		}
-		return branch.ClientQueryTextAs(a.Branch, a.SQL, "mcp", me.Actor)
+		out, err := branch.ClientQueryTextAs(a.Branch, a.SQL, "mcp", me.Actor)
+		return out, mainWriteHint(a.Branch, err)
 
 	case "changes":
 		var a struct {

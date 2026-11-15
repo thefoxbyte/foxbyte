@@ -7,7 +7,10 @@
 //   - An admin (a superuser or a member of db_admin on main) may do anything.
 //   - The account that made a branch owns it, and may use and manage it.
 //   - main is shared: every account may use it. What it may do there is what
-//     Postgres lets its role do.
+//     Postgres lets its role do. Who may change it is the install's main write
+//     mode (auth/mainwrite.go): in "all" every account, in "granted" an admin
+//     and the accounts granted write; MayWriteMain answers that in Go, so a
+//     surface can say so before Postgres refuses.
 //   - Any other branch, including one with no owner, is not there: it is not
 //     listed, and acting on it answers as if it did not exist.
 package access
@@ -144,6 +147,31 @@ func (c *Checker) Level(u auth.User, name string) Level {
 		return Use
 	}
 	return None
+}
+
+// MayWriteMain reports whether u may change main: an admin always, and anyone
+// else in mode "all" or with a grant of write. A store that cannot be read
+// answers no: Postgres is what enforces this, and a refusal said early is only
+// a courtesy.
+func (c *Checker) MayWriteMain(u auth.User) bool {
+	if c.store != nil && u.ID != 0 {
+		if mode, err := c.store.MainWriteMode(); err == nil && mode == auth.MainWriteAll {
+			return true
+		}
+		if ok, err := c.store.HasMainWriteGrant(u.ID); err == nil && ok {
+			return true
+		}
+	}
+	return c.Admin(u)
+}
+
+// MayWrite is MayWriteMain for a branch by name: off main, Use is enough,
+// since a branch is its owner's (and an admin's) to change.
+func (c *Checker) MayWrite(u auth.User, name string) bool {
+	if name == "" || name == "main" {
+		return c.MayWriteMain(u)
+	}
+	return c.Can(u, name, Use)
 }
 
 // Can reports whether u may do at least need to the branch.

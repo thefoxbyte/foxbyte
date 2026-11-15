@@ -93,7 +93,16 @@ func engineAgentLogin(branchName, account string) engineLogin {
 	if !strings.Contains(email, "@") {
 		return shared(loginLegacy)
 	}
-	switch err := EnsureAgentKeyRole(branchName, email); {
+	err := EnsureAgentKeyRole(branchName, email)
+	if err != nil {
+		// The shared roles below write main. An account that may not is
+		// refused rather than given them (mainwrite.go).
+		if refusal := mainWriteRefusal(branchName, email); refusal != nil {
+			log.Printf("agent role for %s on %q: %v (refused: %v)", email, branchName, err, refusal)
+			return engineLogin{mode: loginClaimed, refused: refusal}
+		}
+	}
+	switch {
 	case err == nil:
 		return engineLogin{role: AgentKeyRole(email), password: AgentKeyRolePassword(email), mode: loginOwn}
 	case masked:

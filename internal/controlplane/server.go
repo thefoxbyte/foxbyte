@@ -105,6 +105,7 @@ func Serve(addr string) error {
 	store.MountKeys(api)               // /api/keys (protected via Authn below)
 	registerAccounts(api, store)       // /api/account*, /api/users* (admins)
 	registerAccessReview(api, store)   // /api/access-review (admins; point 4.8)
+	registerMainWrite(api, store)      // /api/access/main-write* (admins; who may change main, LIVE-1)
 	registerApps(api, store)           // /api/apps* (admins; application identity, F1)
 	registerAuditLog(api, store)       // /api/audit-log (admins; the databases' audit log, F6)
 	registerAuditMarks(api)            // /api/branches/{name}/audit/tables* (F6: marked tables)
@@ -832,9 +833,9 @@ func runQuery(addr, sql string, as queryAs) map[string]any {
 	}
 	defer release()
 	if as.ActFor != "" {
-		return runActingFor(ctx, conn, sql, as.ActFor, as.ActForRequired)
+		return withMainWriteHint(as, runActingFor(ctx, conn, sql, as.ActFor, as.ActForRequired))
 	}
-	return runOn(ctx, conn, sql)
+	return withMainWriteHint(as, runOn(ctx, conn, sql))
 }
 
 // runActingFor runs sql in one transaction that first asserts the application

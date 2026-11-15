@@ -26,8 +26,16 @@ import (
 // credentials, who may override the guardrails where, who has gone quiet, and
 // the applications that may say whom a change was for. At this machine the operator is an admin already, as for `fox user list`.
 func accessCmd(args []string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "main-write", "write", "list":
+			mainWriteCmd(args)
+			return
+		}
+	}
 	if len(args) == 0 || args[0] != "review" {
 		fmt.Fprintf(os.Stderr, "usage: %s access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]\n", brand.CLI)
+		fmt.Fprint(os.Stderr, mainWriteUsage())
 		os.Exit(2)
 	}
 	requireFeature(edition.AccessReview)

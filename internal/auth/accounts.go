@@ -139,6 +139,9 @@ func (s *Store) DeleteAccount(userID int64) error {
 		`DELETE FROM api_keys WHERE user_id=?`,
 		`DELETE FROM oauth_identities WHERE user_id=?`,
 		`DELETE FROM unproven_emails WHERE user_id=?`,
+		// A grant of write on main is the account's, not its email's: an
+		// address used again later must be granted again.
+		`DELETE FROM main_writers WHERE user_id=?`,
 		`DELETE FROM pipelines WHERE user_id=?`,
 		`DELETE FROM branch_owners WHERE user_id=?`,
 		`DELETE FROM query_history WHERE actor=(SELECT email FROM users WHERE id=?)`,
