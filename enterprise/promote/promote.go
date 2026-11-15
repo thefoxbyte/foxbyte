@@ -29,37 +29,41 @@ import (
 // reaches them without importing this package.
 func init() { branch.SetPromotion(build, apply) }
 
-// BuildRequest reads what source has that target does not, and returns the
+// build reads what source has that target does not, and returns the
 // statements that would be applied. It refuses a request that cannot be applied
 // cleanly, so the refusal comes when someone asks rather than when a reviewer
 // approves.
 //
-// history is this source's already-approved requests for this target. Without it a
-// second round of changes from the same branch looks like a conflict: the
-// statements the target was given are on both sides now, touching the same
-// objects. Changes that came from this source are therefore not counted as the
-// target's own, and entries already carried are not offered again.
-func build(source, target string, history []auth.ChangeRequest) (entries []branch.RequestEntry, forkAfterID int64, err error) {
+// history is this source's already-applied requests for this target
+// (branch.RequestHistory). Without it a second round of changes from the same
+// branch looks like a conflict: the statements the target was given are on both
+// sides now, touching the same objects. Changes that came from this source are
+// therefore not counted as the target's own, and entries already carried are
+// not offered again.
+//
+// Data changes are left out unless opts.IncludeData, and listed in the plan, so
+// the request says what it is not carrying.
+func build(source, target string, history []auth.ChangeRequest, opts branch.RequestOptions) (plan branch.RequestPlan, err error) {
 	if source, err = branch.ResolveBranch(source); err != nil {
-		return nil, 0, err
+		return plan, err
 	}
 	if target, err = branch.ResolveBranch(target); err != nil {
-		return nil, 0, err
+		return plan, err
 	}
 	if source == target {
-		return nil, 0, fmt.Errorf("%w: %q is the source and the target", branch.ErrInvalidRequest, source)
+		return plan, fmt.Errorf("%w: %q is the source and the target", branch.ErrInvalidRequest, source)
 	}
 	if !branch.Exists(source) {
-		return nil, 0, fmt.Errorf("no branch %q", source)
+		return plan, fmt.Errorf("no branch %q", source)
 	}
 	if !branch.Exists(target) {
-		return nil, 0, fmt.Errorf("no branch %q", target)
+		return plan, fmt.Errorf("no branch %q", target)
 	}
 	if _, err := branch.EnsureRunning(source); err != nil {
-		return nil, 0, err
+		return plan, err
 	}
 	if _, err := branch.EnsureRunning(target); err != nil {
-		return nil, 0, err
+		return plan, err
 	}
 	promoted, fromUs := alreadyPromoted(source, target, history)
 	p := newForkPlan(promoted, fromUs)
@@ -68,44 +72,103 @@ func build(source, target string, history []auth.ChangeRequest) (entries []branc
 	// the shared history is compared and dropped, and of what follows the fork
 	// only the source entries a replay would carry are kept.
 	if err := branch.WalkLedgerFork(source, target, p.visitor()); err != nil {
-		return nil, 0, err
+		return plan, err
 	}
-	forkAfterID = p.forkAfterID
-	tgtTouched := p.tgtTouched
-
-	var conflicts []string
-	seen := map[string]bool{}
-	for _, r := range p.candidates {
-		if r.ObjectIdentity != "" && tgtTouched[r.ObjectIdentity] && !seen[r.ObjectIdentity] {
-			seen[r.ObjectIdentity] = true
-			conflicts = append(conflicts, r.ObjectIdentity)
+	plan = p.plan(opts)
+	if err := p.conflicts(plan.Entries); err != nil {
+		return branch.RequestPlan{}, fmt.Errorf("%w. Look at both with `%s blackbox diff %s %s`, then either "+
+			"re-branch from %s and redo the change, or apply it by hand", err, brand.CLI, source, target, target)
+	}
+	if len(plan.Entries) == 0 {
+		if plan.OmittedCount > 0 {
+			return branch.RequestPlan{}, fmt.Errorf("%w: %q has no schema change that %q does not already have; "+
+				"its %d data change(s) were left out, which a request carries only when asked to (--include-data)",
+				branch.ErrNothingToPromote, source, target, plan.OmittedCount)
 		}
-		entries = append(entries, branch.RequestEntry{
+		return branch.RequestPlan{}, fmt.Errorf("%w: %q has no schema change that %q does not already have",
+			branch.ErrNothingToPromote, source, target)
+	}
+	if err := checkReplayable(plan.Entries); err != nil {
+		return branch.RequestPlan{}, err
+	}
+	if !plan.IncludeData {
+		if err := checkSchemaOnly(plan.Entries); err != nil {
+			return branch.RequestPlan{}, err
+		}
+	}
+	xids, err := runXids(source, plan.ForkAfterID)
+	if err != nil {
+		return branch.RequestPlan{}, fmt.Errorf("reading %q's Blackbox: %w", source, err)
+	}
+	branch.ReplayOnce(plan.Entries, xids)
+	if err := checkPolicyFor(target, plan.Entries); err != nil {
+		return branch.RequestPlan{}, err
+	}
+	return plan, nil
+}
+
+// plan turns the walk's candidates into a request's entries, leaving out the
+// data changes unless they were asked for.
+func (p *forkPlan) plan(opts branch.RequestOptions) branch.RequestPlan {
+	out := branch.RequestPlan{ForkAfterID: p.forkAfterID, IncludeData: opts.IncludeData}
+	for _, r := range p.candidates {
+		if !opts.IncludeData && isDataChange(r.CommandTag, r.Risk) {
+			out.OmittedCount++
+			if len(out.Omitted) < branch.OmittedListed {
+				out.Omitted = append(out.Omitted, branch.OmittedEntry{ID: r.ID, Actor: r.Actor, ActorKind: r.ActorKind,
+					CommandTag: r.CommandTag, Object: r.ObjectIdentity, Reason: "a data change; the request is schema only"})
+			}
+			continue
+		}
+		out.Entries = append(out.Entries, branch.RequestEntry{
 			ID: r.ID, At: r.At.UTC().Format("2006-01-02T15:04:05Z"), Actor: r.Actor, ActorKind: r.ActorKind,
 			CommandTag: r.CommandTag, Object: r.ObjectIdentity, Statement: r.Statement, Risk: r.Risk,
 		})
 	}
-	if len(conflicts) > 0 {
-		return nil, 0, fmt.Errorf("%w: %s. Look at both with `%s blackbox diff %s %s`, then either "+
-			"re-branch from %s and redo the change, or apply it by hand",
-			branch.ErrConflict, strings.Join(conflicts, ", "), brand.CLI, source, target, target)
+	return out
+}
+
+// conflicts names the objects both the request's entries and the target's own
+// changes since the fork touch. Only the entries the request carries count: an
+// object only a left-out data change touched is not walked into.
+func (p *forkPlan) conflicts(entries []branch.RequestEntry) error {
+	var both []string
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if e.Object != "" && p.tgtTouched[e.Object] && !seen[e.Object] {
+			seen[e.Object] = true
+			both = append(both, e.Object)
+		}
 	}
-	if len(entries) == 0 {
-		return nil, 0, fmt.Errorf("%w: %q has no schema change that %q does not already have",
-			branch.ErrNothingToPromote, source, target)
+	if len(both) == 0 {
+		return nil
 	}
-	if err := checkReplayable(entries); err != nil {
-		return nil, 0, err
+	return fmt.Errorf("%w: %s", branch.ErrConflict, strings.Join(both, ", "))
+}
+
+// dataTags are the command tags the Blackbox records a change to rows under:
+// the TG_OP of datachanges.sql's statement triggers (INSERT, UPDATE, DELETE,
+// TRUNCATE), and the other row-changing commands, should they ever be
+// recorded.
+var dataTags = map[string]bool{
+	"INSERT": true, "UPDATE": true, "DELETE": true, "MERGE": true, "TRUNCATE": true, "COPY": true,
+}
+
+// dataRisks are the risks only a data change is recorded with: the row limit,
+// the row budget, an agent's unqualified UPDATE or DELETE, and TRUNCATE. A
+// FLAGGED entry with one of these is a data change whatever its tag says.
+// Other FLAGGED entries (a column dropped, a type changed) are schema changes,
+// and stay in the request with their risk shown.
+var dataRisks = map[string]bool{"impact": true, "budget": true, "unqualified": true, "truncate": true}
+
+// isDataChange reports whether a Blackbox entry records a change to rows
+// rather than to the schema.
+func isDataChange(commandTag, risk string) bool {
+	tag := strings.ToUpper(strings.TrimSpace(commandTag))
+	if i := strings.IndexByte(tag, ' '); i > 0 {
+		tag = tag[:i]
 	}
-	xids, err := runXids(source, forkAfterID)
-	if err != nil {
-		return nil, 0, fmt.Errorf("reading %q's Blackbox: %w", source, err)
-	}
-	branch.ReplayOnce(entries, xids)
-	if err := checkPolicyFor(target, entries); err != nil {
-		return nil, 0, err
-	}
-	return entries, forkAfterID, nil
+	return dataTags[tag] || dataRisks[strings.ToLower(strings.TrimSpace(risk))]
 }
 
 // forkPlan collects what a request needs from a walk of the source's and the
@@ -258,6 +321,14 @@ func checkPolicyFor(target string, entries []branch.RequestEntry) error {
 // request applied it, and the request says who approved it. One transaction means
 // the target is never left half-merged — either every statement is in, or none is.
 //
+// The transaction also writes the request's id into the target's own record
+// (bb.applied_requests), first, so the record and the changes commit together:
+// an id already there is refused before any statement runs, and a request
+// whose outcome the engine's store failed to note can still be found applied
+// (branch.RequestHistory). And it checks again, inside the transaction, that
+// the target has not changed the same objects since the fork: the request was
+// checked when it was asked for, and the target may have moved on since.
+//
 // It logs in as the shared client role, over pgx. Ownership is why that role:
 // applied as the superuser, a promoted table belongs to the admin role, and the
 // next `ALTER TABLE` through the gateway fails with "must be owner of table", so
@@ -266,21 +337,26 @@ func checkPolicyFor(target string, entries []branch.RequestEntry) error {
 // SET ROLE from a superuser's session, is why nothing in a statement can get back
 // out. The Blackbox's attribution is unaffected: for a session logged in as this
 // role it reads bb.actor, as it did for the superuser.
-func apply(requestID int64, target, approver string, entries []branch.RequestEntry) (int, error) {
+func apply(p branch.ApplyPlan) (int, error) {
+	c, entries := p.Request, p.Entries
 	if len(entries) == 0 {
 		return 0, branch.ErrNothingToPromote
 	}
-	// Again here: what is applied is a stored snapshot, and may predate this check.
-	if err := checkReplayable(entries); err != nil {
+	if err := checkSnapshot(c, entries); err != nil {
 		return 0, err
 	}
-	target, err := branch.ResolveBranch(target)
+	target, err := branch.ResolveBranch(c.Target)
 	if err != nil {
 		return 0, err
 	}
+	c.Target = target
 	if _, err := branch.EnsureRunning(target); err != nil {
 		return 0, err
 	}
+	if err := ensureAppliedRecord(target); err != nil {
+		return 0, err
+	}
+	_, fromUs := alreadyPromoted(c.Source, target, p.History)
 	ctx := context.Background()
 	openCtx, cancel := context.WithTimeout(ctx, openTimeout)
 	defer cancel()
@@ -291,18 +367,144 @@ func apply(requestID int64, target, approver string, entries []branch.RequestEnt
 	defer conn.Close(ctx)
 
 	replayed := false
+	recorded := 0
 	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		inTx := func() bool { return conn.PgConn().TxStatus() != 'I' }
-		if err := replay(ctx, tx, inTx, requestID, approver, entries); err != nil {
+		n, err := applyIn(ctx, tx, inTx, c, p.Approver, entries, fromUs)
+		recorded = n
+		if err != nil {
 			return err
 		}
 		replayed = true
 		return nil
 	})
+	if errors.Is(err, branch.ErrAlreadyApplied) {
+		return recorded, fmt.Errorf("applying the request to %q (nothing was run again): %w", target, err)
+	}
 	if err != nil {
 		return 0, applyFailure(target, replayed, err)
 	}
 	return len(entries), nil
+}
+
+// checkSnapshot checks what is about to be applied, again: it is a stored
+// snapshot, and may predate the checks made when it was asked for, or have
+// been written by an engine that made fewer of them.
+func checkSnapshot(c auth.ChangeRequest, entries []branch.RequestEntry) error {
+	if err := checkReplayable(entries); err != nil {
+		return err
+	}
+	if c.IncludeData {
+		return nil
+	}
+	// A schema-only request applies no data change, whatever its snapshot
+	// says: one made before data changes were left out may hold some.
+	var data []string
+	for _, e := range entries {
+		if isDataChange(e.CommandTag, e.Risk) {
+			data = append(data, fmt.Sprintf("entry %d (%s %s)", e.ID, e.CommandTag, e.Object))
+		}
+	}
+	if len(data) > 0 {
+		return fmt.Errorf("%w: it is schema only and holds data changes: %s. Nothing was applied. "+
+			"Ask again (`%s branch request %s`), which leaves them out, or with --include-data to carry them",
+			branch.ErrNotReplayable, strings.Join(data, ", "), brand.CLI, c.Source)
+	}
+	return checkSchemaOnly(entries)
+}
+
+// ensureAppliedRecord makes sure the target has bb.applied_requests before the
+// transaction that writes to it. A target whose Blackbox predates the table is
+// upgraded, the way `fox ledger upgrade` does it; if that fails nothing is
+// applied, since a request applied without the record could be applied again.
+func ensureAppliedRecord(target string) error {
+	if has, err := branch.LedgerQuery(target, "SELECT (to_regclass('bb.applied_requests') IS NOT NULL)::text"); err == nil &&
+		len(has) == 1 && has[0] == "true" {
+		return nil
+	}
+	if err := branch.EnsureLedgerV2(target); err != nil {
+		return fmt.Errorf("adding the record of applied requests to %q (nothing was applied; `%s ledger upgrade %s` retries it): %w",
+			target, brand.CLI, target, err)
+	}
+	return nil
+}
+
+// applyTx is what applyIn needs of a transaction.
+type applyTx interface {
+	execer
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// applyIn is the whole of an apply inside its transaction: record the request
+// on the target, check for conflicts, then replay. On ErrAlreadyApplied it
+// returns the number of statements the target recorded the first time.
+func applyIn(ctx context.Context, tx applyTx, inTx func() bool, c auth.ChangeRequest, approver string,
+	entries []branch.RequestEntry, fromUs map[string]bool) (int, error) {
+	if n, err := recordApplied(ctx, tx, c, approver, len(entries)); err != nil {
+		return n, err
+	}
+	if err := conflictsSince(ctx, tx, c, entries, fromUs); err != nil {
+		return 0, err
+	}
+	return 0, replay(ctx, tx, inTx, c.ID, approver, entries)
+}
+
+// recordApplied writes the request into the target's record, first, so that a
+// second apply of the same id finds it and stops. Two applies at once meet on
+// the primary key: the second waits for the first to commit or roll back, and
+// then either finds the row or writes its own.
+func recordApplied(ctx context.Context, tx applyTx, c auth.ChangeRequest, approver string, statements int) (int, error) {
+	tag, err := tx.Exec(ctx, "INSERT INTO bb.applied_requests (request_id, source, approver, statements) "+
+		"VALUES ($1, $2, $3, $4) ON CONFLICT (request_id) DO NOTHING", c.ID, c.Source, approver, statements)
+	if err != nil {
+		return 0, fmt.Errorf("recording request #%d in %q's Blackbox: %w", c.ID, c.Target, err)
+	}
+	if tag.RowsAffected() == 1 {
+		return 0, nil
+	}
+	had := 0
+	if err := tx.QueryRow(ctx, "SELECT statements FROM bb.applied_requests WHERE request_id = $1", c.ID).Scan(&had); err != nil {
+		return 0, fmt.Errorf("%w: request #%d (reading its record: %v)", branch.ErrAlreadyApplied, c.ID, err)
+	}
+	return had, fmt.Errorf("%w: request #%d is in %q's record of applied requests", branch.ErrAlreadyApplied, c.ID, c.Target)
+}
+
+// conflictsSince asks the target, inside the apply's transaction, whether it
+// has changed any object the request touches since the branches parted: the
+// same question build asked, over the target's Blackbox as it stands now.
+// Changes this source's earlier requests made are the source's own, as there.
+//
+// Only the columns that say what changed and under which session are read, not
+// the statements.
+func conflictsSince(ctx context.Context, tx applyTx, c auth.ChangeRequest, entries []branch.RequestEntry, fromUs map[string]bool) error {
+	objects := []string{}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		if e.Object != "" && !seen[e.Object] {
+			seen[e.Object] = true
+			objects = append(objects, e.Object)
+		}
+	}
+	if len(objects) == 0 {
+		return nil
+	}
+	sessions := []string{}
+	for s := range fromUs {
+		sessions = append(sessions, s)
+	}
+	var touched string
+	err := tx.QueryRow(ctx, "SELECT coalesce(string_agg(DISTINCT object_identity, ', ' ORDER BY object_identity), '') "+
+		"FROM bb.schema_ledger WHERE id > $1 AND object_identity = ANY($2) AND status <> 'BLOCKED' "+
+		"AND NOT (coalesce(session, '') = ANY($3))", c.ForkAfterID, objects, sessions).Scan(&touched)
+	if err != nil {
+		return fmt.Errorf("checking %q for changes since the fork: %w", c.Target, err)
+	}
+	if touched != "" {
+		return fmt.Errorf("%w: %s changed on %s since the branches parted. Nothing was applied; "+
+			"look at both with `%s blackbox diff %s %s` and ask again", branch.ErrConflict, touched, c.Target,
+			brand.CLI, c.Source, c.Target)
+	}
+	return nil
 }
 
 // openTimeout bounds the login. The statements themselves have no limit: an ALTER

@@ -24,17 +24,33 @@ import (
 // change and cannot approve its own, which is the point of having a review step.
 
 // requestView is a change request as the API returns it: the record, plus the
-// statements it holds, decoded.
+// statements it holds and what it left out, decoded.
 type requestView struct {
 	auth.ChangeRequest
 	Entries []branch.RequestEntry `json:"entries"`
+	Omitted []branch.OmittedEntry `json:"omitted"`
+	// Existing is set when asking found an open request for exactly the same
+	// changes and returned it rather than making a second one.
+	Existing bool `json:"existing,omitempty"`
 }
 
 func viewOf(c auth.ChangeRequest) requestView {
 	entries, _ := branch.UnmarshalEntries(c.Entries)
-	c.Entries = "" // it is in Entries below, decoded; sending both is noise
-	return requestView{ChangeRequest: c, Entries: entries}
+	omitted, _ := branch.UnmarshalOmitted(c.Omitted)
+	if omitted == nil {
+		omitted = []branch.OmittedEntry{}
+	}
+	c.Entries, c.Omitted = "", "" // they are below, decoded; sending both is noise
+	return requestView{ChangeRequest: c, Entries: entries, Omitted: omitted}
 }
+
+// Seams for tests: the paid half's build and apply, which need running
+// branches.
+var (
+	buildChangeRequest = branch.BuildRequest
+	applyClaimed       = branch.ApplyClaimed
+	requestHistory     = branch.RequestHistory
+)
 
 func registerRequests(mux *http.ServeMux, store *auth.Store) {
 	// Ask for a branch's changes to be applied elsewhere. The path's branch is the
@@ -47,6 +63,9 @@ func registerRequests(mux *http.ServeMux, store *auth.Store) {
 		source := r.PathValue("name")
 		var body struct {
 			Target string `json:"target"`
+			// IncludeData carries the source's data changes too. Off unless
+			// asked for, and shown on the request when it is on.
+			IncludeData bool `json:"include_data"`
 		}
 		if err := decode(r, &body); err != nil {
 			writeErr(w, 400, err)
@@ -61,28 +80,36 @@ func registerRequests(mux *http.ServeMux, store *auth.Store) {
 		if !allowed(w, r, u, target, access.Use) {
 			return
 		}
-		history, err := store.ApprovedRequestsFrom(source, target)
+		history, err := requestHistory(store, source, target)
 		if err != nil {
 			writeErr(w, 500, err)
 			return
 		}
-		entries, forkAfter, err := branch.BuildRequest(source, target, history)
+		plan, err := buildChangeRequest(source, target, history, branch.RequestOptions{IncludeData: body.IncludeData})
 		if err != nil {
 			writeErr(w, statusForRequestErr(err), err)
 			return
 		}
-		snapshot, err := branch.MarshalEntries(entries)
+		rec, err := branch.NewRequest(source, target, plan)
 		if err != nil {
 			writeErr(w, 500, err)
 			return
 		}
-		c, err := store.CreateChangeRequest(u.ID, source, target, forkAfter, snapshot)
+		c, existing, err := store.OpenChangeRequest(u.ID, rec)
 		if err != nil {
 			writeErr(w, 500, err)
+			return
+		}
+		if existing {
+			// The same changes are already waiting for a decision: a second
+			// request would be a second chance to apply them.
+			v := viewOf(c)
+			v.Existing = true
+			writeJSON(w, 200, v)
 			return
 		}
 		store.Audit(auth.EvChangeRequested, u.Email, fmt.Sprintf("request #%d: %s → %s", c.ID, source, target),
-			remoteIP(r), fmt.Sprintf("%d statement(s)", len(entries)))
+			remoteIP(r), branch.RequestedDetail(plan))
 		writeJSON(w, 201, viewOf(c))
 	})
 
@@ -155,6 +182,12 @@ func requestFor(w http.ResponseWriter, r *http.Request, store *auth.Store, need 
 	return c, true
 }
 
+// decideRequest approves or rejects a request, and applies an approved one.
+//
+// Both are privileged, and each writes its intent to the security log before
+// it happens and its outcome after (auth.BeginPrivileged). The intents come
+// before the claim, because once a request is claimed the decision is made: an
+// intent that cannot be written must stop the decision, not follow it.
 func decideRequest(w http.ResponseWriter, r *http.Request, store *auth.Store, decision string) {
 	c, ok := requestFor(w, r, store, access.Manage)
 	if !ok {
@@ -173,10 +206,29 @@ func decideRequest(w http.ResponseWriter, r *http.Request, store *auth.Store, de
 		writeErr(w, 500, err)
 		return
 	}
+	ip := remoteIP(r)
+	decided, err := store.BeginPrivileged(auth.EvChangeDecideStarted, auth.EvChangeDecided, auth.EvChangeDecideFailed,
+		u.Email, fmt.Sprintf("request #%d %s", c.ID, decision), ip, body.Note)
+	if err != nil {
+		writeErr(w, 503, err)
+		return
+	}
+	var applying *auth.Privileged
+	if decision == auth.RequestApproved {
+		applying, err = store.BeginPrivileged(auth.EvChangeApplyStarted, auth.EvChangeApplied, auth.EvChangeApplyFailed,
+			u.Email, fmt.Sprintf("request #%d: %s → %s", c.ID, c.Source, c.Target), ip, applyDetail(c, len(entries)))
+		if err != nil {
+			decided.Done(err, "not decided")
+			writeErr(w, 503, err)
+			return
+		}
+	}
 	// One writer wins: a second approval of the same request must not apply its
 	// statements twice.
 	claimed, err := store.ClaimChangeRequest(c.ID, u.ID, decision, body.Note)
 	if err != nil {
+		decided.Done(err, "not decided")
+		applying.Done(err, "not applied")
 		if errors.Is(err, auth.ErrRequestDecided) {
 			writeErr(w, 409, err)
 			return
@@ -185,33 +237,47 @@ func decideRequest(w http.ResponseWriter, r *http.Request, store *auth.Store, de
 		return
 	}
 	if decision == auth.RequestRejected {
-		store.Audit(auth.EvChangeDecided, u.Email, fmt.Sprintf("request #%d rejected", c.ID), remoteIP(r), body.Note)
+		decided.Done(nil, body.Note)
 		writeJSON(w, 200, viewOf(claimed))
 		return
 	}
-	n, applyErr := branch.ApplyRequest(c.ID, c.Target, u.Email, entries)
-	failure := ""
-	if applyErr != nil {
-		failure = applyErr.Error()
+	n, applyErr, recordErr := applyClaimed(store, claimed, u.Email)
+	outcome := fmt.Sprintf("%d statement(s) applied to %s", n, c.Target)
+	switch {
+	case errors.Is(applyErr, branch.ErrAlreadyApplied):
+		applying.Done(applyErr, "nothing run again; the target already had it")
+	default:
+		applying.Done(applyErr, outcome)
 	}
-	if err := store.FinishChangeRequest(c.ID, n, failure); err != nil {
-		writeErr(w, 500, err)
-		return
-	}
-	store.Audit(auth.EvChangeDecided, u.Email, fmt.Sprintf("request #%d approved", c.ID), remoteIP(r),
-		fmt.Sprintf("%d statement(s) applied to %s", n, c.Target))
+	decided.Done(nil, outcome)
 	final, err := store.ChangeRequest(c.ID)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	if applyErr != nil {
+	switch {
+	case errors.Is(applyErr, branch.ErrAlreadyApplied):
+		writeJSON(w, 409, map[string]any{"error": applyErr.Error(), "request": viewOf(final)})
+	case applyErr != nil:
 		// The decision stands and the record says it failed, so this is reported as
 		// a failure to apply rather than a refusal to decide.
 		writeJSON(w, 500, map[string]any{"error": applyErr.Error(), "request": viewOf(final)})
-		return
+	case recordErr != nil:
+		// Applied, and the store could not say so. The target's own record has
+		// it, and the next request from this source reconciles from there.
+		writeJSON(w, 500, map[string]any{"error": fmt.Sprintf("the request was applied to %s, but recording that here failed "+
+			"(it will be reconciled from %s's own record): %v", c.Target, c.Target, recordErr), "request": viewOf(final)})
+	default:
+		writeJSON(w, 200, viewOf(final))
 	}
-	writeJSON(w, 200, viewOf(final))
+}
+
+// applyDetail is the apply intent's detail: how much, and whether rows change.
+func applyDetail(c auth.ChangeRequest, n int) string {
+	if c.IncludeData {
+		return fmt.Sprintf("%d statement(s), including data changes", n)
+	}
+	return fmt.Sprintf("%d statement(s), schema only", n)
 }
 
 // statusForRequestErr maps a refusal to ask for a promotion onto a status code.

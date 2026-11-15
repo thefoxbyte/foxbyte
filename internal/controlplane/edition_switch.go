@@ -58,7 +58,20 @@ func registerEditionSwitch(mux *http.ServeMux, store *auth.Store) {
 			return
 		}
 		u, _ := auth.UserFrom(r.Context())
-		err := startEditionSwitch(body.Edition, u.Email)
+		detail := "to " + body.Edition
+		if body.Edition == update.EditionEnterprise {
+			detail += ", Enterprise License accepted"
+		}
+		// Intent first, and no switch without it (auth.BeginPrivileged). The
+		// success keeps its kind, edition.switch_started.
+		act, err := store.BeginPrivileged(auth.EvEditionSwitchAsked, auth.EvEditionSwitch, auth.EvEditionSwitchFailed,
+			u.Email, "", remoteIP(r), detail)
+		if err != nil {
+			writeErr(w, 503, err)
+			return
+		}
+		err = startEditionSwitch(body.Edition, u.Email)
+		act.Done(err, detail)
 		switch {
 		case errors.Is(err, host.ErrSameEdition), errors.Is(err, host.ErrSwitchRunning):
 			writeErr(w, 409, err)
@@ -67,11 +80,6 @@ func registerEditionSwitch(mux *http.ServeMux, store *auth.Store) {
 			writeErr(w, 400, err)
 			return
 		}
-		detail := "to " + body.Edition
-		if body.Edition == update.EditionEnterprise {
-			detail += ", Enterprise License accepted"
-		}
-		store.Audit(auth.EvEditionSwitch, u.Email, "", remoteIP(r), detail)
 		writeJSON(w, 202, map[string]string{"state": "running", "edition": body.Edition})
 	})
 

@@ -99,6 +99,11 @@ var mirrored = []mirror{
 	{table: "pipeline_targets", cols: []string{"branch", "pipeline_id"}, pk: []string{"branch"}},
 	{table: "change_requests", cols: []string{"id", "source", "target", "created_by", "created", "status",
 		"fork_after_id", "entries", "decided_by", "decided", "note", "applied"}, pk: []string{"id"}},
+	// What a request left out, whether it carries data changes, and the key
+	// that finds a duplicate (requests.go). Optional: a document from a node
+	// older than the table leaves this node's rows as they are.
+	{table: "change_request_meta", cols: []string{"request_id", "entry_key", "include_data", "omitted", "omitted_count"},
+		pk: []string{"request_id"}, optional: true},
 	// Application identity (apps.go): which applications may assert, with
 	// which keys, and the install id their tokens name. Without these a
 	// failover would refuse every application's tokens.

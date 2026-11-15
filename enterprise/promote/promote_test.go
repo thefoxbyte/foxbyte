@@ -58,20 +58,20 @@ func TestAlreadyPromoted(t *testing.T) {
 // A request with no statements is refused rather than producing an empty
 // transaction that reports success.
 func TestApplyRequestRefusesNothing(t *testing.T) {
-	if _, err := apply(1, "main", "someone@example.com", nil); err != branch.ErrNothingToPromote {
+	if _, err := apply(branch.ApplyPlan{Request: auth.ChangeRequest{ID: 1, Target: "main"}, Approver: "someone@example.com"}); err != branch.ErrNothingToPromote {
 		t.Errorf("applying an empty request gave %v, want branch.ErrNothingToPromote", err)
 	}
 }
 
 // Names are checked before anything reaches a container.
 func TestBuildRequestChecksNames(t *testing.T) {
-	if _, _, err := build("dev", "dev", nil); err == nil {
+	if _, err := build("dev", "dev", nil, branch.RequestOptions{}); err == nil {
 		t.Error("a branch was allowed to be its own source and target")
 	}
-	if _, _, err := build("../etc", "main", nil); err == nil {
+	if _, err := build("../etc", "main", nil, branch.RequestOptions{}); err == nil {
 		t.Error("a source that is not a branch name was accepted")
 	}
-	if _, _, err := build("dev", "../etc", nil); err == nil {
+	if _, err := build("dev", "../etc", nil, branch.RequestOptions{}); err == nil {
 		t.Error("a target that is not a branch name was accepted")
 	}
 }
