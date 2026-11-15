@@ -78,7 +78,7 @@ func TestSameShape(t *testing.T) {
 // back to find the feed moved on without it, with no error anywhere.
 func TestThePositionAdvancesOnCommitOnly(t *testing.T) {
 	h := NewHub()
-	d := &Decoder{hub: h, relations: map[uint32]Relation{}}
+	d := &Decoder{hub: h, relations: map[uint32]Relation{}, catalog: &fakeCatalog{}}
 	s := h.Subscribe()
 	defer s.Close()
 
@@ -122,7 +122,7 @@ func decodeInto(t *testing.T, msgs ...pglogrepl.Message) []any {
 	h := NewHub()
 	sub := h.Subscribe()
 	defer sub.Close()
-	d := &Decoder{hub: h, relations: map[uint32]Relation{}}
+	d := &Decoder{hub: h, relations: map[uint32]Relation{}, catalog: &fakeCatalog{}}
 	for i, m := range msgs {
 		// The record position: distinct per message, so a test can tell the
 		// per-record LSN from the transaction's commit LSN.
@@ -267,7 +267,7 @@ func TestConsecutiveTransactionsDoNotShareState(t *testing.T) {
 	h := NewHub()
 	sub := h.Subscribe()
 	defer sub.Close()
-	d := &Decoder{hub: h, relations: map[uint32]Relation{}}
+	d := &Decoder{hub: h, relations: map[uint32]Relation{}, catalog: &fakeCatalog{}}
 
 	second, err := pglogrepl.ParseLSN("0/BBBBBB")
 	if err != nil {

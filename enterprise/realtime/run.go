@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -48,12 +49,22 @@ func backoff(failures int) time.Duration {
 // decides, which is the point of a durable slot: the decoder asks for 0 and
 // Postgres replays from wherever the feed was acknowledged to.
 func Supervise(ctx context.Context, branchName, slot, password string, hub *Hub, since pglogrepl.LSN) {
+	// This is the root of the feed's goroutine, so a panic anywhere below it
+	// would otherwise take the whole control plane down with it. It ends this
+	// one feed instead, and says why, like any other decoder that gave up.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("change feed %s: stopped after an internal error: %v\n%s", branchName, r, debug.Stack())
+			hub.Close(Notice{Type: "error", Code: CodeDecoderFailed,
+				Detail: "the change feed stopped on an internal error"})
+		}
+	}()
 	failures := 0
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := runOnce(ctx, branchName, slot, password, hub, since)
+		err := runFeed(ctx, branchName, slot, password, hub, since)
 		since = 0 // only the first attempt resumes from the caller's position
 		switch {
 		case ctx.Err() != nil:
@@ -99,6 +110,10 @@ func Supervise(ctx context.Context, branchName, slot, password string, hub *Hub,
 	}
 }
 
+// runFeed is one attempt at running the decoder; a variable so a test can make
+// an attempt fail in ways a real branch would not.
+var runFeed = runOnce
+
 func runOnce(ctx context.Context, branchName, slot, password string, hub *Hub, since pglogrepl.LSN) error {
 	// A subscriber arriving at a suspended branch should be served, not told
 	// that the feed cannot be read. The reaper suspends a branch nobody is
@@ -130,7 +145,16 @@ func runOnce(ctx context.Context, branchName, slot, password string, hub *Hub, s
 	if len(pubs) == 0 {
 		return fmt.Errorf("nothing is being streamed on %q yet — enable a table first", branchName)
 	}
-	d, err := NewDecoder(ctx, dsn, slot, strings.Join(pubs, ","), hub)
+	cat, err := openCatalog(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = cat.Close(closeCtx)
+	}()
+	d, err := NewDecoder(ctx, dsn, slot, strings.Join(pubs, ","), hub, cat)
 	if err != nil {
 		return err
 	}
