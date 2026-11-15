@@ -112,7 +112,14 @@ inherited by every branch, capture **every** schema change and attribute it:
   all, and over time each agent may change at most 1,000 rows of a table per
   hour across all its statements. `fox guardrail limit` and `fox guardrail
   budget` change them, per table if needed; an admin can let one statement
-  through.
+  through. An agent's transactions on one table take turns with the budget,
+  so holding several open at once does not multiply it.
+
+**Who can read it.** Every client login can read who changed what, when, and
+the hashes. The statement text can hold the values a change wrote, so a client
+reads only the text of its own entries (`bb.ledger_statement(id)`, for a
+per-user or per-agent login); the superuser and admins (`fox admin grant`)
+read all of it, and `bb.ledger_verify()` checks the chain for anyone.
 
 ```bash
 fox blackbox            # every schema change on this branch, most recent first

@@ -177,6 +177,10 @@ func readExport(path string) ([]ledger.Row, error) {
 // readDatabase reads every ledger row over a plain Postgres connection. Read
 // access to bb.schema_ledger (and bb.ledger_ext, if present) is all it needs —
 // a connection through the FoxByte gateway with an API key works.
+//
+// Recomputing a hash needs every entry's statement, which client roles cannot
+// read directly (audit PRIV-3): through the gateway that takes an admin's key
+// (db_admin), whose login reads the text through bb.ledger_statement.
 func readDatabase(dsn string) ([]ledger.Row, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -186,11 +190,27 @@ func readDatabase(dsn string) ([]ledger.Row, error) {
 	}
 	defer conn.Close(ctx)
 
-	var withExt bool
-	if err := conn.QueryRow(ctx, "SELECT to_regclass('bb.ledger_ext') IS NOT NULL").Scan(&withExt); err != nil {
+	var withExt, direct, viaFunc bool
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('bb.ledger_ext') IS NOT NULL,
+  has_column_privilege('bb.schema_ledger', 'statement', 'SELECT'),
+  to_regprocedure('bb.ledger_statement(bigint)') IS NOT NULL`).Scan(&withExt, &direct, &viaFunc); err != nil {
 		return nil, fmt.Errorf("reading the ledger: %w", err)
 	}
-	rs, err := conn.Query(ctx, ledger.RowsQuery(withExt, ""))
+	query := ledger.RowsQuery(withExt, "")
+	if !direct {
+		var admin bool
+		if viaFunc {
+			if err := conn.QueryRow(ctx, "SELECT bb._may_override()").Scan(&admin); err != nil {
+				return nil, fmt.Errorf("reading the ledger: %w", err)
+			}
+		}
+		if !admin {
+			return nil, errors.New("this login cannot read the Blackbox's statement text, which every hash covers: " +
+				"connect as an admin (fox admin grant <email>) or verify an export (fox ledger export)")
+		}
+		query = ledger.ClientRowsQuery(withExt, "")
+	}
+	rs, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("reading the ledger: %w", err)
 	}

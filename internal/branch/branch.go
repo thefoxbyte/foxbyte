@@ -801,8 +801,10 @@ func Ledger(name string, limit int) error {
 //
 //	legacy | chained | broken | first_broken_id
 //
-// LedgerVerifySQL is exported so the control-plane can run the same check.
-const LedgerVerifySQL = `WITH v AS (
+// It reads every entry's statement, which only the superuser may (audit
+// PRIV-3), so it is what `fox ledger verify` runs, and it works on a branch
+// whose Blackbox predates bb.ledger_verify.
+const ledgerVerifySQL = `WITH v AS (
   SELECT id, prev_hash, row_hash, bb._ledger_hash(s.*) AS recomputed,
          lag(row_hash) OVER (ORDER BY id) AS prev_link
   FROM bb.schema_ledger s WHERE row_hash IS NOT NULL)
@@ -812,6 +814,12 @@ SELECT (SELECT count(*) FROM bb.schema_ledger WHERE row_hash IS NULL) AS legacy,
        coalesce(min(id) FILTER (WHERE row_hash <> recomputed OR prev_hash IS DISTINCT FROM coalesce(prev_link,''))::text,'') AS first_broken
 FROM v`
 
+// LedgerVerifySQL is the same check for a client session, such as the
+// console's, which runs as db_client: bb.ledger_verify does it as the
+// Blackbox's owner and returns the same four columns. A branch whose Blackbox
+// predates it needs `fox ledger upgrade <branch>`.
+const LedgerVerifySQL = `SELECT legacy, chained, broken, first_broken FROM bb.ledger_verify()`
+
 // LedgerVerify recomputes the ledger's hash chain and returns a human-readable
 // summary. A non-nil error means the chain is broken (a row was deleted or
 // edited after the fact) — the message says where.
@@ -820,7 +828,7 @@ func LedgerVerify(name string) (string, error) {
 		name = "main"
 	}
 	out, err := capture("docker", "exec", "--env-file", pgEnvFile(), container(name),
-		"psql", "-U", pgUser, "-d", pgDatabase, "-tA", "-F", "|", "-c", LedgerVerifySQL)
+		"psql", "-U", pgUser, "-d", pgDatabase, "-tA", "-F", "|", "-c", ledgerVerifySQL)
 	if err != nil {
 		return "", fmt.Errorf("verify query: %w", err)
 	}

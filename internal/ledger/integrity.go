@@ -415,6 +415,15 @@ func RowsQuery(withExt bool, where string) string {
 		" FROM bb.schema_ledger s" + join + " " + where + " ORDER BY s.id) x"
 }
 
+// ClientRowsQuery is RowsQuery for a login that may not read the statement
+// column (every client role, since audit PRIV-3): the text comes through
+// bb.ledger_statement, which gives all of it to the superuser and db_admin
+// members, and to anyone else only their own entries'. Ask bb._may_override()
+// first: for anyone else the chain cannot be recomputed.
+func ClientRowsQuery(withExt bool, where string) string {
+	return strings.Replace(RowsQuery(withExt, where), "s.statement,", "bb.ledger_statement(s.id) AS statement,", 1)
+}
+
 // ExportQuery selects every ledger row with all of its capture columns, one JSON
 // document per row in id order — the `fox ledger export` format.
 func ExportQuery(withExt bool) string {
