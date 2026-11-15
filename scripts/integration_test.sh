@@ -990,7 +990,7 @@ assert_eq "…and a dry run promoted nothing" "$(cat "$HOME/$BRAND_STATE_DIR/pri
 assert_contains "a local drill is refused on a machine that follows a primary elsewhere" \
   "$($S ha drill --yes --writes 10 2>&1 | head -2)" "ha drill --takeover"
 # For real now: the watcher promotes, the drill measures.
-( sleep 6; "$S" ha watch --witness https://127.0.0.1:7072/ha/primary --token "$WTOKEN" --after 0s >/tmp/watch-real.log 2>&1 ) &
+( sleep 6; "$S" ha watch --witness https://127.0.0.1:7072/ha/primary --token "$WTOKEN" --after 0s --accept-unfenced >/tmp/watch-real.log 2>&1 ) &
 TD=/tmp/takeover.out
 timeout 180 $S ha drill --takeover --wait 90s >"$TD" 2>&1
 assert_eq "the takeover drill runs and exits 0" "$?" "0"

@@ -485,7 +485,7 @@ fox node expose --address A --peer B --yes   # let a standby on another machine 
 fox node join <token>           # on the other machine: become its standby
 fox node unexpose | leave | status | token
 fox ha witness --primary H:5432 --token T              # on a third host: the second opinion
-fox ha watch --witness https://W:7070/ha/primary --token T   # on the standby: automatic failover
+fox ha watch --witness https://W:7070/ha/primary --token T --accept-unfenced   # on the standby: automatic failover
 ```
 
 `fox node expose` is the only thing that puts Postgres on a network, and it is
@@ -512,12 +512,25 @@ then works as it does on one machine: `fox ha status` shows how far behind it is
 `fox ha failover` promotes it, and `fox ha drill` measures what a failover costs.
 That machine's own `main` sits idle while it follows another primary.
 
+`fox ha failover` fences before it promotes. On one machine it stops the old
+primary, waits until docker reports it stopped, and only then promotes the
+standby and routes `main` to it. When docker cannot confirm the stop, it refuses
+and names the container to stop by hand. `--force` promotes anyway, at the risk
+it states: sessions still connected to the old primary can commit writes the new
+primary never sees, and those are lost. `fox up` never starts the old main
+beside a promoted standby, and stops it if something else did. A failover or
+failback interrupted by a crash is settled at the next `fox up`, by asking which
+server is out of recovery, before anything starts as primary.
+
 `fox ha failover` on a machine that follows a remote primary refuses while that
 primary still answers — promoting would make a second primary and the two copies
 would diverge, and this command cannot stop a database on another machine. Stop
 it first, or pass `--force` if something else already has. The check cannot tell
 a dead primary from one it merely cannot reach, so a network partition still
-needs a failover manager to arbitrate.
+needs a failover manager to arbitrate. A promotion past it is recorded as not
+fenced, and `fox ha status` says so until a failback. `fox ha watch` will only
+promote with `--accept-unfenced` (or watch with `--dry-run`), because a primary
+on another machine can never be confirmed stopped from this one.
 
 Replication is asynchronous by default: commits never wait, and losing the
 machine costs up to a minute of writes (`archive_timeout=60`). `fox ha sync on`

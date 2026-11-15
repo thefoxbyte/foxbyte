@@ -45,6 +45,10 @@ type WatchOptions struct {
 	After       time.Duration // how long the primary must be unreachable before promoting
 	Once        bool          // run one round and report, for a drill or a check
 	DryRun      bool          // decide and say so, but never promote
+	// AcceptUnfenced is the operator saying, with --accept-unfenced, that a
+	// promotion may go ahead on the witness's word although the old primary,
+	// on another machine, cannot be confirmed stopped. Required to promote.
+	AcceptUnfenced bool
 }
 
 // Defaults chosen for the plan's "about a minute": a look every 10s and a
@@ -153,6 +157,17 @@ func Watch(o WatchOptions) error {
 			"`%s ha watch` runs on a standby that joined a primary elsewhere (`%s node join`)",
 			brand.CLI, brand.CLI)
 	}
+	// The primary a watcher watches is always on another machine, which this
+	// one cannot stop or see stopped. Two observers agreeing it is unreachable
+	// is the best evidence there is, and still not proof, so a promotion on it
+	// is something an operator has to have said yes to. --dry-run promotes
+	// nothing and needs no such yes.
+	if !o.DryRun && !o.AcceptUnfenced {
+		return fmt.Errorf("automatic failover needs --accept-unfenced: the primary is on another machine, and " +
+			"this one cannot stop it or confirm that it has stopped before promoting. If it is in fact still " +
+			"serving clients that neither this machine nor the witness can see, the writes it takes after the " +
+			"promotion are lost. Pass --accept-unfenced to accept that, or --dry-run to watch without promoting")
+	}
 	if ContainerState("standby") != "running" {
 		return fmt.Errorf("this machine has no running copy to promote — `%s ha status` says what it is doing",
 			brand.CLI)
@@ -185,7 +200,7 @@ func Watch(o WatchOptions) error {
 		report(action, j, v, answer, askErr, downFor)
 
 		if action == watchPromote && !o.DryRun {
-			if err := promoteUnattended(j, answer, downFor); err != nil {
+			if err := promoteUnattended(j, answer, downFor, o.AcceptUnfenced); err != nil {
 				log.Printf("ha watch: the promotion did not happen: %v", err)
 				// Not fatal: the fence refusing is the system working. Keep
 				// watching — if the primary really has gone, the next round
@@ -244,16 +259,18 @@ func report(a watchAction, j Joined, v witnessView, answer WitnessAnswer, askErr
 }
 
 // promoteUnattended takes over, and records it where an incident review will
-// look. The fence is not skipped: HAFailover probes the primary again itself,
-// so a primary that came back between the decision and the act stops this.
-func promoteUnattended(j Joined, answer WitnessAnswer, downFor time.Duration) error {
+// look. The fence is not skipped: the failover probes the primary again
+// itself, so a primary that came back between the decision and the act stops
+// this. The record says fencing was not confirmed, because across machines it
+// never can be.
+func promoteUnattended(j Joined, answer WitnessAnswer, downFor time.Duration, acceptUnfenced bool) error {
 	detail := fmt.Sprintf("%s:%d unreachable for %s; witness %s agreed",
 		j.Address, j.Port, downFor.Round(time.Second), answer.Witness)
-	if err := HAFailover(false); err != nil {
+	if err := haFailover(failoverAsk{unattended: true, witnessAgreed: true, acceptUnfenced: acceptUnfenced}); err != nil {
 		auditWatch(auth.EvFailoverRefused, detail+"; refused: "+err.Error())
 		return err
 	}
-	auditWatch(auth.EvFailoverPromoted, detail)
+	auditWatch(auth.EvFailoverPromoted, detail+"; fencing not confirmed (the old primary is on another machine), accepted by --accept-unfenced")
 	fmt.Printf("\nthis machine is the primary now. %s must not be started as a primary again:\n"+
 		"bring it back with `%s node join` against this machine, which replaces its copy.\n",
 		j.Address, brand.CLI)

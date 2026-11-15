@@ -255,7 +255,7 @@ Migration:
 High availability:
   ha enable            Provision a hot standby streaming from main
   ha status            Show replication status (primary + standby)
-  ha failover          Promote the standby to primary (reroutes 'main')
+  ha failover [--force]  Stop the old primary, confirm it stopped, then promote the standby (reroutes 'main')
   ha disable           Remove the standby
   ha failback          After a failover: move 'main' back to its own container, keeping every write
 
@@ -896,8 +896,18 @@ func haCmd(args []string) {
 	case "status":
 		must(branch.HAStatus())
 	case "failover":
-		// --force is for a primary on another machine that the operator has
-		// already stopped or isolated. It never skips stopping a local one.
+		// The old primary is stopped, and seen stopped, before the standby is
+		// promoted. --force promotes when that cannot be confirmed: a local
+		// one docker could not stop, or a remote one that still answers. It
+		// risks writes still being committed on the old primary, then lost.
+		if hasFlag(args, "-h") || hasFlag(args, "--help") {
+			fmt.Printf("usage: %s ha failover [--force]\n\n"+
+				"Stops the old primary, waits until docker reports it stopped, and only then promotes\n"+
+				"the standby and routes 'main' to it. Refused when the old primary cannot be confirmed\n"+
+				"stopped. --force promotes anyway: if the old primary is in fact still running, writes\n"+
+				"its sessions commit are not on the new primary and are lost.\n", brand.CLI)
+			return
+		}
 		must(branch.HAFailover(hasFlag(args, "--force")))
 	case "disable":
 		must(branch.HADisable())
@@ -929,7 +939,7 @@ func haCmd(args []string) {
 func haWatchCmd(args []string) {
 	if hasFlag(args, "-h") || hasFlag(args, "--help") {
 		fmt.Printf("usage: %s ha watch --witness https://<host:port>/ha/primary --token T [--witness-fingerprint F]\n"+
-			"                   [--after 60s] [--every 10s] [--once] [--dry-run]\n\n"+
+			"                   [--after 60s] [--every 10s] [--once] (--accept-unfenced | --dry-run)\n\n"+
 			"Runs on a standby that joined a primary elsewhere. Every round it asks two\n"+
 			"questions — can I reach the primary, and can the witness — and promotes only\n"+
 			"when both say no for --after. One opinion is never enough: two machines cannot\n"+
@@ -939,7 +949,10 @@ func haWatchCmd(args []string) {
 			"--token (or %s) is required and must match the witness's: every\n"+
 			"answer is signed with it, and one that does not check out counts as no answer.\n"+
 			"--witness-fingerprint pins the witness's certificate, as the witness prints it.\n"+
-			"--dry-run prints every decision and acts on none, which is how to try this.\n",
+			"--dry-run prints every decision and acts on none, which is how to try this.\n"+
+			"--accept-unfenced is required to promote. The primary is on another machine, which\n"+
+			"this one cannot stop or confirm stopped; if it is still serving clients neither\n"+
+			"observer can see, the writes it takes after the promotion are lost.\n",
 			brand.CLI, brand.CLI, brand.EnvName("HA_WITNESS_TOKEN"))
 		return
 	}
@@ -950,9 +963,10 @@ func haWatchCmd(args []string) {
 		Interval:    durFlag(args, "--every", -1),
 		// Negative means "not given", so `--after 0s` can mean what it says:
 		// promote as soon as both observers agree, which is how a drill asks.
-		After:  durFlag(args, "--after", -1),
-		Once:   hasFlag(args, "--once"),
-		DryRun: hasFlag(args, "--dry-run"),
+		After:          durFlag(args, "--after", -1),
+		Once:           hasFlag(args, "--once"),
+		DryRun:         hasFlag(args, "--dry-run"),
+		AcceptUnfenced: hasFlag(args, "--accept-unfenced"),
 	}))
 }
 

@@ -348,7 +348,7 @@ func DrillTakeover(o DrillOptions) (DrillResult, error) {
 		return !IsStandbyNode() && drillServing(PrimaryContainer())
 	}); err != nil {
 		r.Notes = append(r.Notes, "nothing promoted this machine: "+err.Error())
-		return r, fmt.Errorf("%w\nIt is still a copy. `%s ha watch --witness <url>` promotes it "+
+		return r, fmt.Errorf("%w\nIt is still a copy. `%s ha watch --witness <url> --accept-unfenced` promotes it "+
 			"unattended, or `%s ha failover` by hand", err, brand.CLI, brand.CLI)
 	}
 	r.TimeToService = time.Since(downAt)
