@@ -117,7 +117,7 @@ BEGIN
     CREATE ROLE db_admin NOLOGIN;
   END IF;
   EXECUTE format('GRANT db_admin TO %%I', %s);
-END $do$;`, bodyLiteral(email)))
+END $do$;`, bodyLiteral(email))+adminMainAccess(branchName, email))
 }
 
 // RevokeAdmin removes email's per-user role from db_admin on a branch.
@@ -128,7 +128,25 @@ BEGIN
      AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %[1]s) THEN
     EXECUTE format('REVOKE db_admin FROM %%I', %[1]s);
   END IF;
-END $do$;`, bodyLiteral(email)))
+END $do$;`, bodyLiteral(email))+adminMainAccess(branchName, email))
+}
+
+// adminMainAccess is what follows an admin grant or revoke on main: an admin
+// may always change main, so the account's roles there, its own and its agent
+// keys', go into db_client or out of it with the grant (mainwrite.go).
+func adminMainAccess(branchName, email string) string {
+	if branchName != "" && branchName != "main" {
+		return ""
+	}
+	defer forgetUserRole("main", email)
+	write, err := mainWriteFor("main", email)
+	if err != nil {
+		// The admin grant still goes in; the roles are set again at the
+		// next start, or by `fox access main-write`.
+		log.Printf("main write for %s: %v", email, err)
+		return ""
+	}
+	return "\n" + mainAccessSQL(write, nil, []string{email, AgentKeyRole(email)})
 }
 
 // ListAdmins returns the roles that are members of db_admin on a branch.

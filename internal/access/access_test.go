@@ -126,3 +126,48 @@ func TestOtherEventsKeepTheCache(t *testing.T) {
 		t.Errorf("an unrelated event emptied the cache (calls %d)", calls)
 	}
 }
+
+// Who may change main. The test store is a new install, so it records
+// "granted": only the admin and an account granted write may. In "all", every
+// account may. Off main, using a branch is enough.
+func TestMayWriteMain(t *testing.T) {
+	s, admin, alice, bob := storeWith(t)
+	c := NewWith(s, func(e string) bool { return e == "admin@x.com" })
+	if err := c.Own(alice, "alice-dev"); err != nil {
+		t.Fatal(err)
+	}
+	if mode, _ := s.MainWriteMode(); mode != auth.MainWriteGranted {
+		t.Fatalf("a new store's mode is %q", mode)
+	}
+	check := func(when string, want map[string]bool) {
+		t.Helper()
+		for _, u := range []auth.User{admin, alice, bob} {
+			if got := c.MayWriteMain(u); got != want[u.Email] {
+				t.Errorf("%s: %s may write main = %v, want %v", when, u.Email, got, want[u.Email])
+			}
+		}
+	}
+	check("granted, nobody granted", map[string]bool{"admin@x.com": true})
+	if err := s.GrantMainWrite(bob.ID, admin.Email); err != nil {
+		t.Fatal(err)
+	}
+	check("bob granted", map[string]bool{"admin@x.com": true, "bob@x.com": true})
+	if !c.MayWrite(alice, "alice-dev") || c.MayWrite(bob, "alice-dev") {
+		t.Error("off main, writing a branch is using it")
+	}
+	if c.MayWrite(alice, "") || !c.MayWrite(bob, "main") {
+		t.Error("MayWrite on main is not MayWriteMain")
+	}
+	if err := s.SetMainWriteMode(auth.MainWriteAll); err != nil {
+		t.Fatal(err)
+	}
+	check("all", map[string]bool{"admin@x.com": true, "alice@x.com": true, "bob@x.com": true})
+	if c.MayWriteMain(auth.User{}) {
+		t.Error("no account at all may write main")
+	}
+	// Reading main stays Use for everybody, in either mode.
+	_ = s.SetMainWriteMode(auth.MainWriteGranted)
+	if c.Level(alice, "main") != Use {
+		t.Error("a read-only account lost Use on main")
+	}
+}

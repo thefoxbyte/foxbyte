@@ -44,3 +44,40 @@ func TestMCPAppliesTheAccessRule(t *testing.T) {
 		t.Errorf("alice deleting her own agent: %v", err)
 	}
 }
+
+// A new install's main is read-only for an account not granted write: MCP
+// says so before Postgres does, for the tool that exists to change a branch.
+func TestMCPRefusesAChangeToReadOnlyMain(t *testing.T) {
+	s, err := auth.Open(auth.Config{DBPath: filepath.Join(t.TempDir(), "a.db"), WebOrigin: "http://x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	bob, _ := s.CreateUser("bob@x.com", "password1")
+	oldACL, oldMe := acl, me
+	t.Cleanup(func() { acl, me = oldACL, oldMe })
+	acl = access.NewWith(s, func(string) bool { return false })
+	_ = acl.Own(bob, "bob-dev")
+	me = identity{Actor: bob.Email, User: bob}
+
+	err = checkAccess("execute_change", []byte(`{"sql":"insert into t values (1)"}`))
+	if err == nil || !strings.Contains(err.Error(), "main is read-only for your account") ||
+		!strings.Contains(err.Error(), "access write grant bob@x.com") {
+		t.Errorf("a change to main: %v", err)
+	}
+	for _, args := range []string{
+		`{"sql":"insert into t values (1)","dry_run":true}`, // nothing is changed
+		`{"branch":"bob-dev","sql":"insert into t values (1)"}`,
+	} {
+		if err := checkAccess("execute_change", []byte(args)); err != nil {
+			t.Errorf("%s: %v", args, err)
+		}
+	}
+	if err := checkAccess("run_sql", []byte(`{"sql":"select 1"}`)); err != nil {
+		t.Errorf("reading main: %v", err)
+	}
+	_ = s.GrantMainWrite(bob.ID, "admin@x.com")
+	if err := checkAccess("execute_change", []byte(`{"sql":"insert into t values (1)"}`)); err != nil {
+		t.Errorf("granted: %v", err)
+	}
+}

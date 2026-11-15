@@ -529,7 +529,7 @@ func Init() error {
 			return err
 		}
 		ensureLedgerV2BestEffort("main")
-		return syncAppRole("main")
+		return finishMain()
 	}
 	store := activeStorage()
 	if !store.exists("main") {
@@ -564,7 +564,18 @@ func Init() error {
 		return err
 	}
 	ensureLedgerV2BestEffort("main")
-	return syncAppRole("main")
+	return finishMain()
+}
+
+// finishMain is the end of every start of main: the client role's password,
+// then who may change main (mainwrite.go), applied again so that grants made to
+// db_client by hand since the last start reach main's readers too.
+func finishMain() error {
+	if err := syncAppRole("main"); err != nil {
+		return err
+	}
+	applyMainWriteAtStart()
+	return nil
 }
 
 // syncAppRole sets the non-superuser client role's password (its own, derived
@@ -663,7 +674,13 @@ func EnsureUserRole(branchName, email string) error {
 	case audited:
 		state = "unmasked" // an unmask holder: real values, reads audited
 	}
-	k := branchName + "\x00" + email + "\x00" + state
+	// Whether it may change the branch is part of the key too: on main a
+	// role may not, until it is granted write (mainwrite.go).
+	write, err := mainWriteFor(branchName, email)
+	if err != nil {
+		return err
+	}
+	k := branchName + "\x00" + email + "\x00" + state + "\x00" + fmt.Sprint(write)
 	if _, ok := ensuredRoles.Load(k); ok {
 		return nil
 	}
@@ -682,6 +699,9 @@ func EnsureUserRole(branchName, email string) error {
 		// ordinary account's again, its reads audited if it holds unmask here.
 		sql += "\n" + unmaskedRoleSQL(email) + "\n" + auditedReadsSQL(email, audited)
 	}
+	// In db_client or main's reader. Off main always db_client: a branch is
+	// cloned with main's roles, readers included, and belongs to its owner.
+	sql += "\n" + mainAccessSQL(write, nil, []string{email})
 	if err := provisionRole(branchName, sql); err != nil {
 		return err
 	}
@@ -690,13 +710,18 @@ func EnsureUserRole(branchName, email string) error {
 }
 
 // userRoleSQL makes a person's login role if it is missing and sets its
-// password, tolerating another session doing the same at that moment.
+// password, tolerating another session doing the same at that moment. A role
+// that main has made read-only (in db_main_reader, mainwrite.go) keeps acting
+// as the reader: only mainAccessSQL moves a role between the two.
 func userRoleSQL(email, password string) string {
 	return retryingRoleDO(fmt.Sprintf("r text := %s;", bodyLiteral(email)), fmt.Sprintf(`      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
         EXECUTE format('CREATE ROLE %%I LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB INHERIT IN ROLE db_client', r);
       END IF;
       EXECUTE format('ALTER ROLE %%I WITH LOGIN PASSWORD %%L', r, %s);
-      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, bodyLiteral(password)))
+      IF NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid = to_regrole('%s')
+                       AND m.member = (SELECT oid FROM pg_roles WHERE rolname = r)) THEN
+        EXECUTE format('ALTER ROLE %%I SET role = db_client', r);
+      END IF;`, bodyLiteral(password), MainReaderRole))
 }
 
 // syncRolePassword sets the Postgres role password to the per-install secret.
@@ -991,6 +1016,9 @@ var buildBranch = func(name, parent string) error {
 	// Before anyone can reach it: until now it answers to its parent's name.
 	syncIdentityBestEffort(name, true)
 	applyAuditBestEffort(name)
+	// Cloned with main's roles: those main keeps read-only write here, on a
+	// branch that belongs to whoever made it (mainwrite.go).
+	restoreBranchWriters(name)
 	return nil
 }
 

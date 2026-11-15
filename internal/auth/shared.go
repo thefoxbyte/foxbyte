@@ -39,6 +39,8 @@ import (
 //     somebody's work.
 //   - apps, app_keys, install_info — which applications may say whom they act
 //     for, and the install id their tokens name (apps.go).
+//   - install_settings, main_writers — whether main is read-only for accounts
+//     not granted write, and who is (mainwrite.go).
 //   - sessions: deliberately not. A browser session is minutes old and cheap to
 //     replace; carrying tokens between machines would widen what a stolen
 //     document is worth, for the convenience of not signing in again.
@@ -111,6 +113,12 @@ var mirrored = []mirror{
 	{table: "app_keys", cols: []string{"app", "kid", "public_key", "created", "revoked", "compromised_since"},
 		pk: []string{"app", "kid"}, optional: true},
 	{table: "install_info", cols: []string{"key", "value"}, pk: []string{"key"}, optional: true},
+	// Who may change main (mainwrite.go): the mode and the accounts granted
+	// write. A standby that takes over must apply the same rule to main's
+	// roles, or a failover would hand write back to everybody. Optional, so a
+	// document from a node older than the tables leaves this node's as they are.
+	{table: "install_settings", cols: []string{"key", "value"}, pk: []string{"key"}, optional: true},
+	{table: "main_writers", cols: []string{"user_id", "granted", "granted_by"}, pk: []string{"user_id"}, optional: true},
 }
 
 // sharedDoc is what crosses between machines.

@@ -862,12 +862,26 @@ A fresh install exposes nothing it does not have to:
   256 KiB in all, says when it left rows out, and stops a statement after
   `FOX_MCP_STATEMENT_TIMEOUT` (60s). Apps connecting through the Gateway get
   no statement timeout: long queries and migrations are legitimate work.
-- **Branches belong to whoever made them.** Every account may use `main`; a
+- **Branches belong to whoever made them.** Every account may read `main`; a
   branch made through the console, the API, the Agent API or MCP is its
-  maker's to use and delete; an admin (the first account, or anyone given
-  `fox admin grant`) may do anything. Other people's branches are not listed,
-  and answer "not found" — through the Gateway too. A branch made with the CLI
-  is an admin's.
+  maker's to use, change and delete; an admin (the first account, or anyone
+  given `fox admin grant`) may do anything. Other people's branches are not
+  listed, and answer "not found" — through the Gateway too. A branch made with
+  the CLI is an admin's.
+- **`main` is read-only unless you are granted write.** On a new install only
+  admins and accounts an admin grants write (`fox access write grant <email>`)
+  may change `main`; everyone else reads it, and changes it through a branch
+  and a change request. Postgres enforces it: such an account's role on `main`
+  is not in `db_client` but in `db_main_reader`, which may read what
+  `db_client` reads and nothing more, and its agent keys follow it. The
+  console and MCP say why a change was refused. `fox access list` shows who
+  may change `main`; `fox access main-write all` lets every account again.
+  **Upgrading:** an install that already had accounts keeps every account able
+  to change `main` (mode `all`) until an admin runs `fox access main-write
+  granted`, which first lists the accounts that will lose write and ends their
+  open sessions on `main`. `fox check` warns while an install is in mode `all`.
+  On Postgres before 15, switching also takes `CREATE` on schema `public` from
+  `PUBLIC` on `main`, and switching back does not return it.
 - **A limit on branches per account.** Each branch is a whole Postgres, so an
   account may own at most `FOX_MAX_BRANCHES_PER_ACCOUNT` branches (20 by
   default; `0` for no limit), and may start at most
