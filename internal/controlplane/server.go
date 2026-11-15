@@ -351,6 +351,9 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 404, fmt.Errorf("%w: %q", branch.ErrParentNotFound, body.From))
 			return
 		}
+		if !allowCreate(w, r) {
+			return
+		}
 		if body.Masked {
 			createMaskedBranch(w, r, body.Name, body.From)
 			return
@@ -481,6 +484,10 @@ func registerAPI(mux *http.ServeMux) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		body.Source = strings.TrimSpace(body.Source)
+		// Before the stream opens, so a refusal is a plain 429 or 403.
+		if !allowCreate(w, r) {
+			return
+		}
 		send, p, ok := newSSE(w)
 		if !ok {
 			writeErr(w, 500, fmt.Errorf("streaming is not supported by this server"))
@@ -586,6 +593,10 @@ func registerAPI(mux *http.ServeMux) {
 	// into a new instance (kind inferred from the filename). Progress streams as SSE.
 	mux.HandleFunc("POST /api/import/file", func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxUpload())
+		// Before the upload is read or the stream opens.
+		if !allowCreate(w, r) {
+			return
+		}
 		file, hdr, ferr := r.FormFile("file")
 		send, p, ok := newSSE(w)
 		if !ok {

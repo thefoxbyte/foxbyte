@@ -672,6 +672,19 @@ A fresh install exposes nothing it does not have to:
   `fox admin grant`) may do anything. Other people's branches are not listed,
   and answer "not found" — through the Gateway too. A branch made with the CLI
   is an admin's.
+- **A limit on branches per account.** Each branch is a whole Postgres, so an
+  account may own at most `FOX_MAX_BRANCHES_PER_ACCOUNT` branches (20 by
+  default; `0` for no limit), and may start at most
+  `FOX_BRANCH_CREATES_PER_MINUTE` creates, imports and point-in-time branches a
+  minute (10 by default; `0` for no limit; over it the API answers 429). Admins
+  and the CLI are exempt.
+- **A branch's keys go with it.** Deleting a branch, by any route, revokes the
+  keys scoped to it, and making a branch under a name revokes any key still
+  scoped to that name; each revocation is in the security log.
+- **One change to a branch at a time.** A wake, suspend, create, delete, reset
+  or restore holds a lock on the branch, so they cannot overlap across
+  processes; one that waits longer than `FOX_BRANCH_LOCK_TIMEOUT` (2m by
+  default) gives up with an error saying the branch is busy.
 - **A password per database role.** Each account, each agent and the client
   role log in to Postgres with their own password, derived from the install
   secret; the secret itself is the superuser's alone and never appears on a
