@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -184,7 +185,15 @@ func exposePublish(e NodeExposure, exposed bool) []string {
 	if !exposed {
 		return nil
 	}
-	return []string{"-p", fmt.Sprintf("%s:%d:5432", strings.TrimSpace(e.Address), e.Port)}
+	// A record from before addresses had to be IPs may hold a hostname. Passing
+	// it on would make docker refuse to create main at all, so main starts
+	// unpublished instead and the log says how to publish it again.
+	addr, err := exposeBindAddress(e)
+	if err != nil {
+		log.Printf("main is not published for its standby: %v", err)
+		return nil
+	}
+	return []string{"-p", fmt.Sprintf("%s:%d:5432", addr, e.Port)}
 }
 
 // exposeBindAddress is the check behind that: the published address must be

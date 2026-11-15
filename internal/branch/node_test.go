@@ -87,12 +87,12 @@ func TestExposePublishBindsOneAddress(t *testing.T) {
 	if exposePublish(NodeExposure{Address: "1.2.3.4", Port: 5432}, false) != nil {
 		t.Error("an unpublished install was given a host port")
 	}
-	// A hostname cannot be a bind address. There is no fallback to every
-	// interface: it is passed through so docker refuses it, and the check in
-	// front of it says so first.
-	got = strings.Join(exposePublish(NodeExposure{Address: "db1.internal", Port: 5555}, true), " ")
-	if strings.Contains(got, "0.0.0.0") || strings.Contains(got, "::") {
-		t.Errorf("a hostname was published on every interface: %q", got)
+	// A hostname or every-interface address cannot be a bind address. There is
+	// no fallback to every interface, and main still starts: just unpublished.
+	for _, bad := range []string{"db1.internal", "0.0.0.0", "::", ""} {
+		if got := exposePublish(NodeExposure{Address: bad, Port: 5555}, true); got != nil {
+			t.Errorf("exposePublish(%q) = %q, want main left unpublished", bad, got)
+		}
 	}
 	for _, bad := range []string{"db1.internal", "", "not an address", "0.0.0.0", "::"} {
 		if _, err := exposeBindAddress(NodeExposure{Address: bad, Port: 5432}); err == nil {
