@@ -331,7 +331,9 @@ func registerAPI(mux *http.ServeMux) {
 				visible = append(visible, b)
 			}
 		}
-		writeJSON(w, 200, visible)
+		// The unmasked-personal-data badge is per caller too: whether a
+		// column is masked depends on who reads it.
+		writeJSON(w, 200, withPersonalData(visible, u.Email))
 	})
 
 	mux.HandleFunc("POST /api/branches", func(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +379,15 @@ func registerAPI(mux *http.ServeMux) {
 		if from == "" {
 			from = "main"
 		}
-		writeJSON(w, 201, map[string]string{"name": body.Name, "from": from, "status": "created"})
+		res := map[string]any{"name": body.Name, "from": from, "status": "created"}
+		// A copy holds what its source holds: say so when its confirmed
+		// personal data reaches whoever uses it as real values. Never a
+		// refusal; masking is opt-in (PRIV-1).
+		u, _ := auth.UserFrom(r.Context())
+		if ws := branch.PersonalDataWarnings(body.Name, u.Email, "people and agents using it", u.Email); len(ws) > 0 {
+			res["warnings"] = ws
+		}
+		writeJSON(w, 201, res)
 	})
 
 	mux.HandleFunc("DELETE /api/branches/{name}", func(w http.ResponseWriter, r *http.Request) {

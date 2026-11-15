@@ -506,6 +506,7 @@ func SetMaskRule(branchName string, r MaskRule) error {
 			return err
 		}
 	}
+	defer forgetPersonalData(branchName) // the warnings read the rules (unmaskedpii.go)
 	return masker.SetRule(branchName, r)
 }
 
@@ -515,6 +516,7 @@ func DropMaskRule(branchName, schema, table, column, path, actor string) error {
 	if err := requireMasker(); err != nil {
 		return err
 	}
+	defer forgetPersonalData(branchName)
 	return masker.DropRule(branchName, schema, table, column, path, actor)
 }
 

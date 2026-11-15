@@ -502,6 +502,7 @@ paths:
                 properties:
                   name: { type: string }
                   status: { type: string, example: created }
+                  warnings: { type: array, items: { type: string }, description: "Said when the new branch holds confirmed personal data you and anyone you hand it to read unmasked, or it has never been scanned. Branches are unmasked by default; it is made either way." }
         "400": { description: "Invalid name or from (lowercase letters, digits and dashes)." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { description: The branch named in from doesn't exist. }
@@ -3371,6 +3372,12 @@ components:
         agent: { type: boolean }
         used: { type: string }
         connections: { type: integer }
+        personalData:
+          type: object
+          description: Present when the branch holds confirmed personal data its readers see unmasked (as the caller reads it; an agent branch as its agent does). Branches are unmasked by default.
+          properties:
+            unmasked: { type: integer, description: Confirmed personal-data columns read as real values. }
+            summary: { type: string, description: The warning, in a sentence. }
     AgentBranch:
       type: object
       properties:
@@ -3388,6 +3395,13 @@ components:
             once, at creation — listings omit the key — and revoked when the
             branch is deleted.
         status: { type: string, description: "ready, or suspended when the branch's container is stopped (the Gateway wakes it on connect)." }
+        warnings:
+          type: array
+          items: { type: string }
+          description: >-
+            Said when the branch holds confirmed personal data the agent reads as real values, or
+            main has never been scanned for it. Branches are unmasked by default; the branch is
+            made either way. Only on the answer to creating it.
     Backup:
       type: object
       properties:

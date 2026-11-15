@@ -364,6 +364,11 @@ td.name-cell { white-space: nowrap; }
 .badge.primary { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .badge.agent { color: var(--info); border-color: color-mix(in srgb, var(--info) 45%, var(--border)); background: color-mix(in srgb, var(--info) 10%, transparent); }
 .badge.branch { color: var(--muted); }
+/* Amber, not red: unmasked is the default and a choice, not a fault. */
+.badge.pii { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, var(--border)); background: color-mix(in srgb, var(--amber) 12%, transparent); cursor: help; }
+.pii-warning { color: color-mix(in srgb, var(--amber) 70%, var(--text)); background: color-mix(in srgb, var(--amber) 12%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border));
+  border-radius: 12px; padding: 11px 15px; margin-top: 14px; font-size: 13.5px; }
 .state { display: inline-flex; align-items: center; gap: var(--s-2); font-weight: 600; }
 .state.running { color: var(--green); } .state.suspended { color: var(--muted); }
 

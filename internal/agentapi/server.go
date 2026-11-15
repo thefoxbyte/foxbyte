@@ -100,65 +100,7 @@ func Serve(addr string) error {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"agents": visible})
 	})
-	agents.HandleFunc("POST /agents/{id}/branch", func(w http.ResponseWriter, r *http.Request) {
-		// The body is optional. Without provenance the request takes exactly the
-		// original path and returns the original response.
-		var p branch.Provenance
-		_ = json.NewDecoder(r.Body).Decode(&p)
-		u, _ := auth.UserFrom(r.Context())
-		// The account's branch limit and create rate; admins pass.
-		if err := branch.AllowBranchCreate(u.ID, acl.Admin(u)); err != nil {
-			code := http.StatusForbidden
-			if errors.Is(err, branch.ErrCreateRate) {
-				code = http.StatusTooManyRequests
-			} else if !errors.Is(err, branch.ErrBranchQuota) {
-				code = http.StatusInternalServerError
-			}
-			writeErr(w, code, err)
-			return
-		}
-		if !p.Requested() {
-			info, err := branch.CreateAgentBranchFor(u.ID, r.PathValue("id"))
-			if err != nil {
-				writeErr(w, http.StatusConflict, err)
-				return
-			}
-			writeJSON(w, http.StatusCreated, info)
-			return
-		}
-		// Whom the session is for (application identity, F1): checked here,
-		// before anything is made, by bb.act_for's rules. The token is never
-		// kept, only the verdict; a failure is recorded as "none" with why,
-		// unless the application registered failures to be refused.
-		if p.ActFor != "" {
-			a := store.CheckAppToken(p.ActFor, u, auth.ViaAgentKey(r.Context()), "agent-"+r.PathValue("id"), time.Now())
-			p.ActFor = ""
-			if a.Refuse {
-				store.Audit(auth.EvDenied, u.Email, "agent-"+r.PathValue("id"), r.RemoteAddr, "agent branch refused: application identity "+a.Note)
-				writeErr(w, http.StatusForbidden, fmt.Errorf("application identity refused: %s", strings.TrimPrefix(a.Note, "token refused: ")))
-				return
-			}
-			p.App = &a
-		}
-		info, s, err := branch.CreateAgentBranchWithProvenanceFor(u.ID, r.PathValue("id"), p)
-		if err != nil {
-			code := http.StatusConflict
-			if errors.Is(err, branch.ErrInvalidRequest) {
-				code = http.StatusBadRequest
-			}
-			writeErr(w, code, err)
-			return
-		}
-		writeJSON(w, http.StatusCreated, struct {
-			branch.Info
-			SessionID       string  `json:"session_id"`
-			TaskID          string  `json:"task_id,omitempty"`
-			ParentSessionID string  `json:"parent_session_id,omitempty"`
-			AppFor          *string `json:"app_for,omitempty"`
-			AppState        *string `json:"app_state,omitempty"`
-			AppNote         *string `json:"app_note,omitempty"`
-		}{info, s.SessionID, p.TaskID, p.ParentSessionID, s.AppFor, s.AppState, s.AppNote})
-	})
+	agents.HandleFunc("POST /agents/{id}/branch", createHandler(store, acl))
 	agents.HandleFunc("DELETE /agents/{id}/branch", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		u, _ := auth.UserFrom(r.Context())
@@ -208,6 +150,89 @@ func Serve(addr string) error {
 	}
 	log.Printf("agent branch API on %s (auth on; TLS)", addr)
 	return srv.ListenAndServeTLS(cert, key)
+}
+
+// What creating an agent's branch calls, as variables so the handler can be
+// tested without Docker.
+var (
+	createAgentBranch    = branch.CreateAgentBranchFor
+	createWithProvenance = branch.CreateAgentBranchWithProvenanceFor
+	// agentWarnings is what to tell whoever asked for the branch (PRIV-1): an
+	// agent's branch is a copy of main, so it holds main's personal data, and
+	// the agent's own role reads it unmasked unless the branch is a masked one.
+	agentWarnings = func(name, owner string) []string {
+		return branch.PersonalDataWarnings(name, "", "agents using it", owner)
+	}
+)
+
+// createHandler is POST /agents/{id}/branch.
+func createHandler(store *auth.Store, acl *access.Checker) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// The body is optional. Without provenance the request takes exactly the
+		// original path and returns the original response, with warnings
+		// beside it when there are any.
+		var p branch.Provenance
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		u, _ := auth.UserFrom(r.Context())
+		// The account's branch limit and create rate; admins pass.
+		if err := branch.AllowBranchCreate(u.ID, acl.Admin(u)); err != nil {
+			code := http.StatusForbidden
+			if errors.Is(err, branch.ErrCreateRate) {
+				code = http.StatusTooManyRequests
+			} else if !errors.Is(err, branch.ErrBranchQuota) {
+				code = http.StatusInternalServerError
+			}
+			writeErr(w, code, err)
+			return
+		}
+		if !p.Requested() {
+			info, err := createAgentBranch(u.ID, r.PathValue("id"))
+			if err != nil {
+				writeErr(w, http.StatusConflict, err)
+				return
+			}
+			// A warning, never a refusal: masking is opt-in, and the branch is
+			// made either way. The caller is told so it is a choice.
+			writeJSON(w, http.StatusCreated, struct {
+				branch.Info
+				Warnings []string `json:"warnings,omitempty"`
+			}{info, agentWarnings(info.Branch, u.Email)})
+			return
+		}
+		// Whom the session is for (application identity, F1): checked here,
+		// before anything is made, by bb.act_for's rules. The token is never
+		// kept, only the verdict; a failure is recorded as "none" with why,
+		// unless the application registered failures to be refused.
+		if p.ActFor != "" {
+			a := store.CheckAppToken(p.ActFor, u, auth.ViaAgentKey(r.Context()), "agent-"+r.PathValue("id"), time.Now())
+			p.ActFor = ""
+			if a.Refuse {
+				store.Audit(auth.EvDenied, u.Email, "agent-"+r.PathValue("id"), r.RemoteAddr, "agent branch refused: application identity "+a.Note)
+				writeErr(w, http.StatusForbidden, fmt.Errorf("application identity refused: %s", strings.TrimPrefix(a.Note, "token refused: ")))
+				return
+			}
+			p.App = &a
+		}
+		info, s, err := createWithProvenance(u.ID, r.PathValue("id"), p)
+		if err != nil {
+			code := http.StatusConflict
+			if errors.Is(err, branch.ErrInvalidRequest) {
+				code = http.StatusBadRequest
+			}
+			writeErr(w, code, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, struct {
+			branch.Info
+			SessionID       string   `json:"session_id"`
+			TaskID          string   `json:"task_id,omitempty"`
+			ParentSessionID string   `json:"parent_session_id,omitempty"`
+			AppFor          *string  `json:"app_for,omitempty"`
+			AppState        *string  `json:"app_state,omitempty"`
+			AppNote         *string  `json:"app_note,omitempty"`
+			Warnings        []string `json:"warnings,omitempty"`
+		}{info, s.SessionID, p.TaskID, p.ParentSessionID, s.AppFor, s.AppState, s.AppNote, agentWarnings(info.Branch, u.Email)})
+	}
 }
 
 // checkAgentID refuses an /agents/{id}/… request whose id would not make a
