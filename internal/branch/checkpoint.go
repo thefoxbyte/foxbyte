@@ -84,8 +84,7 @@ func ledgerLines(name, sql string) ([]string, error) {
 }
 
 func ledgerLinesOnce(name, sql string) ([]string, error) {
-	cmd, ctx, cancel := sudoCmd(execQuick, "docker", "exec", "--env-file", pgEnvFile(), container(name),
-		"psql", "-U", pgUser, "-d", pgDatabase, "-X", "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-c", sql)
+	cmd, ctx, cancel := ledgerPsql(name, sql)
 	defer cancel()
 	out, err := cmd.Output()
 	if err != nil {
@@ -113,25 +112,6 @@ func ledgerV2Tables(name string) (ext, checkpoints bool, err error) {
 	}
 	f := strings.Split(lines[0], "|")
 	return f[0] == "true", len(f) > 1 && f[1] == "true", nil
-}
-
-func loadLedgerRows(name string, withExt bool, where string) ([]ledger.Row, error) {
-	lines, err := ledgerLines(name, ledger.RowsQuery(withExt, where))
-	if err != nil {
-		return nil, err
-	}
-	rows := make([]ledger.Row, 0, len(lines))
-	for _, l := range lines {
-		if !strings.HasPrefix(l, "{") {
-			continue
-		}
-		r, err := ledger.DecodeRowJSON([]byte(l))
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, r)
-	}
-	return rows, nil
 }
 
 // Checkpoint anchors a branch's ledger entries added since its last checkpoint.
@@ -194,16 +174,20 @@ func Integrity(name string) (ledger.Report, error) {
 	if err != nil {
 		return ledger.Report{}, err
 	}
-	rows, err := loadLedgerRows(name, withExt, "")
-	if err != nil {
-		return ledger.Report{}, err
-	}
+	// The anchors are read first because the verifier checks each row against
+	// them as it arrives, rather than after the whole ledger is in memory
+	// (ledgerstream.go). A failure to read them is still reported after a
+	// failure to read the ledger, as it always was.
 	dir := AnchorDir(name)
-	anchors, err := ledger.LoadAnchors(dir)
-	if err != nil {
+	anchors, anchorsErr := ledger.LoadAnchors(dir)
+	v := ledger.NewVerifier(anchors)
+	if err := streamLedgerRows(name, withExt, "", v.Add); err != nil {
 		return ledger.Report{}, err
 	}
-	rep := ledger.Verify(rows, anchors)
+	if anchorsErr != nil {
+		return ledger.Report{}, anchorsErr
+	}
+	rep := v.Report()
 	if pub, err := ledger.ReadPublicKey(AnchorKeyPath() + ".pub"); err == nil {
 		ledger.VerifySignatures(&rep, anchors, pub)
 	}

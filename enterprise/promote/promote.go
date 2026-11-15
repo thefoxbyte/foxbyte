@@ -61,59 +61,21 @@ func build(source, target string, history []auth.ChangeRequest) (entries []branc
 	if _, err := branch.EnsureRunning(target); err != nil {
 		return nil, 0, err
 	}
-	srcRows, err := branch.LedgerRows(source, false, "")
-	if err != nil {
-		return nil, 0, fmt.Errorf("reading %q's Blackbox: %w", source, err)
-	}
-	tgtRows, err := branch.LedgerRows(target, false, "")
-	if err != nil {
-		return nil, 0, fmt.Errorf("reading %q's Blackbox: %w", target, err)
-	}
-	n := branch.CommonPrefix(srcRows, tgtRows)
-	if n > 0 {
-		forkAfterID = srcRows[n-1].ID
-	}
-	// A masked branch's Blackbox starts at its making (masking step 5): it
-	// shares no entry with the source, so the fork is the source's last entry
-	// when it was copied, which its record keeps. Every entry of its own is
-	// after it, and the target's own changes are those after it too.
-	ns, nt := n, n
-	if fork, ok := branch.MaskedBranchFork(source); ok && n == 0 {
-		ns, nt, forkAfterID = 0, len(tgtRows), fork
-		for i, r := range tgtRows {
-			if r.ID > fork {
-				nt = i
-				break
-			}
-		}
-	}
 	promoted, fromUs := alreadyPromoted(source, target, history)
-
-	// What the target has changed on its own since the fork: the objects a replay
-	// could walk into. Entries this source gave it are not the target's own doing.
-	tgtTouched := map[string]bool{}
-	for _, r := range tgtRows[nt:] {
-		if r.ObjectIdentity == "" || r.Status == "BLOCKED" || fromUs[r.Session] {
-			continue
-		}
-		tgtTouched[r.ObjectIdentity] = true
+	p := newForkPlan(promoted, fromUs)
+	p.maskedFork, p.masked = branch.MaskedBranchFork(source)
+	// Both ledgers are read side by side as they stream (branch.WalkLedgerFork):
+	// the shared history is compared and dropped, and of what follows the fork
+	// only the source entries a replay would carry are kept.
+	if err := branch.WalkLedgerFork(source, target, p.visitor()); err != nil {
+		return nil, 0, err
 	}
+	forkAfterID = p.forkAfterID
+	tgtTouched := p.tgtTouched
 
 	var conflicts []string
 	seen := map[string]bool{}
-	for _, r := range srcRows[ns:] {
-		if r.Status == "BLOCKED" {
-			continue // it never happened, so there is nothing to carry over
-		}
-		if ledger.IsScanStatus(r.Status) {
-			continue // found by the catalog scan: no statement anyone ran, so nothing to replay
-		}
-		if promoted[r.ID] {
-			continue // the target already has this one, from an earlier request
-		}
-		if strings.TrimSpace(r.Statement) == "" {
-			continue // an entry with no statement recorded cannot be replayed
-		}
+	for _, r := range p.candidates {
 		if r.ObjectIdentity != "" && tgtTouched[r.ObjectIdentity] && !seen[r.ObjectIdentity] {
 			seen[r.ObjectIdentity] = true
 			conflicts = append(conflicts, r.ObjectIdentity)
@@ -144,6 +106,77 @@ func build(source, target string, history []auth.ChangeRequest) (entries []branc
 		return nil, 0, err
 	}
 	return entries, forkAfterID, nil
+}
+
+// forkPlan collects what a request needs from a walk of the source's and the
+// target's Blackboxes: where they part, the source entries after that which
+// could be replayed, and the objects the target changed on its own since.
+type forkPlan struct {
+	promoted map[int64]bool  // source entries the target already has
+	fromUs   map[string]bool // target sessions this source's requests ran under
+
+	maskedFork int64
+	masked     bool
+
+	maskedMode  bool
+	forkAfterID int64
+	candidates  []ledger.Row
+	tgtTouched  map[string]bool
+}
+
+func newForkPlan(promoted map[int64]bool, fromUs map[string]bool) *forkPlan {
+	return &forkPlan{promoted: promoted, fromUs: fromUs, tgtTouched: map[string]bool{}}
+}
+
+func (p *forkPlan) visitor() branch.LedgerFork {
+	return branch.LedgerFork{
+		Fork: func(n int, last *ledger.Row) {
+			if last != nil {
+				p.forkAfterID = last.ID
+			}
+			// A masked branch's Blackbox starts at its making (masking step 5):
+			// it shares no entry with the source, so the fork is the source's
+			// last entry when it was copied, which its record keeps. Every entry
+			// of its own is after it, and the target's own changes are those
+			// after it too.
+			if p.masked && n == 0 {
+				p.maskedMode, p.forkAfterID = true, p.maskedFork
+			}
+		},
+		OnlyA: func(r ledger.Row) {
+			if replayable(r, p.promoted) {
+				p.candidates = append(p.candidates, r)
+			}
+		},
+		// What the target has changed on its own since the fork: the objects a
+		// replay could walk into. Entries this source gave it are not the
+		// target's own doing.
+		OnlyB: func(r ledger.Row) {
+			if p.maskedMode && r.ID <= p.maskedFork {
+				return
+			}
+			if r.ObjectIdentity == "" || r.Status == "BLOCKED" || p.fromUs[r.Session] {
+				return
+			}
+			p.tgtTouched[r.ObjectIdentity] = true
+		},
+	}
+}
+
+// replayable reports whether a source entry after the fork is one a request
+// carries.
+func replayable(r ledger.Row, promoted map[int64]bool) bool {
+	switch {
+	case r.Status == "BLOCKED":
+		return false // it never happened, so there is nothing to carry over
+	case ledger.IsScanStatus(r.Status):
+		return false // found by the catalog scan: no statement anyone ran, so nothing to replay
+	case promoted[r.ID]:
+		return false // the target already has this one, from an earlier request
+	case strings.TrimSpace(r.Statement) == "":
+		return false // an entry with no statement recorded cannot be replayed
+	}
+	return true
 }
 
 // runXids reads the transaction each Blackbox entry after the fork was recorded
