@@ -7,15 +7,7 @@ import (
 	"net"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
-)
-
-// lookupSRV and lookupTXT resolve a mongodb+srv:// address; variables so tests
-// need no DNS.
-var (
-	lookupSRV = net.LookupSRV
-	lookupTXT = net.LookupTXT
 )
 
 // pinImportSource is the import guard for a source an import is about to
@@ -28,22 +20,28 @@ var (
 //   - postgres:// gains libpq's hostaddr, one address per host. libpq then
 //     connects there and uses the name only for TLS, so nothing is looked up
 //     again — not by pg_dump, not by a continuous import's subscription.
-//   - mysql://, mariadb:// and mongodb:// are used as given; their tools run in
-//     throwaway containers, and the pins become --add-host entries there.
-//   - mongodb+srv:// is looked up here, once, and written out as the mongodb://
-//     seed list it names (with TLS, which +srv implies, and the options its TXT
-//     record may set). The driver would otherwise look the SRV record up again
-//     at connect time, and could be sent anywhere by then.
+//   - mysql:// and mariadb:// are used as given; their tools run in throwaway
+//     containers, and the pins become --add-host entries there. A MySQL client
+//     connects to the host it is given and to nothing the server names.
+//   - mongodb:// is held to one host, connected to directly (pinMongoSource),
+//     and pinned like MySQL. A MongoDB client otherwise learns the other
+//     members of a replica set from the server it reached and connects to
+//     them too, and those names come from the remote server, not the guard.
+//   - mongodb+srv:// is refused: it asks DNS which hosts to connect to, and
+//     a record can name several, or different ones next time.
 func pinImportSource(src string, admin bool) (string, []string, error) {
 	if admin {
 		return src, nil, checkImportSource(src, true)
 	}
 	if strings.HasPrefix(src, "mongodb+srv://") {
-		seed, err := expandMongoSRV(src)
-		if err != nil {
+		return "", nil, fmt.Errorf("a mongodb+srv:// address lets DNS choose the servers to connect to, so only an admin may import from one; " +
+			"use the mongodb:// address of a single member instead (mongodb://user:pass@host:27017/db)")
+	}
+	if strings.HasPrefix(src, "mongodb://") {
+		var err error
+		if src, err = pinMongoSource(src); err != nil {
 			return "", nil, err
 		}
-		src = seed
 	}
 	found, err := vetImportSource(src, false)
 	if err != nil {
@@ -60,6 +58,49 @@ func pinImportSource(src string, admin bool) (string, []string, error) {
 		}
 	}
 	return src, pins, nil
+}
+
+// mongoDiscoveryOptions are the URI options that let a MongoDB client go past
+// the one host it was given: to the members a replica set names, or through a
+// load balancer's mode (which cannot be combined with a direct connection).
+// MongoDB reads option names without regard to case.
+var mongoDiscoveryOptions = map[string]bool{
+	"replicaset": true, "directconnection": true, "loadbalanced": true,
+	"srvservicename": true, "srvmaxhosts": true,
+}
+
+// pinMongoSource rewrites an ordinary account's mongodb:// address so the
+// client talks to the one host the guard checked and nothing else: a single
+// host, directConnection=true, and no option that turns discovery back on.
+// The rest of the address (credentials, database, other options) is kept as
+// written. mongosh, which runs the import, honours directConnection as the
+// drivers do, and still reads when the member named is a secondary.
+func pinMongoSource(src string) (string, error) {
+	scheme, userinfo, hosts, tail := splitURI(src)
+	if strings.Contains(hosts, ",") {
+		return "", fmt.Errorf("this MongoDB address lists several hosts, and an import from it would also connect to whichever members the server names; " +
+			"only an admin may import from one. Use the address of a single member instead")
+	}
+	path, query, _ := strings.Cut(tail, "?")
+	var keep []string
+	for _, kv := range strings.Split(query, "&") {
+		if kv == "" {
+			continue
+		}
+		k, _, _ := strings.Cut(kv, "=")
+		if uk, err := url.QueryUnescape(k); err == nil {
+			k = uk
+		}
+		if mongoDiscoveryOptions[strings.ToLower(strings.TrimSpace(k))] {
+			continue
+		}
+		keep = append(keep, kv)
+	}
+	keep = append(keep, "directConnection=true")
+	if path == "" {
+		path = "/"
+	}
+	return scheme + "://" + userinfo + hosts + path + "?" + strings.Join(keep, "&"), nil
 }
 
 // splitURI cuts scheme://userinfo@hosts/path?query into its parts. userinfo
@@ -113,62 +154,4 @@ func withHostaddr(src string, found map[string]string) (string, error) {
 		sep = "&"
 	}
 	return src + sep + "hostaddr=" + url.QueryEscape(strings.Join(addrs, ",")), nil
-}
-
-// srvOptions are the only options a mongodb+srv TXT record may set.
-var srvOptions = []string{"authSource", "replicaSet", "loadBalanced"}
-
-// expandMongoSRV turns a mongodb+srv:// address into the mongodb:// seed list
-// its SRV record names, as a driver would at connect time.
-func expandMongoSRV(src string) (string, error) {
-	_, userinfo, authority, tail := splitURI(src)
-	host := hostOnly(authority)
-	if host == "" || strings.Contains(authority, ",") || strings.Contains(authority, ":") {
-		return "", fmt.Errorf("a mongodb+srv:// address names exactly one host, with no port")
-	}
-	// A driver accepts only targets in the host's own parent domain; so does this.
-	dot := strings.IndexByte(host, '.')
-	if dot < 0 {
-		return "", fmt.Errorf("a mongodb+srv:// host must be a domain name, got %s", host)
-	}
-	parent := strings.ToLower(host[dot:])
-	_, srvs, err := lookupSRV("mongodb", "tcp", host)
-	if err != nil || len(srvs) == 0 {
-		return "", fmt.Errorf("cannot resolve %s: %v", host, err)
-	}
-	var seeds []string
-	for _, s := range srvs {
-		t := strings.TrimSuffix(s.Target, ".")
-		if !strings.HasSuffix(strings.ToLower(t), parent) {
-			return "", fmt.Errorf("%s's SRV record names %s, outside %s", host, t, parent[1:])
-		}
-		seeds = append(seeds, net.JoinHostPort(t, strconv.Itoa(int(s.Port))))
-	}
-	path, query, _ := strings.Cut(tail, "?")
-	own, err := url.ParseQuery(query)
-	if err != nil {
-		return "", fmt.Errorf("cannot read the options in this connection string: %v", err)
-	}
-	opts := url.Values{}
-	if txts, err := lookupTXT(host); err == nil {
-		for _, t := range txts {
-			if v, err := url.ParseQuery(t); err == nil {
-				for _, k := range srvOptions {
-					if x := v.Get(k); x != "" {
-						opts.Set(k, x)
-					}
-				}
-			}
-		}
-	}
-	for k, vs := range own { // the address's own options win over the record's
-		opts[k] = vs
-	}
-	if own.Get("tls") == "" && own.Get("ssl") == "" {
-		opts.Set("tls", "true") // +srv means TLS unless it says otherwise
-	}
-	if path == "" {
-		path = "/"
-	}
-	return "mongodb://" + userinfo + strings.Join(seeds, ",") + path + "?" + opts.Encode(), nil
 }
