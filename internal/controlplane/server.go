@@ -645,14 +645,10 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 404, err)
 			return
 		}
-		q := ledgerSQL(r.URL.Query())
-		// A masked account reads the Blackbox's entries without their
-		// statements' text, which can hold real values: an UPDATE's literals,
-		// a migration's data (design, section 9; step 4).
-		if u, _ := auth.UserFrom(r.Context()); branch.AccountMaskedOn(r.PathValue("name"), u.Email) {
-			q = strings.Replace(q, " statement, ", " "+maskedStatementSQL+" AS statement, ", 1)
-		}
-		writeJSON(w, 200, runQuery(addr, q, queryAs{}))
+		// Who sees which statements' text is readLedger's to decide: a masked
+		// account none (design, section 9; step 4), a reader of main their own,
+		// whoever manages the branch all of them (ledgerread.go).
+		writeJSON(w, 200, readLedger(r, addr, r.PathValue("name"), ledgerSQL(r.URL.Query())))
 	})
 
 	// Tamper-evidence: recompute the ledger's hash chain and report whether it
