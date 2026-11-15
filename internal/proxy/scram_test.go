@@ -74,3 +74,40 @@ func TestScramChecksTheServerSignature(t *testing.T) {
 		t.Fatalf("a forged server signature: %v", err)
 	}
 }
+
+// A server-first message that is not well-formed SCRAM is refused rather than
+// used: one that only echoes the client's nonce, sends no salt, or asks for no
+// iterations.
+func TestScramRefusesAMalformedServerFirst(t *testing.T) {
+	for name, build := range map[string]func(nonce string) string{
+		"echoed nonce":  func(n string) string { return "r=" + n + ",s=c2FsdA==,i=4096" },
+		"no salt":       func(n string) string { return "r=" + n + "x,s=,i=4096" },
+		"no iterations": func(n string) string { return "r=" + n + "x,s=c2FsdA==,i=0" },
+		"empty":         func(string) string { return "" },
+	} {
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			_ = server.SetDeadline(time.Now().Add(3 * time.Second))
+			_, raw, err := readMsg(server)
+			if err != nil {
+				return
+			}
+			rest := string(raw)
+			i := strings.Index(rest, "n=,r=")
+			if i < 0 {
+				return
+			}
+			first := build(rest[i+len("n=,r="):])
+			cont := make([]byte, 4+len(first))
+			binary.BigEndian.PutUint32(cont[:4], 11)
+			copy(cont[4:], first)
+			_ = writeMsg(server, 'R', cont)
+		}()
+		_ = client.SetDeadline(time.Now().Add(3 * time.Second))
+		if err := scramSHA256(client, []byte("SCRAM-SHA-256\x00"), "secret"); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+		client.Close()
+	}
+}

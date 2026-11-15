@@ -20,13 +20,19 @@ import (
 // and the SQLSTATE it finally refused with.
 func connectFrom(t *testing.T, ip, password string) (first byte, code string) {
 	t.Helper()
+	return connectHolding(t, ip, password, nil)
+}
+
+// connectHolding is connectFrom for a connection admitted with ticket tk.
+func connectHolding(t *testing.T, ip, password string, tk *ticket) (first byte, code string) {
+	t.Helper()
 	client, server := net.Pipe()
 	defer client.Close()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		remote, _ := net.ResolveTCPAddr("tcp", ip+":50000")
-		handle(addrConn{Conn: server, remote: remote})
+		handleAdmitted(addrConn{Conn: server, remote: remote}, tk)
 	}()
 	_ = client.SetDeadline(time.Now().Add(10 * time.Second))
 	ssl := make([]byte, 8)

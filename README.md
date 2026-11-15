@@ -665,7 +665,16 @@ A fresh install exposes nothing it does not have to:
   one email in 15 minutes hold further attempts; request bodies are capped; the
   Gateway serves at most `FOX_GATEWAY_MAX_CONNS` connections (96 by default,
   one under Postgres's non-superuser limit) and gives a
-  client 30 seconds to authenticate.
+  client 30 seconds to authenticate. Within that, at most
+  `FOX_GATEWAY_MAX_PREAUTH_CONNS` may still be authenticating (half the cap,
+  48 by default), one address may hold `FOX_GATEWAY_MAX_CONNS_PER_IP` (two
+  thirds of the cap, 64; IPv6 counted per /64; connections from this machine
+  are exempt) and one API key `FOX_GATEWAY_MAX_CONNS_PER_KEY` (64). Every
+  refusal is `53300 too_many_connections`. Many clients behind one NAT or load
+  balancer share an address, so raise the per-address cap for that. Sessions
+  are never closed for being idle unless you set `FOX_GATEWAY_IDLE_TIMEOUT`
+  (`30m`, or seconds): pooled connections sit silent for hours, and TCP
+  keepalive already frees a slot whose client has vanished.
 - **Branches belong to whoever made them.** Every account may use `main`; a
   branch made through the console, the API, the Agent API or MCP is its
   maker's to use and delete; an admin (the first account, or anyone given
