@@ -66,42 +66,61 @@ func commonPrefix(a, b []ledger.Row) int {
 	return n
 }
 
-// buildDiff compares two id-ordered histories.
-func buildDiff(aName, bName string, a, b []ledger.Row) LedgerDiff {
-	d := LedgerDiff{A: aName, B: bName, AOnly: []DiffEntry{}, BOnly: []DiffEntry{}, BothTouched: []DiffOverlap{}}
-	n := commonPrefix(a, b)
-	d.CommonEntries = n
-	if n > 0 {
-		d.ForkAfterID = a[n-1].ID
-		d.ForkAfterAt = a[n-1].At.UTC().Format(time.RFC3339)
+// diffBuilder assembles a LedgerDiff from a fork walk (LedgerFork). It keeps
+// only what the diff shows: a short summary of each entry after the fork, and
+// the ids of the objects each side touched. The shared history, and every
+// statement's text, are never held.
+type diffBuilder struct {
+	d      LedgerDiff
+	ta, tb map[string][]int64
+}
+
+func newDiffBuilder(aName, bName string) *diffBuilder {
+	return &diffBuilder{
+		d:  LedgerDiff{A: aName, B: bName, AOnly: []DiffEntry{}, BOnly: []DiffEntry{}, BothTouched: []DiffOverlap{}},
+		ta: map[string][]int64{}, tb: map[string][]int64{},
 	}
-	touched := func(rows []ledger.Row) map[string][]int64 {
-		m := map[string][]int64{}
-		for _, r := range rows {
-			if r.ObjectIdentity != "" && r.Status != "BLOCKED" { // a blocked change didn't happen
-				m[r.ObjectIdentity] = append(m[r.ObjectIdentity], r.ID)
+}
+
+func (b *diffBuilder) visitor() LedgerFork {
+	touch := func(m map[string][]int64, r ledger.Row) {
+		if r.ObjectIdentity != "" && r.Status != "BLOCKED" { // a blocked change didn't happen
+			m[r.ObjectIdentity] = append(m[r.ObjectIdentity], r.ID)
+		}
+	}
+	return LedgerFork{
+		Fork: func(n int, last *ledger.Row) {
+			b.d.CommonEntries = n
+			if last != nil {
+				b.d.ForkAfterID = last.ID
+				b.d.ForkAfterAt = last.At.UTC().Format(time.RFC3339)
 			}
-		}
-		return m
+		},
+		OnlyA: func(r ledger.Row) { b.d.AOnly = append(b.d.AOnly, diffEntry(r)); touch(b.ta, r) },
+		OnlyB: func(r ledger.Row) { b.d.BOnly = append(b.d.BOnly, diffEntry(r)); touch(b.tb, r) },
 	}
-	for _, r := range a[n:] {
-		d.AOnly = append(d.AOnly, diffEntry(r))
-	}
-	for _, r := range b[n:] {
-		d.BOnly = append(d.BOnly, diffEntry(r))
-	}
-	ta, tb := touched(a[n:]), touched(b[n:])
-	for obj, ids := range ta {
-		if other, ok := tb[obj]; ok {
-			d.BothTouched = append(d.BothTouched, DiffOverlap{Object: obj, AEntries: ids, BEntries: other})
+}
+
+func (b *diffBuilder) finish() LedgerDiff {
+	for obj, ids := range b.ta {
+		if other, ok := b.tb[obj]; ok {
+			b.d.BothTouched = append(b.d.BothTouched, DiffOverlap{Object: obj, AEntries: ids, BEntries: other})
 		}
 	}
-	sort.Slice(d.BothTouched, func(i, j int) bool { return d.BothTouched[i].Object < d.BothTouched[j].Object })
-	return d
+	sort.Slice(b.d.BothTouched, func(i, j int) bool { return b.d.BothTouched[i].Object < b.d.BothTouched[j].Object })
+	return b.d
+}
+
+// buildDiff compares two id-ordered histories already in memory.
+func buildDiff(aName, bName string, a, b []ledger.Row) LedgerDiff {
+	db := newDiffBuilder(aName, bName)
+	WalkRowsFork(a, b, db.visitor())
+	return db.finish()
 }
 
 // DiffLedgers compares the Blackbox histories of branches a and b (running them
-// if they are suspended).
+// if they are suspended). Both are read as streams, side by side
+// (WalkLedgerFork), so neither ledger is held in memory.
 func DiffLedgers(a, b string) (LedgerDiff, error) {
 	var err error
 	if a, err = ledgerBranchName(a); err != nil {
@@ -110,21 +129,20 @@ func DiffLedgers(a, b string) (LedgerDiff, error) {
 	if b, err = ledgerBranchName(b); err != nil {
 		return LedgerDiff{}, err
 	}
-	rows := map[string][]ledger.Row{}
-	for _, n := range []string{a, b} {
-		if _, ok := rows[n]; ok {
-			continue
-		}
+	names := []string{a, b}
+	if a == b {
+		names = names[:1]
+	}
+	for _, n := range names {
 		if _, err := EnsureRunning(n); err != nil {
 			return LedgerDiff{}, err
 		}
-		r, err := loadLedgerRows(n, false, "")
-		if err != nil {
-			return LedgerDiff{}, fmt.Errorf("reading %q's Blackbox: %w", n, err)
-		}
-		rows[n] = r
 	}
-	d := buildDiff(a, b, rows[a], rows[b])
+	db := newDiffBuilder(a, b)
+	if err := WalkLedgerFork(a, b, db.visitor()); err != nil {
+		return LedgerDiff{}, err
+	}
+	d := db.finish()
 	d.AParent, d.BParent = BranchParent(a), BranchParent(b)
 	return d, nil
 }
