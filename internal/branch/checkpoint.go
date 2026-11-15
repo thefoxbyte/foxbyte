@@ -302,6 +302,13 @@ func StartCheckpointer() {
 					} else if a != nil {
 						log.Printf("security log checkpoint: events %d–%d", a.FromID, a.ToID)
 					}
+					// Retention, when the operator set one: after the
+					// checkpoint, because only anchored events are removed.
+					if res, err := PruneSecurityLog(store, "engine"); err != nil {
+						log.Printf("security log retention: %v", err)
+					} else if res.Removed > 0 {
+						log.Printf("security log retention: removed %d events, up to event %d", res.Removed, res.UpTo)
+					}
 				}
 				// The branch ledgers' half, and only this half. The security
 				// log above keeps anchoring in every edition.

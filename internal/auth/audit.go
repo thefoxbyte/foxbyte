@@ -250,6 +250,11 @@ type SecurityEvent struct {
 	Detail   string `json:"detail,omitempty"`
 	PrevHash string `json:"prev_hash"`
 	RowHash  string `json:"row_hash"`
+	// Seals vouch for an event that was pseudonymised, and Issued are the
+	// seals a pseudonymisation event wrote (seclogprivacy.go). Filled in by
+	// SecurityEvents for verifying; not part of the event as shown.
+	Seals  []EventSeal `json:"-"`
+	Issued []EventSeal `json:"-"`
 }
 
 // EventHash is an event's row hash: SHA-256 over prev_hash and its fields,
@@ -460,7 +465,10 @@ func (s *Store) SecurityEvents(after int64, limit int) ([]SecurityEvent, error) 
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, s.attachSeals(out)
 }
 
 // SecurityEventsOfKind returns one kind's events, oldest first: what the
@@ -560,7 +568,7 @@ func CheckEventChainFrom(evs []SecurityEvent, lastID int64, prev string) (int64,
 			return e.ID, fmt.Sprintf("event %d follows %d: events are missing", e.ID, lastID)
 		case e.PrevHash != prev:
 			return e.ID, fmt.Sprintf("event %d does not chain to the event before it", e.ID)
-		case EventHash(e) != e.RowHash:
+		case !EventIntact(e): // its own hash, or its seal once pseudonymised
 			return e.ID, fmt.Sprintf("event %d has been changed", e.ID)
 		}
 		prev, lastID = e.RowHash, e.ID

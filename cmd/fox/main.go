@@ -281,11 +281,13 @@ Auth (admin):
   user create <email>            Create an account (prompts for a password)
   user passwd <email>            Set a new password when one is forgotten — a password cannot be
                                  recovered, only replaced. Signs that account out everywhere.
-  user list | delete <email>     List accounts, or delete one
+  user list | delete <email>     List accounts, or delete one (its security-log events get a pseudonym)
   setup-token                    Show the token the web sign-up needs for the first account
   audit [--limit N]              The security log: sign-ins, keys, passwords, accounts, admins, refusals
   audit verify [--pubkey <file>] Check the security log's hash chain, its anchors and their signatures
   audit checkpoint               Anchor the security log's new events now (the control plane does it on a schedule)
+  audit prune                    Remove events older than FOX_SECURITY_LOG_RETENTION now (unset: keep everything)
+  audit pseudonym <email>        The token a deleted account's email became in the security log
   apikey create <email> [name] [--agent]
                                  Mint an API key (shown once); --agent mints
                                  one to give an AI agent, recorded as an agent
@@ -1526,8 +1528,11 @@ func auditCmd(args []string) {
 			return
 		}
 		fmt.Printf("security log anchored: events %d–%d, signed by key %s\n", a.FromID, a.ToID, a.KeyID)
+	case "prune", "pseudonym":
+		auditPrivacyCmd(s, sub, args[1:])
 	default:
-		fmt.Printf("usage: %[1]s audit [--limit N] | %[1]s audit verify [--pubkey <file>] | %[1]s audit checkpoint\n", brand.CLI)
+		fmt.Printf("usage: %[1]s audit [--limit N] | %[1]s audit verify [--pubkey <file>] | %[1]s audit checkpoint\n"+
+			"       %[1]s audit prune | %[1]s audit pseudonym <email>\n", brand.CLI)
 		os.Exit(2)
 	}
 }
@@ -1614,6 +1619,12 @@ func userCmd(args []string) {
 			fmt.Fprintf(os.Stderr, "note: could not revoke %s's admin grant on main: %v\n", u.Email, err)
 		}
 		fmt.Printf("deleted %s: its sessions, keys and pipelines are gone; its branches are now an admin's\n", u.Email)
+		// Last, so the record of the deletion is pseudonymised with the rest.
+		if res, err := s.PseudonymiseSecurityLog(u.Email, cliActor()); err != nil {
+			fmt.Fprintf(os.Stderr, "note: its security-log events still name it: %v\n", err)
+		} else {
+			fmt.Printf("security log: %d events now name %s instead\n", res.Events, res.Pseudonym)
+		}
 	default:
 		usage()
 	}

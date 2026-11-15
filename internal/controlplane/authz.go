@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -234,27 +233,23 @@ func registerAccounts(mux *http.ServeMux, store *auth.Store) {
 			}
 		}
 		by, _ := auth.UserFrom(r.Context())
-		// Intent first, and no deletion without it (auth.BeginPrivileged).
-		act, err := store.BeginPrivileged(auth.EvAccountDeleteStarted, auth.EvAccountDeleted, auth.EvAccountDeleteFailed,
-			by.Email, email, remoteIP(r), fmt.Sprintf("account %d", id))
+		// The deletion, its admin grant and the security log's pseudonym are
+		// one routine for every way an account is deleted (accountprivacy.go).
+		res, err := eraseAccount(store, id, email, by.Email, remoteIP(r), "", true)
 		if err != nil {
-			writeErr(w, 503, err)
-			return
-		}
-		err = store.DeleteAccount(id)
-		act.Done(err, "")
-		if err != nil {
-			writeErr(w, 404, err)
-			return
-		}
-		// An admin grant lives on the account's Postgres role, not in the
-		// store: without this, re-creating the same email would bring it back.
-		if email != "" {
-			if err := branch.RevokeAdmin("main", email); err != nil {
-				log.Printf("deleted account %s: revoking its admin grant on main: %v", email, err)
+			code := 404
+			if errors.Is(err, auth.ErrSecurityLogUnavailable) {
+				code = 503 // the intent could not be recorded, so nothing was deleted
 			}
+			writeErr(w, code, err)
+			return
 		}
-		writeJSON(w, 200, map[string]string{"status": "deleted",
-			"note": "its sessions, keys and pipelines are gone; the branches it owned are now reachable by admins only"})
+		out := map[string]string{"status": "deleted",
+			"note": "its sessions, keys and pipelines are gone; the branches it owned are now reachable by admins only"}
+		if res != "" {
+			out["securityLog"] = res
+		}
+		writeJSON(w, 200, out)
 	})
+	registerAccountPrivacy(mux, store) // GET /api/account/export, DELETE /api/account
 }

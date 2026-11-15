@@ -276,7 +276,8 @@ func migrate(ctx context.Context, db *sql.Conn) error {
 )`); err != nil {
 		return err
 	}
-	return nil
+	// The security log's seals and its controlled prune (seclogprivacy.go).
+	return migrateSecurityLogPrivacy(ctx, db)
 }
 
 func hasColumn(ctx context.Context, db *sql.Conn, table, column string) (bool, error) {
