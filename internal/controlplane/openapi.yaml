@@ -2131,6 +2131,35 @@ paths:
             application/json:
               schema: { type: object, properties: { user: { type: object }, admin: { type: boolean } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [accounts]
+      summary: Delete your own account.
+      description: >-
+        Needs the current password, or a console sign-in made in the last 10 minutes; an API key alone is not
+        enough. Refused for the only admin. Deletes the account's sessions, keys, provider sign-ins, pipelines,
+        query history and saved queries; the branches it owned stay, reachable by admins only. Its email, and
+        the addresses it signed in from, are then replaced in the security log by a keyed pseudonym.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { password: { type: string } } }
+      responses:
+        "200": { description: Deleted. securityLog says what happened to its security-log events. }
+        "403": { description: The password is wrong, or neither it nor a recent sign-in was given. }
+        "409": { description: The only admin, or this machine's accounts are an HA copy of the primary's. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/account/export:
+    get:
+      tags: [accounts]
+      summary: A copy of your own account's data, as JSON.
+      description: >-
+        The profile, linked GitHub or Google sign-ins, API keys (described, never their secrets), the branches
+        the account owns, its open sessions (when they began and end, never a token), and the security-log
+        events where it acted or was acted on. An address is shown only on events that were this account's own.
+      responses:
+        "200": { description: The export. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/account/password:
     post:

@@ -213,6 +213,18 @@ failed ones, sign-ups, API keys made and revoked, password changes, deleted
 accounts, admin grants and every refused request — chained and anchored the
 same way: `fox audit`, `fox audit verify`, and `GET /api/audit` for admins.
 
+It keeps everything until you say otherwise. **Set `FOX_SECURITY_LOG_RETENTION`
+(for example `400d`) to the period your own policy requires**; there is no
+default, because how long sign-in records are kept is your decision to make.
+Older events are removed after they are anchored, and the log records where it
+now starts, so `fox audit verify` still checks everything that is left. When an
+account is deleted — by an admin, by `fox user delete`, or by its holder from
+`DELETE /api/account` — its email and the addresses it signed in from are
+replaced in the log by a keyed pseudonym, without breaking the chain. Account
+holders can download their own data from `GET /api/account/export`. For access
+and erasure requests about people in your databases, see
+[docs/data-subject-requests.md](docs/data-subject-requests.md).
+
 ---
 
 ## Install
