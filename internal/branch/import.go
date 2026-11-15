@@ -731,10 +731,18 @@ func loadMongo(p *Progress, target, uri string, a As) error {
 	return nil
 }
 
-func mongoCollections(uri string, a As) ([]string, error) {
+// mongoArgs builds the `docker run … mongosh <uri> --eval <script>` argument
+// list for every mongosh run against a source. The address goes to mongosh
+// exactly as the import guard left it: for an ordinary account that is one
+// host with directConnection=true, which keeps mongosh from following the
+// replica-set members the server advertises.
+func mongoArgs(uri string, a As, script string) []string {
 	args := append([]string{"docker", "run", "--rm", "--network", network}, a.addHosts()...)
-	out, err := exec.Command("sudo", append(args, mongoImage,
-		"mongosh", uri, "--quiet", "--eval", "db.getCollectionNames().forEach(c=>print(c))")...).Output()
+	return append(args, mongoImage, "mongosh", uri, "--quiet", "--eval", script)
+}
+
+func mongoCollections(uri string, a As) ([]string, error) {
+	out, err := exec.Command("sudo", mongoArgs(uri, a, "db.getCollectionNames().forEach(c=>print(c))")...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("could not reach the MongoDB source: %w", err)
 	}
@@ -759,8 +767,7 @@ func mongoImportCollection(p *Progress, target, uri, coll string, a As) error {
 	// Stream each document as one plain-JSON line into the JSON loader.
 	script := fmt.Sprintf("%s db.getCollection(%s).find().forEach(function(d){print(JSON.stringify(clean(d)))})",
 		mongoCleanJS, jsStr(coll))
-	args := append([]string{"docker", "run", "--rm", "--network", network}, a.addHosts()...)
-	cmd := exec.Command("sudo", append(args, mongoImage, "mongosh", uri, "--quiet", "--eval", script)...)
+	cmd := exec.Command("sudo", mongoArgs(uri, a, script)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

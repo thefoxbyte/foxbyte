@@ -6,6 +6,7 @@ package realtime
 
 import (
 	"log"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -72,10 +73,22 @@ func StartMeter(store *auth.Store, hubs HubsFor) {
 		// start-up measures start-up.
 		time.Sleep(time.Minute)
 		for {
-			MeterOnce(store, hubs, retain)
+			meterRound(store, hubs, retain)
 			time.Sleep(iv)
 		}
 	}()
+}
+
+// meterRound is one round on the meter's own goroutine. A panic in it is
+// logged and costs that round only: the meter is the root of this goroutine,
+// and without this a bad reading would end the control plane.
+func meterRound(store *auth.Store, hubs HubsFor, retain time.Duration) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("realtime meter: a round stopped after an internal error: %v\n%s", r, debug.Stack())
+		}
+	}()
+	MeterOnce(store, hubs, retain)
 }
 
 // MeterOnce takes one round of readings. Exported so a test can run a round

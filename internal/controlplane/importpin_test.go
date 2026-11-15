@@ -11,10 +11,10 @@ import (
 )
 
 // fakeDNS answers lookups from a table, so these tests need no network.
-func fakeDNS(t *testing.T, a map[string][]string, srv map[string][]*net.SRV, txt map[string][]string) {
+func fakeDNS(t *testing.T, a map[string][]string) {
 	t.Helper()
-	oldIP, oldSRV, oldTXT := lookupIP, lookupSRV, lookupTXT
-	t.Cleanup(func() { lookupIP, lookupSRV, lookupTXT = oldIP, oldSRV, oldTXT })
+	oldIP := lookupIP
+	t.Cleanup(func() { lookupIP = oldIP })
 	lookupIP = func(h string) ([]net.IP, error) {
 		var out []net.IP
 		for _, s := range a[h] {
@@ -25,22 +25,20 @@ func fakeDNS(t *testing.T, a map[string][]string, srv map[string][]*net.SRV, txt
 		}
 		return out, nil
 	}
-	lookupSRV = func(service, proto, name string) (string, []*net.SRV, error) {
-		if s, ok := srv[name]; ok {
-			return "", s, nil
-		}
-		return "", nil, fmt.Errorf("no SRV for %s", name)
-	}
-	lookupTXT = func(name string) ([]string, error) { return txt[name], nil }
 }
 
 // An admin's source is used as given: the guard passes or fails it, nothing more.
 func TestAnAdminsSourceIsUsedAsGiven(t *testing.T) {
-	fakeDNS(t, map[string][]string{"db.example.com": {"203.0.113.7"}}, nil, nil)
-	src := "postgres://u:p@db.example.com:5432/app"
-	got, pins, err := pinImportSource(src, true)
-	if err != nil || got != src || pins != nil {
-		t.Fatalf("got %q %v %v", got, pins, err)
+	fakeDNS(t, map[string][]string{"db.example.com": {"203.0.113.7"}, "mg.example.com": {"203.0.113.9"}, "m2.example.com": {"203.0.113.10"}})
+	for _, src := range []string{
+		"postgres://u:p@db.example.com:5432/app",
+		// An admin's MongoDB replica set is still discovered as before.
+		"mongodb://mg.example.com:27017,m2.example.com:27017/app?replicaSet=rs0",
+	} {
+		got, pins, err := pinImportSource(src, true)
+		if err != nil || got != src || pins != nil {
+			t.Fatalf("%s: got %q %v %v", src, got, pins, err)
+		}
 	}
 }
 
@@ -48,7 +46,7 @@ func TestAPostgresSourceIsHeldToTheCheckedAddress(t *testing.T) {
 	fakeDNS(t, map[string][]string{
 		"db.example.com": {"2001:db8::1", "203.0.113.7"},
 		"b.example.com":  {"198.51.100.2"},
-	}, nil, nil)
+	})
 	for _, c := range []struct{ in, want string }{
 		{"postgres://u:p@db.example.com:5432/app", "postgres://u:p@db.example.com:5432/app?hostaddr=203.0.113.7"},
 		{"postgresql://db.example.com/app?sslmode=verify-full", "postgresql://db.example.com/app?sslmode=verify-full&hostaddr=203.0.113.7"},
@@ -67,55 +65,61 @@ func TestAPostgresSourceIsHeldToTheCheckedAddress(t *testing.T) {
 }
 
 func TestOtherSourcesArePinnedForTheirContainers(t *testing.T) {
-	fakeDNS(t, map[string][]string{"my.example.com": {"203.0.113.8"}, "mg.example.com": {"203.0.113.9"}}, nil, nil)
-	for src, want := range map[string][]string{
-		"mysql://u:p@my.example.com:3306/app":               {"my.example.com:203.0.113.8"},
-		"mongodb://mg.example.com:27017,my.example.com/app": {"mg.example.com:203.0.113.9", "my.example.com:203.0.113.8"},
+	fakeDNS(t, map[string][]string{"my.example.com": {"203.0.113.8"}, "mg.example.com": {"203.0.113.9"}})
+	for _, c := range []struct {
+		in, want string
+		pins     []string
+	}{
+		{"mysql://u:p@my.example.com:3306/app", "mysql://u:p@my.example.com:3306/app", []string{"my.example.com:203.0.113.8"}},
+		{"mongodb://mg.example.com:27017/app", "mongodb://mg.example.com:27017/app?directConnection=true", []string{"mg.example.com:203.0.113.9"}},
 	} {
-		got, pins, err := pinImportSource(src, false)
-		if err != nil || got != src || !reflect.DeepEqual(pins, want) {
-			t.Errorf("%s: got %q %v %v, want the source unchanged and %v", src, got, pins, err, want)
+		got, pins, err := pinImportSource(c.in, false)
+		if err != nil || got != c.want || !reflect.DeepEqual(pins, c.pins) {
+			t.Errorf("%s: got %q %v %v, want %q %v", c.in, got, pins, err, c.want, c.pins)
+		}
+	}
+}
+
+// An ordinary account's MongoDB import connects to the one host it named and
+// no other: discovery options are dropped, whatever their case, and a direct
+// connection is asked for. Everything else in the address is kept as written.
+func TestAMongoSourceIsHeldToOneDirectHost(t *testing.T) {
+	fakeDNS(t, map[string][]string{"mg.example.com": {"203.0.113.9"}})
+	for _, c := range []struct{ in, want string }{
+		{"mongodb://u:p%40x@mg.example.com/app?replicaSet=rs0&authSource=admin",
+			"mongodb://u:p%40x@mg.example.com/app?authSource=admin&directConnection=true"},
+		{"mongodb://mg.example.com:27017/?REPLICASET=rs0&directConnection=false&tls=true",
+			"mongodb://mg.example.com:27017/?tls=true&directConnection=true"},
+		{"mongodb://mg.example.com?loadBalanced=true", "mongodb://mg.example.com/?directConnection=true"},
+		{"mongodb://mg.example.com/app?replica%53et=rs0", "mongodb://mg.example.com/app?directConnection=true"},
+	} {
+		got, _, err := pinImportSource(c.in, false)
+		if err != nil || got != c.want {
+			t.Errorf("%s:\n got %q (%v)\nwant %q", c.in, got, err, c.want)
+		}
+	}
+}
+
+// A seed list, or an SRV record, names hosts the guard would hold the import
+// to only in part; for an ordinary account both are refused, saying why.
+func TestAMongoSeedListOrSRVIsRefused(t *testing.T) {
+	fakeDNS(t, map[string][]string{"mg.example.com": {"203.0.113.9"}, "m2.example.com": {"203.0.113.10"}})
+	for src, want := range map[string]string{
+		"mongodb://mg.example.com:27017,m2.example.com:27017/app": "several hosts",
+		"mongodb+srv://cl.example.com/app":                        "mongodb+srv",
+	} {
+		if _, _, err := pinImportSource(src, false); err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "admin") {
+			t.Errorf("%s: %v, want a refusal mentioning %q", src, err, want)
 		}
 	}
 }
 
 // The guard still decides: pinning never lets through what it refused.
 func TestPinningStillRefusesPrivateAddresses(t *testing.T) {
-	fakeDNS(t, map[string][]string{"in.example.com": {"10.0.0.5"}}, nil, nil)
-	if _, _, err := pinImportSource("postgres://in.example.com/app", false); err == nil || !strings.Contains(err.Error(), "only an admin") {
-		t.Fatalf("a private address passed: %v", err)
-	}
-}
-
-func TestAMongoSRVAddressIsExpandedOnceAndPinned(t *testing.T) {
-	fakeDNS(t,
-		map[string][]string{"n1.c.example.com": {"203.0.113.21"}, "n2.c.example.com": {"203.0.113.22"}},
-		map[string][]*net.SRV{"cl.c.example.com": {{Target: "n1.c.example.com.", Port: 27017}, {Target: "n2.c.example.com.", Port: 27018}}},
-		map[string][]string{"cl.c.example.com": {"authSource=admin&replicaSet=rs0&w=0"}})
-	got, pins, err := pinImportSource("mongodb+srv://u:p%40x@cl.c.example.com/app?appName=fox&replicaSet=mine", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The record's options (only those it may set), the address's own winning,
-	// and TLS, which +srv implies.
-	want := "mongodb://u:p%40x@n1.c.example.com:27017,n2.c.example.com:27018/app?appName=fox&authSource=admin&replicaSet=mine&tls=true"
-	if got != want {
-		t.Errorf("got  %q\nwant %q", got, want)
-	}
-	if !reflect.DeepEqual(pins, []string{"n1.c.example.com:203.0.113.21", "n2.c.example.com:203.0.113.22"}) {
-		t.Errorf("pins %v", pins)
-	}
-	// tls=false said outright is kept.
-	if got, _, _ := pinImportSource("mongodb+srv://cl.c.example.com/?tls=false", false); !strings.Contains(got, "tls=false") || strings.Contains(got, "tls=true") {
-		t.Errorf("tls=false not kept: %q", got)
-	}
-}
-
-// A driver refuses SRV targets outside the host's parent domain, and so does this.
-func TestAMongoSRVTargetMustShareTheParentDomain(t *testing.T) {
-	fakeDNS(t, map[string][]string{"x.elsewhere.net": {"203.0.113.30"}},
-		map[string][]*net.SRV{"cl.c.example.com": {{Target: "x.elsewhere.net.", Port: 27017}}}, nil)
-	if _, _, err := pinImportSource("mongodb+srv://cl.c.example.com/app", false); err == nil || !strings.Contains(err.Error(), "outside") {
-		t.Fatalf("a foreign target passed: %v", err)
+	fakeDNS(t, map[string][]string{"in.example.com": {"10.0.0.5"}})
+	for _, src := range []string{"postgres://in.example.com/app", "mongodb://in.example.com/app"} {
+		if _, _, err := pinImportSource(src, false); err == nil || !strings.Contains(err.Error(), "only an admin") {
+			t.Fatalf("%s: a private address passed: %v", src, err)
+		}
 	}
 }

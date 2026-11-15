@@ -130,6 +130,18 @@ func TestPinsReachTheSourceTools(t *testing.T) {
 	}
 }
 
+// mongosh is given the guard's address verbatim, so the direct-connection
+// option it added is what the connecting tool actually reads, after the pins.
+func TestTheMongoAddressReachesMongoshAsGiven(t *testing.T) {
+	a := As{Account: "ann@example.com", Pins: []string{"mg.example.com:203.0.113.9"}}
+	uri := "mongodb://mg.example.com:27017/app?directConnection=true"
+	got := strings.Join(mongoArgs(uri, a, "x"), " ")
+	want := "--add-host mg.example.com:203.0.113.9 " + mongoImage + " mongosh " + uri + " --quiet --eval x"
+	if !strings.Contains(got, want) {
+		t.Fatalf("mongosh args = %q, want them to contain %q", got, want)
+	}
+}
+
 // dblink goes where the Blackbox's triggers look for it (their search_path is
 // pg_catalog, public, bb), and is left alone where it already is.
 func TestEnsureDblinkPutsItWhereTheTriggersLook(t *testing.T) {

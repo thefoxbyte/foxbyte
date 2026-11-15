@@ -18,9 +18,10 @@ import (
 //
 // Decoded WAL carries no authorization: the decoder sees every row of every
 // table in the publication, whoever is subscribed. So the checks have to happen
-// when a table is enabled, once, rather than per row — and they have to be
-// refusals rather than warnings, because there is nothing downstream to catch
-// what gets through.
+// when a table is enabled, rather than per row — and they have to be refusals
+// rather than warnings, because there is nothing downstream to catch what gets
+// through. A running decoder asks the read-access ones again whenever the
+// table may have changed since (guard.go).
 //
 // This is deliberately a pure function over a struct. The facts come from the
 // catalog, but the decisions are the part worth being able to read and test

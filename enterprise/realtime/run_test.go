@@ -5,12 +5,48 @@
 package realtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// A panic inside a feed ends that feed, with a reason its subscribers can
+// read, and nothing else: Supervise returns instead of taking the process
+// down. (Were the recover missing, this test binary would crash.)
+func TestAPanicEndsOneFeedNotTheProcess(t *testing.T) {
+	old := runFeed
+	t.Cleanup(func() { runFeed = old })
+	runFeed = func(context.Context, string, string, string, *Hub, pglogrepl.LSN) error {
+		var m map[string]int
+		m["boom"]++ // a nil map: a real runtime panic, not a test's own
+		return nil
+	}
+	h := NewHub()
+	sub := h.Subscribe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Supervise(context.Background(), "main", "slot", "", h, 0)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Supervise did not return after a panic")
+	}
+	select {
+	case <-sub.Done():
+	default:
+		t.Fatal("the feed's subscriber was left waiting")
+	}
+	if r := sub.Reason(); r.Code != CodeDecoderFailed {
+		t.Fatalf("reason = %#v, want %s", r, CodeDecoderFailed)
+	}
+}
 
 // An invalidated slot has to be recognised, or a subscriber is told to wait
 // when it needs to be told to start again.
