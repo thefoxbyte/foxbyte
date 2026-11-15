@@ -227,9 +227,13 @@ Describe 'P-256 release signature' {
         $script:release = New-TestKey
         $script:other = New-TestKey
     }
+    # A test pins a key with a plain assignment in its own block, never with
+    # Set-Variable -Scope Script: install.ps1 was dot-sourced in BeforeAll, so
+    # its (empty) $ReleaseP256PublicKey sits between the test and script scope
+    # and would hide a script-scope one, and the fail-closed tests would only
+    # ever see "no key yet". The assignment ends with the test.
     AfterEach {
         $env:FOX_ALLOW_UNSIGNED = $null
-        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value ''
     }
 
     It 'accepts a signature by the pinned key' {
@@ -253,27 +257,27 @@ Describe 'P-256 release signature' {
     }
 
     It 'fails closed once a key is pinned: no signature, no install' {
-        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value $script:release.Pub
+        $ReleaseP256PublicKey = $script:release.Pub
         Mock Get-FoxBytes { throw 'not found' }
         { Assert-FoxSignature $script:data 'SHA256SUMS.p256.sig' } | Should -Throw '*has no SHA256SUMS.p256.sig*'
     }
 
     It 'fails closed once a key is pinned: a bad signature stops the install' {
-        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value $script:release.Pub
+        $ReleaseP256PublicKey = $script:release.Pub
         $script:mockSig = New-TestSignature $script:other $script:data
         Mock Get-FoxBytes { $script:mockSig }
         { Assert-FoxSignature $script:data 'SHA256SUMS.p256.sig' } | Should -Throw '*does not match*'
     }
 
     It 'passes a good signature once a key is pinned' {
-        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value $script:release.Pub
+        $ReleaseP256PublicKey = $script:release.Pub
         $script:mockSig = New-TestSignature $script:release $script:data
         Mock Get-FoxBytes { $script:mockSig }
         { Assert-FoxSignature $script:data 'SHA256SUMS.p256.sig' } | Should -Not -Throw
     }
 
     It 'FOX_ALLOW_UNSIGNED=1 installs on checksums alone' {
-        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value $script:release.Pub
+        $ReleaseP256PublicKey = $script:release.Pub
         $env:FOX_ALLOW_UNSIGNED = '1'
         Mock Get-FoxBytes { throw 'not found' }
         { Assert-FoxSignature $script:data 'SHA256SUMS.p256.sig' } | Should -Not -Throw

@@ -40,7 +40,7 @@ func TestBackupTargetLine(t *testing.T) {
 
 	remote := branch.Target{
 		Kind: "s3", Bucket: "acme-fox-backups", Endpoint: "https://s3.eu-west-1.amazonaws.com",
-		Region: "eu-west-1", AccessKey: "AKIA…", Encrypted: true, KeyID: "0123456789abcdef",
+		Region: "eu-west-1", AccessKey: "AKIA…", Encrypted: true, KeyID: "test-key-id",
 	}
 	t.Run("an encrypted remote target is fine, and is described", func(t *testing.T) {
 		got := backupTargetLine(remote, nil, nil)
