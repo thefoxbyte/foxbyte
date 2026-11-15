@@ -81,6 +81,14 @@ scoped to that one branch: it opens no other branch, and the control plane and
 the Agent Branch API both refuse it. The key is shown once, at creation —
 `list_branches` returns the DSN without it — and deleting the branch revokes it.
 
+The branch is a copy of main, personal data included, and unmasked by default.
+When it holds confirmed personal data the agent reads as real values (or main
+was never scanned), `create_branch` adds a `Warning:` line after the DSN, and
+the first call of a session on such a branch ends with a one-time `Notice`. A
+key scoped to one branch gets that notice as the session's `instructions` at
+`initialize`. None of these refuses anything; masking is how to hide the values
+(see the README's Security defaults).
+
 Blackbox — the tamper-evident record of every schema change:
 
 | Tool | What it does | Arguments |

@@ -845,6 +845,7 @@ func branchCmd(args []string) {
 		// a line they can paste into an application.
 		fmt.Printf("\nBranch %q is ready in %s.\n", name, took(started))
 		branch.PrintConnectHint(os.Stdout, name)
+		printPersonalDataWarnings(os.Stdout, name)
 	case "list":
 		must(branch.List())
 	case "delete":

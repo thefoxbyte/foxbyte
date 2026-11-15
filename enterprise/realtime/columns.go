@@ -145,78 +145,27 @@ func (p PIIColumn) String() string {
 	return p.Name + " (" + strings.Join(bits, "; ") + ")"
 }
 
-// piiSQL reads both records for one table or for all of them. Only confirmed
-// findings count: a suspected one is a question for a reviewer, and refusing
-// on it would make every scan a reason the feed stops working.
-const (
-	piiFindingsSQL = `SELECT json_build_object('schema', schema_name, 'table', table_name, 'column', column_name,
-  'category', min(category)) FROM bb.pii_findings WHERE state = 'confirmed'%s
-  GROUP BY schema_name, table_name, column_name`
-	maskRulesSQL = `SELECT json_build_object('schema', schema_name, 'table', table_name, 'column', column_name,
-  'category', min(category), 'mask', min(rule)) FROM bb.mask_rules WHERE true%s
-  GROUP BY schema_name, table_name, column_name`
-)
-
-type piiRow struct {
-	Schema   string `json:"schema"`
-	Table    string `json:"table"`
-	Column   string `json:"column"`
-	Category string `json:"category"`
-	Mask     string `json:"mask"`
-}
-
 // personalData is every confirmed PII column on a branch by table, or for one
-// table when schema is set. A branch never scanned and never masked has
-// neither table, and so nothing confirmed.
+// table when schema is set. Only confirmed findings count: a suspected one is a
+// question for a reviewer, and refusing on it would make every scan a reason
+// the feed stops working. A branch never scanned and never masked has neither
+// record, and so nothing confirmed.
+//
+// The lookup is the engine's (branch.ConfirmedPersonalColumns), shared with
+// the warnings given when a branch holding unmasked personal data is handed to
+// an agent: one reading of the records, so the feed and the warnings never
+// disagree about which columns hold personal data.
 func personalData(branchName, schema, table string) (map[string][]PIIColumn, error) {
-	where := ""
-	if schema != "" {
-		where = fmt.Sprintf(" AND schema_name = %s AND table_name = %s",
-			branch.QuoteLiteral(schema), branch.QuoteLiteral(table))
-	}
-	byCol := map[string]map[string]PIIColumn{}
-	for _, src := range []struct{ rel, sql string }{
-		{"bb.pii_findings", piiFindingsSQL},
-		{"bb.mask_rules", maskRulesSQL},
-	} {
-		// Asked on its own: a query naming a missing table fails when it is
-		// planned. See branch.RelationExists.
-		ok, err := branch.RelationExists(branchName, src.rel)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-		lines, err := branch.LedgerQuery(branchName, fmt.Sprintf(src.sql, where))
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", src.rel, err)
-		}
-		for _, l := range lines {
-			var r piiRow
-			if err := json.Unmarshal([]byte(l), &r); err != nil {
-				return nil, fmt.Errorf("reading %s: %w", src.rel, err)
-			}
-			t := r.Schema + "." + r.Table
-			if byCol[t] == nil {
-				byCol[t] = map[string]PIIColumn{}
-			}
-			c := byCol[t][r.Column]
-			c.Name = r.Column
-			if c.Category == "" {
-				c.Category = r.Category
-			}
-			if r.Mask != "" {
-				c.Mask = r.Mask
-			}
-			byCol[t][r.Column] = c
-		}
+	cols, err := branch.ConfirmedPersonalColumns(branchName, schema, table)
+	if err != nil {
+		return nil, err
 	}
 	out := map[string][]PIIColumn{}
-	for t, cols := range byCol {
-		for _, c := range cols {
-			out[t] = append(out[t], c)
-		}
+	for _, c := range cols {
+		t := c.Schema + "." + c.Table
+		out[t] = append(out[t], PIIColumn{Name: c.Column, Category: c.Category, Mask: c.Mask})
+	}
+	for t := range out {
 		sort.Slice(out[t], func(i, j int) bool { return out[t][i].Name < out[t][j].Name })
 	}
 	return out, nil

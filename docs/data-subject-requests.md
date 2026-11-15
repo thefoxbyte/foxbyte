@@ -121,6 +121,16 @@ values after normalising case and separators, so a value buried inside free text
 or in a column no scan found, is not found. Its output lists what it could not
 cover.
 
+### Who else can see them
+
+Branches are unmasked by default: a branch, and every agent's branch, is a copy
+of `main` with its personal data as it is. Wherever a branch is handed to a
+person or an agent (creating one, an MCP session's first call on one, the
+console's branch list, `fox check`) FoxByte warns when it holds confirmed
+personal data that reader sees as real values, or has never been scanned. Those
+warnings are a quick answer to "which copies hold this person's data"; masking
+(Enterprise; see the README's Security defaults) is how to stop handing it on.
+
 ### Erasing them
 
 FoxByte does **not** erase a person across your databases for you. An erasure

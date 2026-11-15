@@ -47,6 +47,10 @@ export type Branch = {
   used: string; refer: string; connections: number; port: string
   // A masked branch's state (masking step 5): being made, open, or failed and closed.
   masked?: 'making' | 'open' | 'failed'
+  // Present when its confirmed personal data reaches its readers as real
+  // values (as you read it; an agent's branch as its agent does). Branches are
+  // unmasked by default; summary is the engine's sentence, with what to do.
+  personalData?: { unmasked: number; summary: string }
 }
 // One statement's outcome. `results` always holds at least one, so a caller can
 // read one shape whether the SQL was a single statement or a script; the fields
@@ -386,9 +390,12 @@ export const startEditionSwitch = (edition: 'enterprise' | 'standard', acceptLic
   req('POST', `${API}/api/edition/switch`, { edition, accept_license: acceptLicense }) as Promise<{ state: string }>
 export const getEditionSwitch = () => req('GET', `${API}/api/edition/switch`) as Promise<EditionSwitch>
 export const getBranches = () => req('GET', `${API}/api/branches`) as Promise<Branch[]>
-// from: the branch to copy (default main).
+// from: the branch to copy (default main). warnings is said when the copy
+// holds personal data you and whoever you hand it to read unmasked, or it has
+// never been scanned; the branch is made either way.
+export type CreatedBranch = { name: string; from?: string; status: string; warnings?: string[] }
 export const createBranch = (name: string, from?: string, masked?: boolean) =>
-  req('POST', `${API}/api/branches`, { name, ...(from ? { from } : {}), ...(masked ? { masked: true } : {}) })
+  req('POST', `${API}/api/branches`, { name, ...(from ? { from } : {}), ...(masked ? { masked: true } : {}) }) as Promise<CreatedBranch>
 // A masked branch (step 5): how far its making got, and what verifying found.
 export type MaskedBranch = {
   name: string; from: string; by: string; started: string; finished?: string

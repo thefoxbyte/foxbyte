@@ -878,6 +878,25 @@ A fresh install exposes nothing it does not have to:
   `FOX_BRANCH_CREATES_PER_MINUTE` creates, imports and point-in-time branches a
   minute (10 by default; `0` for no limit; over it the API answers 429). Admins
   and the CLI are exempt.
+- **Branches are unmasked by default, and say so.** A branch is a copy of its
+  source, and an agent's branch a byte-for-byte copy of main, so whoever uses
+  one reads the personal data it holds as real values unless masking applies.
+  Masking is opt-in and stays so; what FoxByte adds is a warning wherever a
+  branch is handed on: in the answer to creating one (`fox branch create`, the
+  console, the Agent API's `warnings` field, MCP's `create_branch`), once per
+  session in an MCP tool result when an agent first reaches such a branch, as
+  an "unmasked personal data" badge in the console's branch list, and in
+  `fox check`, which names the branches agents or non-admin accounts read real
+  personal data on, and the ones with agents on them that were never scanned.
+  The warnings read only what `fox pii` review confirmed and the masking rules
+  (never table data), and a branch no scan has looked at is said to be "never
+  scanned", not clean. To mask: scan and review (`fox pii scan --branch main`,
+  then confirm findings), set a rule on each column
+  (`fox mask rule customers.aadhaar --branch main`), and mask the accounts that
+  should read masks (`fox mask account you@example.com`); a masked account's
+  agents are then given masked branches. Scanning and masking are Enterprise;
+  Standard shows the warnings, from scans made earlier, and says masking needs
+  Enterprise. A warning never stops a branch being made.
 - **A branch's keys go with it.** Deleting a branch, by any route, revokes the
   keys scoped to it, and making a branch under a name revokes any key still
   scoped to that name; each revocation is in the security log.

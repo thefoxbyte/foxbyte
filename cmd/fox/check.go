@@ -88,6 +88,7 @@ func checks() []check {
 		one("blackbox anchors", checkAnchors),
 		one("anchor target", checkAnchorTarget),
 		one("change feed", checkRealtime),
+		one("personal data", checkPersonalData),
 		group("audit log", checkAuditLogLines),
 		one("durability", checkDurability),
 		one("replication", checkReplicationAccess),
