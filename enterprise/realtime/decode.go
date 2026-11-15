@@ -60,6 +60,10 @@ type Decoder struct {
 	// sent. See guard.go.
 	catalog  Catalog
 	verdicts map[string]string
+	// allowed is the columns each table may stream, from the same answers:
+	// nil for every column. Every change is cut down to these before it is
+	// built (narrow, in guard.go).
+	allowed map[string][]string
 }
 
 // NewDecoder opens a replication connection. dsn must carry
@@ -312,6 +316,9 @@ func (d *Decoder) handleMessage(m pglogrepl.Message, lsn string) error {
 	case *pglogrepl.RelationMessage:
 		rel := relationFrom(msg)
 		old, seen := d.relations[msg.RelationID]
+		// The shape subscribers were last told, under the columns allowed at
+		// the time, so a narrowed column list counts as a change of shape.
+		oldShown, _ := d.narrow(old)
 		d.relations[msg.RelationID] = rel
 		// Postgres describes a table again after its definition, grants or RLS
 		// setting change, so this is where the catalog is asked again — before
@@ -327,8 +334,11 @@ func (d *Decoder) handleMessage(m pglogrepl.Message, lsn string) error {
 		}
 		// Re-announce only when the shape actually changed, or every
 		// transaction would repeat the schema for no reason.
-		if !seen || wasBlocked || !sameShape(old, rel) {
-			d.hub.Publish(Schema{Type: "schema", Table: rel.Qualified(), Columns: rel.Columns})
+		// Only the columns this table may stream, here as in every change:
+		// a column's name and type are not for subscribers either.
+		shown, _ := d.narrow(rel)
+		if !seen || wasBlocked || !sameShape(oldShown, shown) {
+			d.hub.Publish(Schema{Type: "schema", Table: rel.Qualified(), Columns: shown.Columns})
 		}
 
 	case *pglogrepl.InsertMessage:
@@ -336,20 +346,22 @@ func (d *Decoder) handleMessage(m pglogrepl.Message, lsn string) error {
 		if !ok {
 			return err
 		}
-		d.publishChange(BuildChange(rel, "insert", d.commitLSN(lsn), nil, tupleFrom(msg.Tuple)), lsn)
+		rel, t := d.narrow(rel, tupleFrom(msg.Tuple))
+		d.publishChange(BuildChange(rel, "insert", d.commitLSN(lsn), nil, t[0]), lsn)
 	case *pglogrepl.UpdateMessage:
 		rel, ok, err := d.sendable(msg.RelationID)
 		if !ok {
 			return err
 		}
-		d.publishChange(BuildChange(rel, "update", d.commitLSN(lsn),
-			tupleFrom(msg.OldTuple), tupleFrom(msg.NewTuple)), lsn)
+		rel, t := d.narrow(rel, tupleFrom(msg.OldTuple), tupleFrom(msg.NewTuple))
+		d.publishChange(BuildChange(rel, "update", d.commitLSN(lsn), t[0], t[1]), lsn)
 	case *pglogrepl.DeleteMessage:
 		rel, ok, err := d.sendable(msg.RelationID)
 		if !ok {
 			return err
 		}
-		d.publishChange(BuildChange(rel, "delete", d.commitLSN(lsn), tupleFrom(msg.OldTuple), nil), lsn)
+		rel, t := d.narrow(rel, tupleFrom(msg.OldTuple))
+		d.publishChange(BuildChange(rel, "delete", d.commitLSN(lsn), t[0], nil), lsn)
 	case *pglogrepl.TruncateMessage:
 		// One event per relation, with no row data — there is none to send. It
 		// almost never fires: datachanges.sql blocks TRUNCATE by default.

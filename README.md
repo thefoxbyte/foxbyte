@@ -807,6 +807,23 @@ features need a licence — without one it behaves exactly like Standard.
 | Scanning for personal data (`fox pii scan`); reading what earlier scans found | — / yes | yes |
 | The access review report (`fox access review`) | — | yes |
 
+**Which columns the change feed carries.** `fox realtime enable <table>` streams
+every column unless you name them: `--columns id,status,total` sends only those,
+plus the primary key, which always streams because updates and deletes are
+located by it. On PostgreSQL 15 and later (every major FoxByte runs) the list goes
+into the publication, so the other columns never leave Postgres; the decoder drops
+them again in any case, and is the only filter on an older major or under
+`REPLICA IDENTITY FULL`. A table with a primary key sends only the key as the old
+row of an update or delete; `--old-values` asks for the whole previous row
+(REPLICA IDENTITY FULL, which costs WAL on every update). A table with columns
+that `fox pii` review confirmed, or that have a masking rule, is refused until
+those columns are left out or you pass `--allow-pii`, which is recorded in the
+security log: masking does not apply to a change feed. Tables enabled before this
+keep streaming every column; `fox realtime status`, `tables` and `doctor` warn
+about any that send confirmed personal data. The console API takes the same
+choice as `columns`, `old_values` and `allow_pii` on `POST
+/api/branches/{name}/realtime/enable`.
+
 ```sh
 curl -fsSL https://get.thefoxbyte.com/install.sh \
   | FOX_EDITION=enterprise sh

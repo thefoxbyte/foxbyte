@@ -31,7 +31,7 @@ import (
 // them. needFor requires access.Manage for every realtime/ tail: a credential
 // minted here subscribes to a branch, and the DDL run here changes a table.
 //
-//	POST   /api/branches/{name}/realtime/enable     {schema,table,events,full_identity}
+//	POST   /api/branches/{name}/realtime/enable     {schema,table,events,full_identity,columns,old_values,allow_pii}
 //	POST   /api/branches/{name}/realtime/disable    {schema,table}
 //	POST   /api/branches/{name}/realtime/prepare    {schema,table,apply}
 //	GET    /api/branches/{name}/realtime/keys
@@ -154,6 +154,15 @@ func realtimeEnableHandler(w http.ResponseWriter, r *http.Request, name string) 
 		// FullIdentity is the costly rung of the ladder, and it is never
 		// inferred. A caller asks for it by name, having been shown the cost.
 		FullIdentity bool `json:"full_identity"`
+		// Columns is what subscribers receive; empty or absent is every
+		// column. The row's key is added whatever is named.
+		Columns []string `json:"columns"`
+		// OldValues asks for the previous row on updates and deletes, which
+		// takes REPLICA IDENTITY FULL even on a table with a key.
+		OldValues bool `json:"old_values"`
+		// AllowPII streams confirmed personal data knowingly. Without it the
+		// refusal names the columns.
+		AllowPII bool `json:"allow_pii"`
 	}
 	if !readJSON(w, r, &body) {
 		return
@@ -167,8 +176,13 @@ func realtimeEnableHandler(w http.ResponseWriter, r *http.Request, name string) 
 		Table:        realtime.Table{Schema: ref.Schema, Name: ref.Table},
 		Events:       body.Events,
 		FullIdentity: body.FullIdentity,
+		Columns:      body.Columns,
+		OldValues:    body.OldValues,
+		AllowPII:     body.AllowPII,
+		Actor:        actorOf(r),
 	}
-	if err := realtime.Enable(name, req); err != nil {
+	res, err := realtime.Enable(name, req)
+	if err != nil {
 		// The preflight's refusals arrive here, and they are the useful part of
 		// this endpoint: they name the table, the reason and the way forward.
 		// Passed through as 409 rather than flattened to 500 — nothing failed,
@@ -176,8 +190,13 @@ func realtimeEnableHandler(w http.ResponseWriter, r *http.Request, name string) 
 		writeErr(w, 409, err)
 		return
 	}
-	secLog.Audit(auth.EvRealtimeEnabled, actorOf(r), name, remoteIP(r), ref.Schema+"."+ref.Table)
-	verdictOrOK(w, name, ref)
+	secLog.Audit(auth.EvRealtimeEnabled, actorOf(r), name, remoteIP(r), realtime.AuditDetail(res))
+	v, err := realtime.Look(name, ref.Schema, ref.Table, nil)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": true, "result": res})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"table": v, "result": res})
 }
 
 func realtimeDisableHandler(w http.ResponseWriter, r *http.Request, name string) {

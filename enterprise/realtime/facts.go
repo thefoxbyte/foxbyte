@@ -121,11 +121,49 @@ func Survey(branchName string, events []string) ([]Verdict, error) {
 	if err != nil {
 		return nil, err
 	}
+	return assessAll(branchName, rows, events, ""), nil
+}
+
+// assessAll turns catalog rows into verdicts, with each table's column choice
+// and, for the ones streaming, the confirmed personal data they send.
+//
+// The two extra reads are best-effort. They exist to warn, and a survey that
+// failed because a findings table could not be read would take the warning
+// and everything else with it; Enable, which decides, reads them strictly.
+func assessAll(branchName string, rows []factsRow, events []string, schema string) []Verdict {
+	target := branch.ServingBranch(branchName)
+	stream, err := streamColumnsByTable(target)
+	if err != nil {
+		stream = map[string][]string{}
+	}
+	var pii map[string][]PIIColumn
+	anyPublished := false
+	for _, r := range rows {
+		anyPublished = anyPublished || r.Published
+	}
+	if anyPublished {
+		table := ""
+		if schema != "" && len(rows) == 1 {
+			table = rows[0].Name
+		}
+		if pii, err = personalData(target, schema, table); err != nil {
+			pii = nil
+		}
+	}
 	out := make([]Verdict, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, Assess(r.Table, events, r.Published))
+		t := r.Table
+		t.StreamColumns = stream[t.Qualified()]
+		v := Assess(t, events, r.Published)
+		if r.Published {
+			v.StreamingPII = piiNames(streamedPII(pii[t.Qualified()], t.StreamColumns))
+			if len(v.StreamingPII) == 0 {
+				v.StreamingPII = nil
+			}
+		}
+		out = append(out, v)
 	}
-	return out, nil
+	return out
 }
 
 // Look is Survey for one table.
@@ -143,5 +181,5 @@ func Look(branchName, schema, table string, events []string) (Verdict, error) {
 	if len(rows) == 0 {
 		return Verdict{}, fmt.Errorf("there is no table %s.%s on %q", schema, table, branchName)
 	}
-	return Assess(rows[0].Table, events, rows[0].Published), nil
+	return assessAll(branchName, rows[:1], events, schema)[0], nil
 }
