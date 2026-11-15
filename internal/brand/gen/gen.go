@@ -267,21 +267,23 @@ func (b Brand) InstallURL(script string) string {
 	return "https://" + b.InstallHost + "/" + script
 }
 
-// vercelFile is the whole of the install_host site: each installer is fetched
-// from main on GitHub and served under the domain, as a rewrite rather than a
-// redirect, so any client gets the script from the first request. JSON has no
-// comments; deploy/get/README.md explains it.
+// vercelFile is the whole of the install_host site: each installer is a
+// redirect to the copy published with the latest release (finding SUP-3), not
+// a rewrite to main. main is whatever was merged last, and the installer is
+// what holds the pinned release keys, so serving it from main made the keys
+// only as safe as the newest commit; a release's copy is the one its tag was
+// built and signed from. GitHub answers releases/latest/download with a
+// redirect of its own, so any client that runs the one-liner already follows
+// redirects. JSON has no comments; deploy/get/README.md explains it.
 func vercelFile(b Brand) string {
-	raw := "https://raw.githubusercontent.com/" + b.Repo + "/main/deploy/"
+	latest := "https://github.com/" + b.Repo + "/releases/latest/download/"
 	return fmt.Sprintf(`{
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
-    { "source": "/install.sh", "destination": %q },
-    { "source": "/install.ps1", "destination": %q }
-  ],
   "redirects": [
+    { "source": "/install.sh", "destination": %q, "permanent": false },
+    { "source": "/install.ps1", "destination": %q, "permanent": false },
     { "source": "/", "destination": %q, "permanent": false }
   ]
 }
-`, raw+"install.sh", raw+"install.ps1", "https://github.com/"+b.Repo+"#install")
+`, latest+"install.sh", latest+"install.ps1", "https://github.com/"+b.Repo+"#install")
 }

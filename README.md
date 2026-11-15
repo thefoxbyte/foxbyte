@@ -291,25 +291,101 @@ keeps your locally-built engine instead of downloading a release.
 
 Every release's `SHA256SUMS` is signed with the FoxByte release key
 (`SHA256SUMS.sig`, Ed25519). `install.sh` checks the signature against the key
-it carries — which comes from this repository, not from the release — wherever
-`openssl` can do Ed25519 (OpenSSL 3; macOS's LibreSSL cannot, and the installer
-says so; `FOX_REQUIRE_SIGNATURE=1` refuses instead). `fox update` checks it on
-every update, `fox setup` on the engine it downloads, and neither installs a
+it carries wherever `openssl` can do Ed25519 (OpenSSL 3). `fox update` checks it
+on every update, `fox setup` on the engine it downloads, and neither installs a
 release that fails. The Windows distro image, built by its own workflow, has
-its own signed `SHA256SUMS.distro`. Each file also has a
-GitHub build attestation and the release an SBOM (`foxbyte-sbom.spdx.json`):
+its own signed `SHA256SUMS.distro`.
+
+Releases can also carry a second signature, `SHA256SUMS.p256.sig` (ECDSA P-256
+over SHA-256), because macOS's LibreSSL and Windows PowerShell cannot check
+Ed25519. `install.sh` tries Ed25519 first and then P-256; `install.ps1` checks
+P-256. Until the P-256 key is made (below), those machines install on checksums
+alone and say so (`FOX_REQUIRE_SIGNATURE=1` refuses instead on macOS). Once it
+is made, they refuse a release they cannot check, unless `FOX_ALLOW_UNSIGNED=1`.
+
+The signed `SHA256SUMS` also names the release it belongs to, in a first line
+that older verifiers read as the checksum of a file nobody asks for:
+
+```
+0000000000000000000000000000000000000000000000000000000000000000  VERSION=v2.3.0
+```
+
+fox and both installers refuse a release whose line names a different tag (an
+old release republished under a newer tag), and, from v2.3.0 on, a release with
+no line at all. Older releases never had it and still install when you name
+them (`FOX_VERSION=v2.2.1`). `fox update` never moves to an older version;
+going back is a reinstall with the installer and `FOX_VERSION`.
+
+To check a download by hand, `sha256sum -c --ignore-missing SHA256SUMS` passes
+over the version line, and the signatures check with
+`openssl pkeyutl -verify -rawin` (Ed25519) or `openssl dgst -sha256 -verify`
+(P-256). Each file also has a GitHub build attestation and the release an SBOM
+(`foxbyte-sbom.spdx.json`):
 
 ```bash
 gh attestation verify fox-darwin-arm64 --repo thefoxbyte/foxbyte
 gh attestation verify oci://ghcr.io/thefoxbyte/postgres-walg:18 --repo thefoxbyte/foxbyte
 ```
 
-For maintainers: the release key's private half is the `FOX_RELEASE_SIGNING_KEY`
-Actions secret (and a password manager); `make release-key` made it once, and
-replacing it would stop released builds from updating. The Actions are pinned
-by commit and the images by digest; Dependabot proposes Action and module
-updates, and `scripts/check-image-digests.sh` reports image pins that have
-fallen behind their tags.
+The one-line installers come from the latest release (`install.sh` and
+`install.ps1` are release assets, listed in the signed `SHA256SUMS`), not from
+`main`: `get.thefoxbyte.com` redirects to them. See `deploy/get/README.md`.
+
+### Release signing (maintainers)
+
+The Ed25519 key's private half is the `FOX_RELEASE_SIGNING_KEY` secret (and a
+password manager); `make release-key` made it once, and replacing it would stop
+released builds from updating. The Actions are pinned by commit and the images
+by digest; Dependabot proposes Action and module updates, and
+`scripts/check-image-digests.sh` reports image pins that have fallen behind
+their tags.
+
+**Turning on the P-256 signature.** Nothing in the repository holds that key
+yet: `internal/update/signing.go`, `deploy/install.sh` and `deploy/install.ps1`
+carry an empty one, and releases go out without `SHA256SUMS.p256.sig` until it
+is made. To make it, once:
+
+```sh
+go run ./cmd/releasesign generate-p256 --write
+gh secret set FOX_RELEASE_SIGNING_KEY_P256 --env release < release-signing-p256.key
+# put release-signing-p256.key in the password manager, then delete it
+git add internal/update/signing.go deploy/install.sh deploy/install.ps1   # the public key
+```
+
+Set the secret before the commit is released: from then on the release
+workflow fails rather than publish a release without the P-256 signature,
+because installers carrying the key would refuse it. Releases cut before that
+have no P-256 signature, so installing one of them on a Mac with LibreSSL or on
+Windows needs `FOX_ALLOW_UNSIGNED=1` once the key is in the installer.
+
+**GitHub settings, by hand.** The workflows do what code can do: the signing
+jobs (`release` in release.yml, `distro` in wsl-distro.yml) run only for a `v*`
+tag, in an environment named `release`, and a manual run must be started from
+the tag ("Use workflow from" → Tags). The rest is repository settings:
+
+1. **Environment.** Settings → Environments → New environment `release`. Add
+   required reviewers (a maintainer other than the one tagging, where there is
+   one), and under Deployment branches and tags choose "Selected branches and
+   tags" with the tag rule `v*`.
+2. **Secrets into the environment.** Add `FOX_RELEASE_SIGNING_KEY` (and
+   `FOX_RELEASE_SIGNING_KEY_P256`) as environment secrets of `release`, then
+   delete the repository secrets of the same name, so no other job or branch
+   can read them.
+3. **Tags.** Settings → Rules → Rulesets → New tag ruleset targeting `v*`:
+   restrict creation, updates and deletion to maintainers, and block force
+   pushes. A tag that can be moved can be re-pointed at other code after the
+   review.
+4. **main.** A branch ruleset (or branch protection) on `main`: pull requests
+   with a review, required status checks, no force pushes or deletion. The
+   installers' pinned keys and the workflows live there.
+5. **Workflow token.** Settings → Actions → General → Workflow permissions:
+   "Read repository contents". Jobs that publish ask for `contents: write`
+   themselves; any other workflow then cannot upload release assets, which
+   matters now that the install host serves the installers from them.
+6. **Vercel.** The install host's project deploys `deploy/get` from `main`.
+   Before that change reaches it, upload the installers to the current latest
+   release (`gh release upload <tag> deploy/install.sh deploy/install.ps1`), or
+   the one-liner 404s until the next release.
 
 ---
 

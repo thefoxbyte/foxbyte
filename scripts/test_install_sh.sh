@@ -29,8 +29,11 @@ printf '#!/bin/sh\necho "fox 9.9.9"\n' > "$rel/$asset"
 chmod +x "$rel/$asset"
 # On Linux amd64 the host asset and the VM's engine are the same file.
 [ "$asset" = "$linux_asset" ] || cp "$rel/$asset" "$rel/$linux_asset"
-{ printf '%s  %s\n' "$(sha "$rel/$asset")" "$asset"
-  printf '%s  %s\n' "$(sha "$rel/$linux_asset")" "$linux_asset"; } | sort -u > "$rel/SHA256SUMS"
+zeros="$(printf '0%.0s' $(seq 1 64))"
+# The first line names the release (SUP-4), as scripts/release-checksums.sh writes it.
+{ printf '%s  VERSION=v9.9.9\n' "$zeros"
+  { printf '%s  %s\n' "$(sha "$rel/$asset")" "$asset"
+    printf '%s  %s\n' "$(sha "$rel/$linux_asset")" "$linux_asset"; } | sort -u; } > "$rel/SHA256SUMS"
 
 # Signatures (audit v2 G22). A test release key, and a copy of the installer
 # that trusts it instead of the real one. Where openssl cannot do Ed25519
@@ -173,6 +176,108 @@ if [ "$code" = 0 ] && [ -x "$p/bin/fox" ]; then
 	ok "FOX_ALLOW_UNSIGNED=1 installs it on checksums alone"
 else
 	bad "FOX_ALLOW_UNSIGNED=1 installs it on checksums alone (exit $code)"
+fi
+
+# 26–31. The signed version line (SUP-4), held to the tag being installed.
+# FOX_VERSION names the tag; FOX_BASE_URL still points at the fake release.
+# Each variant is re-signed, so only the version check can refuse it.
+relver() { # relver <dir> <version line or "">: a copy of the release, re-signed
+	cp -r "$rel" "$1"
+	grep -v 'VERSION=' "$rel/SHA256SUMS" > "$1/SHA256SUMS"
+	if [ -n "$2" ]; then { printf '%s  VERSION=%s\n' "$zeros" "$2"; cat "$1/SHA256SUMS"; } > "$1/s" && mv "$1/s" "$1/SHA256SUMS"; fi
+	sign "$1"
+}
+vrun() { local dir="$1" p="$2"; shift 2; env FOX_BASE_URL="file://$dir" FOX_PREFIX="$p" "$@" sh "$installer" 2>&1; }
+p="$tmp/p26"; out="$(vrun "$rel" "$p" FOX_VERSION=v9.9.9)"; code=$?
+if [ "$code" = 0 ] && [ -x "$p/bin/fox" ]; then ok "a release whose signed version is its tag installs"; else bad "a release whose signed version is its tag installs (exit $code)"; tail -n 5 <<<"$out" | sed 's/^/      /'; fi
+relver "$tmp/retag" v2.0.1
+p="$tmp/p27"; out="$(vrun "$tmp/retag" "$p" FOX_VERSION=v99.0.0)"; code=$?
+if [ "$code" != 0 ] && [ ! -e "$p/bin/fox" ] && grep -q "is signed for v2.0.1" <<<"$out"; then ok "an old release under a newer tag is refused"; else bad "an old release under a newer tag is refused (exit $code)"; tail -n 5 <<<"$out" | sed 's/^/      /'; fi
+relver "$tmp/unversioned" ""
+p="$tmp/p28"; out="$(vrun "$tmp/unversioned" "$p" FOX_VERSION=v2.3.0)"; code=$?
+if [ "$code" != 0 ] && [ ! -e "$p/bin/fox" ] && grep -q "does not say which version" <<<"$out"; then ok "a release from the cutoff on without the line is refused"; else bad "a release from the cutoff on without the line is refused (exit $code)"; fi
+p="$tmp/p29"; out="$(vrun "$tmp/unversioned" "$p" FOX_VERSION=v2.2.1)"; code=$?
+if [ "$code" = 0 ] && [ -x "$p/bin/fox" ]; then ok "an older release, which never had the line, installs by FOX_VERSION"; else bad "an older release installs by FOX_VERSION (exit $code)"; tail -n 5 <<<"$out" | sed 's/^/      /'; fi
+cp -r "$rel" "$tmp/twover"; printf '%s  VERSION=v2.0.1\n' "$zeros" >> "$tmp/twover/SHA256SUMS"; sign "$tmp/twover"
+p="$tmp/p30"; out="$(vrun "$tmp/twover" "$p" FOX_VERSION=v9.9.9)"; code=$?
+if [ "$code" != 0 ] && [ ! -e "$p/bin/fox" ] && grep -q "more than one version" <<<"$out"; then ok "a listing naming two versions is refused"; else bad "a listing naming two versions is refused (exit $code)"; fi
+if grep -q 'FIRST_VERSIONED_RELEASE="2.3.0"' "$installer" && grep -q 'const FirstVersionedRelease = "2.3.0"' "$here/../internal/update/select.go" \
+	&& grep -q "\$FirstVersionedRelease = '2.3.0'" "$here/../deploy/install.ps1"; then
+	ok "install.sh, install.ps1 and fox agree on the first versioned release"
+else
+	bad "install.sh, install.ps1 and fox agree on the first versioned release"
+fi
+
+# 32–37. The P-256 signature (SUP-5), where openssl cannot do Ed25519. The
+# stand-in openssl below behaves as macOS's LibreSSL does here: it has no
+# Ed25519, and checks ECDSA with `dgst -verify`. Every key is a throwaway.
+if command -v openssl >/dev/null 2>&1 && openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/p256.pem" 2>/dev/null; then
+	real_openssl="$(command -v openssl)"
+	openssl ec -in "$tmp/p256.pem" -pubout -out "$tmp/p256pub.pem" 2>/dev/null
+	openssl ecparam -name prime256v1 -genkey -noout -out "$tmp/p256other.pem" 2>/dev/null
+	sign_p256() { openssl dgst -sha256 -sign "${2:-$tmp/p256.pem}" -out "$1/SHA256SUMS.p256.sig" "$1/SHA256SUMS"; }
+	mkdir -p "$tmp/libressl"
+	cat > "$tmp/libressl/openssl" <<EOF
+#!/bin/sh
+case "\$1" in
+	list|pkeyutl) echo "openssl: no Ed25519 here" >&2; exit 1 ;;
+esac
+exec "$real_openssl" "\$@"
+EOF
+	chmod +x "$tmp/libressl/openssl"
+	P256PUB="$(cat "$tmp/p256pub.pem")" python3 - "$installer" "$tmp/install-p256.sh" <<'PY'
+import os, re, sys
+s = open(sys.argv[1]).read()
+s, n = re.subn(r"RELEASE_P256_PUBLIC_KEY='[^']*'", "RELEASE_P256_PUBLIC_KEY='" + os.environ["P256PUB"] + "'", s, count=1)
+assert n == 1, "no RELEASE_P256_PUBLIC_KEY in install.sh"
+open(sys.argv[2], "w").write(s)
+PY
+	lrun() { local inst="$1" dir="$2" p="$3"; shift 3; env PATH="$tmp/libressl:$PATH" FOX_BASE_URL="file://$dir" FOX_PREFIX="$p" "$@" sh "$inst" 2>&1; }
+	p256rel="$tmp/p256rel"; cp -r "$rel" "$p256rel"; sign_p256 "$p256rel"
+
+	p="$tmp/p32"; out="$(lrun "$installer" "$p256rel" "$p")"; code=$?
+	if [ "$code" = 0 ] && [ -x "$p/bin/fox" ] && grep -q "signature of .* was not checked" <<<"$out"; then
+		ok "with no P-256 key pinned yet, a LibreSSL machine still installs with a warning"
+	else
+		bad "with no P-256 key pinned yet, a LibreSSL machine installs with a warning (exit $code)"; tail -n 5 <<<"$out" | sed 's/^/      /'
+	fi
+	p="$tmp/p33"; out="$(lrun "$tmp/install-p256.sh" "$p256rel" "$p")"; code=$?
+	if [ "$code" = 0 ] && [ -x "$p/bin/fox" ] && grep -q "signed with the FoxByte release key (P-256)" <<<"$out"; then
+		ok "once the P-256 key is pinned, a LibreSSL machine checks it and installs"
+	else
+		bad "a LibreSSL machine checks the P-256 signature (exit $code)"; tail -n 5 <<<"$out" | sed 's/^/      /'
+	fi
+	forged256="$tmp/forged256"; cp -r "$rel" "$forged256"; sign_p256 "$forged256" "$tmp/p256other.pem"
+	p="$tmp/p34"; out="$(lrun "$tmp/install-p256.sh" "$forged256" "$p")"; code=$?
+	if [ "$code" != 0 ] && [ ! -e "$p/bin/fox" ] && grep -q "not signed with the FoxByte P-256 release key" <<<"$out"; then
+		ok "a P-256 signature by another key is refused"
+	else
+		bad "a P-256 signature by another key is refused (exit $code)"
+	fi
+	p="$tmp/p35"; out="$(lrun "$tmp/install-p256.sh" "$rel" "$p")"; code=$?
+	if [ "$code" != 0 ] && [ ! -e "$p/bin/fox" ] && grep -q "has no SHA256SUMS.p256.sig" <<<"$out"; then
+		ok "once the key is pinned, a release this machine cannot check is refused (fails closed)"
+	else
+		bad "a release with no P-256 signature fails closed (exit $code)"; tail -n 5 <<<"$out" | sed 's/^/      /'
+	fi
+	p="$tmp/p36"; out="$(lrun "$tmp/install-p256.sh" "$rel" "$p" FOX_ALLOW_UNSIGNED=1)"; code=$?
+	if [ "$code" = 0 ] && [ -x "$p/bin/fox" ]; then
+		ok "…unless FOX_ALLOW_UNSIGNED=1"
+	else
+		bad "…unless FOX_ALLOW_UNSIGNED=1 (exit $code)"
+	fi
+	if [ "$CAN_SIGN" = 1 ]; then
+		# With OpenSSL 3, Ed25519 is checked first, and a release without the
+		# P-256 signature still installs.
+		p="$tmp/p37"; out="$(env FOX_BASE_URL="file://$rel" FOX_PREFIX="$p" sh "$tmp/install-p256.sh" 2>&1)"; code=$?
+		if [ "$code" = 0 ] && [ -x "$p/bin/fox" ] && grep -q "signed with the FoxByte release key$" <<<"$out"; then
+			ok "where Ed25519 can be checked, it is checked first"
+		else
+			bad "where Ed25519 can be checked, it is checked first (exit $code)"; tail -n 5 <<<"$out" | sed 's/^/      /'
+		fi
+	fi
+else
+	echo "  SKIP: no openssl with P-256 here"
 fi
 
 # 12–19, 21–25. macOS: Lima, then `fox setup`. Run on any machine as an Apple Silicon

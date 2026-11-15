@@ -14,17 +14,24 @@ name: wsl-distro
 on:
   push:
     tags: ['v*']
+  # A manual run is started from the tag itself ("Use workflow from" -> Tags),
+  # as with release.yml: this job signs, so it runs only for a v* tag ref.
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build and attach to (e.g. v0.5.0)'
-        required: true
+        description: 'The tag this run is for (e.g. v0.5.0); must be the tag chosen under "Use workflow from"'
+        required: false
 
 permissions:
   contents: write
 
 jobs:
+  # Signs SHA256SUMS.distro, so it is in the `release` environment like
+  # release.yml's signing job: the signing secrets can be held there, behind
+  # that environment's reviewers and tag rule (README, "Release signing").
   distro:
+    if: startsWith(github.ref, 'refs/tags/v') && (inputs.tag == '' || inputs.tag == github.ref_name)
+    environment: release
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -76,12 +83,19 @@ jobs:
       # This job's checksums are signed with the release key (audit v2 G22). A
       # missing secret fails the job here, rather than publishing an image with
       # no signature. (cmd/releasesign also refuses a key fox would not accept.)
+      # FOX_RELEASE_SIGNING_KEY_P256, when set, adds SHA256SUMS.distro.p256.sig,
+      # which install.ps1 checks (Windows has no Ed25519).
       - name: Build the release signer
         env:
           FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
+          FOX_RELEASE_SIGNING_KEY_P256: ${{ secrets.FOX_RELEASE_SIGNING_KEY_P256 }}
         run: |
           test -n "$FOX_RELEASE_SIGNING_KEY" || { echo "::error::the FOX_RELEASE_SIGNING_KEY secret is not set (see cmd/releasesign)"; exit 1; }
           go build -o "$RUNNER_TEMP/releasesign" ./cmd/releasesign
+          if grep -q "^var releaseP256PublicKey = \"..*\"$" internal/update/signing.go && [ -z "$FOX_RELEASE_SIGNING_KEY_P256" ]; then
+            echo "::error::fox and the installers carry a P-256 release key, but the FOX_RELEASE_SIGNING_KEY_P256 secret is not set: install.ps1 would not trust this distro image"
+            exit 1
+          fi
 
       # A signed file of this job's own, because this workflow can run at any
       # time for an existing tag and release.yml owns SHA256SUMS. Only the hash
@@ -94,6 +108,7 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
           RELEASE_SIGN: ${{ runner.temp }}/releasesign
           FOX_RELEASE_SIGNING_KEY: ${{ secrets.FOX_RELEASE_SIGNING_KEY }}
+          FOX_RELEASE_SIGNING_KEY_P256: ${{ secrets.FOX_RELEASE_SIGNING_KEY_P256 }}
         run: |
           cd dist
           bash ../scripts/release-checksums.sh "$TAG" SHA256SUMS.distro foxbyte-distro.tar.zst
