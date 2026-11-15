@@ -220,10 +220,9 @@ ALTER TABLE bb.dml_counter ADD COLUMN IF NOT EXISTS logged_n bigint NOT NULL DEF
 -- that is refused or rolled back spends nothing. bb.guard_impact adds up the
 -- window at a statement's first row and refuses at the first row over.
 --
--- Two sessions of the same agent writing the same table at the same moment can
--- each see the other's spending only once it commits, so together they can go
--- past the budget by up to one statement each. Serialising every agent write on
--- a lock to prevent that would cost more than it saves.
+-- Spending is seen by other sessions only once it commits, so transactions of
+-- one agent on one table take turns (bb._budget_turn, below): otherwise every
+-- transaction the agent held open at once had a whole budget of its own.
 INSERT INTO bb.policy(op, action) VALUES ('AGENT DML BUDGET', 'block') ON CONFLICT (op) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS bb.dml_spent (
@@ -292,6 +291,62 @@ LANGUAGE sql IMMUTABLE AS $$
     ELSE 'per ' || secs || ' seconds' END
 $$;
 
+-- ── Budget turns (audit TX-8) ───────────────────────────────────────────────
+-- What an agent has spent is read at a statement's first row, but a
+-- transaction's spending is visible to others only after it commits. With K
+-- transactions open at once, each read the same total and each could spend a
+-- whole budget: K times the budget an hour.
+--
+-- So a transaction takes a turn for an (agent, table) before it reads the
+-- total, and keeps it until it ends: the next transaction of the same agent on
+-- the same table waits for it, then reads a total that includes what it spent.
+-- Only budgeted statements take a turn, which means agents only (people and the
+-- application are never budgeted), and only where a budget applies. Different
+-- agents, and different tables, never wait for each other.
+--
+-- The turn is a transaction-scoped advisory lock with two int keys. The
+-- Blackbox's other advisory locks (the ledger's append lock, checkpoints, the
+-- catalogue scan) each take one bigint key, which Postgres keeps apart from
+-- two-int keys, so this can never be mistaken for one of them, nor read as the
+-- append lock by bb._holds_chain_lock.
+--
+-- A wait is bounded by the session's lock_timeout (60s by default for client
+-- logins), and ends in a refusal that says what it was waiting for.
+--
+-- READ COMMITTED reads the total afresh after the wait. In REPEATABLE READ or
+-- SERIALIZABLE it is read from a snapshot that may predate the transaction
+-- that held the turn last, so taking the turn is not enough. Every turn also
+-- touches the pair's row of bb.dml_budget_turns, and Postgres refuses an
+-- update of a row changed since the snapshot with a serialization failure,
+-- which a client retries: the retry sees the spending. Every turn, whatever
+-- its own isolation, since the one that went before may have been READ
+-- COMMITTED.
+CREATE TABLE IF NOT EXISTS bb.dml_budget_turns (
+  actor text NOT NULL,          -- bb._budget_actor()
+  rel   oid  NOT NULL,          -- the table (a partition's root)
+  at    timestamptz NOT NULL,
+  PRIMARY KEY (actor, rel)
+);
+
+CREATE OR REPLACE FUNCTION bb._budget_turn(akey text, root oid) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('bb.dml_budget'), hashtext(akey || '/' || root::text));
+  EXCEPTION WHEN lock_not_available THEN
+    RAISE EXCEPTION 'guardrail: % is waiting for another open transaction of the same agent on % to finish, so that its row budget is not spent twice; it did not finish within lock_timeout (%)',
+        akey, (SELECT bb._table_identity(n.nspname, c.relname) FROM pg_class c
+               JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = root),
+        current_setting('lock_timeout')
+      USING ERRCODE = 'lock_not_available',
+            HINT = 'Commit or roll back the agent''s other open transaction on this table, then try again.';
+  END;
+  INSERT INTO bb.dml_budget_turns (actor, rel, at) VALUES (akey, root, clock_timestamp())
+    ON CONFLICT (actor, rel) DO UPDATE SET at = EXCLUDED.at;
+END;
+$$;
+-- ── end of budget turns ─────────────────────────────────────────────────────
+
 -- Record a refusal (BLOCKED, through a second connection so it survives the
 -- rollback) or a flag (FLAGGED, in this transaction).
 CREATE OR REPLACE FUNCTION bb._record_impact(c record, op text, obj text, status text, risk text) RETURNS void
@@ -351,6 +406,9 @@ BEGIN
           SELECT * INTO b FROM bb._dml_budget(root);
           IF b.max_rows IS NOT NULL THEN
             akey := bb._budget_actor();
+            -- Wait for this agent's other transactions on this table, then
+            -- read the total (TX-8, bb._budget_turn).
+            PERFORM bb._budget_turn(akey, root);
             SELECT coalesce(sum(s.n), 0) INTO spent FROM bb.dml_spent s
               WHERE s.actor = akey AND s.rel = root AND s.at > clock_timestamp() - make_interval(secs => b.per_secs);
             brows := b.max_rows; bsecs := b.per_secs; bleft := b.max_rows - spent;

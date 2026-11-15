@@ -223,6 +223,22 @@ SQLSTATE 42501 (insufficient_privilege)
 
 The attempt is recorded BLOCKED with risk `budget`.
 
+Spending is seen by other sessions only once it commits, so an agent's
+transactions on one table take turns: the second waits until the first ends,
+then reads a total that includes what the first spent. Other agents and other
+tables do not wait. A wait longer than the session's `lock_timeout` (60s for
+client logins) is refused:
+
+```
+ERROR:  guardrail: agent-alice is waiting for another open transaction of the same agent on public.orders to finish, so that its row budget is not spent twice; it did not finish within lock_timeout (1min)
+HINT:   Commit or roll back the agent's other open transaction on this table, then try again.
+SQLSTATE 55P03 (lock_not_available)
+```
+
+In `REPEATABLE READ` or `SERIALIZABLE` a transaction whose snapshot predates
+the other's spending gets a serialization failure (`40001`) instead, and a
+retry sees it.
+
 ## Where else the object appears
 
 - `fox policy check "<SQL>"` / REST `POST /api/branches/{name}/policies/check`:
