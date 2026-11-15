@@ -24,6 +24,45 @@ import (
 
 const secLogAnchorDir = "_security-log"
 
+// SecurityLogRetention is how long the security log keeps an event
+// (FOX_SECURITY_LOG_RETENTION), or 0 for for ever, the default. There is no
+// default period on purpose: how long sign-in records are kept is the
+// operator's policy to set, and a default here would quietly decide it.
+func SecurityLogRetention() (time.Duration, error) {
+	return auth.ParseRetention(brand.GetenvFull(auth.SecurityLogRetentionEnv))
+}
+
+// PruneSecurityLog removes the security log's events older than its retention
+// and anchors the record of having done so. It removes only events already
+// anchored, so every removed event was vouched for outside the store before it
+// went, and the anchor that covers the prune record vouches for the removal.
+// With no retention set, or nothing anchored yet, it does nothing.
+func PruneSecurityLog(store *auth.Store, actor string) (auth.PruneResult, error) {
+	ret, err := SecurityLogRetention()
+	if err != nil || ret == 0 {
+		return auth.PruneResult{}, err
+	}
+	anchors, err := ledger.LoadAnchors(SecurityLogAnchorDir())
+	if err != nil {
+		return auth.PruneResult{}, err
+	}
+	var lastTo int64
+	for _, a := range anchors {
+		lastTo = max(lastTo, a.ToID)
+	}
+	if lastTo == 0 {
+		return auth.PruneResult{}, nil
+	}
+	res, err := store.PruneSecurityEvents(time.Now().Add(-ret), lastTo, actor)
+	if err != nil || res.Removed == 0 {
+		return res, err
+	}
+	if _, err := CheckpointSecurityLog(store); err != nil {
+		return res, fmt.Errorf("pruned %d events, but anchoring the prune failed: %w", res.Removed, err)
+	}
+	return res, nil
+}
+
 // SecurityLogAnchorDir is where the security log's anchors are written.
 func SecurityLogAnchorDir() string {
 	base := strings.TrimSpace(brand.Getenv("ANCHOR_DIR"))
@@ -83,7 +122,22 @@ func CheckpointSecurityLog(store *auth.Store) (*ledger.Anchor, error) {
 	refuse := func(why string) (*ledger.Anchor, error) {
 		return nil, fmt.Errorf("not anchoring the security log: %s — inspect with: %s audit verify", why, brand.CLI)
 	}
-	if lastTo > 0 {
+	// Retention may have removed the oldest events (auth.PruneSecurityEvents).
+	// It never removes past the last anchor, so the last anchored event is
+	// either still there or is exactly the last one removed, whose hash the
+	// prune recorded.
+	startID, startHash, err := store.SecurityLogStart()
+	if err != nil {
+		return nil, err
+	}
+	n, after, hash := 0, lastTo, prev
+	switch {
+	case startID > 0 && lastTo <= startID:
+		if lastTo == startID && prev != startHash {
+			return refuse(fmt.Sprintf("event %d, the last one anchored, does not match the hash the prune recorded for it", lastTo))
+		}
+		after, hash = startID, startHash
+	case lastTo > 0:
 		anchored, err := store.SecurityEvents(lastTo-1, 1)
 		if err != nil {
 			return nil, err
@@ -91,12 +145,13 @@ func CheckpointSecurityLog(store *auth.Store) (*ledger.Anchor, error) {
 		if len(anchored) != 1 || anchored[0].ID != lastTo {
 			return refuse(fmt.Sprintf("event %d, the last one anchored, is gone", lastTo))
 		}
-		if e := anchored[0]; e.RowHash != prev || auth.EventHash(e) != e.RowHash {
+		// EventIntact rather than the hash alone: a pseudonymised event is
+		// vouched for by its seal (auth/seclogprivacy.go).
+		if e := anchored[0]; e.RowHash != prev || !auth.EventIntact(e) {
 			return refuse(fmt.Sprintf("event %d no longer matches its anchor", lastTo))
 		}
 	}
 	var head auth.SecurityEvent
-	n, after, hash := 0, lastTo, prev
 	for {
 		if id, why := auth.CheckEventChainFrom(page, after, hash); id != 0 {
 			return refuse(why)
@@ -134,9 +189,24 @@ func CheckpointSecurityLog(store *auth.Store) (*ledger.Anchor, error) {
 // pub is not nil — their signatures.
 func VerifySecurityLog(evs []auth.SecurityEvent, anchors []ledger.Anchor, pub ed25519.PublicKey) ledger.Report {
 	rep := ledger.Report{Intact: true, Rows: len(evs), ChainedRows: len(evs), Checkpoints: len(anchors), Problems: []string{}, Notes: []string{}}
-	if id, why := auth.CheckEventChain(evs); id != 0 {
+	// The chain from wherever retention left it starting, and the seals of
+	// pseudonymised events (auth/seclogprivacy.go).
+	if id, problems := auth.VerifyEvents(evs); len(problems) > 0 {
 		rep.Intact, rep.FirstBrokenID = false, id
-		rep.Problems = append(rep.Problems, why)
+		rep.Problems = append(rep.Problems, problems...)
+	}
+	upTo, upToHash := auth.PrunedUpTo(evs)
+	var pruneEvent int64
+	for _, e := range evs {
+		if e.Kind == auth.EvSecurityLogPruned {
+			pruneEvent = e.ID
+		}
+		if e.Kind == auth.EvSecurityLogPseudonymised && len(rep.Notes) < 50 {
+			rep.Notes = append(rep.Notes, fmt.Sprintf("event %d pseudonymised a deleted account's events; they are checked against its seals", e.ID))
+		}
+	}
+	if upTo > 0 {
+		rep.Notes = append(rep.Notes, fmt.Sprintf("events 1–%d were removed by retention (event %d); the log is checked from there", upTo, pruneEvent))
 	}
 	byID := map[int64]auth.SecurityEvent{}
 	for _, e := range evs {
@@ -144,9 +214,27 @@ func VerifySecurityLog(evs []auth.SecurityEvent, anchors []ledger.Anchor, pub ed
 	}
 	sorted := append([]ledger.Anchor(nil), anchors...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ToID < sorted[j].ToID })
-	var lastTo int64
+	var lastTo, maxTo int64
 	prev := ""
+	coversPruned := false
 	for _, a := range sorted {
+		maxTo = max(maxTo, a.ToID)
+		if a.FromID <= upTo {
+			coversPruned = true
+		}
+		// An anchor over events retention removed: only its place in the
+		// sequence, and its signature, can still be checked — and, where it
+		// ends exactly where the prune did, that it signed the hash the prune
+		// recorded.
+		if a.ToID <= upTo {
+			if a.Format != secAnchorFormat || a.Algorithm != secAnchorAlgorithm || a.FromID != lastTo+1 || a.PrevRoot != prev ||
+				(a.ToID == upTo && a.LastRowHash != upToHash) {
+				rep.Intact = false
+				rep.Problems = append(rep.Problems, fmt.Sprintf("anchor %s: does not fit the events retention removed", ledger.AnchorFileName(a.ToID)))
+			}
+			lastTo, prev = a.ToID, a.LastRowHash
+			continue
+		}
 		bad := func(format string, args ...any) {
 			rep.Intact = false
 			rep.Problems = append(rep.Problems, fmt.Sprintf("anchor %s: ", ledger.AnchorFileName(a.ToID))+fmt.Sprintf(format, args...))
@@ -164,17 +252,31 @@ func VerifySecurityLog(evs []auth.SecurityEvent, anchors []ledger.Anchor, pub ed
 					n++
 				}
 			}
+			// The ones retention removed from the start of its range.
+			want := a.EntryCount
+			if a.FromID <= upTo {
+				want -= int(upTo - a.FromID + 1)
+			}
 			switch {
 			case !ok:
 				bad("event %d, which it anchors, is gone", a.ToID)
 			case e.RowHash != a.LastRowHash:
 				bad("event %d no longer matches it", a.ToID)
-			case n != a.EntryCount:
-				bad("it anchors %d events, and %d are there", a.EntryCount, n)
+			case n != want:
+				bad("it anchors %d events, and %d are there", want, n)
 			}
 			rep.AnchoredRows += n
 		}
 		lastTo, prev = a.ToID, a.LastRowHash
+	}
+	// A prune that removed anchored events must itself be anchored: until it
+	// is, nothing outside the store says the removal was retention rather
+	// than someone deleting history and writing a prune record to cover it.
+	// PruneSecurityLog anchors straight after pruning, so this holds unless
+	// that failed.
+	if coversPruned && pruneEvent > maxTo {
+		rep.Intact = false
+		rep.Problems = append(rep.Problems, fmt.Sprintf("event %d removed anchored events and is not anchored itself — run: %s audit checkpoint", pruneEvent, brand.CLI))
 	}
 	rep.UnanchoredRows = len(evs) - rep.AnchoredRows
 	if pub != nil {
