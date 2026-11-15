@@ -174,6 +174,15 @@ func (s *Store) SetBranchOwner(branch string, userID int64) error {
 	return err
 }
 
+// OwnedBranchCount is how many branches an account owns, for the per-account
+// branch limit. Read from the owner records, which every API, Agent API and
+// MCP create writes and every delete clears.
+func (s *Store) OwnedBranchCount(userID int64) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM branch_owners WHERE user_id=?`, userID).Scan(&n)
+	return n, err
+}
+
 // BranchOwner returns a branch's owner, if it has one.
 func (s *Store) BranchOwner(branch string) (int64, bool) {
 	var uid int64
@@ -191,6 +200,12 @@ func (s *Store) BranchOwner(branch string) (int64, bool) {
 // gets the same thing.
 func (s *Store) ForgetBranch(branch string) error {
 	if _, err := s.db.Exec(`DELETE FROM branch_owners WHERE branch=?`, branch); err != nil {
+		return err
+	}
+	// Its keys too. branch.Delete revokes them already; this is for a caller
+	// that forgets a branch some other way, so a key scoped to the name never
+	// survives the record of who owned it.
+	if _, err := s.RevokeBranchKeys(branch, "engine", "its branch was forgotten"); err != nil {
 		return err
 	}
 	// A claim that outlived the branch let its pipeline delete whatever somebody

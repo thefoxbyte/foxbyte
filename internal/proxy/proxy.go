@@ -672,6 +672,8 @@ func routeErrorCode(standbyRead bool, err error) string {
 		return cannotConnectNow
 	case errors.Is(err, branch.ErrBranchClosed):
 		return cannotConnectNow
+	case errors.Is(err, branch.ErrBranchBusy): // another operation held it too long
+		return cannotConnectNow
 	}
 	return invalidCatalog
 }
@@ -797,7 +799,7 @@ var (
 	probeReplication = branch.ReplicationStatus
 	probeRealtime    = branch.RealtimeActive
 	listSuspendable  = branch.SuspendableBranches
-	suspendBranch    = branch.Suspend
+	suspendBranch    = branch.SuspendIdle // rechecks for use under the branch's lock
 	// When the console or the API last used a branch: the control plane's use,
 	// which never passes through this gateway (auth/branchuse.go).
 	probeLastUse = func(name string) time.Time {

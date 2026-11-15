@@ -509,11 +509,19 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 
 	branchBeforeMu.Lock()
 	defer branchBeforeMu.Unlock()
+	// And the new branch's own lock, across processes, for the whole restore.
+	unlock, err := lockBranch(newName, "restored")
+	if err != nil {
+		return BeforeEntryResult{}, err
+	}
+	defer unlock()
 
 	store := activeStorage()
 	if store.exists(newName) || ContainerState(newName) != "absent" {
 		return BeforeEntryResult{}, fmt.Errorf("%w: %q", ErrBranchExists, newName)
 	}
+	// A new branch under this name: no earlier branch's key may open it.
+	revokeBranchKeys(newName, "a branch was restored under this name")
 	primary := strings.TrimPrefix(PrimaryContainer(), containerPrefix)
 
 	// 1. The entry, with its transaction id and WAL position when captured.
