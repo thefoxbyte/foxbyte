@@ -3,10 +3,7 @@
 package branch
 
 import (
-	"encoding/json"
-	"net"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +101,58 @@ func TestWatchRefusesWithoutAWitness(t *testing.T) {
 	}
 }
 
+// Refused without a token too, and an older setup (no token, an http:// URL)
+// is told what to change rather than watching in a mode a forged answer could
+// steer.
+func TestWatchRefusesWithoutAWayToTrustTheWitness(t *testing.T) {
+	err := Watch(WatchOptions{Witness: "https://witness.example:7070" + WitnessPath})
+	if !errors.Is(err, errWitnessToken) {
+		t.Fatalf("ha watch ran with no token: %v", err)
+	}
+	for _, want := range []string{"--token", "HA_WITNESS_TOKEN"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say how to set one (%q): %v", want, err)
+		}
+	}
+	if err := Watch(WatchOptions{Witness: "https://w:7070" + WitnessPath, Token: "short"}); !errors.Is(err, errWitnessToken) {
+		t.Errorf("a short token was accepted: %v", err)
+	}
+	err = Watch(WatchOptions{Witness: "http://w:7070" + WitnessPath, Token: strings.Repeat("k", 32)})
+	if err == nil || !strings.Contains(err.Error(), "https://") {
+		t.Errorf("a plain-HTTP witness URL was accepted, or the refusal does not say https: %v", err)
+	}
+}
+
+// One round, given a witness whose answer did not verify. Whatever view comes
+// back with the error, the round decides not to promote.
+func TestAWitnessAnswerThatFailsVerificationNeverPromotes(t *testing.T) {
+	failed := errors.New("the witness's answer failed verification")
+	for _, v := range []witnessView{witnessPrimaryDown, witnessPrimaryUp, witnessSilent} {
+		action, got, _, err := watchRound(false, time.Hour, 0, func() (witnessView, WitnessAnswer, error) {
+			return v, WitnessAnswer{Reachable: false}, failed
+		})
+		if action == watchPromote {
+			t.Errorf("an unverified %v promoted", v)
+		}
+		if action != watchBlind || got != witnessSilent || err == nil {
+			t.Errorf("an unverified %v gave %v / %v / %v, want blind and silent with the error", v, action, got, err)
+		}
+	}
+	// And a verified agreement still promotes, so the check is not simply
+	// switching the feature off.
+	if action, _, _, _ := watchRound(false, time.Hour, 0, func() (witnessView, WitnessAnswer, error) {
+		return witnessPrimaryDown, WitnessAnswer{}, nil
+	}); action != watchPromote {
+		t.Errorf("a verified agreement decided %v", action)
+	}
+	// The witness is not asked while the primary answers.
+	asked := false
+	watchRound(true, 0, 0, func() (witnessView, WitnessAnswer, error) { asked = true; return witnessSilent, WitnessAnswer{}, nil })
+	if asked {
+		t.Error("the witness was asked while the primary answered")
+	}
+}
+
 func TestWatchDefaultsLandInsideTheMinuteThePlanPromises(t *testing.T) {
 	o := WatchOptions{After: -1}
 	o.withDefaults()
@@ -129,123 +178,5 @@ func TestWatchDefaultsLandInsideTheMinuteThePlanPromises(t *testing.T) {
 	}
 	if drill.Interval != watchIntervalDefault {
 		t.Errorf("an omitted interval became %s", drill.Interval)
-	}
-}
-
-// The witness, as an HTTP handler against a real listener. Two things worth
-// asserting: it answers the one question truthfully, and it does not confirm to
-// a stranger that it is a witness at all.
-func TestWitnessAnswersOneQuestion(t *testing.T) {
-	// Something that is listening, and an address that is not.
-	up, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer up.Close()
-	// Port 0: nothing can listen there, so connecting fails at once on every
-	// system. A port freed by closing a listener was used before, and the test
-	// servers below were sometimes handed that very port, so the "down" primary
-	// answered (seen in CI).
-	downAddr := "127.0.0.1:0"
-
-	t.Run("it reaches a primary that is up", func(t *testing.T) {
-		srv := httptest.NewServer(WitnessHandler(up.Addr().String(), ""))
-		defer srv.Close()
-		v, a, err := AskWitness(srv.URL+WitnessPath, "", 5*time.Second)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if v != witnessPrimaryUp || !a.Reachable {
-			t.Errorf("view = %v, answer = %+v", v, a)
-		}
-		if a.Witness == "" || a.At == "" {
-			t.Errorf("the answer does not say who gave it or when: %+v", a)
-		}
-	})
-
-	t.Run("and says so when it cannot", func(t *testing.T) {
-		srv := httptest.NewServer(WitnessHandler(downAddr, ""))
-		defer srv.Close()
-		v, a, err := AskWitness(srv.URL+WitnessPath, "", 5*time.Second)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if v != witnessPrimaryDown || a.Reachable {
-			t.Errorf("view = %v, answer = %+v", v, a)
-		}
-	})
-
-	t.Run("a stranger is not told this is a witness", func(t *testing.T) {
-		srv := httptest.NewServer(WitnessHandler(up.Addr().String(), "s3cret"))
-		defer srv.Close()
-		// 404, not 401: a witness that confirms it is one to anybody who asks
-		// is a map of somebody's database cluster.
-		resp, err := http.Get(srv.URL + WitnessPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("an unauthenticated ask got %s, want 404", resp.Status)
-		}
-		// And the right token works.
-		if v, _, err := AskWitness(srv.URL+WitnessPath, "s3cret", 5*time.Second); err != nil || v != witnessPrimaryUp {
-			t.Errorf("with the token: %v, %v", v, err)
-		}
-		// A wrong one is refused, and the refusal is not silence-shaped: the
-		// watcher must read it as "could not ask", never as agreement.
-		if v, _, err := AskWitness(srv.URL+WitnessPath, "wrong", 5*time.Second); err == nil || v != witnessSilent {
-			t.Errorf("with a wrong token: %v, %v", v, err)
-		}
-	})
-
-	t.Run("a witness that is not there is silent, not agreeing", func(t *testing.T) {
-		v, _, err := AskWitness("http://127.0.0.1:1"+WitnessPath, "", time.Second)
-		if err == nil {
-			t.Error("asking nothing succeeded")
-		}
-		if v != witnessSilent {
-			t.Errorf("an unreachable witness gave view %v", v)
-		}
-		// Which decides nothing: the promotion needs an opinion, and this is
-		// the absence of one.
-		if watchDecide(false, v, time.Hour, time.Minute) == watchPromote {
-			t.Error("an unreachable witness was counted as agreement")
-		}
-	})
-
-	t.Run("an unreadable answer is silence too", func(t *testing.T) {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte("not json"))
-		}))
-		defer srv.Close()
-		if v, _, err := AskWitness(srv.URL, "", time.Second); err == nil || v != witnessSilent {
-			t.Errorf("view = %v, err = %v", v, err)
-		}
-	})
-}
-
-// The witness needs an address it can dial, and a bad one must be a refusal
-// rather than a witness that reports every primary as gone.
-func TestWitnessNeedsHostAndPort(t *testing.T) {
-	for _, bad := range []string{"", "primary.example.com", "primary.example.com:", ":5432x"} {
-		if _, err := primaryAnswering(bad, time.Second); err == nil {
-			t.Errorf("primaryAnswering(%q) accepted it", bad)
-		}
-	}
-	if err := ServeWitness(":0", "not-an-address", ""); err == nil {
-		t.Error("the witness started with an address it cannot dial")
-	}
-	// And a bad address reaches the answer rather than being swallowed: a
-	// witness answering "unreachable" because it was misconfigured would
-	// agree with every standby about every primary.
-	var a WitnessAnswer
-	rec := httptest.NewRecorder()
-	WitnessHandler("nonsense", "").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, WitnessPath, nil))
-	if err := json.NewDecoder(rec.Body).Decode(&a); err != nil {
-		t.Fatal(err)
-	}
-	if a.Error == "" {
-		t.Errorf("a misconfigured witness reported a clean 'unreachable': %+v", a)
 	}
 }

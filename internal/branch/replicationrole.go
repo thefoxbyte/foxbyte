@@ -4,6 +4,7 @@ package branch
 
 import (
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -96,28 +97,120 @@ func peerHBALine(peer string) string {
 	return "hostssl replication " + ReplicationRole + " " + peer + " scram-sha-256"
 }
 
-// hbaScript is the shell that narrows a primary's replication rule. Separate
-// and pure so a test can read what will run against a database it has no way to
-// start.
+// hbaManagedMarker is the first line of a pg_hba.conf that `node expose` wrote.
+// Its presence is how the script knows the file on disk is already ours, so a
+// second expose does not back up its own output over the original.
+const hbaManagedMarker = "# fox-node-expose: written by node expose, put back by node unexpose"
+
+// hbaBackupName is where the rules from before the exposure wait, beside the
+// file they came from. Inside PGDATA, so a base backup copies it too. That is
+// harmless, because pg_hba.conf holds rules and no secrets, and it means a
+// promoted copy can be un-exposed the same way.
+const hbaBackupName = "pg_hba.conf.fox-unexposed"
+
+// exposedHBA is the whole of pg_hba.conf while main is published.
 //
-// peer is "" on an install that publishes nothing, which is every install until
-// somebody runs `node expose` — and then the file says exactly what it said
-// before this existed.
-func hbaScript(peer string) string {
-	sh := `set -e
-sed -i '/` + legacyHBAPattern + `/d' "$PGDATA/pg_hba.conf"
-grep -qF '` + replicationHBALine + `' "$PGDATA/pg_hba.conf" || echo '` + replicationHBALine + `' >> "$PGDATA/pg_hba.conf"`
-	// Stale peer rules go first: an address that is no longer the standby's
-	// must stop being admitted, and `node expose` run twice with a different
-	// peer would otherwise leave both.
-	sh += `
-sed -i '/^hostssl[[:space:]]\+replication[[:space:]]\+` + ReplicationRole + `/d' "$PGDATA/pg_hba.conf"`
-	if line := peerHBALine(peer); line != "" {
-		sh += `
-echo '` + line + `' >> "$PGDATA/pg_hba.conf"`
+// The stock file ends with `host all all all scram-sha-256`. On a published
+// port that admits every role from every network, which goes around the
+// gateway's API keys, ACL and attribution. Narrowing only the replication rule
+// left it in place. So while main is published the file is replaced rather
+// than edited, and it keeps exactly what the engine itself uses:
+//
+//   - the socket and loopback rules the image ships, trusted as before. They
+//     are reachable only from inside the container, and every `docker exec
+//     psql` this engine runs goes through them;
+//   - `host all all samenet`: the gateway reaches main over the docker network,
+//     and so do the engine's one-off helper containers (backups, import,
+//     export). samenet is the subnets the server is attached to, which is that
+//     network. Docker's port publishing keeps a remote client's own source
+//     address (measured across two machines, docs/FOX_HA_Plan.md), so a
+//     connection arriving on the published port does not match it;
+//   - the replication role from samenet, for a standby on this machine;
+//   - the replication role from the peer, over TLS only;
+//   - and an explicit reject for everything else, so nothing depends on a rule
+//     that merely happens to be missing.
+//
+// The peer must already be a CIDR. Anything else is an error, rather than a
+// rule that matches nothing, or worse, something.
+func exposedHBA(peer string) (string, error) {
+	p := strings.TrimSpace(peer)
+	if _, _, err := net.ParseCIDR(p); err != nil {
+		return "", fmt.Errorf("the peer %q is not a CIDR range, so no rule was written: %w", peer, err)
 	}
-	return sh
+	lines := []string{
+		hbaManagedMarker,
+		"# The rules from before are in " + hbaBackupName + " beside this file.",
+		"local   all          all                          trust",
+		"host    all          all          127.0.0.1/32    trust",
+		"host    all          all          ::1/128         trust",
+		"local   replication  all                          trust",
+		"host    replication  all          127.0.0.1/32    trust",
+		"host    replication  all          ::1/128         trust",
+		"host    all          all          samenet         scram-sha-256",
+		replicationHBALine,
+		peerHBALine(p),
+		"host    all          all          all             reject",
+		"host    replication  all          all             reject",
+	}
+	return strings.Join(lines, "\n") + "\n", nil
 }
+
+// hbaScript is the shell that writes a primary's pg_hba.conf. Separate and pure
+// so a test can read what will run against a database it has no way to start.
+//
+// With a peer, main is published: the original file is set aside, once (a
+// second run sees the marker and leaves the backup alone), and replaced with
+// exposedHBA. Without one, the original comes back and the replication rule is
+// narrowed inside it, which is what this did before exposure existed. Both are
+// idempotent, because `ha enable` and `node expose` run this every time.
+//
+// The caller reloads Postgres afterwards. pg_hba is re-read on a reload, so a
+// change of rules restarts nothing.
+func hbaScript(peer string) (string, error) {
+	head := `set -e
+f="$PGDATA/pg_hba.conf"
+keep="$PGDATA/` + hbaBackupName + `"`
+	if strings.TrimSpace(peer) != "" {
+		body, err := exposedHBA(peer)
+		if err != nil {
+			return "", err
+		}
+		// Written to a temporary file and renamed, so a reload never reads a
+		// half-written file. The heredoc's delimiter is quoted, so the shell
+		// expands nothing inside it.
+		return head + `
+grep -qxF '` + hbaManagedMarker + `' "$f" || cp -p "$f" "$keep"
+cat > "$f.fox-new" <<'FOXHBA'
+` + body + `FOXHBA
+mv "$f.fox-new" "$f"`, nil
+	}
+	// Putting the original back. A managed file with no backup beside it
+	// (somebody removed it) gets the image's own rules, rather than staying
+	// in its published shape on an install that publishes nothing.
+	sh := head + `
+if [ -f "$keep" ]; then mv "$keep" "$f"
+elif grep -qxF '` + hbaManagedMarker + `' "$f"; then cat > "$f" <<'FOXHBA'
+` + stockHBA + `FOXHBA
+fi
+sed -i '/` + legacyHBAPattern + `/d' "$f"
+grep -qF '` + replicationHBALine + `' "$f" || echo '` + replicationHBALine + `' >> "$f"`
+	// Stale peer rules go too: an install that stops publishing must stop
+	// admitting the peer it used to.
+	sh += `
+sed -i '/^hostssl[[:space:]]\+replication[[:space:]]\+` + ReplicationRole + `/d' "$f"`
+	return sh, nil
+}
+
+// stockHBA is what the official image writes, for the one case where the
+// original is gone and something has to stand in for it.
+const stockHBA = `local   all             all                                     trust
+host    all             all             127.0.0.1/32            trust
+host    all             all             ::1/128                 trust
+local   replication     all                                     trust
+host    replication     all             127.0.0.1/32            trust
+host    replication     all             ::1/128                 trust
+host    all             all             all                     scram-sha-256
+`
 
 // ReplicationOpenToEveryone reports whether a server still carries the wide
 // rule. For `fox check`: an install whose HA was enabled by an older version

@@ -928,20 +928,26 @@ func haCmd(args []string) {
 // witness and knows where it is.
 func haWatchCmd(args []string) {
 	if hasFlag(args, "-h") || hasFlag(args, "--help") {
-		fmt.Printf("usage: %s ha watch --witness <url> [--token T] [--after 60s] [--every 10s] [--once] [--dry-run]\n\n"+
+		fmt.Printf("usage: %s ha watch --witness https://<host:port>/ha/primary --token T [--witness-fingerprint F]\n"+
+			"                   [--after 60s] [--every 10s] [--once] [--dry-run]\n\n"+
 			"Runs on a standby that joined a primary elsewhere. Every round it asks two\n"+
 			"questions — can I reach the primary, and can the witness — and promotes only\n"+
 			"when both say no for --after. One opinion is never enough: two machines cannot\n"+
 			"tell a dead primary from one they cannot reach, and promoting on a guess makes\n"+
 			"two primaries whose copies cannot be merged.\n\n"+
 			"The witness goes on a third host, where the clients are. `%s ha witness` runs it.\n"+
-			"--dry-run prints every decision and acts on none, which is how to try this.\n", brand.CLI, brand.CLI)
+			"--token (or %s) is required and must match the witness's: every\n"+
+			"answer is signed with it, and one that does not check out counts as no answer.\n"+
+			"--witness-fingerprint pins the witness's certificate, as the witness prints it.\n"+
+			"--dry-run prints every decision and acts on none, which is how to try this.\n",
+			brand.CLI, brand.CLI, brand.EnvName("HA_WITNESS_TOKEN"))
 		return
 	}
 	must(branch.Watch(branch.WatchOptions{
-		Witness:  optValue(args, "--witness"),
-		Token:    optOr(args, "--token", os.Getenv(brand.EnvName("HA_WITNESS_TOKEN"))),
-		Interval: durFlag(args, "--every", -1),
+		Witness:     optValue(args, "--witness"),
+		Token:       optOr(args, "--token", os.Getenv(brand.EnvName("HA_WITNESS_TOKEN"))),
+		Fingerprint: optValue(args, "--witness-fingerprint"),
+		Interval:    durFlag(args, "--every", -1),
 		// Negative means "not given", so `--after 0s` can mean what it says:
 		// promote as soon as both observers agree, which is how a drill asks.
 		After:  durFlag(args, "--after", -1),
@@ -954,13 +960,17 @@ func haWatchCmd(args []string) {
 func haWitnessCmd(args []string) {
 	primary := optValue(args, "--primary")
 	if primary == "" || hasFlag(args, "-h") || hasFlag(args, "--help") {
-		fmt.Printf("usage: %s ha witness --primary <host:port> [--addr :7070] [--token T]\n\n"+
-			"Answers one question, over HTTP: can this host reach that primary? A standby\n"+
+		fmt.Printf("usage: %s ha witness --primary <host:port> --token T [--addr :7070]\n\n"+
+			"Answers one question, over HTTPS: can this host reach that primary? A standby\n"+
 			"running `%s ha watch` promotes only when it and the witness agree that the\n"+
 			"primary has gone.\n\n"+
+			"--token (or %s) is required, at least 16 characters, and the same\n"+
+			"on the standby: each answer is signed with it so the standby can tell it is this\n"+
+			"witness's, given just now.\n\n"+
 			"Run it on a third host — where the clients are, not beside either database.\n"+
 			"A witness that is cut off from the primary alongside the standby will agree\n"+
-			"with it about a primary that is still serving somebody else.\n", brand.CLI, brand.CLI)
+			"with it about a primary that is still serving somebody else.\n",
+			brand.CLI, brand.CLI, brand.EnvName("HA_WITNESS_TOKEN"))
 		os.Exit(2)
 	}
 	must(branch.ServeWitness(optOr(args, "--addr", ":7070"), primary,

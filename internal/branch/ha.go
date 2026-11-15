@@ -111,16 +111,28 @@ func haGuard(action, primary string) error {
 // pg_hba is first-match-wins and a wide rule anywhere still admits everyone it
 // names.
 func allowReplication(primary string) error {
-	if err := EnsureReplicationRole(primary); err != nil {
-		return err
-	}
 	peer := ""
 	if e, ok := CurrentExposure(); ok {
 		peer = e.Peer
 	}
+	return allowReplicationFor(primary, peer)
+}
+
+// allowReplicationFor writes the rules for a given peer, or for none. Separate
+// from allowReplication so `node expose` can narrow the rules before main's
+// port is published, rather than leaving a window in which the published port
+// still carries the stock rules.
+func allowReplicationFor(primary, peer string) error {
+	sh, err := hbaScript(peer)
+	if err != nil {
+		return err
+	}
+	if err := EnsureReplicationRole(primary); err != nil {
+		return err
+	}
 	if out, err := captureCombined("docker", "exec", "-u", "postgres", primary,
-		"bash", "-c", hbaScript(peer)); err != nil {
-		return fmt.Errorf("narrowing the replication rule on %s: %w\n%s", primary, err, strings.TrimSpace(out))
+		"bash", "-c", sh); err != nil {
+		return fmt.Errorf("writing the access rules on %s: %w\n%s", primary, err, strings.TrimSpace(out))
 	}
 	if out, err := captureCombined("docker", "exec", "--env-file", pgEnvFile(), primary,
 		"psql", "-U", pgUser, "-d", pgDatabase, "-tAq", "-c", "SELECT pg_reload_conf()"); err != nil {

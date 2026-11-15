@@ -448,6 +448,42 @@ all sighup — checked against a live server — so the restart the command perf
 is for the published port alone, and it says "connections drop for a few
 seconds" rather than pretending otherwise.
 
+**The rest of `pg_hba.conf` had to change too, found in a later audit.** Only
+the replication rule had been narrowed. The image's own last rule, `host all all
+all scram-sha-256`, stayed in place, so the published port admitted every role
+from every network, which goes around the gateway's API keys, ACL and
+attribution. While main is published, `node expose` now replaces the whole file
+(the original is kept beside it as `pg_hba.conf.fox-unexposed`) with:
+
+```
+local   all          all                          trust
+host    all          all          127.0.0.1/32    trust
+host    all          all          ::1/128         trust
+local   replication  all                          trust
+host    replication  all          127.0.0.1/32    trust
+host    replication  all          ::1/128         trust
+host    all          all          samenet         scram-sha-256
+host replication db_replica samenet scram-sha-256
+hostssl replication db_replica <peer> scram-sha-256
+host    all          all          all             reject
+host    replication  all          all             reject
+```
+
+The socket and loopback rules are how the engine's own `docker exec psql` gets
+in; `samenet` is the docker network the gateway and the engine's helper
+containers use, and Docker keeps a remote client's source address, so nothing
+arriving on the published port matches it. The rules are written into the
+running main *before* the port is published, and `node unexpose` puts the
+original back only *after* the port is gone, so the published port never carries
+the stock rules. Both are a `pg_reload_conf()`, not a restart, and running
+either twice changes nothing. An `--address` that is not an IP is now refused
+rather than published on `0.0.0.0`, and a `--peer` of `/0` is refused.
+
+**After upgrading,** an install that is already published keeps its old rules
+until something rewrites them: run `fox node expose` again with the same
+`--address` and `--peer`. An install published with a hostname as `--address`
+will fail to start main with that address until it is exposed again with an IP.
+
 #### The join token, which settles the third bullet
 
 The plan asked to "distribute the install secret and signing keys to each node,
@@ -636,6 +672,31 @@ Two gateways behind a virtual IP is what makes a failover invisible to clients,
 and §6.4 — whether the customer supplies the IP — decides what we build. With
 one gateway per site the surviving machine serves on its own address, which is
 correct and is not transparent.
+
+**The witness's answer is authenticated, found in a later audit.** It used to
+answer over plain HTTP, with an optional token compared in the ordinary way, so
+anything on the network path could have supplied the "primary unreachable" an
+unattended promotion waits for. Now:
+
+- the token is required on both sides (`--token` or `FOX_HA_WITNESS_TOKEN`, at
+  least 16 characters). `ha witness` will not start without one and `ha watch`
+  will not run without one; each says how to set it and suggests a fresh value;
+- the token never travels. A request carries an HMAC-SHA256 of a fresh nonce,
+  which the witness checks in constant time; an answer carries an HMAC-SHA256
+  over the verdict, the witness's name, its time and that nonce. The watcher
+  rejects an answer whose MAC, nonce or time (more than two minutes from its
+  own clock) does not check out, so an altered, made-up or replayed answer is
+  refused;
+- the witness serves HTTPS with the engine's self-signed certificate
+  (`internal/tlsutil`) and prints its SHA-256 fingerprint, which `ha watch
+  --witness-fingerprint` can pin. The MAC is what makes an answer authentic; the
+  pin is a second check;
+- an answer that fails any check is no answer. The round is `blind`, and blind
+  never promotes.
+
+**After upgrading,** a witness or watcher set up without a token stops with an
+error saying how to set one. Pick one token, give it to both, restart the
+witness, and change the watcher's `--witness` URL from `http://` to `https://`.
 
 **What no drill and no witness can fix:** the witness has to be where the
 clients are. A witness partitioned from the primary alongside the standby will

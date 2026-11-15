@@ -29,10 +29,14 @@ import (
 //   - only over TLS, with a certificate the standby verifies (nodecerts.go);
 //   - only for db_replica, which can copy the database and read none of it
 //     (replicationrole.go);
-//   - only from the peer address named, as a /32.
+//   - only from the peer address named, as a /32;
+//   - and no other role from any other network: while main is published its
+//     pg_hba.conf is replaced by one that ends in an explicit reject, so the
+//     stock "every role, every address" rule is not on the published port
+//     (exposedHBA in replicationrole.go).
 //
-// Each of those five was measured across two machines before this was written.
-// The one that matters most is the second-to-last: the superuser is refused
+// The first five were measured across two machines before this was written.
+// The one that matters most is the fourth: the superuser is refused
 // even over TLS from the permitted address, because the rule names a role.
 
 // nodePGCertDir holds the certificate and key the primary serves.
@@ -92,8 +96,14 @@ func normalisePeer(peer string) (string, error) {
 		return "", fmt.Errorf("no peer address: say which machine the standby is on")
 	}
 	if strings.Contains(p, "/") {
-		if _, _, err := net.ParseCIDR(p); err != nil {
+		_, n, err := net.ParseCIDR(p)
+		if err != nil {
 			return "", fmt.Errorf("%q is not an address or a CIDR range: %w", peer, err)
+		}
+		// A zero-length prefix is every address there is, which is the rule
+		// this command exists to avoid writing.
+		if ones, _ := n.Mask.Size(); ones == 0 {
+			return "", fmt.Errorf("%q admits every address; name the standby's machine", peer)
 		}
 		return p, nil
 	}
@@ -124,12 +134,11 @@ func validateExposeAddress(addr string) error {
 		}
 		return nil
 	}
-	// A name is allowed: the certificate names it, and the standby has to
-	// resolve it to the same machine.
-	if strings.ContainsAny(a, " \t/\\") {
-		return fmt.Errorf("%q is not an address or a hostname", addr)
-	}
-	return nil
+	// A name is refused. The port is bound to this one address, and a name
+	// cannot be bound: the only way to publish it would be on every interface,
+	// which is the opposite of what was asked for.
+	return fmt.Errorf("%q is not an IP address. Give the address of this machine that a standby "+
+		"will dial: the port is published on that address alone, and a name cannot be bound", addr)
 }
 
 // exposeArgs is what a published primary adds to its command line: TLS, from
@@ -165,17 +174,32 @@ func exposeMount(exposed bool) []string {
 // exposePublish is the host port, bound to the one address rather than to
 // every interface. `docker run -p 0.0.0.0:5432:5432` would put the database on
 // every network this machine is attached to, which is not what was asked for.
+//
+// There is no fallback to every interface. An address that is not an IP is
+// passed through as it is, so `docker run` refuses it and main fails to start
+// with an error naming it, rather than starting on every network. NodeExpose
+// refuses such an address before it is ever saved (exposeBindAddress); this
+// only matters for a record written by an older release, which accepted names.
 func exposePublish(e NodeExposure, exposed bool) []string {
 	if !exposed {
 		return nil
 	}
-	host := e.Address
-	if net.ParseIP(host) == nil {
-		// A name cannot be a bind address; publish on every interface and let
-		// the pg_hba rule and TLS be the narrowing, which they are anyway.
-		host = "0.0.0.0"
+	return []string{"-p", fmt.Sprintf("%s:%d:5432", strings.TrimSpace(e.Address), e.Port)}
+}
+
+// exposeBindAddress is the check behind that: the published address must be
+// one specific IP. Unparseable or unspecified is an error, never 0.0.0.0.
+func exposeBindAddress(e NodeExposure) (string, error) {
+	ip := net.ParseIP(strings.TrimSpace(e.Address))
+	if ip == nil {
+		return "", fmt.Errorf("the published address %q is not an IP address, so it cannot be bound. "+
+			"Run `%s node expose --address <this machine's IP> --peer <standby IP> --yes` again",
+			e.Address, brand.CLI)
 	}
-	return []string{"-p", fmt.Sprintf("%s:%d:5432", host, e.Port)}
+	if ip.IsUnspecified() {
+		return "", fmt.Errorf("the published address %q is every interface; name one", e.Address)
+	}
+	return ip.String(), nil
 }
 
 // NodeExpose publishes this primary for a standby on another machine.
@@ -219,7 +243,20 @@ func NodeExpose(addr, peer string, port int) error {
 		return err
 	}
 
-	e := NodeExposure{Address: addr, Port: port, Peer: cidr}
+	e := NodeExposure{Address: strings.TrimSpace(addr), Port: port, Peer: cidr}
+	if _, err := exposeBindAddress(e); err != nil {
+		return err
+	}
+
+	// The access rules before the port. pg_hba.conf lives in the data
+	// directory, which survives the restart, so writing it into the running
+	// main now means the published port never carries the stock rules, not
+	// even for the seconds between the restart and the next step. A primary
+	// that is not running cannot be published anyway.
+	if err := allowReplicationFor(PrimaryContainer(), cidr); err != nil {
+		return fmt.Errorf("writing the access rules before publishing main (main must be running): %w", err)
+	}
+
 	b, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {
 		return err
@@ -234,15 +271,17 @@ func NodeExpose(addr, peer string, port int) error {
 	// Restarting picks up the mount, the port and the TLS settings together.
 	fmt.Printf("Restarting main to publish it on %s:%d…\n", addr, port)
 	if err := startContainer("main", true); err != nil {
-		// Leave no state claiming an exposure that did not happen.
+		// Leave no state claiming an exposure that did not happen. The rules
+		// written above stay until the next `ha enable` or `node unexpose`
+		// puts the old ones back: narrower than needed is the safe way round.
 		_ = os.Remove(nodeExposePath())
 		return fmt.Errorf("restarting main: %w", err)
 	}
 	if err := waitReady("main"); err != nil {
 		return err
 	}
-	// The role and the rules: samenet for a standby on this machine, and the
-	// peer for the one that is not.
+	// The same rules again, now that main is back. Idempotent, and it confirms
+	// the restarted server loaded them.
 	if err := allowReplication(PrimaryContainer()); err != nil {
 		return err
 	}
@@ -328,6 +367,13 @@ func handKeyToPostgres() error {
 // NodeUnexpose takes it back off the network.
 func NodeUnexpose() error {
 	if !Exposed() {
+		// Still put the old rules back if a published-shape pg_hba.conf was
+		// left behind, which an expose that failed at the restart does. Best
+		// effort: with nothing published, narrower rules are not a hazard,
+		// only a surprise.
+		if err := allowReplicationFor(PrimaryContainer(), ""); err != nil {
+			fmt.Printf("Note: could not check main's access rules (%v).\n", err)
+		}
 		fmt.Println("Nothing is published: this install was already off the network.")
 		return nil
 	}
@@ -341,10 +387,11 @@ func NodeUnexpose() error {
 	if err := waitReady("main"); err != nil {
 		return err
 	}
-	// The peer rule goes with it. The role and the samenet rule stay: a standby
-	// on this machine still uses them, and they are narrower than what was
-	// there before either existed.
-	if err := allowReplication(PrimaryContainer()); err != nil {
+	// The rules from before the exposure come back, and the peer rule goes. The
+	// role and the samenet rule stay: a standby on this machine still uses
+	// them. Done after the restart, so the port is gone before the stock rules
+	// return.
+	if err := allowReplicationFor(PrimaryContainer(), ""); err != nil {
 		return err
 	}
 	fmt.Println("Postgres is off the network again. Clients reach branches through the gateway, as before.")

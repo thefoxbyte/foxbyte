@@ -484,14 +484,27 @@ fox ha drill --yes              # kill the primary for real, and report what it 
 fox node expose --address A --peer B --yes   # let a standby on another machine copy this one
 fox node join <token>           # on the other machine: become its standby
 fox node unexpose | leave | status | token
+fox ha witness --primary H:5432 --token T              # on a third host: the second opinion
+fox ha watch --witness https://W:7070/ha/primary --token T   # on the standby: automatic failover
 ```
 
 `fox node expose` is the only thing that puts Postgres on a network, and it is
-off until you ask. It publishes on the one address you name, over TLS with a
+off until you ask. It publishes on the one IP address you name, over TLS with a
 certificate that standby verifies, admitting only `db_replica` — which can copy
-the database and read none of it — and only from the one peer address. The join
-token it prints carries that CA and that role's password, and deliberately not
-the install secret. `fox check` reports the exposure on every run.
+the database and read none of it — and only from the one peer address. While
+published, main's `pg_hba.conf` admits nothing else from outside its own docker
+network: every other role and address is rejected, and `fox node unexpose` puts
+the previous rules back. The join token it prints carries that CA and that
+role's password, and deliberately not the install secret. `fox check` reports
+the exposure on every run. After upgrading from a release before this rule
+change, run `fox node expose` again on a published install.
+
+`fox ha witness` and `fox ha watch` need the same token (`--token` or
+`FOX_HA_WITNESS_TOKEN`, at least 16 characters): every witness answer is signed
+with it and served over HTTPS, and an answer that does not verify never leads to
+a promotion. A setup from an older release without a token stops with an error
+saying how to set one; its `--witness` URL also changes from `http://` to
+`https://`.
 
 On the second machine, `fox node join <token>` copies that primary over TLS and
 runs the copy as a standby, verifying the primary's certificate. Everything else

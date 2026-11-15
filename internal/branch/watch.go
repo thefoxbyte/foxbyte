@@ -28,19 +28,23 @@ import (
 // The promotion is pg_promote(), the fence is a probe of the primary, and the
 // decision is a pure function below so it can be read without a cluster.
 //
-// Opt-in, and refused without a witness. That refusal is the feature: two
+// Opt-in, and refused without a witness, or without the token that lets this
+// machine check the witness's answers (witness.go). That refusal is the feature: two
 // machines cannot tell a dead primary from an unreachable one, so an automatic
 // failover configured without a third opinion is a scheduled split brain. It
 // is better for the command not to work than for it to work most of the time.
 
 // WatchOptions is how the watcher is configured.
 type WatchOptions struct {
-	Witness  string        // the witness's URL (required)
-	Token    string        // the witness's token, if it has one
-	Interval time.Duration // how often to look
-	After    time.Duration // how long the primary must be unreachable before promoting
-	Once     bool          // run one round and report, for a drill or a check
-	DryRun   bool          // decide and say so, but never promote
+	Witness string // the witness's https URL (required)
+	Token   string // the token shared with the witness (required)
+	// Fingerprint pins the witness's certificate (its SHA-256, as the witness
+	// prints it). Optional: the answer's MAC already authenticates it.
+	Fingerprint string
+	Interval    time.Duration // how often to look
+	After       time.Duration // how long the primary must be unreachable before promoting
+	Once        bool          // run one round and report, for a drill or a check
+	DryRun      bool          // decide and say so, but never promote
 }
 
 // Defaults chosen for the plan's "about a minute": a look every 10s and a
@@ -133,6 +137,16 @@ func Watch(o WatchOptions) error {
 			"primaries. Run `%s ha witness --primary <primary-address>` on a third host — where the "+
 			"clients are, not beside either database — and point this at it with --witness", brand.CLI)
 	}
+	// Refused rather than run without a way to trust the answer. A watcher
+	// from an older release has neither a token nor an https URL; it stops
+	// here with the instructions, instead of watching in a mode that a forged
+	// answer could steer.
+	if err := checkWitnessToken(o.Token); err != nil {
+		return err
+	}
+	if err := checkWitnessURL(o.Witness); err != nil {
+		return err
+	}
 	j, ok := CurrentJoin()
 	if !ok {
 		return fmt.Errorf("this machine is not following a primary, so there is nothing to watch for — "+
@@ -161,19 +175,13 @@ func Watch(o WatchOptions) error {
 		} else if downSince.IsZero() {
 			downSince = time.Now()
 		}
-		v := witnessSilent
-		var answer WitnessAnswer
-		var askErr error
-		if !primaryUp {
-			// Only asked when it matters. A witness is somebody else's machine
-			// and there is no reason to talk to it while the primary answers.
-			v, answer, askErr = AskWitness(o.Witness, o.Token, watchAskTimeout)
-		}
 		downFor := time.Duration(0)
 		if !downSince.IsZero() {
 			downFor = time.Since(downSince)
 		}
-		action := watchDecide(primaryUp, v, downFor, o.After)
+		action, v, answer, askErr := watchRound(primaryUp, downFor, o.After, func() (witnessView, WitnessAnswer, error) {
+			return AskWitness(WitnessAsk{URL: o.Witness, Token: o.Token, Fingerprint: o.Fingerprint, Timeout: watchAskTimeout})
+		})
 		report(action, j, v, answer, askErr, downFor)
 
 		if action == watchPromote && !o.DryRun {
@@ -191,6 +199,28 @@ func Watch(o WatchOptions) error {
 		}
 		time.Sleep(o.Interval)
 	}
+}
+
+// watchRound is one round's decision, given whether this machine reaches the
+// primary and a way to ask the witness. Separate from the loop so a test can
+// hand it a witness whose answers fail verification and see what it decides.
+//
+// The witness is only asked when it matters: it is somebody else's machine, and
+// there is no reason to talk to it while the primary answers. An error from the
+// asking always means no opinion, whatever view came with it, so an answer that
+// failed a check can never count as agreement.
+func watchRound(primaryUp bool, downFor, after time.Duration,
+	ask func() (witnessView, WitnessAnswer, error)) (watchAction, witnessView, WitnessAnswer, error) {
+	v := witnessSilent
+	var answer WitnessAnswer
+	var err error
+	if !primaryUp {
+		v, answer, err = ask()
+		if err != nil {
+			v = witnessSilent
+		}
+	}
+	return watchDecide(primaryUp, v, downFor, after), v, answer, err
 }
 
 func report(a watchAction, j Joined, v witnessView, answer WitnessAnswer, askErr error, downFor time.Duration) {

@@ -651,6 +651,16 @@ assert_eq "…publishing the port on that address only, not every interface" \
 assert_eq "…with TLS actually serving" "$(pg pg-main 'SHOW ssl')" "on"
 assert_eq "…admitting the other machine only over TLS" \
   "$(sudo docker exec -u postgres pg-main bash -c 'grep -cF "hostssl replication db_replica 10.9.9.10/32 scram-sha-256" "$PGDATA/pg_hba.conf"')" "1"
+# The stock rule admits every role from every address, which on a published
+# port goes around the gateway. It is replaced, and the file ends in a reject.
+assert_eq "…with no rule admitting every role from everywhere" \
+  "$(sudo docker exec -u postgres pg-main bash -c 'grep -cE "^host[[:space:]]+all[[:space:]]+all[[:space:]]+all[[:space:]]+scram" "$PGDATA/pg_hba.conf" || true')" "0"
+assert_eq "…and everything else rejected" \
+  "$(sudo docker exec -u postgres pg-main bash -c 'grep -v "^#" "$PGDATA/pg_hba.conf" | grep -v "^$" | tail -1' | awk '{print $1, $2, $3, $4, $5}')" "host replication all all reject"
+assert_eq "…while a client on the docker network, as the gateway is, still gets in" \
+  "$(sudo docker run --rm --network dbnet -e PGPASSWORD="$(grep '^PGPASSWORD=' "$HOME/$BRAND_STATE_DIR/pg.env" | cut -d= -f2-)" \
+      "$(sudo docker inspect -f '{{.Config.Image}}' pg-main)" \
+      psql "postgresql://dbadmin@pg-main/appdb" -tAc "SELECT 'still-ok'" 2>&1 | head -1)" "still-ok"
 # The private key must not be in the data directory: pg_basebackup copies
 # PGDATA, so a key kept there is handed to every standby that joins.
 assert_eq "…and the private key is not where a base backup would copy it" \
@@ -672,6 +682,8 @@ assert_eq "unexpose exits 0" "$?" "0"
 assert_eq "…so no host port is published" "$(sudo docker port pg-main 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_eq "…the peer rule is gone" \
   "$(sudo docker exec -u postgres pg-main bash -c 'grep -c "^hostssl" "$PGDATA/pg_hba.conf" || true')" "0"
+assert_eq "…the rules from before the exposure are back" \
+  "$(sudo docker exec -u postgres pg-main bash -c 'grep -c "reject" "$PGDATA/pg_hba.conf" || true')" "0"
 assert_eq "…and the local standby's rule is kept" \
   "$(sudo docker exec -u postgres pg-main bash -c 'grep -cF "host replication db_replica samenet" "$PGDATA/pg_hba.conf"')" "1"
 # Publishing and unpublishing each restart main, which interrupts replication.
@@ -902,28 +914,50 @@ $S ha disable >/dev/null 2>&1
 # What is being tested is the decision, which is the part that runs unattended.
 WITPORT=7071
 DEADPORT=59999
+# The witness and the watcher share a token, which signs every answer. The one
+# on 7073 has a different token, standing in for a witness that is not ours.
+WTOKEN="$(openssl rand -hex 32)"
+OTHERTOKEN="$(openssl rand -hex 32)"
 assert_contains "automatic failover refuses to run without a witness" \
   "$($S ha watch 2>&1 | head -2)" "needs a witness"
+assert_contains "…or without a token to check its answers" \
+  "$($S ha watch --witness https://127.0.0.1:$WITPORT/ha/primary 2>&1 | head -2)" "no witness token is set"
+assert_contains "…or over plain HTTP" \
+  "$($S ha watch --witness http://127.0.0.1:$WITPORT/ha/primary --token "$WTOKEN" 2>&1 | head -2)" "https://"
 assert_contains "…and on a machine that follows nobody" \
-  "$($S ha watch --witness http://127.0.0.1:$WITPORT/ha/primary 2>&1 | head -2)" "not following a primary"
+  "$($S ha watch --witness https://127.0.0.1:$WITPORT/ha/primary --token "$WTOKEN" 2>&1 | head -2)" "not following a primary"
+assert_contains "a witness refuses to start without a token" \
+  "$($S ha witness --primary 127.0.0.1:8080 --addr 127.0.0.1:7079 2>&1 | head -2)" "no witness token is set"
 # The witness itself: one question, answered truthfully both ways.
-$S ha witness --primary 127.0.0.1:8080 --addr 127.0.0.1:$WITPORT >/tmp/wit-up.log 2>&1 &
+$S ha witness --primary 127.0.0.1:8080 --addr 127.0.0.1:$WITPORT --token "$WTOKEN" >/tmp/wit-up.log 2>&1 &
 WUP=$!
-$S ha witness --primary 127.0.0.1:$DEADPORT --addr 127.0.0.1:7072 >/tmp/wit-down.log 2>&1 &
+$S ha witness --primary 127.0.0.1:$DEADPORT --addr 127.0.0.1:7072 --token "$WTOKEN" >/tmp/wit-down.log 2>&1 &
 WDOWN=$!
-$S ha witness --primary 127.0.0.1:8080 --addr 127.0.0.1:7073 --token s3cret >/tmp/wit-tok.log 2>&1 &
+$S ha witness --primary 127.0.0.1:8080 --addr 127.0.0.1:7073 --token "$OTHERTOKEN" >/tmp/wit-tok.log 2>&1 &
 WTOK=$!
 sleep 2
+# witask PORT TOKEN asks the way a watcher does: a fresh nonce, and an HMAC of
+# it under the token (length-prefixed fields, as witness.go writes them).
+witask() {
+  local n mac
+  n="$(openssl rand -hex 32)"
+  mac="$(printf '22:fox-witness-request-v1\n64:%s\n' "$n" | openssl dgst -sha256 -hmac "$2" -r | cut -d' ' -f1)"
+  curl -sk "${@:3}" -H "Authorization: Fox-Witness $mac" "https://127.0.0.1:$1/ha/primary?nonce=$n"
+}
 assert_eq "a witness says so when it reaches the primary" \
-  "$(curl -s http://127.0.0.1:$WITPORT/ha/primary | jget reachable)" "True"
+  "$(witask $WITPORT "$WTOKEN" | jget reachable)" "True"
 assert_eq "…and when it does not" \
-  "$(curl -s http://127.0.0.1:7072/ha/primary | jget reachable)" "False"
+  "$(witask 7072 "$WTOKEN" | jget reachable)" "False"
+assert_eq "…and signs what it says" \
+  "$(witask 7072 "$WTOKEN" | jget mac | wc -c | tr -d ' ')" "65"
+assert_eq "it answers over TLS only" \
+  "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$WITPORT/ha/primary)" "400"
 # 404, not 401: a witness that confirms it is one to anybody who asks is a map
 # of somebody's database cluster.
 assert_eq "a stranger is not told that this is a witness at all" \
-  "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7073/ha/primary)" "404"
-assert_eq "…and the token gets an answer" \
-  "$(curl -s -H 'Authorization: Bearer s3cret' http://127.0.0.1:7073/ha/primary | jget reachable)" "True"
+  "$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:7073/ha/primary)" "404"
+assert_eq "…nor is somebody with the wrong token" \
+  "$(witask 7073 "$WTOKEN" -o /dev/null -w '%{http_code}')" "404"
 
 $S ha enable >/dev/null 2>&1; sleep 5
 printf '{"address":"127.0.0.1","port":%s,"role":"db_replica","at":"2026-10-13T00:00:00Z"}\n' "$DEADPORT" > "$HOME/$BRAND_STATE_DIR/node-joined.json"
@@ -931,14 +965,18 @@ printf '{"address":"127.0.0.1","port":%s,"role":"db_replica","at":"2026-10-13T00
 # somebody else can, so this machine is the one that is cut off. Promoting here
 # would make a second primary.
 assert_contains "a watcher refuses while the witness still reaches the primary" \
-  "$($S ha watch --witness http://127.0.0.1:$WITPORT/ha/primary --once --after 0s --dry-run 2>&1 | tail -1)" \
+  "$($S ha watch --witness https://127.0.0.1:$WITPORT/ha/primary --token "$WTOKEN" --once --after 0s --dry-run 2>&1 | tail -1)" \
   "the one that is cut off"
 # And having no second opinion is not agreement.
 assert_contains "…and refuses when the witness cannot be asked at all" \
-  "$($S ha watch --witness http://127.0.0.1:7999/ha/primary --once --after 0s --dry-run 2>&1 | tail -1)" \
+  "$($S ha watch --witness https://127.0.0.1:7999/ha/primary --token "$WTOKEN" --once --after 0s --dry-run 2>&1 | tail -1)" \
+  "A promotion needs two opinions"
+# A witness whose answers do not verify under this token is no opinion either.
+assert_contains "…and when the witness's answer does not verify" \
+  "$($S ha watch --witness https://127.0.0.1:7073/ha/primary --token "$WTOKEN" --once --after 0s --dry-run 2>&1 | tail -1)" \
   "A promotion needs two opinions"
 assert_contains "…but promotes when both agree the primary has gone" \
-  "$($S ha watch --witness http://127.0.0.1:7072/ha/primary --once --after 0s --dry-run 2>&1 | tail -1)" \
+  "$($S ha watch --witness https://127.0.0.1:7072/ha/primary --token "$WTOKEN" --once --after 0s --dry-run 2>&1 | tail -1)" \
   "promoting"
 # A dry run decided all three and changed nothing.
 assert_eq "…and a dry run promoted nothing" "$(cat "$HOME/$BRAND_STATE_DIR/primary" 2>/dev/null)" "main"
@@ -952,7 +990,7 @@ assert_eq "…and a dry run promoted nothing" "$(cat "$HOME/$BRAND_STATE_DIR/pri
 assert_contains "a local drill is refused on a machine that follows a primary elsewhere" \
   "$($S ha drill --yes --writes 10 2>&1 | head -2)" "ha drill --takeover"
 # For real now: the watcher promotes, the drill measures.
-( sleep 6; "$S" ha watch --witness http://127.0.0.1:7072/ha/primary --after 0s >/tmp/watch-real.log 2>&1 ) &
+( sleep 6; "$S" ha watch --witness https://127.0.0.1:7072/ha/primary --token "$WTOKEN" --after 0s >/tmp/watch-real.log 2>&1 ) &
 TD=/tmp/takeover.out
 timeout 180 $S ha drill --takeover --wait 90s >"$TD" 2>&1
 assert_eq "the takeover drill runs and exits 0" "$?" "0"
