@@ -158,7 +158,7 @@ administrator — so keep a copy of the anchors, or the key, where they are not.
 # with the public key, so a forged anchor is caught too
 fox blackbox anchor-key > anchor.pub
 
-# against a live branch, through the FoxByte gateway with an API key
+# against a live branch, through the FoxByte gateway with an admin's API key
 fox-verify --dsn 'postgresql://dbadmin:<api-key>@localhost:6432/main?sslmode=require' \
            --anchors ~/.fox/anchors/main --pubkey anchor.pub
 
@@ -166,6 +166,11 @@ fox-verify --dsn 'postgresql://dbadmin:<api-key>@localhost:6432/main?sslmode=req
 fox ledger export main > main-ledger.jsonl
 fox-verify --export main-ledger.jsonl --anchors ./anchors/main
 ```
+
+Every hash covers the entry's statement, and a client login may read only the
+text of its own entries (`bb.ledger_statement`), so `--dsn` needs an admin's
+login (`fox admin grant`) or the superuser; anyone else verifies an export, or
+asks the database to check its own chain with `SELECT * FROM bb.ledger_verify()`.
 
 Exit status is `0` when intact, `1` when tampering is detected, `2` on a usage or
 connection error. `--json` prints the full report.
