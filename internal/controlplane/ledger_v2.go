@@ -102,6 +102,9 @@ func registerLedgerV2(mux *http.ServeMux) {
 			Name string `json:"name"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !allowCreate(w, r) {
+			return
+		}
 		res, err := branch.BranchBeforeEntry(r.PathValue("name"), id, body.Name, nil)
 		if err == nil {
 			err = own(r, res.Branch)

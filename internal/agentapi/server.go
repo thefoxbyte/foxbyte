@@ -106,6 +106,17 @@ func Serve(addr string) error {
 		var p branch.Provenance
 		_ = json.NewDecoder(r.Body).Decode(&p)
 		u, _ := auth.UserFrom(r.Context())
+		// The account's branch limit and create rate; admins pass.
+		if err := branch.AllowBranchCreate(u.ID, acl.Admin(u)); err != nil {
+			code := http.StatusForbidden
+			if errors.Is(err, branch.ErrCreateRate) {
+				code = http.StatusTooManyRequests
+			} else if !errors.Is(err, branch.ErrBranchQuota) {
+				code = http.StatusInternalServerError
+			}
+			writeErr(w, code, err)
+			return
+		}
 		if !p.Requested() {
 			info, err := branch.CreateAgentBranchFor(u.ID, r.PathValue("id"))
 			if err != nil {

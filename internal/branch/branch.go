@@ -887,7 +887,16 @@ var ErrParentNotFound = errors.New("no branch to create from")
 
 // Create makes an instant copy-on-write branch of parent (default "main") and
 // starts a Postgres container serving it.
-func Create(name, parent string) error {
+//
+// Any key scoped to the name is revoked first (see revokeBranchKeys): a new
+// branch under an old name is somebody else's, and must not open to the key
+// of the one it replaces, even if that one's delete never got as far as
+// revoking it.
+func Create(name, parent string) error { return createBranch(name, parent, false) }
+
+// createBranch is Create holding the branch's lock. keepKeys is for a reset,
+// which makes the branch again for the same people and keeps their keys.
+func createBranch(name, parent string, keepKeys bool) error {
 	if parent == "" {
 		parent = "main"
 	}
@@ -897,6 +906,16 @@ func Create(name, parent string) error {
 	if err := checkName(parent); err != nil {
 		return err
 	}
+	unlock, err := lockBranch(name, "created")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return createLocked(name, parent, keepKeys)
+}
+
+// createLocked is Create for a caller that holds the branch's lock.
+func createLocked(name, parent string, keepKeys bool) error {
 	// Last, as well as at each docker command: the dataset is part of what the
 	// console lists.
 	defer noteStateChange()
@@ -904,15 +923,32 @@ func Create(name, parent string) error {
 	forgetCatalogScan(name)
 	// Cloning a branch that doesn't exist fails deep in the storage layer with a
 	// message about datasets or snapshots; say what's actually wrong.
-	if !activeStorage().exists(parent) {
+	if !branchExists(parent) {
 		return fmt.Errorf("%w: %q", ErrParentNotFound, parent)
 	}
-	if activeStorage().exists(name) {
+	if branchExists(name) {
 		return fmt.Errorf("branch %q already exists", name)
 	}
-	if err := checkNoContainer(name, ContainerState(name)); err != nil {
+	// Asked now, under the lock, and a docker that does not answer is a
+	// refusal: making the branch starts by removing any container of its name.
+	f, err := probeContainer(container(name))
+	if err != nil {
+		return fmt.Errorf("branch %q: %w", name, err)
+	}
+	if err := checkNoContainer(name, f.state); err != nil {
 		return err
 	}
+	// Only once it is certain the name is free: an existing branch keeps its
+	// keys when somebody asks to make it again.
+	if !keepKeys {
+		revokeBranchKeys(name, "a new branch was made under this name")
+	}
+	return buildBranch(name, parent)
+}
+
+// buildBranch is the part of Create that makes the clone and its container, a
+// variable so a test can stand in for the storage and docker work.
+var buildBranch = func(name, parent string) error {
 	// A masked branch being made, or one that failed, is copied by nobody;
 	// a copy of an open one is masked too (maskedbranch.go).
 	if err := inheritMasked(name, parent); err != nil {
@@ -946,29 +982,63 @@ func Create(name, parent string) error {
 
 // Delete stops a branch's container and destroys its dataset and origin
 // snapshot. Refuses to delete "main".
-func Delete(name string) error {
+//
+// Every key scoped to the branch is revoked first, whichever door the delete
+// came through (the console, the CLI, the Agent API, MCP): a scoped key is let
+// past the gateway's per-branch check, so one that outlived its branch would
+// open whatever is next made under the name.
+func Delete(name string) error { return deleteBranch(name, false) }
+
+// deleteBranch is Delete holding the branch's lock; keepKeys as for
+// createBranch.
+func deleteBranch(name string, keepKeys bool) error {
 	if err := checkName(name); err != nil {
 		return err
 	}
 	if name == "main" {
 		return fmt.Errorf("refusing to delete the primary branch 'main'")
 	}
+	unlock, err := lockBranch(name, "deleted")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return deleteLocked(name, keepKeys)
+}
+
+// deleteLocked is Delete for a caller that holds the branch's lock. A wake
+// queued behind it looks again once it has the lock, finds no data, and says
+// the branch does not exist rather than starting it again.
+func deleteLocked(name string, keepKeys bool) error {
 	defer noteStateChange() // after the dataset goes, which the console lists
+	// Before anything is removed, so a delete that fails part way still leaves
+	// no key behind.
+	if !keepKeys {
+		revokeBranchKeys(name, "its branch was deleted")
+	}
 	forgetBranchRoles(name)
 	forgetCatalogScan(name)
 	forgetBranchUnmasks(name)
-	removeContainer(container(name))
-	if err := activeStorage().destroy(name); err != nil {
+	if err := teardownBranch(name); err != nil {
 		return err
 	}
 	forgetMaskedBranch(name)
 	return nil
 }
 
+// teardownBranch removes a branch's container and its data, a variable so a
+// test can stand in for docker and the storage driver.
+var teardownBranch = func(name string) error {
+	removeContainer(container(name))
+	return activeStorage().destroy(name)
+}
+
 // Reset re-creates a branch as a fresh copy-on-write clone of parent (default
 // "main"), discarding everything done on it. The most-wanted operation in an
 // agent workflow — start over cheaply — and near-instant on the existing
 // primitives.
+//
+// The branch's keys and owner stay: it is the same branch, started over.
 func Reset(name, parent string) error {
 	if err := checkName(name); err != nil {
 		return err
@@ -979,18 +1049,30 @@ func Reset(name, parent string) error {
 	if parent == "" {
 		parent = "main"
 	}
-	// A masked branch is made again as one, from its own source.
+	if err := checkName(parent); err != nil {
+		return err
+	}
+	// A masked branch is made again as one, from its own source. Not under one
+	// lock throughout: masking works on the new branch through the ordinary
+	// paths, which take the lock themselves.
 	if r, ok := MaskedBranchOf(name); ok && !r.Inherited {
-		if err := Delete(name); err != nil {
+		if err := deleteBranch(name, true); err != nil {
 			return err
 		}
-		_, err := CreateMasked(name, r.From, r.By, func(s string) { fmt.Println("  " + s) })
+		_, err := createMasked(name, r.From, r.By, func(s string) { fmt.Println("  " + s) }, true)
 		return err
 	}
-	if err := Delete(name); err != nil {
+	// Held from the delete to the end of the create, so nothing can wake the
+	// branch, or make another under its name, in between.
+	unlock, err := lockBranch(name, "reset")
+	if err != nil {
 		return err
 	}
-	return Create(name, parent)
+	defer unlock()
+	if err := deleteLocked(name, true); err != nil {
+		return err
+	}
+	return createLocked(name, parent, true)
 }
 
 // List shows the branches and their containers.
@@ -1518,8 +1600,15 @@ func DeleteAgentBranch(agentID string) error {
 	if err := checkName(name); err != nil {
 		return err
 	}
-	revokeAgentKeys(name) // best-effort; reports its own failure
-	return Delete(name)
+	// Delete revokes the keys, as it does for every caller.
+	err := Delete(name)
+	// The owner goes once the branch has: kept after a failed delete, so the
+	// owner can try again, and dropped when there is nothing left to own, so
+	// it is not counted against their branch limit.
+	if err == nil || !branchExists(name) {
+		forgetAgentBranch(name)
+	}
+	return err
 }
 
 // BackendAddr returns host:port where a branch's Postgres is reachable, used by
@@ -1717,10 +1806,68 @@ func Suspend(name string) error {
 	if err := checkName(name); err != nil {
 		return err
 	}
-	if err := suspendRefusal(name, PrimaryContainer(), ContainerState("standby") != "absent"); err != nil {
+	if err := checkSuspendable(name); err != nil {
 		return err
 	}
-	return run("docker", "stop", container(name))
+	// Under the lock, so a stop never lands in the middle of a wake, a create
+	// or a reset of the same branch.
+	unlock, err := lockBranch(name, "suspended")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return stopBranch(name)
+}
+
+// checkSuspendable is suspendRefusal for the install as it is now, a variable
+// so a test can stand in for docker.
+var checkSuspendable = func(name string) error {
+	return suspendRefusal(name, PrimaryContainer(), ContainerState("standby") != "absent")
+}
+
+// stopBranch stops a branch's container, a variable so a test can stand in
+// for docker.
+var stopBranch = func(name string) error { return run("docker", "stop", container(name)) }
+
+// ErrBranchInUse: the idle reaper found a branch in use after all, once it
+// held the branch's lock.
+var ErrBranchInUse = errors.New("branch is in use")
+
+// probeActive counts a branch's client connections for SuspendIdle, on a
+// short deadline: a docker slow to answer is no reason to hold the lock long.
+var probeActive = func(name string) (int, error) { return activeConnectionsWithin(execProbe, name) }
+
+// SuspendIdle is Suspend for the gateway's idle reaper, which has decided the
+// branch is idle and must not be wrong about it. Holding the branch's lock, it
+// refuses a branch that someone was routed to within suspendGrace (a client
+// still connecting, which Postgres does not count yet), and one with a client
+// connection now. The reaper's own probes ran before the lock was granted, and
+// a wake may have finished in between.
+//
+// Suspend itself does not ask: a person who says to suspend a branch means it.
+func SuspendIdle(name string) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
+	if err := checkSuspendable(name); err != nil {
+		return err
+	}
+	unlock, err := lockBranch(name, "suspended")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if routedWithin(name, suspendGrace) {
+		return fmt.Errorf("%w: %q had a connection routed to it in the last %s", ErrBranchInUse, name, suspendGrace)
+	}
+	n, err := probeActive(name)
+	if err != nil {
+		return fmt.Errorf("not suspending %q: counting its connections: %w", name, err)
+	}
+	if n > 0 {
+		return fmt.Errorf("%w: %q has %d client connection(s)", ErrBranchInUse, name, n)
+	}
+	return stopBranch(name)
 }
 
 // suspendRefusal says why a branch must not be suspended: the gateway never wakes
@@ -1826,9 +1973,26 @@ func EnsureRunning(name string) (string, error) {
 	// The ordinary case, and the only one remembered answers can settle: it was
 	// serving a moment ago, and if that has stopped being true the dial fails
 	// and the caller comes back through here.
+	noteRouted(name)
 	if f, err := containers.lookup(cont); err == nil && f.serving() {
 		return f.addr(), nil
 	}
+	// One wake per branch in this process, and that one under the branch's
+	// lock, so it neither races a wake from another process nor lands in the
+	// middle of a delete, a reset or a suspend.
+	return wakeOnce(name, func() (string, error) { return wakeLocked(name) })
+}
+
+// wakeLocked is EnsureRunning's slow path: take the branch's lock, then decide
+// on what docker and the storage say now. What was seen before the lock was
+// granted may describe a branch somebody has since deleted.
+func wakeLocked(name string) (string, error) {
+	unlock, err := lockBranch(name, "woken")
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	cont := container(name)
 	// Anything else may start or recreate a container, so it stands on an
 	// answer asked for here and now.
 	f, err := probeContainer(cont)

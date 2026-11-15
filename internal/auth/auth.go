@@ -582,6 +582,51 @@ func (s *Store) RevokeScopeKeys(scope string) error {
 	return err
 }
 
+// RevokeBranchKeys is RevokeScopeKeys for a branch that has gone or is being
+// made again, and says how many keys it revoked. Each revocation is written to
+// the security log like any other key revoked, with why, so a key that stopped
+// working can be traced to the delete that ended it.
+func (s *Store) RevokeBranchKeys(branch, actor, why string) (int, error) {
+	if strings.TrimSpace(branch) == "" {
+		return 0, nil
+	}
+	rows, err := s.db.Query(`SELECT id, prefix FROM api_keys WHERE scope=?`, branch)
+	if err != nil {
+		return 0, err
+	}
+	type key struct{ id, prefix string }
+	var keys []key
+	for rows.Next() {
+		var k key
+		if err := rows.Scan(&k.id, &k.prefix); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, k := range keys {
+		var res sql.Result
+		err := retryBusy(func() error {
+			var e error
+			res, e = s.db.Exec(`DELETE FROM api_keys WHERE id=? AND scope=?`, k.id, branch)
+			return e
+		})
+		if err != nil {
+			return n, err
+		}
+		if c, _ := res.RowsAffected(); c > 0 {
+			n++
+			s.Audit(EvKeyRevoked, actor, "key "+k.id+" ("+k.prefix+"…) scoped to branch "+branch, "", why)
+		}
+	}
+	return n, nil
+}
+
 // VerifyKey resolves an API key to its user and its scope. A false result means
 // "not authenticated"; a genuine store failure (as opposed to an unknown key) is
 // logged so it is diagnosable rather than silently masquerading as a bad key.
