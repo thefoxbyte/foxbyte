@@ -70,6 +70,11 @@ type Verdict struct {
 	// applied: nothing here decides that a table's updates do not matter.
 	Alternatives []string `json:"alternatives,omitempty"`
 	Reason       string   `json:"reason,omitempty"`
+	// StreamingPII is the confirmed personal-data columns a streaming table
+	// sends to subscribers. Set by Survey and Look, which can read the
+	// findings: a table enabled before column choice existed streams every
+	// column, and this is how anyone finds out that includes these.
+	StreamingPII []string `json:"streaming_pii,omitempty"`
 }
 
 // Costly reports whether any change in this verdict has an ongoing price.
@@ -144,10 +149,10 @@ func Assess(t Table, events []string, published bool) (v Verdict) {
 			Why: "a change feed carries whole rows, so it may only stream what db_client could " +
 				"already read — every client session is logged in as that role",
 		})
-	} else if len(t.ColumnsHidden) > 0 {
+	} else if hidden := t.hiddenStreamed(); len(hidden) > 0 {
 		v.Fixes = append(v.Fixes, Fix{
 			SQL: fmt.Sprintf("GRANT SELECT (%s) ON %s TO db_client;",
-				strings.Join(t.ColumnsHidden, ", "), t.Qualified()),
+				strings.Join(hidden, ", "), t.Qualified()),
 			Why: "db_client cannot read these columns, and a change feed carries whole rows",
 		})
 	}

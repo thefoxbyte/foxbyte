@@ -42,6 +42,10 @@ type Table struct {
 	// SELECT and is unreadable, which would only show up once the feed was on.
 	ClientCanUseSchema bool     `json:"client_can_use_schema"`
 	ColumnsHidden      []string `json:"columns_hidden,omitempty"` // columns db_client may not read
+	// StreamColumns is the columns the feed carries for this table, as chosen
+	// at enable (columns.go); nil is every column, which is what a table
+	// enabled before the choice existed streams.
+	StreamColumns []string `json:"stream_columns,omitempty"`
 
 	// IsSystem is FoxByte's own schema or Postgres's. Only tables an
 	// application made are streamable: bb holds the recorded text of every
@@ -108,10 +112,40 @@ type Request struct {
 	// FullIdentity is --replica-identity=full: the caller accepting the extra
 	// WAL per update in exchange for streaming a table with no primary key.
 	FullIdentity bool
+	// Columns is --columns: the only columns subscribers receive. Empty
+	// streams every column. The row's key is added whatever is named.
+	Columns []string
+	// OldValues is --old-values: the previous row on every update and
+	// delete, which takes REPLICA IDENTITY FULL even on a table with a key.
+	OldValues bool
+	// AllowPII is --allow-pii: stream columns personal-data review confirmed,
+	// knowingly. Without it Enable refuses them by name.
+	AllowPII bool
+	// Actor is who asked, recorded with the column choice.
+	Actor string
 }
 
 // Qualified is the table as a person wrote it.
 func (t Table) Qualified() string { return t.Schema + "." + t.Name }
+
+// hiddenStreamed is the columns db_client may not read that the feed would
+// still carry. A column left out of the stream is not a problem however it is
+// granted: it never reaches a subscriber.
+func (t Table) hiddenStreamed() []string {
+	if t.StreamColumns == nil {
+		return t.ColumnsHidden
+	}
+	var out []string
+	for _, c := range t.ColumnsHidden {
+		for _, s := range t.StreamColumns {
+			if c == s {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
 
 // Events is the request's events, defaulted and ordered.
 func (r Request) EventList() []string {
@@ -150,7 +184,7 @@ func Preflight(r Request) error {
 	// refusal a command prints. They used to be separate implementations of the
 	// same rules, which is two places to forget the same thing.
 	t := r.Table
-	if r.FullIdentity {
+	if r.FullIdentity || r.OldValues {
 		// The caller has asked for the identity this check would otherwise
 		// demand, and Enable sets it moments from now.
 		t.ReplicaIdentity = 'f'
