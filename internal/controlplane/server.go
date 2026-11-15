@@ -869,9 +869,204 @@ func runActingFor(ctx context.Context, conn *pgx.Conn, sql, token string, requir
 	return out
 }
 
-// runOn runs sql on an open session: one statement through the extended
-// protocol, or a script when Postgres refuses that.
+// consoleRowCap is the most rows a console result holds.
+const consoleRowCap = 1000
+
+// runOn runs sql on an open session: one query through a cursor, so it stops
+// at the cap, else one statement through the extended protocol, or a script
+// when Postgres refuses that.
 func runOn(ctx context.Context, conn *pgx.Conn, sql string) map[string]any {
+	if readsRows(sql) {
+		if out, ran := runCapped(ctx, conn, sql); ran {
+			return out
+		}
+	}
+	return runStreamed(ctx, conn, sql)
+}
+
+// capCursor names the cursor runCapped opens. Unlikely to be a name the
+// user's own SQL uses, and it only lives for one request either way.
+const capCursor = "fox_console_cap"
+
+// runCapped runs a query through a cursor and reads one row past the cap, so
+// Postgres stops there instead of working through the rest.
+//
+// The console shows at most 1,000 rows, but the plain path read the whole
+// result off the wire to finish the statement: a 30-million-row SELECT took
+// 3.9 s to show 1,000 rows, against 0.4 s for a query that only had 1,000.
+// Postgres stops a portal that nobody fetches from, and a cursor is the
+// portal the console can name. Cancelling the query at the cap was the other
+// way, and it is not used: a cancel aborts the transaction, so a SELECT that
+// called a function which writes, or a data-modifying WITH, would lose what
+// it did, and in an act_for run the whole transaction would go with it.
+//
+// Postgres decides what a cursor may hold: only a single SELECT, VALUES or
+// TABLE, with no data-modifying WITH. Anything else, a script among them, is
+// refused at DECLARE before it runs, and ran is false: the caller runs the
+// SQL the way it always has, and nothing has happened twice. A syntax error
+// takes that path too, so its position is counted in the user's own text.
+//
+// DECLARE goes through the extended protocol on purpose. That protocol
+// refuses a second command, so the cursor can never wrap the first statement
+// of a script and run the rest outside it.
+//
+// The cursor lives in a transaction: one opened here and committed after the
+// fetch, or, when the session is already in one (act_for), a savepoint inside
+// it. Either way the session is idle again before it goes back to the pool.
+// A failure part way leaves a transaction open or the connection closed, and
+// the pool closes such a connection rather than reuse it (consolepool.go).
+func runCapped(ctx context.Context, conn *pgx.Conn, sql string) (out map[string]any, ran bool) {
+	pc := conn.PgConn()
+	open, undo, done := "BEGIN", "ROLLBACK", "COMMIT"
+	switch pc.TxStatus() {
+	case 'I':
+	case 'T':
+		open = "SAVEPOINT " + capCursor
+		undo = "ROLLBACK TO SAVEPOINT " + capCursor + "; RELEASE SAVEPOINT " + capCursor
+		done = "RELEASE SAVEPOINT " + capCursor
+	default:
+		return nil, false // a failed transaction: the plain path reports it
+	}
+	if _, err := conn.Exec(ctx, open); err != nil {
+		return nil, false
+	}
+	if _, err := pc.ExecParams(ctx, "DECLARE "+capCursor+" NO SCROLL CURSOR FOR "+sql,
+		nil, nil, nil, nil).Close(); err != nil {
+		// Not a query a cursor can hold, or not one Postgres can parse. Nothing
+		// ran; put the session back as it was and let the plain path answer.
+		if _, uerr := conn.Exec(ctx, undo); uerr != nil {
+			return queryErr(uerr), true
+		}
+		return nil, false
+	}
+	fail := func(err error) map[string]any {
+		_, _ = conn.Exec(ctx, undo)
+		return map[string]any{"error": err.Error()}
+	}
+	// Described afresh each time rather than cached: the same FETCH text
+	// returns different columns for each query it reads.
+	rows, err := conn.Query(ctx, fmt.Sprintf("FETCH FORWARD %d FROM %s", consoleRowCap+1, capCursor),
+		pgx.QueryExecModeDescribeExec)
+	if err != nil {
+		return fail(err), true
+	}
+	cols, got, err := readRows(conn, rows, consoleRowCap+1)
+	if err != nil {
+		return fail(err), true
+	}
+	// Closing the cursor is what ends the query on the server, mid-scan if
+	// it got that far.
+	if _, err := conn.Exec(ctx, "CLOSE "+capCursor); err != nil {
+		return fail(err), true
+	}
+	if _, err := conn.Exec(ctx, done); err != nil {
+		return queryErr(err), true
+	}
+	truncated := len(got) > consoleRowCap
+	if truncated {
+		got = got[:consoleRowCap]
+	}
+	tag := fmt.Sprintf("SELECT %d", len(got))
+	one := map[string]any{"columns": cols, "rows": got, "command": tag}
+	res := map[string]any{"columns": cols, "rows": got, "command": tag}
+	if truncated {
+		// The count of rows the query would have returned is not known: not
+		// knowing it is the point. Said, so nobody takes 1,000 for the total.
+		note := fmt.Sprintf("showing the first %d rows: the query was stopped there, so the total is not known. Export the result for every row.", consoleRowCap)
+		for _, m := range []map[string]any{one, res} {
+			m["truncated"] = true
+			m["note"] = note
+		}
+	}
+	one["results"] = []map[string]any{res}
+	return one, true
+}
+
+// readsRows reports whether sql starts the way a cursor's query can: SELECT,
+// VALUES, TABLE or WITH, after any comments and opening brackets. Only a
+// first look, to spare every INSERT a refused DECLARE; Postgres makes the
+// real decision.
+func readsRows(sql string) bool {
+	s := sql
+	for {
+		s = strings.TrimLeft(s, " \t\r\n\f(")
+		switch {
+		case strings.HasPrefix(s, "--"):
+			i := strings.IndexByte(s, '\n')
+			if i < 0 {
+				return false
+			}
+			s = s[i+1:]
+			continue
+		case strings.HasPrefix(s, "/*"):
+			// Postgres's block comments nest.
+			depth, i := 0, 0
+			for i < len(s) {
+				if strings.HasPrefix(s[i:], "/*") {
+					depth, i = depth+1, i+2
+				} else if strings.HasPrefix(s[i:], "*/") {
+					depth, i = depth-1, i+2
+					if depth == 0 {
+						break
+					}
+				} else {
+					i++
+				}
+			}
+			if depth != 0 {
+				return false
+			}
+			s = s[i:]
+			continue
+		}
+		break
+	}
+	end := strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z')
+	})
+	if end < 0 {
+		end = len(s)
+	}
+	switch strings.ToLower(s[:end]) {
+	case "select", "values", "table", "with":
+		return true
+	}
+	return false
+}
+
+// readRows reads up to limit rows as the console renders them.
+func readRows(conn *pgx.Conn, rows pgx.Rows, limit int) ([]string, [][]any, error) {
+	defer rows.Close()
+	fds := rows.FieldDescriptions()
+	cols := make([]string, len(fds))
+	for i, f := range fds {
+		cols[i] = f.Name
+	}
+	out := [][]any{}
+	for rows.Next() {
+		if len(out) >= limit {
+			break
+		}
+		vals, err := rows.Values()
+		if err != nil {
+			return nil, nil, err
+		}
+		row := make([]any, len(vals))
+		for i, v := range vals {
+			row[i] = cell(v, fds[i].DataTypeOID, conn.TypeMap())
+		}
+		out = append(out, row)
+	}
+	rows.Close()
+	return cols, out, rows.Err()
+}
+
+// runStreamed is how the console ran every statement before runCapped: one
+// statement through the extended protocol, or a script when Postgres refuses
+// that. A statement that returns more rows than the cap is still read to its
+// end, because stopping it part way would change what it did; it is only
+// reached by statements a cursor cannot hold.
+func runStreamed(ctx context.Context, conn *pgx.Conn, sql string) map[string]any {
 	rows, err := conn.Query(ctx, sql)
 	if err != nil {
 		// Postgres refuses more than one command in the extended protocol, which
@@ -899,7 +1094,7 @@ func runOn(ctx context.Context, conn *pgx.Conn, sql string) map[string]any {
 	}
 	out := [][]any{}
 	for rows.Next() {
-		if len(out) >= 1000 {
+		if len(out) >= consoleRowCap {
 			break
 		}
 		vals, err := rows.Values()

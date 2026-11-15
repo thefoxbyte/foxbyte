@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -499,6 +500,11 @@ func waitReady(name string) error {
 // container. On first run Postgres initializes a fresh cluster on the dataset.
 func Init() error {
 	if err := ensureNetwork(); err != nil {
+		return err
+	}
+	// A promotion a crash interrupted is settled first, so the marker read
+	// below names the server that really is the primary (ha.go).
+	if err := settlePromotion(); err != nil {
 		return err
 	}
 	// After `fox ha failover` the promoted standby is the primary; the old main
@@ -1657,10 +1663,68 @@ func primaryBranch() string {
 }
 
 // setPrimary records the branch name now serving as primary.
+//
+// Written whole or not at all. A plain write truncates the file first, and a
+// crash in that moment left it empty, which reads as "main": the next `fox
+// up` then started the stepped-down primary as main beside the promoted
+// standby.
 func setPrimary(name string) error {
 	defer noteStateChange()
-	_ = os.MkdirAll(filepath.Dir(primaryFile()), 0o755)
-	return os.WriteFile(primaryFile(), []byte(name), 0o644)
+	return writeStateAtomic(primaryFile(), []byte(name))
+}
+
+// syncFile is (*os.File).Sync, a variable so a test can fail it.
+var syncFile = func(f *os.File) error { return f.Sync() }
+
+// writeStateAtomic replaces a small state file so that a reader, or a start
+// after a crash at any moment, finds the old contents or the new and never a
+// part: written to a temporary file beside it, flushed to disk, renamed over
+// it, and the directory flushed so the rename itself survives a power cut.
+func writeStateAtomic(path string, data []byte) (err error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if _, err = f.Write(data); err == nil {
+		err = syncFile(f)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if err = os.Chmod(tmp, 0o644); err != nil {
+		return err
+	}
+	if err = os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+// syncDir flushes a directory's entries. Windows cannot open a directory for
+// that, and the engine runs on Linux, so there it is skipped.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return syncFile(d)
 }
 
 // BranchInfo describes a branch for the control-plane API / dashboard.

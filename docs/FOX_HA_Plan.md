@@ -735,6 +735,53 @@ be started as a primary again, because it would accept writes the survivor
 never sees. `node join` against the survivor is the way back, and it replaces
 that copy.
 
+#### The local fence ran after the promotion, found in a later audit
+
+On one machine the order was promote, then stop the old primary, and a failed
+`docker stop` was ignored. For that window, or for good when the stop failed,
+sessions still connected to the old primary kept committing writes the promoted
+standby never saw, and those writes were lost. The primary marker was also
+written in place, so a crash in the middle of the write left it empty, which
+reads as `main`, and the next `fox up` started the stepped-down primary.
+
+Now:
+
+- **fence, confirm, promote.** `ha failover` stops the old primary, then asks
+  `docker inspect` until it reports the container stopped (`exited`, `dead`,
+  `created` or gone; `paused` does not count, because a paused server keeps its
+  sessions), for up to 30 seconds. Only then is the standby promoted. If the stop
+  cannot be confirmed, the failover is refused and names the container to stop
+  by hand. `--force` promotes anyway, and the warning says what it risks.
+- **routing follows the promotion.** `pg_promote` is waited for and its answer
+  read, not assumed. The marker the gateway reads is written only after that, so
+  `main` is never routed to a server still in recovery.
+- **the marker is written whole.** It goes to a temporary file, which is
+  flushed, renamed over the marker, and the directory flushed, so a crash leaves
+  either the old marker or the new one.
+- **an interrupted promotion is settled at start.** A record of the promotion in
+  progress (`~/.fox/promoting`) is written before `pg_promote` and removed after
+  the marker. If `fox up` finds it, it asks the server being promoted whether it
+  is out of recovery and makes the marker agree. If that cannot be told, nothing
+  starts as primary. A promotion that fails while the standby is known to still
+  be a standby starts the old primary again; one whose outcome is unknown starts
+  nothing.
+- **the old main stays down.** While the marker names the standby, `fox up`
+  stops a running old main before the standby serves, and refuses to go on if it
+  cannot. The way back is `ha failback`, which rebuilds main as a copy of the
+  standby. Failback now confirms that the standby has stopped before it promotes
+  main, and goes through the same record.
+- **one change at a time.** Failover and failback hold the branch locks of both
+  `main` and `standby` (main first), so no wake, suspend, reset or delete of
+  either can run in the middle.
+
+Across machines nothing here can stop the old primary or see it stopped, so
+fencing is never confirmed there. `ha failover` still refuses while the old
+primary answers. A promotion past that is recorded as unfenced (`ha status`
+shows it until a failback). `ha watch` promotes only with the witness's
+agreement and `--accept-unfenced`, an operator's explicit acceptance that a
+primary still serving clients neither observer can see would lose the writes it
+takes. `--dry-run` needs no such flag.
+
 **What the fence does not do, said plainly rather than implied.** It cannot tell
 a dead primary from one this machine merely cannot reach. If the network is
 partitioned and clients can still reach the primary, forcing a promotion
