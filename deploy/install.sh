@@ -31,7 +31,8 @@
 #   FOX_BASE_URL  release download base URL      (default: GitHub releases)
 #   FOX_NO_VERIFY set to 1 to skip checksum verification
 #   FOX_REQUIRE_SIGNATURE  set to 1 to refuse to install when the signature cannot be checked here
-#   FOX_ALLOW_UNSIGNED     set to 1 to install a release that is not signed (checksums are still checked)
+#                 (only matters while this script carries no P-256 key; once it does, that is the rule)
+#   FOX_ALLOW_UNSIGNED     set to 1 to install a release whose signature cannot be checked (checksums are still checked)
 #   FOX_LIMA      macOS: auto | brew | release | skip   (default: auto — Homebrew if
 #                 present, else Lima's own release; skip leaves Lima to you)
 #   FOX_LIMA_BASE_URL  macOS: where to download Lima's release from (a mirror must
@@ -155,6 +156,8 @@ asset_url() { # asset_url <asset-name>
 # unaltered download), not authorship. SHA256SUMS.sig proves authorship: an
 # Ed25519 signature by the FoxByte release key, whose public half is below —
 # in this script, which comes from the repository, not from the release.
+# SHA256SUMS.p256.sig is the same proof by a second key, for machines whose
+# openssl cannot do Ed25519.
 
 VERIFY=1
 [ "${FOX_NO_VERIFY:-}" = "1" ] && VERIFY=0
@@ -170,6 +173,32 @@ sha256_of() { # sha256_of <file>
 		echo ""
 	fi
 }
+
+# "latest" is turned into the tag it stands for before anything is fetched
+# (finding SUP-4). The signed SHA256SUMS names the version it was made for, and
+# that is only worth something against the tag being installed; it also keeps
+# every file of one install from the same release, should a new one be
+# promoted part-way through. GitHub answers /releases/latest with a redirect
+# to /releases/tag/<tag>, which is read without following it.
+resolve_latest() {
+	latest_url="https://github.com/$REPO/releases/latest"
+	loc=""
+	if command -v curl >/dev/null 2>&1; then
+		loc="$(curl -fsS -o /dev/null --connect-timeout 15 --retry 2 -w '%{redirect_url}' "$latest_url" 2>/dev/null)" || loc=""
+	elif command -v wget >/dev/null 2>&1; then
+		loc="$(wget --max-redirect=0 -S -O /dev/null --connect-timeout=15 "$latest_url" 2>&1 | sed -n 's/^ *[Ll]ocation: *//p' | tr -d '\r' | head -n 1)"
+	fi
+	latest_tag="${loc##*/tag/}"
+	case "$loc" in */tag/*) ;; *) latest_tag="" ;; esac
+	case "$latest_tag" in
+		""|*[!A-Za-z0-9._-]*) err "could not find which release is the latest one of $REPO.
+Nothing was installed. Retry, or name the release with FOX_VERSION=<tag>." ;;
+	esac
+	VERSION="$latest_tag"
+}
+if [ "$VERSION" = "latest" ] && [ -z "${FOX_BASE_URL:-}" ] && [ -z "${FOX_DIST:-}" ]; then
+	resolve_latest
+fi
 
 SUMS=""
 if [ "$VERIFY" = "1" ]; then
@@ -189,7 +218,18 @@ RELEASE_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAaTn8b2xj53r7QjOK+K2//RBU+4OBHoxzuclxGK04WZc=
 -----END PUBLIC KEY-----'
 
-can_check_signatures() {
+# The second release key's public half: ECDSA P-256 over SHA-256, which
+# macOS's LibreSSL can check where it cannot check Ed25519 (finding SUP-5).
+# Written by `go run ./cmd/releasesign generate-p256 --write`, with fox's and
+# install.ps1's copies.
+#
+# Empty until the maintainer makes that key (README, "Verifying a release").
+# While it is empty, a machine that cannot check Ed25519 installs with a
+# warning, as it always has. Once it is set, such a machine checks P-256
+# instead, and refuses a release it cannot check (unless FOX_ALLOW_UNSIGNED=1).
+RELEASE_P256_PUBLIC_KEY=''
+
+can_check_ed25519() {
 	command -v openssl >/dev/null 2>&1 && openssl list -public-key-algorithms 2>/dev/null | grep -qi ed25519
 }
 
@@ -203,27 +243,106 @@ check_signature() {
 Nothing was installed. Set FOX_ALLOW_UNSIGNED=1 to install on checksums alone."
 	fetch "$(asset_url SHA256SUMS.sig)" "$tmp/SHA256SUMS.sig" 2>/dev/null || err "$VERSION has no SHA256SUMS.sig: it was not signed with the $PRODUCT release key.
 Nothing was installed. (Releases published before signing began have none: set FOX_ALLOW_UNSIGNED=1 to install one on checksums alone.)"
-	if ! can_check_signatures; then
-		[ "${FOX_REQUIRE_SIGNATURE:-}" = "1" ] && err "this machine's openssl cannot check Ed25519 signatures (FOX_REQUIRE_SIGNATURE=1).
-Nothing was installed. Install OpenSSL 3 (macOS: brew install openssl, then put it first on PATH) and re-run."
-		warn "the signature of $VERSION was not checked: this machine's openssl cannot check Ed25519 signatures (macOS ships LibreSSL).
-  Every file is still checked against SHA256SUMS, and $CLI checks signatures on every update.
-  To check this install too: install OpenSSL 3 and re-run, or set FOX_REQUIRE_SIGNATURE=1 to refuse."
-		return 0
-	fi
-	printf '%s\n' "$RELEASE_PUBLIC_KEY" > "$tmp/release.pub"
-	if openssl pkeyutl -verify -pubin -inkey "$tmp/release.pub" -rawin -in "$SUMS" -sigfile "$tmp/SHA256SUMS.sig" >/dev/null 2>&1; then
-		say "SHA256SUMS is signed with the $PRODUCT release key"
-	else
+	# Ed25519 first: every signed release has it.
+	if can_check_ed25519; then
+		printf '%s\n' "$RELEASE_PUBLIC_KEY" > "$tmp/release.pub"
+		if openssl pkeyutl -verify -pubin -inkey "$tmp/release.pub" -rawin -in "$SUMS" -sigfile "$tmp/SHA256SUMS.sig" >/dev/null 2>&1; then
+			say "SHA256SUMS is signed with the $PRODUCT release key"
+			return 0
+		fi
 		err "SHA256SUMS of $VERSION is not signed with the $PRODUCT release key — it was not published by $PRODUCT, or it was altered.
 Nothing was installed."
 	fi
+	# Then P-256, which LibreSSL can check.
+	if [ -n "$RELEASE_P256_PUBLIC_KEY" ]; then
+		command -v openssl >/dev/null 2>&1 || err "there is no openssl here, so the signature of $VERSION cannot be checked.
+Nothing was installed. Install openssl and re-run, or set FOX_ALLOW_UNSIGNED=1 to install on checksums alone."
+		fetch "$(asset_url SHA256SUMS.p256.sig)" "$tmp/SHA256SUMS.p256.sig" 2>/dev/null || err "$VERSION has no SHA256SUMS.p256.sig, and this machine's openssl cannot check the Ed25519 signature it does have.
+Nothing was installed. Install OpenSSL 3 (macOS: brew install openssl, then put it first on PATH) and re-run.
+(Releases from before the P-256 signature have none: set FOX_ALLOW_UNSIGNED=1 to install one on checksums alone.)"
+		printf '%s\n' "$RELEASE_P256_PUBLIC_KEY" > "$tmp/release-p256.pub"
+		if openssl dgst -sha256 -verify "$tmp/release-p256.pub" -signature "$tmp/SHA256SUMS.p256.sig" "$SUMS" >/dev/null 2>&1; then
+			say "SHA256SUMS is signed with the $PRODUCT release key (P-256)"
+			return 0
+		fi
+		err "SHA256SUMS of $VERSION is not signed with the $PRODUCT P-256 release key — it was not published by $PRODUCT, or it was altered.
+Nothing was installed."
+	fi
+	# No P-256 key in this installer yet: what installs did before it existed.
+	[ "${FOX_REQUIRE_SIGNATURE:-}" = "1" ] && err "this machine's openssl cannot check Ed25519 signatures (FOX_REQUIRE_SIGNATURE=1).
+Nothing was installed. Install OpenSSL 3 (macOS: brew install openssl, then put it first on PATH) and re-run."
+	warn "the signature of $VERSION was not checked: this machine's openssl cannot check Ed25519 signatures (macOS ships LibreSSL).
+  Every file is still checked against SHA256SUMS, and $CLI checks signatures on every update.
+  To check this install too: install OpenSSL 3 and re-run, or set FOX_REQUIRE_SIGNATURE=1 to refuse."
+	return 0
 }
 check_signature
 
+# The version the signed SHA256SUMS names (finding SUP-4), held to the tag being
+# installed: the tag is not signed, so an old release put up again under a
+# newer tag would otherwise install. The line is a checksum of 64 zeros for a
+# "file" called VERSION=<tag>, which is why verify_file below never mistakes
+# it for one. Releases from FIRST_VERSIONED_RELEASE on all carry it, so one of
+# those without it is refused; older ones never had it, and stay installable
+# by naming them with FOX_VERSION. Keep in step with internal/update/select.go.
+FIRST_VERSIONED_RELEASE="2.3.0"
+ZERO_SUM="0000000000000000000000000000000000000000000000000000000000000000"
+
+# ver_cmp <a> <b> prints -1, 0 or 1, ordered as fox orders versions (a
+# pre-release before its release), and fails if either is not a version.
+ver_cmp() {
+	awk -v a="$1" -v b="$2" '
+	function parse(s, v,   n, i, parts, pre) {
+		sub(/^[vV]/, "", s)
+		pre = ""
+		i = index(s, "-")
+		if (i) { pre = substr(s, i + 1); s = substr(s, 1, i - 1); if (pre == "") return 0 }
+		n = split(s, parts, ".")
+		if (s == "" || n > 3) return 0
+		for (i = 1; i <= 3; i++) {
+			if (i <= n) { if (parts[i] !~ /^[0-9]+$/) return 0; v[i] = parts[i] + 0 } else v[i] = 0
+		}
+		v[4] = pre
+		return 1
+	}
+	BEGIN {
+		x[0] = 0; y[0] = 0
+		if (!parse(a, x) || !parse(b, y)) exit 1
+		for (i = 1; i <= 3; i++) if (x[i] != y[i]) { print (x[i] < y[i] ? -1 : 1); exit 0 }
+		if (x[4] == y[4]) print 0
+		else if (x[4] == "") print 1
+		else if (y[4] == "") print -1
+		else print (x[4] < y[4] ? -1 : 1)
+	}'
+}
+
+check_version() {
+	[ "$VERIFY" = "1" ] || return 0
+	signed="$(awk -v z="$ZERO_SUM" '{ sub(/\r$/, "") } $1 == z && $2 ~ /^\*?VERSION=/ { v = $2; sub(/^\*?VERSION=/, "", v); print v }' "$SUMS" | sort -u)"
+	case "$signed" in
+		*"
+"*) err "SHA256SUMS of $VERSION names more than one version.
+Nothing was installed." ;;
+	esac
+	if [ "$VERSION" = "latest" ]; then
+		# Only with FOX_BASE_URL and no FOX_VERSION: a mirror the user chose,
+		# and no tag to hold the file to.
+		[ -z "$signed" ] || say "SHA256SUMS is for $signed"
+		return 0
+	fi
+	if [ -n "$signed" ]; then
+		[ "$(ver_cmp "$signed" "$VERSION" 2>/dev/null)" = "0" ] || err "SHA256SUMS of $VERSION is signed for $signed: it is a different release, published under the $VERSION tag.
+Nothing was installed."
+		return 0
+	fi
+	[ "$(ver_cmp "$VERSION" "$FIRST_VERSIONED_RELEASE" 2>/dev/null)" = "-1" ] || err "SHA256SUMS of $VERSION does not say which version it is, and every release from v$FIRST_VERSIONED_RELEASE on does.
+It may be an older release published again under a newer tag. Nothing was installed."
+}
+check_version
+
 verify_file() { # verify_file <asset-name> <path>
 	[ "$VERIFY" = "1" ] || return 0
-	want="$(awk -v n="$1" '{ f = $2; sub(/^\*/, "", f) } f == n { print $1; exit }' "$SUMS")"
+	want="$(awk -v n="$1" -v z="$ZERO_SUM" '{ f = $2; sub(/^\*/, "", f) } $1 == z && f ~ /^VERSION=/ { next } f == n { print $1; exit }' "$SUMS")"
 	[ -n "$want" ] || { rm -f "$2"; err "$1 is not listed in SHA256SUMS for $VERSION.
 Nothing was installed. Set FOX_NO_VERIFY=1 to install without checking (not recommended)."; }
 	got="$(sha256_of "$2")"

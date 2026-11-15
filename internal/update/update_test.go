@@ -231,8 +231,17 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 // publish adds a release with the given files and a matching SHA256SUMS
 // (skipping names in unlisted).
 func (f *fakeGitHub) publish(tag string, files map[string]string, unlisted ...string) {
+	f.publishAs(tag, "", files, unlisted...)
+}
+
+// publishAs is publish with a version line naming version in the signed
+// SHA256SUMS ("" for none, as releases before the line had).
+func (f *fakeGitHub) publishAs(tag, version string, files map[string]string, unlisted ...string) {
 	r := Release{Tag: tag, HTMLURL: f.srv.URL + "/releases/" + tag}
 	var sums strings.Builder
+	if version != "" {
+		sums.WriteString(VersionLine(version) + "\n")
+	}
 	skip := map[string]bool{}
 	for _, u := range unlisted {
 		skip[u] = true

@@ -166,7 +166,8 @@ func TestGeneratedTextFilesHaveALineEndingRule(t *testing.T) {
 	}
 }
 
-// The install host serves the installers from main. A wrong destination would
+// The install host serves the installers published with the latest release
+// (release.yml uploads them). A wrong destination would
 // make the one-liner print a 404 page into sh, so each path is checked against
 // the script it must serve.
 func TestInstallHostServesTheInstallers(t *testing.T) {
@@ -179,16 +180,25 @@ func TestInstallHostServesTheInstallers(t *testing.T) {
 		t.Fatal(err)
 	}
 	var site struct {
-		Rewrites []struct{ Source, Destination string }
+		Rewrites  []struct{ Source, Destination string }
+		Redirects []struct{ Source, Destination string }
 	}
 	if err := json.Unmarshal(files[filepath.Join("deploy", "get", "vercel.json")], &site); err != nil {
 		t.Fatalf("vercel.json: %v", err)
 	}
-	want := map[string]string{
-		"/install.sh":  "https://raw.githubusercontent.com/" + b.Repo + "/main/deploy/install.sh",
-		"/install.ps1": "https://raw.githubusercontent.com/" + b.Repo + "/main/deploy/install.ps1",
+	// From the latest release, never from main (SUP-3): the installer carries
+	// the pinned release keys, so it must be a released, signed copy.
+	if len(site.Rewrites) != 0 {
+		t.Errorf("vercel.json rewrites %v; the installers are redirects to the latest release", site.Rewrites)
 	}
-	for _, r := range site.Rewrites {
+	want := map[string]string{
+		"/install.sh":  "https://github.com/" + b.Repo + "/releases/latest/download/install.sh",
+		"/install.ps1": "https://github.com/" + b.Repo + "/releases/latest/download/install.ps1",
+	}
+	for _, r := range site.Redirects {
+		if r.Source == "/" {
+			continue
+		}
 		if want[r.Source] != r.Destination {
 			t.Errorf("%s rewrites to %q, want %q", r.Source, r.Destination, want[r.Source])
 		}

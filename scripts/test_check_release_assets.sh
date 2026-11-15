@@ -38,11 +38,12 @@ mkdir -p "$tmp/rel"
 # that platform the Standard binary.
 std="fox-darwin-arm64 fox-darwin-amd64 fox-linux-arm64 fox-linux-amd64 fox-windows-amd64.exe"
 ent="fox-enterprise-darwin-arm64 fox-enterprise-darwin-amd64 fox-enterprise-linux-arm64 fox-enterprise-linux-amd64 fox-enterprise-windows-amd64.exe"
-all="$std $ent foxbyte-docker-context.tar.gz"
+all="$std $ent foxbyte-docker-context.tar.gz install.sh install.ps1"
 sum="$(printf 'a%.0s' $(seq 64))"
-publish() { # publish "<attached names>" "<listed names>"
+zeros="$(printf '0%.0s' $(seq 64))"
+publish() { # publish "<attached names>" "<listed names>" [version line tag]
 	printf '%s\n' $1 SHA256SUMS SHA256SUMS.sig fox-verify-linux-amd64 > "$tmp/rel/assets"
-	: > "$tmp/rel/SHA256SUMS"
+	printf '%s  VERSION=%s\n' "$zeros" "${3-v9.9.9}" > "$tmp/rel/SHA256SUMS"
 	for n in $2; do printf '%s  %s\n' "$sum" "$n" >> "$tmp/rel/SHA256SUMS"; done
 }
 expect() { # expect <description> <exit code> [text in output]
@@ -80,6 +81,20 @@ if out="$(CHECK_RETRY_SLEEP=0 bash "$script" v9.9.9 2>&1)"; then
 else
 	grep -q "no SHA256SUMS.sig" <<<"$out" && ok "an unsigned release fails" || bad "an unsigned release fails (wrong message)"
 fi
+
+publish "${all/install.ps1/}" "$all"
+expect "a release without the Windows installer fails" 1 "does not publish install.ps1"
+
+publish "$all" "${all/install.sh /}"
+expect "an installer missing from SHA256SUMS fails" 1 "does not publish install.sh"
+
+# The signed version line (SUP-4): without it, or naming another tag, every
+# client from FirstVersionedRelease on refuses the release.
+publish "$all" "$all" v9.9.8
+expect "a SHA256SUMS naming another version fails" 1 "no VERSION=v9.9.9 line"
+publish "$all" "$all"
+sed -i.bak '/VERSION=/d' "$tmp/rel/SHA256SUMS"
+expect "a SHA256SUMS naming no version fails" 1 "does not name its version"
 
 echo "check-release-assets: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

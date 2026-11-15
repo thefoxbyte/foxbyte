@@ -116,7 +116,10 @@ python3 - "$FOX_UPDATE_BASE_URL" "$T/www" "$ENGINE" "$T/release.key" "v$CANDIDAT
 import hashlib, json, os, subprocess, sys
 base, www, engine, key, tag = sys.argv[1:6]
 d = os.path.join(www, "dl", tag)
-sums = hashlib.sha256(open(os.path.join(d, engine), "rb").read()).hexdigest() + "  " + engine + "\n"
+# The signed version line, as scripts/release-checksums.sh writes it: updaters
+# from v2.3.0 on refuse a release this new without one.
+sums = "0" * 64 + "  VERSION=" + tag + "\n"
+sums += hashlib.sha256(open(os.path.join(d, engine), "rb").read()).hexdigest() + "  " + engine + "\n"
 open(os.path.join(d, "SHA256SUMS"), "w").write(sums)
 subprocess.run(["openssl", "pkeyutl", "-sign", "-inkey", key, "-rawin",
                 "-in", os.path.join(d, "SHA256SUMS"), "-out", os.path.join(d, "SHA256SUMS.sig")], check=True)

@@ -62,10 +62,14 @@ set -eu
 h() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'; else shasum -a 256 "$1" | awk '{print $1}'; fi; }
 case "$1" in
 sign) h "$2" > "$3"; cat "$2" >> "$STUB_SIGNED"; echo "signed" >> "$STUB_LOG" ;;
+sign-p256) [ -n "${FOX_RELEASE_SIGNING_KEY_P256:-}" ] || exit 1; echo "p256:$(h "$2")" > "$3"; echo "signed-p256" >> "$STUB_LOG" ;;
 verify) [ "$(h "$2")" = "$(cat "$3")" ] ;;
 esac
 SIGNER
 chmod +x "$tmp/bin/fakesign"
+# The same, except that P-256 signing fails.
+printf '#!/usr/bin/env bash\n[ "$1" = sign-p256 ] && exit 1\nexec "%s" "$@"\n' "$tmp/bin/fakesign" > "$tmp/bin/failp256"
+chmod +x "$tmp/bin/failp256"
 export PATH="$tmp/bin:$PATH" CHECKSUM_SETTLE_SECONDS=0 RELEASE_SIGN="$tmp/bin/fakesign"
 
 if command -v sha256sum >/dev/null 2>&1; then sum() { sha256sum "$1" | awk '{print $1}'; }; else sum() { shasum -a 256 "$1" | awk '{print $1}'; }; fi
@@ -77,7 +81,9 @@ echo "content of the distro image" > "$tmp/distro/foxbyte-distro.tar.zst"
 
 publish_release() { (cd "$tmp/rel" && bash "$script" v9.9.9 SHA256SUMS fox-linux-amd64 fox-verify-linux-amd64 foxbyte-docker-context.tar.gz) >/dev/null; }
 publish_distro()  { (cd "$tmp/distro" && bash "$script" v9.9.9 SHA256SUMS.distro foxbyte-distro.tar.zst) >/dev/null; }
-names() { awk '{print $2}' "$STUB_RELEASE/$1" | tr '\n' ' ' | sed 's/ $//'; }
+zeros="$(printf '0%.0s' $(seq 1 64))"
+# The files listed, without the version line.
+names() { awk -v z="$zeros" '$1 != z {print $2}' "$STUB_RELEASE/$1" | tr '\n' ' ' | sed 's/ $//'; }
 new_release() {
 	export STUB_RELEASE="$tmp/release-$1" STUB_LOG="$tmp/log-$1" STUB_SIGNED="$tmp/signed-$1"
 	rm -rf "$STUB_RELEASE" "$STUB_LOG" "$STUB_SIGNED"
@@ -148,6 +154,39 @@ unset STUB_FAIL_UPLOAD
 new_release nofile
 (cd "$tmp/rel" && bash "$script" v9.9.9 SHA256SUMS no-such-file) >/dev/null 2>&1
 assert_eq "a file this job did not build fails the job" "$?:$(ls "$STUB_RELEASE" | wc -l | tr -d ' ')" "1:0"
+
+# SUP-4: the signed file names the tag, on its first line, in the form every
+# released verifier passes over: a checksum of 64 zeros for VERSION=<tag>.
+new_release version
+publish_release
+assert_eq "SHA256SUMS starts with the signed version line" \
+  "$(head -n 1 "$STUB_RELEASE/SHA256SUMS")" "$zeros  VERSION=v9.9.9"
+assert_eq "…which is inside what was signed" "$(head -n 1 "$STUB_SIGNED")|$(sig_matches SHA256SUMS)" "$zeros  VERSION=v9.9.9|yes"
+assert_eq "…exactly once" "$(grep -c 'VERSION=' "$STUB_RELEASE/SHA256SUMS")" "1"
+publish_distro
+assert_eq "SHA256SUMS.distro names it too" "$(head -n 1 "$STUB_RELEASE/SHA256SUMS.distro")" "$zeros  VERSION=v9.9.9"
+if command -v sha256sum >/dev/null 2>&1; then
+	assert_eq "sha256sum -c --ignore-missing passes over the version line" \
+	  "$(cd "$tmp/rel" && sha256sum -c --ignore-missing "$STUB_RELEASE/SHA256SUMS" >/dev/null 2>&1; echo $?)" "0"
+fi
+assert_eq "a tag that could not sit in the line is refused" \
+  "$(cd "$tmp/rel" && bash "$script" 'v9 9' SHA256SUMS fox-linux-amd64 >/dev/null 2>&1; echo $?)" "2"
+
+# SUP-5: the P-256 signature, only when its secret is there.
+new_release nop256
+publish_release
+assert_eq "without the P-256 secret, no P-256 signature is published" \
+  "$([ -e "$STUB_RELEASE/SHA256SUMS.p256.sig" ] && echo present || echo absent)|$(grep -c signed-p256 "$STUB_LOG")" "absent|0"
+new_release p256
+(cd "$tmp/rel" && FOX_RELEASE_SIGNING_KEY_P256=throwaway bash "$script" v9.9.9 SHA256SUMS fox-linux-amd64 fox-verify-linux-amd64 foxbyte-docker-context.tar.gz) >/dev/null
+assert_eq "with it, SHA256SUMS.p256.sig signs the same bytes" \
+  "$(cat "$STUB_RELEASE/SHA256SUMS.p256.sig" 2>/dev/null)" "p256:$(sum "$STUB_RELEASE/SHA256SUMS")"
+assert_eq "…and the Ed25519 signature is still there" "$(sig_matches SHA256SUMS)" "yes"
+(cd "$tmp/distro" && FOX_RELEASE_SIGNING_KEY_P256=throwaway bash "$script" v9.9.9 SHA256SUMS.distro foxbyte-distro.tar.zst) >/dev/null
+assert_eq "the distro file gets its own" \
+  "$(cat "$STUB_RELEASE/SHA256SUMS.distro.p256.sig" 2>/dev/null)" "p256:$(sum "$STUB_RELEASE/SHA256SUMS.distro")"
+assert_eq "a P-256 signer that fails fails the job" \
+  "$(cd "$tmp/rel" && FOX_RELEASE_SIGNING_KEY_P256=throwaway RELEASE_SIGN="$tmp/bin/failp256" bash "$script" v9.9.9 SHA256SUMS fox-linux-amd64 >/dev/null 2>&1; echo $?)" "1"
 
 assert_eq "missing arguments are a usage error" "$(bash "$script" v9.9.9 SHA256SUMS >/dev/null 2>&1; echo $?)" "2"
 assert_eq "no signer is an error, not an unsigned release" \

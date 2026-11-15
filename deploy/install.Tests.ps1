@@ -152,6 +152,177 @@ Describe 'FoxByte release verification' {
     }
 }
 
+# Finding SUP-4: the version a release's signed SHA256SUMS names is held to the
+# tag being installed, and a release from the cutoff on must name one.
+Describe 'signed release version' {
+    BeforeAll {
+        . "$PSScriptRoot/install.ps1"
+        $script:zeros = '0' * 64
+    }
+
+    It 'orders versions as fox does' {
+        Compare-FoxVersion 'v2.3.0' '2.3' | Should -Be 0
+        Compare-FoxVersion 'v2.2.1' '2.3.0' | Should -Be -1
+        Compare-FoxVersion 'v10.0' 'v9.9.9' | Should -Be 1
+        Compare-FoxVersion 'v2.3.0-rc1' '2.3.0' | Should -Be -1
+        Compare-FoxVersion 'main' '2.3.0' | Should -BeNullOrEmpty
+    }
+
+    It 'accepts a listing that names the tag being installed' {
+        { Assert-FoxVersion "$script:zeros  VERSION=v2.3.0`n" 'v2.3.0' } | Should -Not -Throw
+    }
+
+    It 'refuses a listing signed for another version' {
+        { Assert-FoxVersion "$script:zeros  VERSION=v2.0.1`n" 'v99.0.0' } | Should -Throw '*signed for v2.0.1*'
+    }
+
+    It 'refuses a listing that names two versions' {
+        { Assert-FoxVersion "$script:zeros  VERSION=v2.3.0`n$script:zeros  VERSION=v2.0.1`n" 'v2.3.0' } | Should -Throw '*more than one version*'
+    }
+
+    It 'refuses a release from the cutoff on that names no version' {
+        { Assert-FoxVersion (('a' * 64) + "  fox-windows-amd64.exe`n") "v$FirstVersionedRelease" } | Should -Throw '*does not say which version*'
+    }
+
+    It 'still installs an older release, which never had the line' {
+        { Assert-FoxVersion (('a' * 64) + "  fox-windows-amd64.exe`n") 'v2.2.1' } | Should -Not -Throw
+    }
+
+    It 'never mistakes the version line for a file' {
+        Set-Variable -Name FoxSums -Scope Script -Value "$script:zeros  VERSION=v2.3.0`n"
+        Set-Variable -Name FoxDistroSums -Scope Script -Value ''
+        { Get-FoxChecksum 'VERSION=v2.3.0' } | Should -Throw '*not listed in SHA256SUMS*'
+    }
+}
+
+# Finding SUP-5: the P-256 signature, which Windows can check. Every key here
+# is a throwaway made by the test.
+Describe 'P-256 release signature' {
+    BeforeAll {
+        . "$PSScriptRoot/install.ps1"
+        function New-TestKey {
+            $k = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+            $q = $k.ExportParameters($false).Q
+            $point = [byte[]](@(4) + $q.X + $q.Y)
+            return @{ Key = $k; Pub = [Convert]::ToBase64String($point) }
+        }
+        # .NET signs as r||s; releases carry DER, as openssl and Go write it.
+        function ConvertTo-Der([byte[]]$Raw) {
+            $body = @()
+            foreach ($k in 0, 1) {
+                [byte[]]$v = $Raw[($k * 32)..($k * 32 + 31)]
+                $s = 0
+                while ($s -lt 31 -and $v[$s] -eq 0) { $s++ }
+                [byte[]]$v = $v[$s..31]
+                if ($v[0] -ge 0x80) { [byte[]]$v = @([byte]0) + $v }
+                $body += @([byte]2, [byte]$v.Length) + $v
+            }
+            return ,([byte[]](@([byte]0x30, [byte]$body.Length) + $body))
+        }
+        function New-TestSignature($TestKey, [byte[]]$Data) {
+            $raw = $TestKey.Key.SignData($Data, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+            return ,(ConvertTo-Der $raw)
+        }
+        $script:data = [System.Text.Encoding]::UTF8.GetBytes(('0' * 64) + "  VERSION=v2.3.0`n" + ('a' * 64) + "  fox-windows-amd64.exe`n")
+        $script:release = New-TestKey
+        $script:other = New-TestKey
+    }
+    AfterEach {
+        $env:FOX_ALLOW_UNSIGNED = $null
+        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value ''
+    }
+
+    It 'accepts a signature by the pinned key' {
+        $sig = New-TestSignature $script:release $script:data
+        Test-FoxSignature $script:data $sig $script:release.Pub | Should -BeTrue
+    }
+
+    It 'refuses a signature by another key' {
+        $sig = New-TestSignature $script:other $script:data
+        Test-FoxSignature $script:data $sig $script:release.Pub | Should -BeFalse
+    }
+
+    It 'refuses a listing altered after signing' {
+        $sig = New-TestSignature $script:release $script:data
+        $altered = [byte[]]($script:data + [byte]10)
+        Test-FoxSignature $altered $sig $script:release.Pub | Should -BeFalse
+    }
+
+    It 'refuses something that is not a DER signature' {
+        Test-FoxSignature $script:data ([byte[]](1..64)) $script:release.Pub | Should -BeFalse
+    }
+
+    It 'fails closed once a key is pinned: no signature, no install' {
+        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value $script:release.Pub
+        Mock Get-FoxBytes { throw 'not found' }
+        { Assert-FoxSignature $script:data 'SHA256SUMS.p256.sig' } | Should -Throw '*has no SHA256SUMS.p256.sig*'
+    }
+
+    It 'fails closed once a key is pinned: a bad signature stops the install' {
+        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value $script:release.Pub
+        $script:mockSig = New-TestSignature $script:other $script:data
+        Mock Get-FoxBytes { $script:mockSig }
+        { Assert-FoxSignature $script:data 'SHA256SUMS.p256.sig' } | Should -Throw '*does not match*'
+    }
+
+    It 'passes a good signature once a key is pinned' {
+        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value $script:release.Pub
+        $script:mockSig = New-TestSignature $script:release $script:data
+        Mock Get-FoxBytes { $script:mockSig }
+        { Assert-FoxSignature $script:data 'SHA256SUMS.p256.sig' } | Should -Not -Throw
+    }
+
+    It 'FOX_ALLOW_UNSIGNED=1 installs on checksums alone' {
+        Set-Variable -Name ReleaseP256PublicKey -Scope Script -Value $script:release.Pub
+        $env:FOX_ALLOW_UNSIGNED = '1'
+        Mock Get-FoxBytes { throw 'not found' }
+        { Assert-FoxSignature $script:data 'SHA256SUMS.p256.sig' } | Should -Not -Throw
+    }
+
+    It 'only warns while no P-256 key is pinned' {
+        Mock Get-FoxBytes { throw 'not found' }
+        { Assert-FoxSignature $script:data 'SHA256SUMS.p256.sig' -WarningAction SilentlyContinue } | Should -Not -Throw
+    }
+
+    It 'ships with the same P-256 key as fox (or, until it is made, none)' {
+        $go = Get-Content -Raw "$PSScriptRoot/../internal/update/signing.go"
+        $go -match 'var releaseP256PublicKey = "([^"]*)"' | Should -BeTrue
+        $src = Get-Content -Raw "$PSScriptRoot/install.ps1"
+        $src -match "(?m)^\`$ReleaseP256PublicKey = '([^']*)'" | Should -BeTrue
+        $Matches[1] | Should -Be ([regex]::Match($go, 'var releaseP256PublicKey = "([^"]*)"').Groups[1].Value)
+    }
+}
+
+# Findings SUP-3 and SUP-8: after a reboot the install resumes with a released
+# installer, for the same release, never with whatever is on main.
+Describe 'resume after reboot' {
+    BeforeAll { . "$PSScriptRoot/install.ps1" }
+    AfterEach { Set-Variable -Name Version -Scope Script -Value 'latest' }
+
+    It 'resumes the same release, with that release''s installer' {
+        Set-Variable -Name Version -Scope Script -Value 'v2.4.0'
+        $cmd = Get-ResumeCommand
+        $cmd | Should -Match ([regex]::Escape("`$env:FOX_VERSION='v2.4.0'"))
+        $cmd | Should -Match ([regex]::Escape('https://github.com/thefoxbyte/foxbyte/releases/download/v2.4.0/install.ps1'))
+    }
+
+    It 'uses the latest release''s installer for a release that has none of its own' {
+        Set-Variable -Name Version -Scope Script -Value 'v2.2.1'
+        $cmd = Get-ResumeCommand
+        $cmd | Should -Match ([regex]::Escape("`$env:FOX_VERSION='v2.2.1'"))
+        $cmd | Should -Match ([regex]::Escape('https://github.com/thefoxbyte/foxbyte/releases/latest/download/install.ps1'))
+    }
+
+    It 'keeps the edition' {
+        Get-ResumeCommand | Should -Match ([regex]::Escape("`$env:FOX_EDITION='standard'"))
+    }
+
+    It 'never fetches from main' {
+        $src = Get-Content -Raw "$PSScriptRoot/install.ps1"
+        $src | Should -Not -Match 'raw\.githubusercontent\.com/[^ ]*/main/'
+    }
+}
+
 Describe 'installer prefers the prebuilt distro' {
     BeforeAll { $script:src = Get-Content -Raw (Join-Path $PSScriptRoot 'install.ps1') }
 
