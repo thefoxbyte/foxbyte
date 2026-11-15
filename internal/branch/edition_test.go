@@ -35,7 +35,10 @@ func TestTheGatedFunctionsRefuseWithoutALicence(t *testing.T) {
 		{"RemovePolicyRule", func() error { return RemovePolicyRule("main", "r", "me") }, ErrPolicyNotLicensed},
 		{"Impact", func() error { _, err := Impact("main", "select 1", "", ""); return err }, ErrImpactNotLicensed},
 		{"ExportLedger", func() error { return ExportLedger("main", nil) }, ErrExportNotLicensed},
-		{"ApplyRequest", func() error { _, err := ApplyRequest(1, "main", "me", nil); return err }, ErrPromotionNotLicensed},
+		{"ApplyRequest", func() error {
+			_, err := ApplyRequest(ApplyPlan{Request: auth.ChangeRequest{ID: 1, Target: "main"}, Approver: "me"})
+			return err
+		}, ErrPromotionNotLicensed},
 		{"RunPipeline", func() error { _, err := RunPipeline(nil, PipelineSpec{}, "main"); return err }, ErrPipelinesNotLicensed},
 	} {
 		err := c.call()
@@ -117,11 +120,11 @@ func TestTheDispatchersCallTheRegisteredEngine(t *testing.T) {
 	)
 	SetImpactAnalyser(func(_, _, _, _ string) (ImpactReport, error) { called["impact"] = true; return ImpactReport{}, nil })
 	SetPromotion(
-		func(_, _ string, _ []auth.ChangeRequest) ([]RequestEntry, int64, error) {
+		func(_, _ string, _ []auth.ChangeRequest, _ RequestOptions) (RequestPlan, error) {
 			called["build"] = true
-			return nil, 0, nil
+			return RequestPlan{}, nil
 		},
-		func(int64, string, string, []RequestEntry) (int, error) { called["apply"] = true; return 0, nil },
+		func(ApplyPlan) (int, error) { called["apply"] = true; return 0, nil },
 	)
 	SetPipelineRunner(func(*Progress, PipelineSpec, string, As) (RunResult, error) {
 		called["pipeline"] = true
@@ -137,8 +140,8 @@ func TestTheDispatchersCallTheRegisteredEngine(t *testing.T) {
 	_, _, _ = Checkpoint("main")
 	_ = ExportLedger("main", io.Discard)
 	_, _ = Impact("main", "select 1", "", "")
-	_, _, _ = BuildRequest("dev", "main", nil)
-	_, _ = ApplyRequest(1, "main", "me", []RequestEntry{{ID: 1}})
+	_, _ = BuildRequest("dev", "main", nil, RequestOptions{})
+	_, _ = ApplyRequest(ApplyPlan{Request: auth.ChangeRequest{ID: 1, Target: "main"}, Approver: "me", Entries: []RequestEntry{{ID: 1}}})
 	_, _ = RunPipeline(nil, PipelineSpec{}, "main")
 
 	for _, w := range []string{"anchor", "export", "impact", "build", "apply", "pipeline"} {
@@ -166,8 +169,11 @@ func TestTheDispatchersRefuseWithNoEngine(t *testing.T) {
 		{"Checkpoint", func() error { _, _, err := Checkpoint("main"); return err }},
 		{"ExportLedger", func() error { return ExportLedger("main", io.Discard) }},
 		{"Impact", func() error { _, err := Impact("main", "select 1", "", ""); return err }},
-		{"BuildRequest", func() error { _, _, err := BuildRequest("dev", "main", nil); return err }},
-		{"ApplyRequest", func() error { _, err := ApplyRequest(1, "main", "me", []RequestEntry{{ID: 1}}); return err }},
+		{"BuildRequest", func() error { _, err := BuildRequest("dev", "main", nil, RequestOptions{}); return err }},
+		{"ApplyRequest", func() error {
+			_, err := ApplyRequest(ApplyPlan{Request: auth.ChangeRequest{ID: 1, Target: "main"}, Approver: "me", Entries: []RequestEntry{{ID: 1}}})
+			return err
+		}},
 		{"RunPipeline", func() error { _, err := RunPipeline(nil, PipelineSpec{}, "main"); return err }},
 	} {
 		if err := c.call(); !errors.Is(err, ErrNotLicensed) {

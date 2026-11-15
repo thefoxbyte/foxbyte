@@ -211,6 +211,9 @@ func toolList() []map[string]any {
 			map[string]any{
 				"branch": str("the branch whose changes to offer (default main)"),
 				"target": str("the branch they would be applied to (default main)"),
+				"include_data": map[string]any{"type": "boolean", "description": "also carry the branch's data changes " +
+					"(INSERT, UPDATE, DELETE, …). Off by default: they are left out and listed, and the reviewer is shown " +
+					"plainly when a request carries them"},
 			}, nil),
 		tool("list_change_requests",
 			"The change requests made from a branch, newest first, with what each holds and whether it was approved, rejected or applied.",
@@ -548,8 +551,9 @@ func runTool(name string, args json.RawMessage) (string, error) {
 
 	case "request_changes":
 		var a struct {
-			Branch string `json:"branch"`
-			Target string `json:"target"`
+			Branch      string `json:"branch"`
+			Target      string `json:"target"`
+			IncludeData bool   `json:"include_data"`
 		}
 		_ = json.Unmarshal(args, &a)
 		if a.Branch == "" {
@@ -562,25 +566,30 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		if acl != nil && !acl.Can(me.User, a.Target, access.Use) {
 			return "", fmt.Errorf("no branch %q", a.Target)
 		}
-		history, err := store.ApprovedRequestsFrom(a.Branch, a.Target)
+		history, err := branch.RequestHistory(store, a.Branch, a.Target)
 		if err != nil {
 			return "", err
 		}
-		entries, forkAfter, err := branch.BuildRequest(a.Branch, a.Target, history)
+		plan, err := branch.BuildRequest(a.Branch, a.Target, history, branch.RequestOptions{IncludeData: a.IncludeData})
 		if err != nil {
 			return "", err
 		}
-		snapshot, err := branch.MarshalEntries(entries)
+		rec, err := branch.NewRequest(a.Branch, a.Target, plan)
 		if err != nil {
 			return "", err
 		}
-		c, err := store.CreateChangeRequest(me.User.ID, a.Branch, a.Target, forkAfter, snapshot)
+		c, existing, err := store.OpenChangeRequest(me.User.ID, rec)
 		if err != nil {
 			return "", err
+		}
+		if existing {
+			return branch.FormatRequest(c, plan.Entries) +
+				fmt.Sprintf("\nRequest #%d is already open for exactly these changes, so no new one was made. "+
+					"Nothing has been applied to %s.\n", c.ID, a.Target), nil
 		}
 		store.Audit(auth.EvChangeRequested, me.Actor, fmt.Sprintf("request #%d: %s → %s", c.ID, a.Branch, a.Target),
-			"", fmt.Sprintf("%d statement(s), via MCP", len(entries)))
-		return branch.FormatRequest(c, entries) +
+			"", branch.RequestedDetail(plan)+", via MCP")
+		return branch.FormatRequest(c, plan.Entries) +
 			fmt.Sprintf("\nNothing has been applied to %s. Someone who can manage it decides.\n", a.Target), nil
 
 	case "list_change_requests":

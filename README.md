@@ -204,9 +204,28 @@ What is applied is the Blackbox's own record of what ran on `dev`, so `main` end
 up holding the same statements, each attributed to whoever wrote it, with the
 approver beside it. It is refused if both branches changed the same object since
 they split, if `main`'s policy gate would block a statement, or if there is
-nothing to promote. **Schema only — no data is moved.** An agent can ask
-(MCP `request_changes`) and cannot approve its own: approving needs the right to
-manage the target. There is a **Requests** page in the console.
+nothing to promote. **Schema only, unless you ask.** The Blackbox records an
+agent's data changes too, and on its branch those are usually test rows, so a
+request leaves out every INSERT, UPDATE, DELETE, MERGE, TRUNCATE and COPY and
+lists what it left out; a statement that would change rows inside a schema
+change's text is refused. `fox branch request dev --include-data` (API and MCP:
+`include_data`) carries them, and the request says so in capitals to whoever
+approves it.
+
+A request is applied once. The apply writes the request's id into the target's
+own `bb.applied_requests` in the same transaction as the changes, and an id
+already there is refused; the transaction also checks again that the target has
+not changed the same objects since the fork. If the changes committed but
+recording the outcome failed, the next request from that branch reads the
+target's record and marks the request applied rather than offering its
+statements again. Asking twice for exactly the same changes while a request is
+open returns the open one. Approving, rejecting and applying are each written to
+the security log before they happen and again with the outcome; if the first
+write fails, nothing is decided.
+
+An agent can ask (MCP `request_changes`) and cannot approve its own: approving
+needs the right to manage the target. There is a **Requests** page in the
+console.
 
 Beside it, a **security log** records what happens at the doors — sign-ins and
 failed ones, sign-ups, API keys made and revoked, password changes, deleted

@@ -45,7 +45,7 @@ func requestCmd(args []string) {
 			"       %[1]s request show <id>\n"+
 			"       %[1]s request approve <id> [--note \"…\"]\n"+
 			"       %[1]s request reject <id> [--note \"…\"]\n\n"+
-			"Make one with: %[1]s branch request <source> [--to <target>]\n", brand.CLI)
+			"Make one with: %[1]s branch request <source> [--to <target>] [--include-data]\n", brand.CLI)
 		os.Exit(2)
 	}
 }
@@ -55,7 +55,7 @@ func branchRequestCmd(args []string) {
 	requireFeature(edition.Promotion)
 	source := firstPositional(args, "--to")
 	if source == "" {
-		fmt.Printf("usage: %s branch request <source> [--to <target>]\n", brand.CLI)
+		fmt.Printf("usage: %s branch request <source> [--to <target>] [--include-data]\n", brand.CLI)
 		os.Exit(2)
 	}
 	target := optValue(args, "--to")
@@ -64,17 +64,24 @@ func branchRequestCmd(args []string) {
 	}
 	s := openStore()
 	defer s.Close()
-	history, err := s.ApprovedRequestsFrom(source, target)
+	history, err := branch.RequestHistory(s, source, target)
 	must(err)
-	entries, forkAfter, err := branch.BuildRequest(source, target, history)
+	// Data changes stay on the source unless asked for by name.
+	plan, err := branch.BuildRequest(source, target, history, branch.RequestOptions{IncludeData: hasFlag(args, "--include-data")})
 	must(err)
-	snapshot, err := branch.MarshalEntries(entries)
+	rec, err := branch.NewRequest(source, target, plan)
 	must(err)
-	c, err := s.CreateChangeRequest(auth.CLIUser, source, target, forkAfter, snapshot)
+	c, existing, err := s.OpenChangeRequest(auth.CLIUser, rec)
 	must(err)
+	if existing {
+		fmt.Print(branch.FormatRequest(c, plan.Entries))
+		fmt.Printf("Request #%d is already open for exactly these changes, so no new one was made. Review it, then:\n  %s request approve %d\n",
+			c.ID, brand.CLI, c.ID)
+		return
+	}
 	s.Audit(auth.EvChangeRequested, cliActor(), fmt.Sprintf("request #%d: %s → %s", c.ID, source, target), "",
-		fmt.Sprintf("%d statement(s)", len(entries)))
-	fmt.Print(branch.FormatRequest(c, entries))
+		branch.RequestedDetail(plan))
+	fmt.Print(branch.FormatRequest(c, plan.Entries))
 	fmt.Printf("Nothing has been applied to %s yet. Review it, then:\n  %s request approve %d\n",
 		target, brand.CLI, c.ID)
 }
@@ -111,29 +118,49 @@ func requestDecideCmd(args []string, decision string) {
 	entries, err := branch.UnmarshalEntries(c.Entries)
 	must(err)
 
-	claimed, err := s.ClaimChangeRequest(c.ID, auth.CLIUser, decision, optValue(args, "--note"))
+	// The intents are written before the claim, which is the decision: one
+	// that cannot be written stops it (auth.BeginPrivileged).
+	note := optValue(args, "--note")
+	decided, err := s.BeginPrivileged(auth.EvChangeDecideStarted, auth.EvChangeDecided, auth.EvChangeDecideFailed,
+		cliActor(), fmt.Sprintf("request #%d %s", c.ID, decision), "", note)
+	must(err)
+	var applying *auth.Privileged
+	if decision == auth.RequestApproved {
+		applying, err = s.BeginPrivileged(auth.EvChangeApplyStarted, auth.EvChangeApplied, auth.EvChangeApplyFailed,
+			cliActor(), fmt.Sprintf("request #%d: %s → %s", c.ID, c.Source, c.Target), "",
+			fmt.Sprintf("%d statement(s)", len(entries)))
+		if err != nil {
+			decided.Done(err, "not decided")
+			must(err)
+		}
+	}
+	claimed, err := s.ClaimChangeRequest(c.ID, auth.CLIUser, decision, note)
+	if err != nil {
+		decided.Done(err, "not decided")
+		applying.Done(err, "not applied")
+	}
 	if errors.Is(err, auth.ErrRequestDecided) {
 		must(fmt.Errorf("request #%d was already %s by %s", c.ID, c.Status, c.DecidedBy))
 	}
 	must(err)
 
 	if decision == auth.RequestRejected {
-		s.Audit(auth.EvChangeDecided, cliActor(), fmt.Sprintf("request #%d rejected", c.ID), "", claimed.Note)
+		decided.Done(nil, claimed.Note)
 		fmt.Printf("Request #%d rejected. %s is unchanged.\n", c.ID, c.Target)
 		return
 	}
 
 	fmt.Printf("Applying %d statement(s) to %s …\n", len(entries), c.Target)
-	n, applyErr := branch.ApplyRequest(c.ID, c.Target, "the local CLI", entries)
-	failure := ""
-	if applyErr != nil {
-		failure = applyErr.Error()
+	n, applyErr, recordErr := branch.ApplyClaimed(s, claimed, "the local CLI")
+	if recordErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: recording the outcome of request #%d: %v\n"+
+			"(%s keeps its own record; the next request from %s reconciles from it)\n", c.ID, recordErr, c.Target, c.Source)
 	}
-	if err := s.FinishChangeRequest(c.ID, n, failure); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: recording the outcome of request #%d: %v\n", c.ID, err)
+	applying.Done(applyErr, fmt.Sprintf("%d statement(s) applied to %s", n, c.Target))
+	decided.Done(nil, fmt.Sprintf("%d statement(s) applied to %s", n, c.Target))
+	if errors.Is(applyErr, branch.ErrAlreadyApplied) {
+		must(fmt.Errorf("%w — nothing was run again, and request #%d is now recorded as applied (%d statement(s))", applyErr, c.ID, n))
 	}
-	s.Audit(auth.EvChangeDecided, cliActor(), fmt.Sprintf("request #%d approved", c.ID), "",
-		fmt.Sprintf("%d statement(s) applied to %s", n, c.Target))
 	must(applyErr)
 	fmt.Printf("Applied %d statement(s) to %s. Each one is in %s's Blackbox, attributed to whoever wrote it:\n  %s blackbox %s\n",
 		n, c.Target, c.Target, brand.CLI, c.Target)

@@ -236,12 +236,20 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 			writeErr(w, 404, fmt.Errorf("no account for %s — they need to sign up first", email))
 			return
 		}
-		if err := branch.GrantAdmin(name, u.Email); err != nil {
+		by, _ := auth.UserFrom(r.Context())
+		// Intent first, and no grant without it (auth.BeginPrivileged).
+		act, err := store.BeginPrivileged(auth.EvAdminGrantStarted, auth.EvAdminGranted, auth.EvAdminGrantFailed,
+			by.Email, u.Email, remoteIP(r), "branch "+name)
+		if err != nil {
+			writeErr(w, 503, err)
+			return
+		}
+		err = branch.GrantAdmin(name, u.Email)
+		act.Done(err, "branch "+name)
+		if err != nil {
 			writeErr(w, 500, err)
 			return
 		}
-		by, _ := auth.UserFrom(r.Context())
-		store.Audit(auth.EvAdminGranted, by.Email, u.Email, remoteIP(r), "branch "+name)
 		writeJSON(w, 200, map[string]string{"email": u.Email, "branch": name, "status": "granted"})
 	})
 
@@ -273,12 +281,19 @@ func registerPolicy(mux *http.ServeMux, store *auth.Store) {
 			writeErr(w, 409, fmt.Errorf("%s is the only admin on %q — grant someone else first (or run: fox admin revoke %s --branch %s)", email, name, email, name))
 			return
 		}
-		if err := branch.RevokeAdmin(name, email); err != nil {
+		by, _ := auth.UserFrom(r.Context())
+		act, err := store.BeginPrivileged(auth.EvAdminRevokeStarted, auth.EvAdminRevoked, auth.EvAdminRevokeFailed,
+			by.Email, email, remoteIP(r), "branch "+name)
+		if err != nil {
+			writeErr(w, 503, err)
+			return
+		}
+		err = branch.RevokeAdmin(name, email)
+		act.Done(err, "branch "+name)
+		if err != nil {
 			writeErr(w, 500, err)
 			return
 		}
-		by, _ := auth.UserFrom(r.Context())
-		store.Audit(auth.EvAdminRevoked, by.Email, email, remoteIP(r), "branch "+name)
 		writeJSON(w, 200, map[string]string{"email": email, "branch": name, "status": "revoked"})
 	})
 }

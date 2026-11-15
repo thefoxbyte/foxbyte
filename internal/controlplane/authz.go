@@ -233,12 +233,20 @@ func registerAccounts(mux *http.ServeMux, store *auth.Store) {
 				}
 			}
 		}
-		if err := store.DeleteAccount(id); err != nil {
+		by, _ := auth.UserFrom(r.Context())
+		// Intent first, and no deletion without it (auth.BeginPrivileged).
+		act, err := store.BeginPrivileged(auth.EvAccountDeleteStarted, auth.EvAccountDeleted, auth.EvAccountDeleteFailed,
+			by.Email, email, remoteIP(r), fmt.Sprintf("account %d", id))
+		if err != nil {
+			writeErr(w, 503, err)
+			return
+		}
+		err = store.DeleteAccount(id)
+		act.Done(err, "")
+		if err != nil {
 			writeErr(w, 404, err)
 			return
 		}
-		by, _ := auth.UserFrom(r.Context())
-		store.Audit(auth.EvAccountDeleted, by.Email, email, remoteIP(r), "")
 		// An admin grant lives on the account's Postgres role, not in the
 		// store: without this, re-creating the same email would bring it back.
 		if email != "" {

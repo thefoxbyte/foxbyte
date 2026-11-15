@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
 
@@ -103,10 +104,11 @@ func TestReplayAccepted(t *testing.T) {
 
 // Refused by name, and before any container is looked for: this test has none.
 func TestApplyRefusesAnUnsafeStatement(t *testing.T) {
-	_, err := apply(1, "main", "someone@example.com", []branch.RequestEntry{
-		entry(1, "a", "human", "CREATE TABLE", "public.t", "CREATE TABLE t (id int)"),
-		entry(2, "a", "human", "CREATE TABLE", "public.u", "CREATE TABLE u (id int); COMMIT"),
-	})
+	_, err := apply(branch.ApplyPlan{Request: auth.ChangeRequest{ID: 1, Target: "main"}, Approver: "someone@example.com",
+		Entries: []branch.RequestEntry{
+			entry(1, "a", "human", "CREATE TABLE", "public.t", "CREATE TABLE t (id int)"),
+			entry(2, "a", "human", "CREATE TABLE", "public.u", "CREATE TABLE u (id int); COMMIT"),
+		}})
 	if !errors.Is(err, branch.ErrNotReplayable) {
 		t.Fatalf("err = %v", err)
 	}

@@ -515,3 +515,76 @@ func checkReplayable(entries []branch.RequestEntry) error {
 	return fmt.Errorf("%w:\n  %s\nNothing was applied. Make the change again on the source without those statements "+
 		"(`%s blackbox` shows what it ran), or apply it by hand", branch.ErrNotReplayable, strings.Join(bad, "\n  "), brand.CLI)
 }
+
+// What a schema-only request may carry.
+//
+// Leaving out the entries the Blackbox recorded as data changes is not enough
+// on its own: an entry holds its author's whole message, so the CREATE TABLE
+// entry of `CREATE TABLE t (…); INSERT INTO t …` would run the INSERT too, and
+// a person's data changes are not recorded as entries at all. So a schema-only
+// request also refuses any entry whose text changes rows, as far as the text
+// shows. Like the check above it reads what was sent and nothing it calls: a
+// function that writes rows when called is not seen here.
+
+// dataStatements are the statements that change rows, by their first word.
+var dataStatements = map[string]bool{
+	"insert": true, "update": true, "delete": true, "merge": true, "truncate": true, "copy": true,
+}
+
+// dataRefusal says how a message changes rows, or "" if its text does not.
+func dataRefusal(statement string) string {
+	toks, err := lexSQL(statement)
+	if err != nil {
+		return "it cannot be read: " + err.Error()
+	}
+	for _, s := range splitStatements(toks) {
+		switch head := wordAt(s, 0); {
+		case dataStatements[head]:
+			return strings.ToUpper(head) + " changes rows"
+		case head == "with":
+			// A data-changing statement can sit inside a WITH. Erring towards a
+			// refusal: `… FOR UPDATE` reads the same, and the remedy is cheap.
+			for _, t := range s[1:] {
+				if t.kind == tokWord && (t.text == "insert" || t.text == "update" || t.text == "delete" || t.text == "merge") {
+					return "its WITH holds " + strings.ToUpper(t.text) + ", which changes rows"
+				}
+			}
+		case head == "do":
+			for _, t := range s[1:] {
+				if t.kind != tokString {
+					continue
+				}
+				body, err := lexSQL(t.text)
+				if err != nil {
+					return "its DO block cannot be read: " + err.Error()
+				}
+				for i, b := range body {
+					if b.kind == tokWord && dataStatements[b.text] && startsStatement(body, i) {
+						return "its DO block runs " + strings.ToUpper(b.text) + ", which changes rows"
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// checkSchemaOnly refuses a schema-only request holding an entry whose text
+// changes rows.
+func checkSchemaOnly(entries []branch.RequestEntry) error {
+	var bad []string
+	for _, e := range entries {
+		if e.SameRun != 0 {
+			continue // its text is the earlier entry's, checked there
+		}
+		if r := dataRefusal(e.Statement); r != "" {
+			bad = append(bad, fmt.Sprintf("entry %d (%s %s): %s", e.ID, e.CommandTag, e.Object, r))
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: the request is schema only, and these entries would change rows too:\n  %s\n"+
+		"Nothing was applied. Make the schema change on its own on the source, or ask with --include-data "+
+		"so the approver sees that rows change", branch.ErrNotReplayable, strings.Join(bad, "\n  "))
+}
