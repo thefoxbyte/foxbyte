@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 	"io"
 	"net/url"
 	"os"
@@ -941,6 +942,9 @@ func loadJSON(p *Progress, target string, r io.Reader, table string) error {
 	streamErr := make(chan error, 1)
 	go func() {
 		defer pw.Close()
+		// A panic here must still end the pipe and report, or psql and the
+		// wait below would hang on it for ever.
+		defer safego.Catch("import: writing documents", func(err error) { pw.CloseWithError(err); streamErr <- err })
 		w := bufio.NewWriter(pw)
 		fmt.Fprintln(w, "BEGIN;")
 		err := streamJSONDocs(br, first, func(raw string) error {

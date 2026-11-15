@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 	"strconv"
 	"strings"
 	"sync"
@@ -307,57 +308,60 @@ func StartCheckpointer() {
 			log.Printf("security log checkpoints: %v", serr)
 		}
 		for range t.C {
-			// The security log, on the same schedule as the branches.
-			if store != nil && time.Since(last[secLogAnchorDir]) >= interval {
-				last[secLogAnchorDir] = time.Now()
-				if a, err := CheckpointSecurityLog(store); err != nil {
-					log.Printf("security log checkpoint: %v", err)
-				} else if a != nil {
-					log.Printf("security log checkpoint: events %d–%d", a.FromID, a.ToID)
+			// One tick in Run: a panic costs this tick, and the next still comes.
+			safego.Run("ledger checkpoints", func() {
+				// The security log, on the same schedule as the branches.
+				if store != nil && time.Since(last[secLogAnchorDir]) >= interval {
+					last[secLogAnchorDir] = time.Now()
+					if a, err := CheckpointSecurityLog(store); err != nil {
+						log.Printf("security log checkpoint: %v", err)
+					} else if a != nil {
+						log.Printf("security log checkpoint: events %d–%d", a.FromID, a.ToID)
+					}
 				}
-			}
-			// The branch ledgers' half, and only this half. The security
-			// log above keeps anchoring in every edition.
-			if !edition.Has(edition.Anchors) {
-				saidWhyNotAnchoring.Do(func() {
-					log.Printf("ledger checkpoints: not anchoring branch ledgers — %v "+
-						"(the security log is still anchored, and existing anchors still verify)",
-						ErrAnchorsNotLicensed)
-				})
-				continue
-			}
-			// The audit log's chain (F6 step 6), on the same schedule.
-			if time.Since(last[auditAnchorDirName]) >= interval {
-				last[auditAnchorDirName] = time.Now()
-				if a, err := CheckpointAuditLog(); err != nil {
-					log.Printf("audit log checkpoint: %v", err)
-				} else if a != nil {
-					log.Printf("audit log checkpoint: records %d–%d", a.FromID, a.ToID)
+				// The branch ledgers' half, and only this half. The security
+				// log above keeps anchoring in every edition.
+				if !edition.Has(edition.Anchors) {
+					saidWhyNotAnchoring.Do(func() {
+						log.Printf("ledger checkpoints: not anchoring branch ledgers — %v "+
+							"(the security log is still anchored, and existing anchors still verify)",
+							ErrAnchorsNotLicensed)
+					})
+					return
 				}
-			}
-			names, err := RunningBranches()
-			if err != nil {
-				continue
-			}
-			for _, n := range names {
-				pending, err := pendingCheckpointRows(n)
-				if err != nil || pending <= 0 {
-					continue
+				// The audit log's chain (F6 step 6), on the same schedule.
+				if time.Since(last[auditAnchorDirName]) >= interval {
+					last[auditAnchorDirName] = time.Now()
+					if a, err := CheckpointAuditLog(); err != nil {
+						log.Printf("audit log checkpoint: %v", err)
+					} else if a != nil {
+						log.Printf("audit log checkpoint: records %d–%d", a.FromID, a.ToID)
+					}
 				}
-				if pending < threshold && time.Since(last[n]) < interval {
-					continue
-				}
-				last[n] = time.Now()
-				a, _, err := Checkpoint(n)
+				names, err := RunningBranches()
 				if err != nil {
-					log.Printf("ledger checkpoint %s: %v", n, err)
-					continue
+					return
 				}
-				if a != nil {
-					log.Printf("ledger checkpoint %s #%d: ids %d–%d (%d entries), root %s",
-						n, a.CheckpointID, a.FromID, a.ToID, a.EntryCount, a.MerkleRoot)
+				for _, n := range names {
+					pending, err := pendingCheckpointRows(n)
+					if err != nil || pending <= 0 {
+						continue
+					}
+					if pending < threshold && time.Since(last[n]) < interval {
+						continue
+					}
+					last[n] = time.Now()
+					a, _, err := Checkpoint(n)
+					if err != nil {
+						log.Printf("ledger checkpoint %s: %v", n, err)
+						continue
+					}
+					if a != nil {
+						log.Printf("ledger checkpoint %s #%d: ids %d–%d (%d entries), root %s",
+							n, a.CheckpointID, a.FromID, a.ToID, a.EntryCount, a.MerkleRoot)
+					}
 				}
-			}
+			})
 		}
 	}()
 }

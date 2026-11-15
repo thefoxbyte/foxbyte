@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 	"log"
 	"net/http"
 	"net/url"
@@ -53,9 +54,12 @@ func reapLoop(ttl time.Duration) {
 	}
 	for {
 		time.Sleep(interval)
-		if n, err := branch.ReapAgentBranches(ttl); err == nil && n > 0 {
-			log.Printf("reaped %d expired agent branch(es)", n)
-		}
+		// One round in Run: a panic is logged and the next round still comes.
+		safego.Run("agent branch reaper", func() {
+			if n, err := branch.ReapAgentBranches(ttl); err == nil && n > 0 {
+				log.Printf("reaped %d expired agent branch(es)", n)
+			}
+		})
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/ledger"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // The audit log's store and the collector that fills it (F6 Gate 1, step 3;
@@ -797,22 +798,24 @@ func StartAuditCollector() {
 		time.Sleep(30 * time.Second)
 		lastErr := ""
 		for {
-			if res, err := CollectAudit(); err != nil {
-				log.Printf("audit log: collecting: %v", err)
-			} else if res.Removed > 0 || res.Pruned > 0 {
-				log.Printf("audit log: %d record(s) collected, %d raw file(s) removed, %d day(s) past retention removed",
-					res.Records, res.Removed, res.Pruned)
-			}
-			// A failure is said once, not every minute: the findings keep it.
-			if _, err := ForwardAudit(); err != nil {
-				if err.Error() != lastErr {
-					log.Printf("audit log: forwarding: %v (the records wait in the store and go when it works)", err)
+			safego.Run("audit log: collecting", func() {
+				if res, err := CollectAudit(); err != nil {
+					log.Printf("audit log: collecting: %v", err)
+				} else if res.Removed > 0 || res.Pruned > 0 {
+					log.Printf("audit log: %d record(s) collected, %d raw file(s) removed, %d day(s) past retention removed",
+						res.Records, res.Removed, res.Pruned)
 				}
-				lastErr = err.Error()
-			} else if lastErr != "" {
-				log.Printf("audit log: forwarding works again")
-				lastErr = ""
-			}
+				// A failure is said once, not every minute: the findings keep it.
+				if _, err := ForwardAudit(); err != nil {
+					if err.Error() != lastErr {
+						log.Printf("audit log: forwarding: %v (the records wait in the store and go when it works)", err)
+					}
+					lastErr = err.Error()
+				} else if lastErr != "" {
+					log.Printf("audit log: forwarding works again")
+					lastErr = ""
+				}
+			})
 			time.Sleep(time.Minute)
 		}
 	}()
