@@ -666,6 +666,19 @@ A fresh install exposes nothing it does not have to:
   Gateway serves at most `FOX_GATEWAY_MAX_CONNS` connections (96 by default,
   one under Postgres's non-superuser limit) and gives a
   client 30 seconds to authenticate.
+- **Every request has a deadline.** An ordinary API request has
+  `FOX_HTTP_TIMEOUT` (5m) to send its body and receive its answer, a file
+  import's upload `FOX_UPLOAD_TIMEOUT` (2h), an export `FOX_EXPORT_TIMEOUT`
+  (1h); a progress or change stream may run on, but a reader that stops
+  reading is dropped after a minute. At most `FOX_MAX_IMPORTS` imports and
+  `FOX_MAX_EXPORTS` exports (4 each) run at once; past that the answer is 429.
+- **Queries stop on the server.** A console query runs for at most
+  `FOX_CONSOLE_STATEMENT_TIMEOUT` (60s), on connections pooled per branch and
+  per login (`FOX_CONSOLE_POOL_SIZE`, 4; `0` turns pooling off) and reset
+  before reuse. MCP `run_sql` returns at most 1,000 rows a statement and
+  256 KiB in all, says when it left rows out, and stops a statement after
+  `FOX_MCP_STATEMENT_TIMEOUT` (60s). Apps connecting through the Gateway get
+  no statement timeout: long queries and migrations are legitimate work.
 - **Branches belong to whoever made them.** Every account may use `main`; a
   branch made through the console, the API, the Agent API or MCP is its
   maker's to use and delete; an admin (the first account, or anyone given
