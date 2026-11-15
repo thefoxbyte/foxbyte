@@ -119,7 +119,11 @@ inherited by every branch, capture **every** schema change and attribute it:
 the hashes. The statement text can hold the values a change wrote, so a client
 reads only the text of its own entries (`bb.ledger_statement(id)`, for a
 per-user or per-agent login); the superuser and admins (`fox admin grant`)
-read all of it, and `bb.ledger_verify()` checks the chain for anyone.
+read all of it, and `bb.ledger_verify()` checks the chain for anyone. The text
+is part of the hash chain, so it cannot be erased later: an application that
+writes personal data with bind parameters keeps the values out of it, and
+[docs/data-subject-requests.md](docs/data-subject-requests.md#the-blackbox-keeps-statement-text)
+says what that means for an erasure request.
 
 ```bash
 fox blackbox            # every schema change on this branch, most recent first
