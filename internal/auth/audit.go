@@ -41,6 +41,10 @@ const (
 	EvPasswordChange = "account.password_changed"
 	EvPasswordReset  = "account.password_reset"
 	EvAccountDeleted = "account.deleted"
+	// EvAccountClaimed: a provider sign-in proved the email of an account that
+	// was made by open sign-up, so whoever made that account loses its password,
+	// sessions and keys (emailproof.go).
+	EvAccountClaimed = "account.claimed"
 	EvKeyCreated     = "key.created"
 	EvKeyRevoked     = "key.revoked"
 	EvAdminGranted   = "admin.granted"
@@ -326,9 +330,23 @@ func (s *Store) appendEvent(kind, actor, subject, ip, detail string) error {
 			_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		}
 	}()
+	if err := appendEventIn(ctx, conn, kind, actor, subject, ip, detail); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return err
+	}
+	commit = true
+	return nil
+}
+
+// appendEventIn chains one event onto the log inside a transaction the caller
+// has already opened with BEGIN IMMEDIATE, so the event commits or rolls back
+// with the change it records.
+func appendEventIn(ctx context.Context, conn *sql.Conn, kind, actor, subject, ip, detail string) error {
 	e := SecurityEvent{At: time.Now().UTC().Format(time.RFC3339Nano), Kind: kind,
 		Actor: actor, Subject: clip(subject), IP: ip, Detail: clip(detail)}
-	err = conn.QueryRowContext(ctx, `SELECT id, row_hash FROM security_events ORDER BY id DESC LIMIT 1`).Scan(&e.ID, &e.PrevHash)
+	err := conn.QueryRowContext(ctx, `SELECT id, row_hash FROM security_events ORDER BY id DESC LIMIT 1`).Scan(&e.ID, &e.PrevHash)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
@@ -338,10 +356,6 @@ func (s *Store) appendEvent(kind, actor, subject, ip, detail string) error {
 		VALUES(?,?,?,?,?,?,?,?,?)`, e.ID, e.At, e.Kind, e.Actor, e.Subject, e.IP, e.Detail, e.PrevHash, e.RowHash); err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return err
-	}
-	commit = true
 	return nil
 }
 

@@ -85,7 +85,7 @@ func (s *Store) handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not read identity", http.StatusBadRequest)
 		return
 	}
-	u, err := s.upsertOAuth(provider, subject, email, verified)
+	u, err := s.upsertOAuth(provider, subject, email, verified, clientIP(r))
 	switch {
 	case errors.Is(err, errOAuthUnverified), errors.Is(err, errOAuthNoAccount):
 		s.Audit(EvOAuthRefused, "", email, clientIP(r), provider+": "+err.Error())

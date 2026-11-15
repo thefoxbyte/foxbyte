@@ -107,29 +107,29 @@ func TestOAuthRules(t *testing.T) {
 	tokenIn(t)
 	s := closedStore(t)
 	// No account yet: a provider sign-in cannot make the first one.
-	if _, err := s.upsertOAuth("github", "1", "a@x.com", true); !errors.Is(err, errOAuthNoAccount) {
+	if _, err := s.upsertOAuth("github", "1", "a@x.com", true, ""); !errors.Is(err, errOAuthNoAccount) {
 		t.Errorf("first account over OAuth: err = %v, want errOAuthNoAccount", err)
 	}
 	a, _ := s.CreateUser("a@x.com", "password1")
 	// An unverified email must not join the account that has it.
-	if _, err := s.upsertOAuth("github", "2", "a@x.com", false); !errors.Is(err, errOAuthUnverified) {
+	if _, err := s.upsertOAuth("github", "2", "a@x.com", false, ""); !errors.Is(err, errOAuthUnverified) {
 		t.Errorf("unverified email: err = %v, want errOAuthUnverified", err)
 	}
 	// A verified one joins it.
-	u, err := s.upsertOAuth("github", "3", "A@x.com", true)
+	u, err := s.upsertOAuth("github", "3", "A@x.com", true, "")
 	if err != nil || u.ID != a.ID {
 		t.Fatalf("verified email: %+v, %v; want account %d", u, err, a.ID)
 	}
 	// And that identity signs in to it from now on.
-	if u, err := s.upsertOAuth("github", "3", "", false); err != nil || u.ID != a.ID {
+	if u, err := s.upsertOAuth("github", "3", "", false, ""); err != nil || u.ID != a.ID {
 		t.Errorf("known identity: %+v, %v", u, err)
 	}
 	// Sign-up closed: a new email gets no account.
-	if _, err := s.upsertOAuth("google", "9", "new@x.com", true); !errors.Is(err, errOAuthNoAccount) {
+	if _, err := s.upsertOAuth("google", "9", "new@x.com", true, ""); !errors.Is(err, errOAuthNoAccount) {
 		t.Errorf("new email with sign-up closed: err = %v, want errOAuthNoAccount", err)
 	}
 	s.cfg.SignupOpen = true
-	if _, err := s.upsertOAuth("google", "9", "new@x.com", true); err != nil {
+	if _, err := s.upsertOAuth("google", "9", "new@x.com", true, ""); err != nil {
 		t.Errorf("new email with sign-up open: %v", err)
 	}
 }

@@ -660,7 +660,10 @@ A fresh install exposes nothing it does not have to:
 - **The first account needs the setup token**, and sign-up is closed after it:
   an admin adds people with `fox user create`, or `FOX_SIGNUP=open` lets them
   register. Signing in with GitHub or Google needs a verified email, and makes
-  no account while sign-up is closed.
+  no account while sign-up is closed. An open sign-up's email is unproven, so
+  the first GitHub or Google sign-in with that verified email takes the account
+  over: its password, sessions and API keys are removed, and the security log
+  records it (`account.claimed`).
 - **Brakes on guessing and flooding.** Ten failed sign-ins for one address or
   one email in 15 minutes hold further attempts; request bodies are capped; the
   Gateway serves at most `FOX_GATEWAY_MAX_CONNS` connections (96 by default,

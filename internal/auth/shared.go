@@ -86,6 +86,11 @@ type mirror struct {
 // parents before children on the way in, and the reverse on the way out.
 var mirrored = []mirror{
 	{table: "users", cols: []string{"id", "email", "pw_hash", "created"}, pk: []string{"id"}},
+	// Which accounts' emails were never proven (emailproof.go). Carried so a
+	// standby that takes over still knows which accounts a provider sign-in
+	// must clean before joining. Optional, so a document from a node older
+	// than the table leaves this node's rows as they are.
+	{table: "unproven_emails", cols: []string{"user_id", "since"}, pk: []string{"user_id"}, optional: true},
 	{table: "api_keys", cols: []string{"id", "user_id", "name", "key_hash", "prefix", "created", "last_used", "scope", "kind"},
 		pk: []string{"id"}, volatile: []string{"last_used"}},
 	{table: "oauth_identities", cols: []string{"provider", "subject", "user_id"}, pk: []string{"provider", "subject"}},
