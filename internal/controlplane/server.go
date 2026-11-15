@@ -378,6 +378,8 @@ func registerAPI(mux *http.ServeMux) {
 	})
 
 	mux.HandleFunc("DELETE /api/branches/{name}", func(w http.ResponseWriter, r *http.Request) {
+		// The console's pooled sessions first: they would hold the branch open.
+		closeConsolePools(r.PathValue("name"))
 		if err := branch.Delete(r.PathValue("name")); err != nil {
 			writeErr(w, 500, err)
 			return
@@ -392,6 +394,9 @@ func registerAPI(mux *http.ServeMux) {
 			writeErr(w, 400, fmt.Errorf("refusing to suspend the primary 'main'"))
 			return
 		}
+		// And its pooled console sessions, which would otherwise count as a
+		// client using it.
+		closeConsolePools(name)
 		if err := branch.Suspend(name); err != nil {
 			writeErr(w, 500, err)
 			return
@@ -796,16 +801,19 @@ type queryAs struct {
 }
 
 // runQuery executes SQL against a branch backend and returns columns/rows (or an
-// error message the console can render). Capped and time-bounded.
+// error message the console can render). Capped at RowCap rows a statement, and
+// time-bounded on the server (FOX_CONSOLE_STATEMENT_TIMEOUT) and here, a little
+// later, so the server's own message is what normally says a query ran too long.
+// The session comes from the console's pool (consolepool.go).
 func runQuery(addr, sql string, as queryAs) map[string]any {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), consoleStatementTimeout()+5*time.Second)
 	defer cancel()
 
-	conn, err := openSession(ctx, addr, as)
+	conn, release, err := acquireSession(ctx, addr, as)
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	defer conn.Close(ctx)
+	defer release()
 	if as.ActFor != "" {
 		return runActingFor(ctx, conn, sql, as.ActFor, as.ActForRequired)
 	}
@@ -920,6 +928,23 @@ var ensureUserRole = branch.EnsureUserRole
 var errNoOwnRole = errors.New("could not log you in as your own role")
 
 func openSession(ctx context.Context, addr string, as queryAs) (*pgx.Conn, error) {
+	cfg, err := sessionConfig(addr, as)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := connectSession(ctx, cfg, as.Branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := prepareSession(ctx, conn, as); err != nil {
+		conn.Close(ctx)
+		return nil, err
+	}
+	return conn, nil
+}
+
+// sessionConfig is the login a console session uses: the role, and its password.
+func sessionConfig(addr string, as queryAs) (*pgx.ConnConfig, error) {
 	cfg, err := pgx.ParseConfig(fmt.Sprintf("postgres://%s/%s", addr, branch.Database))
 	if err != nil {
 		return nil, err
@@ -946,41 +971,43 @@ func openSession(ctx context.Context, addr string, as queryAs) (*pgx.Conn, error
 		}
 		cfg.User, cfg.Password = as.Actor, branch.UserRolePassword(as.Actor)
 	}
-	conn, err := connectSession(ctx, cfg, as.Branch)
-	if err != nil {
-		return nil, err
-	}
-	fail := func(err error) (*pgx.Conn, error) { conn.Close(ctx); return nil, err }
+	return cfg, nil
+}
 
+// prepareSession gives a connected session the settings this run asked for.
+// They are session settings, so a pooled connection has them taken off again
+// before anyone else is given it (consolepool.go).
+func prepareSession(ctx context.Context, conn *pgx.Conn, as queryAs) error {
 	// Attribute console DDL in the Blackbox to the signed-in user — our own
 	// tool should not be the blind spot. The engine's reads skip this.
 	if as.Actor != "" {
 		if _, err := conn.Exec(ctx,
 			"SELECT set_config('bb.actor',$1,false), set_config('bb.actor_kind','human',false), set_config('application_name','console',false)",
 			as.Actor); err != nil {
-			return fail(err)
+			return err
 		}
 	}
 	if as.Actor == "" && as.Label != "" {
 		if _, err := conn.Exec(ctx, "SELECT set_config('bb.actor',$1,false), set_config('application_name',$2,false)",
 			as.Label, as.App); err != nil {
-			return fail(err)
+			return err
 		}
 	}
-	// Each console run is its own connection, so a SET typed in one run is gone
-	// by the next; the override has to travel with the query it is meant for.
+	// Each console run starts from a clean session, a new one or a pooled one
+	// reset, so a SET typed in one run is gone by the next; the override has to
+	// travel with the query it is meant for.
 	if len(as.AllowRules) > 0 {
 		if _, err := conn.Exec(ctx, "SELECT set_config('bb.policy_allow',$1,false)", strings.Join(as.AllowRules, ",")); err != nil {
-			return fail(err)
+			return err
 		}
 	}
 	if as.AllowDestructive {
 		if _, err := conn.Exec(ctx, "SELECT set_config('bb.allow_destructive','on',false)"); err != nil {
-			return fail(err)
+			return err
 		}
 	}
 
-	return conn, nil
+	return nil
 }
 
 // queryErr renders a failed query for the console: the message, and where
