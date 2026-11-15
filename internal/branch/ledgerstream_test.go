@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,12 +43,17 @@ type psqlAnswer struct {
 func fakePsql(t *testing.T, answer func(name, sql string) psqlAnswer) {
 	t.Helper()
 	dir := t.TempDir()
+	// A diff reads both ledgers at once, so two calls can arrive together:
+	// each must get its own output file.
+	var mu sync.Mutex
 	n := 0
 	old := ledgerPsql
 	ledgerPsql = func(name, sql string) (*exec.Cmd, context.Context, context.CancelFunc) {
 		a := answer(name, sql)
+		mu.Lock()
 		n++
 		path := filepath.Join(dir, fmt.Sprintf("out-%d", n))
+		mu.Unlock()
 		if err := os.WriteFile(path, []byte(a.stdout), 0o600); err != nil {
 			t.Fatal(err)
 		}
