@@ -17,8 +17,10 @@ import (
 
 // Server returns an http.Server with timeouts. The bare http.ListenAndServe has
 // none, so a client that opens connections and sends its headers one byte at a
-// time holds them open for ever. There is no write timeout: imports and
-// pipeline runs stream their progress for as long as they take.
+// time holds them open for ever. There is no server-wide ReadTimeout or
+// WriteTimeout: imports and pipeline runs stream their progress for as long as
+// they take, so the bodies and responses are bounded per request instead
+// (Deadlines, StreamWrite).
 func Server(addr string, h http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,

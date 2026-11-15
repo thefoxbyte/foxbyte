@@ -164,8 +164,11 @@ func Serve(addr string) error {
 	// …and a change a browser sends from another site is refused (cross-site
 	// request forgery; matters most when FOX_WEB_ORIGIN makes the cookie
 	// SameSite=None).
-	handler := httpx.SecurityHeaders("")(httpx.CORS(store.WebOrigin())(httpx.RefuseCrossSite(store.WebOrigin())(
-		logging(httpx.LimitBodies(httpx.MaxBody, isUpload)(mux)))))
+	// And each request has its own read and write deadlines (deadlines.go): a
+	// body that trickles in, or a reader that stops reading, is cut off rather
+	// than held for ever.
+	handler := httpx.Deadlines(routeBudgets())(httpx.SecurityHeaders("")(httpx.CORS(store.WebOrigin())(httpx.RefuseCrossSite(store.WebOrigin())(
+		logging(httpx.LimitBodies(httpx.MaxBody, isUpload)(mux))))))
 
 	// TLS when a certificate is available (self-signed on first run, or a real
 	// one via FOX_TLS_CERT/KEY), so API keys and session tokens are never
@@ -261,7 +264,7 @@ func readStatusFacts() (statusFacts, error) {
 
 // isUpload is the one route whose body is a file rather than JSON; it has its
 // own, larger cap (maxUpload).
-func isUpload(r *http.Request) bool { return r.URL.Path == "/api/import/file" }
+func isUpload(r *http.Request) bool { return apiPath(r) == "/api/import/file" }
 
 // maxUpload caps a file import's upload: FOX_MAX_UPLOAD_MB, 4096 MiB by
 // default. The part of an upload that does not fit in memory is written to a
@@ -405,7 +408,7 @@ func registerAPI(mux *http.ServeMux) {
 	})
 
 	// The whole result of one statement, streamed as a file (point 1.3).
-	mux.HandleFunc("POST /api/branches/{name}/export", handleExport)
+	mux.HandleFunc("POST /api/branches/{name}/export", exportSlots.Wrap(handleExport))
 
 	// The object browser (point 12.1): what the branch holds, and each
 	// object's CREATE script.
@@ -473,7 +476,7 @@ func registerAPI(mux *http.ServeMux) {
 	// Migration: import a source database into a new instance from a connection
 	// string. The web wizard accepts a URL source (no arbitrary server file paths
 	// from a browser); file imports (.sql/.csv/.json) go through /api/import/file.
-	mux.HandleFunc("POST /api/import", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/import", importSlots.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Source     string `json:"source"`
 			Target     string `json:"target"`
@@ -520,7 +523,7 @@ func registerAPI(mux *http.ServeMux) {
 			return
 		}
 		send("done", map[string]any{"status": status, "target": target, "tables": branch.TableCount(target)})
-	})
+	}))
 
 	// Base backups in object storage: what a point-in-time restore can start
 	// from. Read-only -- a restore itself is `fox restore --to`, which needs a
@@ -584,7 +587,7 @@ func registerAPI(mux *http.ServeMux) {
 
 	// Migration via file upload: a .sql/.csv/.json file streamed from the browser
 	// into a new instance (kind inferred from the filename). Progress streams as SSE.
-	mux.HandleFunc("POST /api/import/file", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/import/file", importSlots.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxUpload())
 		file, hdr, ferr := r.FormFile("file")
 		send, p, ok := newSSE(w)
@@ -616,7 +619,7 @@ func registerAPI(mux *http.ServeMux) {
 			return
 		}
 		send("done", map[string]any{"status": "imported", "target": target, "tables": branch.TableCount(target)})
-	})
+	}))
 
 	// Blackbox (RECORD layer): the queryable history of DDL changes on a
 	// branch, filterable by actor/table/risk/status/kind/time.
@@ -1521,8 +1524,7 @@ func (f writeFunc) Write(b []byte) (int, error) { return f(b) }
 // events) and item-level steps (as `progress` events). ok is false if the server
 // can't stream (no http.Flusher).
 func newSSE(w http.ResponseWriter) (send func(string, any), p *branch.Progress, ok bool) {
-	fl, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok = w.(http.Flusher); !ok {
 		return nil, nil, false
 	}
 	h := w.Header()
@@ -1533,8 +1535,13 @@ func newSSE(w http.ResponseWriter) (send func(string, any), p *branch.Progress, 
 	w.WriteHeader(http.StatusOK)
 	send = func(event string, data any) {
 		b, _ := json.Marshal(data)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
-		fl.Flush()
+		// Each event under its own write deadline: a stream may run for hours,
+		// but a reader that stops reading is dropped after a minute, and the
+		// failed write ends the request's context so the handler stops too.
+		_ = httpx.StreamWrite(w, func() error {
+			_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+			return err
+		})
 	}
 	p = &branch.Progress{
 		Log: writeFunc(func(b []byte) (int, error) {

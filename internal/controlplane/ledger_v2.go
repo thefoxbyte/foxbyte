@@ -122,7 +122,7 @@ func registerLedgerV2(mux *http.ServeMux) {
 		}
 	})
 
-	mux.HandleFunc("GET /api/branches/{name}/ledger/export", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/branches/{name}/ledger/export", exportSlots.Wrap(func(w http.ResponseWriter, r *http.Request) {
 		if !requireFeature(w, edition.Export) {
 			return
 		}
@@ -144,5 +144,5 @@ func registerLedgerV2(mux *http.ServeMux) {
 			// Headers may be out already; the truncated body plus the log is all we can do.
 			http.Error(w, err.Error(), 500)
 		}
-	})
+	}))
 }

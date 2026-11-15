@@ -178,8 +178,12 @@ func Serve(addr string) error {
 
 	// The Agent API answers machines only, so nothing it returns may load or be framed.
 	// A change a browser sends from another site is refused, as on the control plane.
-	handler := httpx.SecurityHeaders(httpx.APIPolicy)(httpx.CORS(store.WebOrigin())(httpx.RefuseCrossSite(store.WebOrigin())(
-		logging(httpx.LimitBodies(httpx.MaxBody, nil)(mux)))))
+	// Every route here is an ordinary one, under one read and write deadline
+	// (FOX_HTTP_TIMEOUT), so a client that stops reading or sending is cut off.
+	t := httpx.RequestTimeout()
+	handler := httpx.Deadlines(func(*http.Request) httpx.Budget { return httpx.Budget{Read: t, Write: t} })(
+		httpx.SecurityHeaders(httpx.APIPolicy)(httpx.CORS(store.WebOrigin())(httpx.RefuseCrossSite(store.WebOrigin())(
+			logging(httpx.LimitBodies(httpx.MaxBody, nil)(mux))))))
 	srv := httpx.Server(addr, handler)
 	cert, key, tlsErr := tlsutil.EnsureCert()
 	if tlsErr != nil {
