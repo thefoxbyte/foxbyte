@@ -87,17 +87,9 @@ func ClientQueryTextAs(branchName, sql, tool, actor string) (string, error) {
 	if login.refused != nil {
 		return "", login.refused
 	}
-	args := []string{"docker", "exec", "-e", "PGAPPNAME=" + tool}
-	if opts := engineSessionOptions(login, branchName, actor); opts != "" {
-		args = append(args, "-e", "PGOPTIONS="+opts)
-	}
-	args = append(args, container(branchName),
-		"psql", "-U", login.role, "-d", pgDatabase, "-P", "pager=off", "-c", sql)
-	out, err := captureCombined(args[0], args[1:]...)
-	if err != nil {
-		return out, fmt.Errorf("%s", out)
-	}
-	return out, nil
+	// Over pgx with the caps and the statement timeout (mcpquery.go), told at
+	// login exactly what PGOPTIONS told psql.
+	return clientQueryCapped(branchName, sql, tool, login, engineSessionOptions(login, branchName, actor))
 }
 
 // AdminForFirstAccount gives the first account on an install the admin grant on

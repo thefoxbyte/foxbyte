@@ -19,6 +19,7 @@ import (
 	"github.com/thefoxbyte/foxbyte/internal/edition"
 	"github.com/thefoxbyte/foxbyte/internal/license"
 	"github.com/thefoxbyte/foxbyte/internal/proxy"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 	"github.com/thefoxbyte/foxbyte/internal/version"
 	"github.com/thefoxbyte/foxbyte/web"
 )
@@ -147,7 +148,13 @@ func runCheck(c check, d time.Duration) []checkLine {
 		return c.run()
 	}
 	done := make(chan []checkLine, 1)
-	go func() { done <- c.run() }()
+	go func() {
+		// A check that panics fails its own line; the report goes on.
+		defer safego.Catch("check "+c.name, func(err error) {
+			done <- []checkLine{fail(c.name, err.Error(), "")}
+		})
+		done <- c.run()
+	}()
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {

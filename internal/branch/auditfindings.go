@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // What can go wrong with the audit log, found rather than assumed (F6 Gate 1,
@@ -86,11 +87,13 @@ func StartAuditHeartbeat() {
 	go func() {
 		time.Sleep(time.Minute)
 		for {
-			if AuditOn() {
-				if _, err := SendHeartbeats(); err != nil {
-					log.Printf("audit log: heartbeats: %v", err)
+			safego.Run("audit log: heartbeats", func() {
+				if AuditOn() {
+					if _, err := SendHeartbeats(); err != nil {
+						log.Printf("audit log: heartbeats: %v", err)
+					}
 				}
-			}
+			})
 			time.Sleep(heartbeatEvery)
 		}
 	}()

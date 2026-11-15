@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // ---- setting the target ----
@@ -340,7 +341,7 @@ func StartBackupScheduler() {
 	go func() {
 		time.Sleep(time.Minute) // let the stack settle after a start
 		for {
-			backupIfDue(iv)
+			safego.Run("backups", func() { backupIfDue(iv) })
 			time.Sleep(check)
 		}
 	}()

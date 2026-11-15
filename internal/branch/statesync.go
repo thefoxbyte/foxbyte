@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
+	"github.com/thefoxbyte/foxbyte/internal/safego"
 )
 
 // Shared state — phase 2 of docs/FOX_HA_Plan.md: accounts, API keys and the
@@ -139,9 +140,11 @@ func StartStateSync(s SharedStore) {
 	go func() {
 		time.Sleep(10 * time.Second) // let the stack settle after a start
 		for {
-			if err := SyncSharedState(s); err != nil {
-				log.Printf("shared state: %v", err)
-			}
+			safego.Run("shared state", func() {
+				if err := SyncSharedState(s); err != nil {
+					log.Printf("shared state: %v", err)
+				}
+			})
 			time.Sleep(iv)
 		}
 	}()
