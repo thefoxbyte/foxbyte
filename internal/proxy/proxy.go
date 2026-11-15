@@ -7,6 +7,7 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
@@ -212,33 +213,48 @@ func Serve(addr string, idle time.Duration) error {
 		tlsConfig = cfg
 		log.Printf("TLS enabled — clients connect with sslmode=require (required from other machines)")
 	}
-	ln, err := net.Listen("tcp", addr)
+	lc := net.ListenConfig{KeepAliveConfig: clientKeepAlive}
+	ln, err := lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return err
 	}
-	slots := make(chan struct{}, maxConns())
+	limits := limitsFromEnv()
 	if idle > 0 {
 		go reaper(idle)
 		log.Printf("auto-suspend enabled: idle branches stop after %s", idle)
 	}
-	log.Printf("wire-protocol proxy listening on %s — connect with dbname=<branch> (e.g. dbname=main); at most %d connections", addr, cap(slots))
+	log.Printf("wire-protocol proxy listening on %s — connect with dbname=<branch> (e.g. dbname=main); at most %d connections (%d authenticating, %d per address, %d per key)",
+		addr, cap(limits.slots), cap(limits.preauth), limits.perIP.max, limits.perKey.max)
+	if d := sessionIdleTimeout(); d > 0 {
+		log.Printf("sessions idle for %s are closed", d)
+	}
+	return serveListener(ln, limits, handleAdmitted)
+}
+
+// serveListener accepts connections until the listener is closed, admitting
+// each against limits and serving it with handleConn on its own goroutine.
+func serveListener(ln net.Listener, limits *gatewayLimits, handleConn func(net.Conn, *ticket)) error {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return err
+			}
 			log.Printf("accept: %v", err)
 			continue
 		}
-		select {
-		case slots <- struct{}{}:
-			go func() {
-				defer func() { <-slots }()
-				handle(c)
-			}()
-		default:
+		t, refusal := limits.admit(c)
+		if t == nil {
 			// Full: say so in Postgres's own words and close, rather than
 			// holding a goroutine and a socket for every extra client.
-			go refuseBusy(c)
+			go refuse(c, refusal)
+			continue
 		}
+		go func() {
+			defer t.release()
+			defer recovered("client session", c)
+			handleConn(c, t)
+		}()
 	}
 }
 
@@ -344,10 +360,13 @@ func remoteHost(c net.Conn) string {
 	return host
 }
 
-func refuseBusy(c net.Conn) {
+// refuse turns a connection away with too_many_connections, the SQLSTATE
+// Postgres itself uses when it is full, so clients and pools treat both alike.
+func refuse(c net.Conn, message string) {
 	defer c.Close()
+	defer recovered("connection refusal", c)
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	sendError(c, "53300", "too many connections to the gateway — try again shortly") // too_many_connections
+	sendError(c, "53300", message) // too_many_connections
 }
 
 // needsTLS reports whether a client must have upgraded to TLS before it may
@@ -361,7 +380,12 @@ func needsTLS(client net.Conn) bool {
 	return !httpx.IsLoopbackConn(client.RemoteAddr())
 }
 
-func handle(client net.Conn) {
+// handle serves a connection that holds nothing against the gateway's limits.
+func handle(client net.Conn) { handleAdmitted(client, nil) }
+
+// handleAdmitted serves one connection; t is what it holds against the
+// gateway's limits, or nil.
+func handleAdmitted(client net.Conn, t *ticket) {
 	defer client.Close()
 	_ = client.SetDeadline(time.Now().Add(startupTimeout))
 
@@ -413,9 +437,18 @@ func handle(client net.Conn) {
 			sendError(client, "28P01", "this is a realtime key: it subscribes to the change feed and cannot run SQL — use a key_ key as the password")
 			return
 		}
+		// Counted only once the key is known to be real, so nobody can use up
+		// a key's allowance without holding the key.
+		if !t.admitKey(key) {
+			sendError(client, "53300", "too many connections to the gateway with this API key — try again shortly") // too_many_connections
+			return
+		}
 		actor, keyScope, account = u.Email, scope, u
 		agentKey = kind == auth.KindAgent
 	}
+	// Past the password: the slot kept for clients still authenticating goes
+	// back for the next one.
+	t.authenticated()
 	// Authenticated: the startup deadline has done its job. Waking a
 	// suspended branch can take longer, and a session may idle for hours.
 	_ = client.SetDeadline(time.Time{})
@@ -592,10 +625,7 @@ func handle(client net.Conn) {
 		defer deregisterCancel(key)
 	}
 
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(backend, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, backend); done <- struct{}{} }()
-	<-done
+	pipe(client, backend, sessionIdleTimeout())
 }
 
 // The dials are bounded, unlike the rest of a session. The first is short
@@ -851,7 +881,12 @@ func reaper(idle time.Duration) {
 	}
 	for {
 		time.Sleep(interval)
-		sweepOnce(idle)
+		// Recovered per pass, so one bad pass costs that pass and not
+		// auto-suspend for the rest of the process's life.
+		func() {
+			defer recovered("auto-suspend sweep")
+			sweepOnce(idle)
+		}()
 	}
 }
 
