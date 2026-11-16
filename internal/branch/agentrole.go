@@ -152,12 +152,17 @@ func agentKeyRoleSQL(role, password string) string {
         EXECUTE format('ALTER ROLE %%I RESET search_path', r);
         EXECUTE format('ALTER ROLE %%I RESET log_min_error_statement', r);
       END IF;
-      EXECUTE format('GRANT db_client TO %%I', r);
-      EXECUTE format('GRANT %[1]s TO %%I', r);
-      IF current_setting('server_version_num')::int >= 160000 THEN
-        EXECUTE format('GRANT %[1]s TO %%I WITH INHERIT TRUE, SET TRUE', r);
-      END IF;
-      EXECUTE format('ALTER ROLE %%I SET role = db_client', r);`, AgentClientRole, bodyLiteral(password), MaskedRole))
+      -- A role main has made read-only (mainwrite.go) stays so: only
+      -- mainAccessSQL moves a role in or out of db_client there.
+      IF NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid = to_regrole('%[4]s')
+                       AND m.member = (SELECT oid FROM pg_roles WHERE rolname = r)) THEN
+        EXECUTE format('GRANT db_client TO %%I', r);
+        EXECUTE format('GRANT %[1]s TO %%I', r);
+        IF current_setting('server_version_num')::int >= 160000 THEN
+          EXECUTE format('GRANT %[1]s TO %%I WITH INHERIT TRUE, SET TRUE', r);
+        END IF;
+        EXECUTE format('ALTER ROLE %%I SET role = db_client', r);
+      END IF;`, AgentClientRole, bodyLiteral(password), MaskedRole, MainReaderRole))
 }
 
 // maskedAgentKeyRoleSQL makes an agent key's role a masked reader's: in
@@ -179,6 +184,10 @@ func maskedAgentKeyRoleSQL(role, password string) string {
            WHERE g.rolname = 'db_client' AND m.member = (SELECT oid FROM pg_roles WHERE rolname = r)) THEN
         EXECUTE format('REVOKE db_client FROM %%I', r);
       END IF;
+      IF EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid = to_regrole('%[5]s')
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = r)) THEN
+        EXECUTE format('REVOKE %[5]s FROM %%I', r); -- main's reader reads the real tables
+      END IF;
       IF current_setting('server_version_num')::int >= 160000 THEN
         EXECUTE format('GRANT %[1]s TO %%I WITH INHERIT FALSE, SET FALSE', r);
       ELSIF pg_has_role(r, '%[1]s', 'MEMBER') THEN
@@ -187,7 +196,7 @@ func maskedAgentKeyRoleSQL(role, password string) string {
       EXECUTE format('GRANT %[3]s TO %%I', r);
       EXECUTE format('ALTER ROLE %%I SET role = %[3]s', r);
       EXECUTE format('ALTER ROLE %%I SET search_path = %[4]s, public', r);
-      EXECUTE format('ALTER ROLE %%I SET log_min_error_statement = panic', r);`, AgentClientRole, bodyLiteral(password), MaskedRole, MaskSchema))
+      EXECUTE format('ALTER ROLE %%I SET log_min_error_statement = panic', r);`, AgentClientRole, bodyLiteral(password), MaskedRole, MaskSchema, MainReaderRole))
 }
 
 // EnsureAgentKeyRole makes sure the role an agent key belonging to email logs
@@ -207,7 +216,12 @@ func EnsureAgentKeyRole(branchName, email string) error {
 	if maskedHere {
 		state = "masked"
 	}
-	key, cacheable := agentCacheKey(branchName, branchIdentity(branchName), role+"\x00"+state)
+	// An agent key writes main only where its account may (mainwrite.go).
+	write, err := mainWriteFor(branchName, email)
+	if err != nil {
+		return err
+	}
+	key, cacheable := agentCacheKey(branchName, branchIdentity(branchName), role+"\x00"+state+"\x00"+fmt.Sprint(write))
 	if cacheable {
 		if _, ok := agentRolesReady.Load(key); ok {
 			return nil
@@ -226,6 +240,7 @@ func EnsureAgentKeyRole(branchName, email string) error {
 		// An unmask holder's agent: real values, its reads audited, as its own.
 		sql += "\n" + auditedReadsSQL(role, readsAudited(branchName, email))
 	}
+	sql += "\n" + mainAccessSQL(write, nil, []string{role})
 	if err := provisionRole(branchName, sql); err != nil {
 		return err
 	}
@@ -245,6 +260,11 @@ func applyAgentKeyMask(branchName, email string) error {
 		sql = maskedAgentKeyRoleSQL(role, AgentKeyRolePassword(email))
 	}
 	sql += "\n" + auditedReadsSQL(role, readsAudited(branchName, email))
+	write, err := mainWriteFor(branchName, email)
+	if err != nil {
+		return err
+	}
+	sql += "\n" + mainAccessSQL(write, nil, []string{role})
 	exists, err := QuerySQL(branchName, fmt.Sprintf("SELECT count(*) FROM pg_roles WHERE rolname = %s", quoteLiteral(role)))
 	if err != nil {
 		return err

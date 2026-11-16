@@ -134,7 +134,41 @@ func checkAccess(tool string, args []byte) error {
 			return fmt.Errorf("only the owner of %q or an admin may do that", name)
 		}
 	}
-	return nil
+	return checkMainWrite(tool, args)
+}
+
+// checkMainWrite refuses, before Postgres would, a tool that exists to change
+// its branch when that branch is main and main is read-only for the account
+// (branch/mainwrite.go). run_sql is not one: it also reads, and what it may
+// write is Postgres's to refuse (mainWriteHint says why).
+func checkMainWrite(tool string, args []byte) error {
+	if tool != "execute_change" {
+		return nil
+	}
+	var a struct {
+		Branch string `json:"branch"`
+		DryRun bool   `json:"dry_run"`
+	}
+	_ = json.Unmarshal(args, &a)
+	if a.DryRun || (a.Branch != "" && a.Branch != "main") || acl.MayWriteMain(me.User) {
+		return nil
+	}
+	return branch.MainReadOnlyError(me.User.Email)
+}
+
+// mainWriteHint adds to a refused statement on main the reason, when it is
+// that main is read-only for the account.
+func mainWriteHint(branchName string, err error) error {
+	if err == nil || (branchName != "" && branchName != "main") || acl == nil || me.Scope != "" {
+		return err
+	}
+	if !strings.Contains(err.Error(), "permission denied") && !strings.Contains(err.Error(), "must be owner") {
+		return err
+	}
+	if acl.MayWriteMain(me.User) {
+		return err
+	}
+	return fmt.Errorf("%v\n%v", err, branch.MainReadOnlyError(me.User.Email))
 }
 
 // Tools a branch-scoped key may not use at all: they either reach beyond one

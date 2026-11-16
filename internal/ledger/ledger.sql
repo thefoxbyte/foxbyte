@@ -874,6 +874,18 @@ BEGIN
 END $$;
 ALTER ROLE db_agent SET role = db_client;
 
+-- What an account's role on main is in, instead of db_client, while main is
+-- read-only for it (audit LIVE-1; internal/branch/mainwrite.go gives it what
+-- db_client may read). Made here, on every branch, so the statements below
+-- can name it; it has no members until an install puts main in mode
+-- "granted", and none ever off main.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'db_main_reader') THEN
+    CREATE ROLE db_main_reader NOLOGIN;
+  END IF;
+END $$;
+
 -- Defaults for client logins, for what the append lock does to everyone else. A
 -- transaction that has recorded something holds that lock until it ends, and
 -- every other session's DDL (and every agent write) queues behind it, so one
@@ -890,7 +902,8 @@ DECLARE r record; s text;
 BEGIN
   FOR r IN SELECT oid, rolname FROM pg_roles
             WHERE rolcanlogin AND NOT rolsuper
-              AND (rolname IN ('db_client', 'db_agent') OR pg_has_role(oid, 'db_client', 'MEMBER')) LOOP
+              AND (rolname IN ('db_client', 'db_agent') OR pg_has_role(oid, 'db_client', 'MEMBER')
+                   OR pg_has_role(oid, 'db_main_reader', 'MEMBER')) LOOP
     FOREACH s IN ARRAY ARRAY['lock_timeout=60s', 'idle_in_transaction_session_timeout=10min'] LOOP
       IF NOT EXISTS (SELECT 1 FROM pg_db_role_setting d, unnest(d.setconfig) c
                       WHERE d.setrole = r.oid AND d.setdatabase = 0
@@ -1003,7 +1016,7 @@ CREATE OR REPLACE FUNCTION bb._seal_function(f oid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog SET session_replication_role = replica AS $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_proc p WHERE p.oid = f AND p.prosecdef AND NOT p.proname = ANY (bb._client_callable())) THEN
-    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, db_client', f::regprocedure);
+    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, db_client, db_main_reader', f::regprocedure);
   END IF;
 END;
 $$;

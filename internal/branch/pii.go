@@ -131,6 +131,7 @@ func ScanPersonalData(name string, o PIIScanOptions) (PIIReport, error) {
 	if err != nil {
 		return PIIReport{}, err
 	}
+	defer forgetPersonalData(name) // the warnings read the findings (unmaskedpii.go)
 	if _, err := scanPII(name, o); err != nil {
 		return PIIReport{}, err
 	}
@@ -344,6 +345,7 @@ func MarkPersonalData(name string, id int64, state, note, actor string) (PIIFind
 	if len(note) > 1000 {
 		return PIIFindingDetail{}, fmt.Errorf("%w: a note is at most 1000 characters", ErrInvalidRequest)
 	}
+	defer forgetPersonalData(name)
 	if err := markPII(name, id, state, note, actor); err != nil {
 		return PIIFindingDetail{}, err
 	}

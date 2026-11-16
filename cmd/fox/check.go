@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"github.com/thefoxbyte/foxbyte/internal/daemon"
@@ -84,10 +85,12 @@ func checks() []check {
 		one("connections", checkConnections),
 		one("API over TLS", checkAPI),
 		one("API is closed", checkAPIClosed),
+		one("main write", checkMainWrite),
 		one("blackbox", checkBlackbox),
 		one("blackbox anchors", checkAnchors),
 		one("anchor target", checkAnchorTarget),
 		one("change feed", checkRealtime),
+		one("personal data", checkPersonalData),
 		group("audit log", checkAuditLogLines),
 		one("durability", checkDurability),
 		one("replication", checkReplicationAccess),
@@ -1057,6 +1060,25 @@ func checkVolumes() checkLine {
 	return warn("docker volumes",
 		fmt.Sprintf("%d unused anonymous volume(s), most likely left by branches removed by an older version", n),
 		"docker volume prune   — removes unused anonymous volumes only; named ones, the object store's included, are kept")
+}
+
+// checkMainWrite warns while main is writable by every account (audit LIVE-1):
+// an install that upgraded keeps that until an admin switches it.
+func checkMainWrite() checkLine {
+	s, err := auth.OpenFromEnv()
+	if err != nil {
+		return warn("main write", "the account store could not be read: "+firstLine(err.Error()), "")
+	}
+	defer s.Close()
+	mode, err := s.MainWriteMode()
+	if err != nil {
+		return warn("main write", "could not be read: "+firstLine(err.Error()), "")
+	}
+	if mode == auth.MainWriteAll {
+		return warn("main write", "every account can change data on main, not only admins and accounts granted write",
+			fmt.Sprintf("%[1]s access main-write granted   (%[1]s access list shows who keeps write)", brand.CLI))
+	}
+	return ok("main write", "only admins and accounts granted write may change main")
 }
 
 func firstLine(s string) string {

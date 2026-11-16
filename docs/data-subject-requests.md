@@ -121,6 +121,16 @@ values after normalising case and separators, so a value buried inside free text
 or in a column no scan found, is not found. Its output lists what it could not
 cover.
 
+### Who else can see them
+
+Branches are unmasked by default: a branch, and every agent's branch, is a copy
+of `main` with its personal data as it is. Wherever a branch is handed to a
+person or an agent (creating one, an MCP session's first call on one, the
+console's branch list, `fox check`) FoxByte warns when it holds confirmed
+personal data that reader sees as real values, or has never been scanned. Those
+warnings are a quick answer to "which copies hold this person's data"; masking
+(Enterprise; see the README's Security defaults) is how to stop handing it on.
+
 ### Erasing them
 
 FoxByte does **not** erase a person across your databases for you. An erasure
@@ -135,11 +145,9 @@ column blanked, a record kept because the law requires it. So:
   the rows. Delete branches you no longer need (`fox branch delete <name>`), or reset
   them from `main` after the erasure (`fox branch reset <name>`). `fox subject find` again afterwards to
   confirm nothing is left.
-- **The ledger:** the Blackbox keeps the text of the statements it records, and
-  a statement can contain the very values you erased (an `INSERT` with the
-  person's email in it). Removing those from a tamper-evident ledger is a
-  separate design and is not done yet. Note it in your response to the request
-  if it applies.
+- **The ledger:** see [The Blackbox keeps statement text](#the-blackbox-keeps-statement-text)
+  below. The text of a statement that wrote the person's values stays in the
+  ledger. Note it in your response to the request if it applies.
 - **The databases' audit log (pgAudit):** `fox audit-log purge --user <login>` removes
   the statement text a database login left; the records stay.
 - **Backups and snapshots:** they are not edited. They age out under their
@@ -148,3 +156,36 @@ column blanked, a record kept because the law requires it. So:
 
 Record what you did, and when, in your own register of requests: FoxByte's logs
 say who ran which statement, not why.
+
+## The Blackbox keeps statement text
+
+Each Blackbox entry holds the text of the statement it records, inside the hash
+chain that makes the ledger tamper-evident. That is deliberate: the record is
+only worth something if nobody, including whoever runs FoxByte, can change or
+remove an entry afterwards. The consequence is that **statement text cannot be
+erased**. A statement that wrote a person's values, for example
+`INSERT INTO customers (email) VALUES ('ada@example.com')`, keeps those values
+in the ledger for as long as the branch exists. (Audit finding PRIV-2; keeping
+the text in the chain was chosen over making it erasable.)
+
+What limits it:
+
+- **Who can read it.** A database login reads the text of its own entries only
+  (`bb.ledger_statement`). Admins, and a branch's owner on their own branch, see
+  all of it in the console. Nobody reads it through `db_client`.
+- **What gets into it.** The text is what the client sent. An application that
+  passes values as bind parameters (`$1`, `?` in most drivers and ORMs) sends
+  them apart from the statement, so the ledger records the placeholder, not the
+  value. Literal values typed into the console, `psql` or an agent's SQL are
+  recorded as typed. Prefer parameters for writes that carry personal data.
+- **How long it lasts.** A branch's ledger goes when the branch is deleted, so an
+  agent's or developer's branch does not keep it beyond the branch's life.
+  `main`'s ledger lasts as long as `main`.
+- **Masking.** A masked account sees no statement text at all.
+
+Whether a tamper-evident record of changes may be kept despite an erasure
+request is a question for your data protection officer or legal counsel; laws
+that grant erasure also recognise records kept to meet a legal obligation or to
+establish, exercise or defend legal claims. FoxByte does not decide that for you.
+State in your record of processing that the Blackbox keeps statement text, and
+for how long.

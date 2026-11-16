@@ -132,6 +132,10 @@ Stack:
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)
+  access main-write [all|granted]
+                       Who may change main: every account, or admins and accounts granted write
+  access write grant|revoke <email> | access list
+                       Grant or revoke one account's write on main; list who may change main
   pii unclassified | accept <column-id> [--note "…"]
                        What appeared since a branch's first scan, not reviewed; accept one as holding nothing
   pii aadhaar run [--branch b] [--table-timeout 5m] [--logs] [--json]
@@ -845,6 +849,7 @@ func branchCmd(args []string) {
 		// a line they can paste into an application.
 		fmt.Printf("\nBranch %q is ready in %s.\n", name, took(started))
 		branch.PrintConnectHint(os.Stdout, name)
+		printPersonalDataWarnings(os.Stdout, name)
 	case "list":
 		must(branch.List())
 	case "delete":

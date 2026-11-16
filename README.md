@@ -119,7 +119,11 @@ inherited by every branch, capture **every** schema change and attribute it:
 the hashes. The statement text can hold the values a change wrote, so a client
 reads only the text of its own entries (`bb.ledger_statement(id)`, for a
 per-user or per-agent login); the superuser and admins (`fox admin grant`)
-read all of it, and `bb.ledger_verify()` checks the chain for anyone.
+read all of it, and `bb.ledger_verify()` checks the chain for anyone. The text
+is part of the hash chain, so it cannot be erased later: an application that
+writes personal data with bind parameters keeps the values out of it, and
+[docs/data-subject-requests.md](docs/data-subject-requests.md#the-blackbox-keeps-statement-text)
+says what that means for an erasure request.
 
 ```bash
 fox blackbox            # every schema change on this branch, most recent first
@@ -862,18 +866,51 @@ A fresh install exposes nothing it does not have to:
   256 KiB in all, says when it left rows out, and stops a statement after
   `FOX_MCP_STATEMENT_TIMEOUT` (60s). Apps connecting through the Gateway get
   no statement timeout: long queries and migrations are legitimate work.
-- **Branches belong to whoever made them.** Every account may use `main`; a
+- **Branches belong to whoever made them.** Every account may read `main`; a
   branch made through the console, the API, the Agent API or MCP is its
-  maker's to use and delete; an admin (the first account, or anyone given
-  `fox admin grant`) may do anything. Other people's branches are not listed,
-  and answer "not found" — through the Gateway too. A branch made with the CLI
-  is an admin's.
+  maker's to use, change and delete; an admin (the first account, or anyone
+  given `fox admin grant`) may do anything. Other people's branches are not
+  listed, and answer "not found" — through the Gateway too. A branch made with
+  the CLI is an admin's.
+- **`main` is read-only unless you are granted write.** On a new install only
+  admins and accounts an admin grants write (`fox access write grant <email>`)
+  may change `main`; everyone else reads it, and changes it through a branch
+  and a change request. Postgres enforces it: such an account's role on `main`
+  is not in `db_client` but in `db_main_reader`, which may read what
+  `db_client` reads and nothing more, and its agent keys follow it. The
+  console and MCP say why a change was refused. `fox access list` shows who
+  may change `main`; `fox access main-write all` lets every account again.
+  **Upgrading:** an install that already had accounts keeps every account able
+  to change `main` (mode `all`) until an admin runs `fox access main-write
+  granted`, which first lists the accounts that will lose write and ends their
+  open sessions on `main`. `fox check` warns while an install is in mode `all`.
+  On Postgres before 15, switching also takes `CREATE` on schema `public` from
+  `PUBLIC` on `main`, and switching back does not return it.
 - **A limit on branches per account.** Each branch is a whole Postgres, so an
   account may own at most `FOX_MAX_BRANCHES_PER_ACCOUNT` branches (20 by
   default; `0` for no limit), and may start at most
   `FOX_BRANCH_CREATES_PER_MINUTE` creates, imports and point-in-time branches a
   minute (10 by default; `0` for no limit; over it the API answers 429). Admins
   and the CLI are exempt.
+- **Branches are unmasked by default, and say so.** A branch is a copy of its
+  source, and an agent's branch a byte-for-byte copy of main, so whoever uses
+  one reads the personal data it holds as real values unless masking applies.
+  Masking is opt-in and stays so; what FoxByte adds is a warning wherever a
+  branch is handed on: in the answer to creating one (`fox branch create`, the
+  console, the Agent API's `warnings` field, MCP's `create_branch`), once per
+  session in an MCP tool result when an agent first reaches such a branch, as
+  an "unmasked personal data" badge in the console's branch list, and in
+  `fox check`, which names the branches agents or non-admin accounts read real
+  personal data on, and the ones with agents on them that were never scanned.
+  The warnings read only what `fox pii` review confirmed and the masking rules
+  (never table data), and a branch no scan has looked at is said to be "never
+  scanned", not clean. To mask: scan and review (`fox pii scan --branch main`,
+  then confirm findings), set a rule on each column
+  (`fox mask rule customers.aadhaar --branch main`), and mask the accounts that
+  should read masks (`fox mask account you@example.com`); a masked account's
+  agents are then given masked branches. Scanning and masking are Enterprise;
+  Standard shows the warnings, from scans made earlier, and says masking needs
+  Enterprise. A warning never stops a branch being made.
 - **A branch's keys go with it.** Deleting a branch, by any route, revokes the
   keys scoped to it, and making a branch under a name revokes any key still
   scoped to that name; each revocation is in the security log.

@@ -130,6 +130,9 @@ export default function Dashboard() {
   const [masked, setMasked] = useState(false)
   const { can } = useFeatures()
   const [err, setErr] = useState('')
+  // What the engine said about the branch just made: the personal data it
+  // holds unmasked, or that nobody has scanned it. Shown until the next create.
+  const [warnings, setWarnings] = useState<string[]>([])
   const [offline, setOffline] = useState(false)
 
   // The newest refresh wins: a poll already on its way when the user suspends a
@@ -152,7 +155,10 @@ export default function Dashboard() {
   }
   const create = () => {
     const n = name.trim()
-    if (n) { act(() => createBranch(n, from === 'main' ? undefined : from, masked)); setName(''); setMasked(false) }
+    if (!n) return
+    setWarnings([])
+    act(async () => { const r = await createBranch(n, from === 'main' ? undefined : from, masked); setWarnings(r?.warnings ?? []) })
+    setName(''); setMasked(false)
   }
 
   if (offline) {
@@ -214,6 +220,7 @@ export default function Dashboard() {
         <button className="primary" onClick={create} disabled={!name.trim()}>+ Create branch</button>
       </div>
       {err && <div className="err">{err}</div>}
+      {warnings.map((w, i) => <div className="pii-warning" role="status" data-testid="create-warning" key={i}>{w}</div>)}
 
       <div className="table-wrap">
         <table>
@@ -235,6 +242,8 @@ export default function Dashboard() {
                     <td>
                       <span className={'badge ' + type}>{type}</span>
                       {b.masked && <> <span className="badge" data-testid={`masked-${b.name}`}>masked</span></>}
+                      {b.personalData && b.personalData.unmasked > 0 && <> <span className="badge pii"
+                        data-testid={`pii-${b.name}`} title={b.personalData.summary}>unmasked personal data</span></>}
                     </td>
                     <td>
                       {b.masked === 'making'

@@ -19,6 +19,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/thefoxbyte/foxbyte/internal/access"
@@ -107,11 +108,18 @@ func dispatch(req rpcRequest) (rpcResponse, bool) {
 		if branch.ValidProvenanceID(p.ClientInfo.Name) {
 			clientName = p.ClientInfo.Name
 		}
-		resp.Result = map[string]any{
+		res := map[string]any{
 			"protocolVersion": protocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "foxbyte", "version": version.Version},
 		}
+		// A key scoped to a branch holding unmasked personal data is told so
+		// as the session starts, in the instructions a client shows its
+		// operator or gives its model (PRIV-1).
+		if n := initializeNotice(); n != "" {
+			res["instructions"] = n
+		}
+		resp.Result = res
 	case "ping":
 		resp.Result = map[string]any{}
 	case "tools/list":
@@ -359,6 +367,65 @@ func runTool(name string, args json.RawMessage) (string, error) {
 	if err := checkAccess(tool, args); err != nil {
 		return "", err
 	}
+	text, err := runAllowedTool(tool, name, args)
+	if err == nil {
+		if n := sessionNotice(tool, args); n != "" {
+			text += "\n\n" + n
+		}
+	}
+	return text, err
+}
+
+// What the personal-data warnings call, as variables so they can be tested
+// without Docker.
+var (
+	createAgentBranch    = branch.CreateAgentBranchFor
+	personalDataWarnings = branch.PersonalDataWarnings
+)
+
+// noticed is the branches this session has already been told about.
+var noticed = map[string]bool{}
+
+// sessionNotice is said once per branch per session, on the first tool call
+// that reaches a branch holding personal data this agent reads unmasked, or a
+// branch never scanned (PRIV-1). In the tool result, because that is the one
+// place the model's operator reliably sees: a log line on stderr is read by
+// nobody. Once, because the same paragraph on every result would be skipped.
+func sessionNotice(tool string, args []byte) string {
+	// Only the tools that read or change a branch; delete_branch is ending it.
+	if tool == "delete_branch" {
+		return ""
+	}
+	var names []string
+	for name := range branchArgs(tool, args) {
+		if name != "" && !noticed[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	var out []string
+	for _, name := range names {
+		noticed[name] = true
+		for _, w := range personalDataWarnings(name, me.Actor, "this agent and whoever reads its results", me.User.Email) {
+			out = append(out, "Notice ("+name+"): "+w)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// initializeNotice is the same notice for a key scoped to one branch, said as
+// the session starts: the branch is known before any tool is called.
+func initializeNotice() string {
+	if me.Scope == "" {
+		return ""
+	}
+	noticed[me.Scope] = true
+	ws := personalDataWarnings(me.Scope, me.Actor, "this agent and whoever reads its results", me.User.Email)
+	return strings.Join(ws, "\n")
+}
+
+// runAllowedTool runs a tool whose scope and access are already checked.
+func runAllowedTool(tool, name string, args json.RawMessage) (string, error) {
 	switch tool {
 	case "create_branch":
 		var a struct {
@@ -371,11 +438,24 @@ func runTool(name string, args json.RawMessage) (string, error) {
 		if err := allowCreate(); err != nil {
 			return "", err
 		}
-		info, err := branch.CreateAgentBranchFor(me.User.ID, a.AgentID)
+		info, err := createAgentBranch(me.User.ID, a.AgentID)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("Branch %q is ready — a disposable Postgres isolated from main.\nDSN: %s", info.Branch, info.DSN), nil
+		text := fmt.Sprintf("Branch %q is ready — a disposable Postgres isolated from main.\nDSN: %s", info.Branch, info.DSN)
+		// A warning, never a refusal: masking is opt-in. The branch's own role
+		// reads real values unless it is a masked branch, so it is judged with
+		// no account (""), and the owner is named for the command that would
+		// mask it.
+		ws := personalDataWarnings(info.Branch, "", "agents using it", me.User.Email)
+		for _, w := range ws {
+			text += "\nWarning: " + w
+		}
+		// Said here, so the first call on the new branch need not say it again.
+		if len(ws) > 0 {
+			noticed[info.Branch] = true
+		}
+		return text, nil
 
 	case "list_branches":
 		all, err := branch.ListAgentBranches()
@@ -431,7 +511,8 @@ func runTool(name string, args json.RawMessage) (string, error) {
 			}
 			return branch.QueryText(a.Branch, a.SQL)
 		}
-		return branch.ClientQueryTextAs(a.Branch, a.SQL, "mcp", me.Actor)
+		out, err := branch.ClientQueryTextAs(a.Branch, a.SQL, "mcp", me.Actor)
+		return out, mainWriteHint(a.Branch, err)
 
 	case "changes":
 		var a struct {

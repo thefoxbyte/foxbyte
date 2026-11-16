@@ -257,11 +257,16 @@ func maskedRoleSQL(email, password string) string {
       IF pg_has_role(r, 'db_client', 'MEMBER') THEN
         EXECUTE format('REVOKE db_client FROM %%I', r);
       END IF;
+      -- Nor main's reader (mainwrite.go), which reads the real tables too.
+      IF EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid = to_regrole('%[4]s')
+                   AND m.member = (SELECT oid FROM pg_roles WHERE rolname = r)) THEN
+        EXECUTE format('REVOKE %[4]s FROM %%I', r);
+      END IF;
       EXECUTE format('GRANT %[2]s TO %%I', r);
       EXECUTE format('ALTER ROLE %%I SET role = %[2]s', r);
       EXECUTE format('ALTER ROLE %%I SET search_path = %[3]s, public', r);
       EXECUTE format('ALTER ROLE %%I SET log_min_error_statement = panic', r);`,
-		bodyLiteral(password), MaskedRole, MaskSchema))
+		bodyLiteral(password), MaskedRole, MaskSchema, MainReaderRole))
 }
 
 // unmaskedRoleSQL turns a masked reader's role back into an ordinary
@@ -301,6 +306,13 @@ func ApplyAccountMask(branchName, email string) error {
 		sql = maskedRoleSQL(email, UserRolePassword(email))
 	}
 	sql += "\n" + auditedReadsSQL(email, readsAudited(branchName, email))
+	// Unmasked, a role is back in db_client; on main that is only right for
+	// an account that may write there (mainwrite.go).
+	write, err := mainWriteFor(branchName, email)
+	if err != nil {
+		return err
+	}
+	sql += "\n" + mainAccessSQL(write, nil, []string{email})
 	if err := provisionRole(branchName, sql+"\n"+endSessionsSQL(email)); err != nil {
 		return err
 	}
@@ -311,9 +323,8 @@ func ApplyAccountMask(branchName, email string) error {
 
 func forgetUserRole(branchName, email string) {
 	forgetAgentKeyRole(branchName, email)
-	for _, m := range []string{"masked", "plain", "unmasked"} {
-		ensuredRoles.Delete(branchName + "\x00" + email + "\x00" + m)
-	}
+	// Every state of the key (masked or not, may write main or not).
+	ForgetUserRole(branchName, email)
 	ensuredRoles.Delete(branchName + "\x00" + email)
 }
 
@@ -506,6 +517,7 @@ func SetMaskRule(branchName string, r MaskRule) error {
 			return err
 		}
 	}
+	defer forgetPersonalData(branchName) // the warnings read the rules (unmaskedpii.go)
 	return masker.SetRule(branchName, r)
 }
 
@@ -515,6 +527,7 @@ func DropMaskRule(branchName, schema, table, column, path, actor string) error {
 	if err := requireMasker(); err != nil {
 		return err
 	}
+	defer forgetPersonalData(branchName)
 	return masker.DropRule(branchName, schema, table, column, path, actor)
 }
 
