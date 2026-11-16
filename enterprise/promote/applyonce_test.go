@@ -114,6 +114,32 @@ func TestIsDataChange(t *testing.T) {
 	}
 }
 
+// A mixed message is left out of a schema-only request, not used to refuse
+// every later schema change on the branch. The INSERT still does not run.
+func TestAMixedMessageIsLeftOutRatherThanBlockingTheRequest(t *testing.T) {
+	p := newForkPlan(nil, nil)
+	p.candidates = []ledger.Row{
+		candidate(27, "CREATE TABLE", "public.e2e_script", "APPLIED", "", "CREATE TABLE e2e_script (id int); INSERT INTO e2e_script VALUES (1)"),
+		candidate(40, "CREATE TABLE", "public.e2e_promo", "APPLIED", "", "CREATE TABLE e2e_promo (id int)"),
+	}
+	plan := p.plan(branch.RequestOptions{})
+	if len(plan.Entries) != 1 || plan.Entries[0].ID != 40 {
+		t.Fatalf("entries = %+v, want only the later CREATE TABLE", plan.Entries)
+	}
+	if plan.OmittedCount != 1 || len(plan.Omitted) != 1 || plan.Omitted[0].ID != 27 {
+		t.Fatalf("omitted = %+v count %d, want the mixed script", plan.Omitted, plan.OmittedCount)
+	}
+	if err := checkSchemaOnly(plan.Entries); err != nil {
+		t.Errorf("the request that remains is not schema-only: %v", err)
+	}
+	// Asked for with the data, the mixed message is carried and the safety
+	// check still refuses to call it schema-only.
+	with := p.plan(branch.RequestOptions{IncludeData: true})
+	if len(with.Entries) != 2 {
+		t.Fatalf("with data: %d entries, want both", len(with.Entries))
+	}
+}
+
 // An entry holds its author's whole message, so a schema change sent with a
 // data change would carry it in its text.
 func TestSchemaOnlyRefusesDataInTheText(t *testing.T) {

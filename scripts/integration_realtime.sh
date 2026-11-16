@@ -483,7 +483,6 @@ esac
 # confirmed position past the end of the WAL -- the decoder reports `since` as
 # flushed -- and from then on the branch's feed delivered nothing to anybody,
 # across restarts, with `fox realtime slots` still calling the slot idle.
-BEFORE_CONF="$(confirmed_lsn)"
 # --max-time on both, because the failure being tested for is a *stream*: a
 # route that answers this with 200 and an open stream would hang the suite for
 # the hour a stream is allowed to live. It did, once, while this was written.
@@ -493,10 +492,24 @@ assert_eq "a position ahead of the branch is refused with 400" "$CODE" "400"
 BODY="$(curl -sk --max-time 10 -H "Authorization: Bearer $KEY" "$API/api/branches/main/realtime?since=FFFFFFFF/FFFFFFF0")"
 assert_contains "…and says why, naming the branch's own log" "$BODY" "ahead of"
 # Held open past the standby interval, which is what used to be enough to move
-# the slot. The position must be unchanged afterwards.
+# the slot past the end of the WAL. A refusal writes nothing and flushes nothing.
 curl -skN --max-time 13 -H "Authorization: Bearer $KEY" \
   "$API/api/branches/main/realtime?since=FFFFFFFF/FFFFFFF0" >/dev/null 2>&1
-assert_eq "…and the slot is not moved by asking" "$(confirmed_lsn)" "$BEFORE_CONF"
+# A quiet keepalive may acknowledge WAL that was already written, so the slot
+# can move forward without anyone asking. What asking must not do is flush the
+# position that was refused, or any position past the end of this branch's log:
+# that is the poisoned slot, and the feed then delivers nothing.
+AFTER="$(pg pg-main "SELECT coalesce((SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name='fox_rt_main_stream'),'none') || '|' || pg_current_wal_lsn()")"
+SLOT_OK="$(python3 - "$AFTER" <<'PY'
+import sys
+def lsn(s):
+    hi, lo = s.split("/")
+    return (int(hi, 16) << 32) | int(lo, 16)
+conf, end = sys.argv[1].split("|")
+print("yes" if "/" in conf and conf != "FFFFFFFF/FFFFFFF0" and lsn(conf) <= lsn(end) else "no")
+PY
+)"
+assert_eq "…and the slot is not moved by asking" "$SLOT_OK" "yes"
 # The proof that matters: the feed still works for everybody else.
 ALIVE=/tmp/rt-alive.ndjson
 ( stream_for 8 "$ALIVE" ) &

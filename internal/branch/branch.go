@@ -2105,7 +2105,15 @@ func Wake(name string) error {
 // branch (used to avoid suspending a branch that is in use).
 func ActiveConnections(name string) (int, error) { return activeConnectionsWithin(execQuick, name) }
 
-const activeConnectionsSQL = "SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid();"
+// ConsolePoolApp is the application_name of a console connection sitting idle
+// in its pool. The reaper does not count those: nobody is running a query on
+// them, and a connection kept for the next request must not keep the branch
+// awake past the idle window. An active console query changes application_name
+// for the duration of the query, so that one still counts.
+const ConsolePoolApp = "fox-console"
+
+const activeConnectionsSQL = "SELECT count(*) FROM pg_stat_activity WHERE backend_type='client backend' AND pid<>pg_backend_pid()" +
+	" AND NOT (coalesce(state,'') = 'idle' AND application_name = '" + ConsolePoolApp + "');"
 
 // activeConnectionsWithin is ActiveConnections bounded by d.
 func activeConnectionsWithin(d time.Duration, name string) (int, error) {

@@ -109,8 +109,10 @@ func humanCount(n float64) string {
 type Request struct {
 	Table  Table
 	Events []string // insert, update, delete; empty means all three
-	// FullIdentity is --replica-identity=full: the caller accepting the extra
-	// WAL per update in exchange for streaming a table with no primary key.
+	// FullIdentity is --replica-identity=full. On a table with no primary key
+	// it is what makes updates and deletes streamable. On a table that already
+	// has a key it still sets REPLICA IDENTITY FULL, so an update or delete
+	// carries the previous row — the same WAL cost as --old-values.
 	FullIdentity bool
 	// Columns is --columns: the only columns subscribers receive. Empty
 	// streams every column. The row's key is added whatever is named.

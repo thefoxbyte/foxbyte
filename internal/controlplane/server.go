@@ -913,6 +913,15 @@ const capCursor = "fox_console_cap"
 // the pool closes such a connection rather than reuse it (consolepool.go).
 func runCapped(ctx context.Context, conn *pgx.Conn, sql string) (out map[string]any, ran bool) {
 	pc := conn.PgConn()
+	// The Sessions page reads pg_stat_activity.query. While this cursor is
+	// fetching, that column says FETCH FROM fox_console_cap, which is not the
+	// statement the person ran — a pg_sleep tagged so a test can find it never
+	// shows up, and neither does anyone else's query. Recorded under the
+	// backend's pid for as long as this call holds the connection.
+	if pid := int(pc.PID()); pid != 0 {
+		noteConsoleQuery(pid, sql)
+		defer clearConsoleQuery(pid)
+	}
 	open, undo, done := "BEGIN", "ROLLBACK", "COMMIT"
 	switch pc.TxStatus() {
 	case 'I':
@@ -1151,6 +1160,12 @@ func sessionConfig(addr string, as queryAs) (*pgx.ConnConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Idle pooled connections keep this name, which the reaper does not count
+	// (branch.ConsolePoolApp). A query in progress replaces it below.
+	if cfg.RuntimeParams == nil {
+		cfg.RuntimeParams = map[string]string{}
+	}
+	cfg.RuntimeParams["application_name"] = branch.ConsolePoolApp
 	// The non-superuser client role, so the web console is bound by the same
 	// rules as any other client (RLS, and the append-only ledger).
 	cfg.User, cfg.Password = branch.ClientRole, branch.ClientRolePassword()
@@ -1753,7 +1768,8 @@ func (f writeFunc) Write(b []byte) (int, error) { return f(b) }
 // events) and item-level steps (as `progress` events). ok is false if the server
 // can't stream (no http.Flusher).
 func newSSE(w http.ResponseWriter) (send func(string, any), p *branch.Progress, ok bool) {
-	if _, ok = w.(http.Flusher); !ok {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
 		return nil, nil, false
 	}
 	h := w.Header()
@@ -1762,6 +1778,12 @@ func newSSE(w http.ResponseWriter) (send func(string, any), p *branch.Progress, 
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no") // don't let a proxy buffer the stream
 	w.WriteHeader(http.StatusOK)
+	// WriteHeader only buffers the status line. A quiet stream — one that has
+	// not had a change to send yet — would otherwise hold it until the first
+	// event or until the handler returned, and a client that only waited for
+	// the status (curl --max-time, the subscriber cap's "a place frees up")
+	// saw no response at all.
+	flusher.Flush()
 	send = func(event string, data any) {
 		b, _ := json.Marshal(data)
 		// Each event under its own write deadline: a stream may run for hours,

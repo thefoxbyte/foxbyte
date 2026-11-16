@@ -7,11 +7,40 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/thefoxbyte/foxbyte/internal/access"
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
+
+// consoleQueries is the statement a console backend is running, by its
+// Postgres pid. A query the console caps runs as FETCH FROM a cursor, so
+// pg_stat_activity.query does not name what the person typed. The Sessions
+// page substitutes this for that FETCH while the call is in progress.
+var consoleQueries = struct {
+	sync.Mutex
+	m map[int]string
+}{m: map[int]string{}}
+
+func noteConsoleQuery(pid int, sql string) {
+	consoleQueries.Lock()
+	consoleQueries.m[pid] = sql
+	consoleQueries.Unlock()
+}
+
+func clearConsoleQuery(pid int) {
+	consoleQueries.Lock()
+	delete(consoleQueries.m, pid)
+	consoleQueries.Unlock()
+}
+
+func consoleQueryText(pid int) (string, bool) {
+	consoleQueries.Lock()
+	defer consoleQueries.Unlock()
+	q, ok := consoleQueries.m[pid]
+	return q, ok
+}
 
 // Sessions and maintenance (point 12.5). The branch's owner and an admin see
 // and signal every client session on it; anyone else who may use it, their
@@ -36,9 +65,16 @@ func registerSessions(mux *http.ServeMux) {
 		}
 		out := []branch.Session{}
 		for _, s := range ss {
-			if only == "" || branch.SessionOf(s.User, only) {
-				out = append(out, s)
+			if only != "" && !branch.SessionOf(s.User, only) {
+				continue
 			}
+			if q, ok := consoleQueryText(s.PID); ok && q != "" {
+				if len(q) > 4000 {
+					q = q[:4000]
+				}
+				s.Query = q
+			}
+			out = append(out, s)
 		}
 		writeJSON(w, 200, map[string]any{"branch": name, "all": only == "", "sessions": out})
 	})

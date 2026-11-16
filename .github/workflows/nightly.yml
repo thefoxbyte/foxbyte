@@ -82,7 +82,20 @@ jobs:
             echo "::error::this runner's kernel has no ZFS module, so the suites cannot run here"
             exit 1
           }
-          zfs version
+          # OpenZFS 2.4 opens /dev/zfs even for `zfs version`, and refuses
+          # anyone but root when that node is mode 0600. Some runners leave it
+          # that way (udev never widens it). The engine runs zfs through sudo,
+          # so this check does too. Retried: modprobe can return before the
+          # device node exists.
+          zfs_ok=0
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if sudo zfs version; then zfs_ok=1; break; fi
+            sleep 1
+          done
+          if [ "$zfs_ok" != 1 ]; then
+            echo "::error::zfs loaded but 'sudo zfs version' failed, so the suites cannot run here"
+            exit 1
+          fi
           docker --version
 
       - name: Build the engine

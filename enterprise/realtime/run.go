@@ -135,7 +135,11 @@ func runOnce(ctx context.Context, branchName, slot, password string, hub *Hub, s
 	// And its read of the column choices, which a role made after the last
 	// enable does not have yet. Without it the decoder could not tell which
 	// columns to drop, and stops rather than guess (pgCatalog.streamColumns).
-	if err := branch.ExecSQL(branchName, grantColumnsSQL); err != nil {
+	// ServingBranch, not the name: after a failover "main" is the promoted
+	// standby and pg-main is stopped. Exec into the stopped container fails
+	// every attempt, and the feed on main delivers nothing. EnsureRealtimeRole
+	// already resolves it; this grant has to as well.
+	if err := branch.ExecSQL(branch.ServingBranch(branchName), grantColumnsSQL); err != nil {
 		return fmt.Errorf("letting %s read the column choices on %q: %w", branch.RealtimeRole, branchName, err)
 	}
 	dsn, err := branch.RealtimeDSN(branchName, password)

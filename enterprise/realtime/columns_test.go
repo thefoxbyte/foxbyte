@@ -94,11 +94,12 @@ func TestOldValuesTakeFullAndTheDecoderFilters(t *testing.T) {
 		t.Errorf("a FULL table publishing updates was given a column list (filter %q):\n%s", p.Filter, p.SQL)
 	}
 
-	// --replica-identity=full on a table that has a key is not a request for
-	// old values, and costs nothing.
+	// --replica-identity=full sets FULL even when the table already has a key.
+	// That is the flag's name, and it is how a subscriber is given the row as
+	// it was. A keyed table left at its default identity made the flag a no-op.
 	q := mustPlan(t, app(), ordersColumns(18), nil, Request{FullIdentity: true})
-	if strings.Contains(q.SQL, "REPLICA IDENTITY FULL") || len(q.Notes) == 0 {
-		t.Errorf("a keyed table got FULL without asking for old values, or was not told why not:\n%s", q.SQL)
+	if !strings.Contains(q.SQL, `ALTER TABLE "public"."orders" REPLICA IDENTITY FULL`) || !q.OldValues {
+		t.Errorf("--replica-identity=full did not set FULL on a keyed table:\n%s", q.SQL)
 	}
 }
 

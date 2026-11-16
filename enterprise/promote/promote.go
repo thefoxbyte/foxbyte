@@ -112,11 +112,25 @@ func build(source, target string, history []auth.ChangeRequest, opts branch.Requ
 func (p *forkPlan) plan(opts branch.RequestOptions) branch.RequestPlan {
 	out := branch.RequestPlan{ForkAfterID: p.forkAfterID, IncludeData: opts.IncludeData}
 	for _, r := range p.candidates {
+		// An entry holds its author's whole message. A command tag of CREATE
+		// TABLE does not mean the message is only that: `CREATE TABLE t;
+		// INSERT INTO t` is recorded as one entry, and replaying it would
+		// change rows. Leaving it in, then refusing the whole request, also
+		// blocks every later schema change on that branch. It is left out,
+		// like any other data change, and listed so the asker can see it.
+		reason := ""
 		if !opts.IncludeData && isDataChange(r.CommandTag, r.Risk) {
+			reason = "a data change; the request is schema only"
+		} else if !opts.IncludeData {
+			if r := dataRefusal(r.Statement); r != "" {
+				reason = r + "; a schema-only request would run it"
+			}
+		}
+		if reason != "" {
 			out.OmittedCount++
 			if len(out.Omitted) < branch.OmittedListed {
 				out.Omitted = append(out.Omitted, branch.OmittedEntry{ID: r.ID, Actor: r.Actor, ActorKind: r.ActorKind,
-					CommandTag: r.CommandTag, Object: r.ObjectIdentity, Reason: "a data change; the request is schema only"})
+					CommandTag: r.CommandTag, Object: r.ObjectIdentity, Reason: reason})
 			}
 			continue
 		}
