@@ -256,10 +256,16 @@ assert_eq "the admin deletes bob, and his key stops working" \
   "$(code "$KEY" -X DELETE "https://localhost:8080/api/users/$BOB_ID")|$(code "$KB" https://localhost:8080/api/status)" "200|401"
 rm -f "$BCOOKIE"
 # Audit v2 G28: all of that is in the security log, which is chained and anchored.
+# Deleting an account replaces its email with a pseudonym in every event,
+# including the deletion and the password change (PRIV-4). The events are
+# still there; they are found by the pseudonym, not by the address.
+BOB_PSEUD="$($S audit pseudonym bob@foxbyte.dev)"
 AUDIT="$($S audit --limit 500)"
 assert_eq "the security log records failed sign-ins, refusals, keys and deletions" \
-  "$(echo "$AUDIT" | grep -c 'login.failed' | awk '{print ($1>0)}')|$(echo "$AUDIT" | grep -c 'access.denied' | awk '{print ($1>0)}')|$(echo "$AUDIT" | grep -c 'key.created' | awk '{print ($1>0)}')|$(echo "$AUDIT" | grep 'account.deleted' | grep -c 'bob@foxbyte.dev')" "1|1|1|1"
-assert_eq "…and who changed a password" "$(echo "$AUDIT" | grep 'account.password_changed' | grep -c 'bob@foxbyte.dev')" "1"
+  "$(echo "$AUDIT" | grep -c 'login.failed' | awk '{print ($1>0)}')|$(echo "$AUDIT" | grep -c 'access.denied' | awk '{print ($1>0)}')|$(echo "$AUDIT" | grep -c 'key.created' | awk '{print ($1>0)}')|$(echo "$AUDIT" | grep 'account.deleted' | grep -c "$BOB_PSEUD")" "1|1|1|1"
+assert_eq "…and a deleted account is not still named by its email" \
+  "$(echo "$AUDIT" | grep 'account.deleted' | grep -c 'bob@foxbyte.dev')" "0"
+assert_eq "…and who changed a password" "$(echo "$AUDIT" | grep 'account.password_changed' | grep -c "$BOB_PSEUD")" "1"
 assert_eq "admins read it over the API; others may not" \
   "$(as "$KEY" 'https://localhost:8080/api/audit?limit=5' | grep -c '"row_hash"' | awk '{print ($1>0)}')|$(code "$KA" https://localhost:8080/api/audit)" "1|403"
 assert_eq "it anchors, signed" "$($S audit checkpoint | grep -c 'signed by key')" "1"
@@ -522,7 +528,7 @@ assert_eq "…and the standby has the same document, through replication" "$SB" 
 # failover would refuse every application's tokens.
 assert_eq "…carrying the tables a second machine needs" \
   "$(sudo docker exec pg-main psql -U dbadmin -d statedb -tAc "SELECT string_agg(k, ',' ORDER BY k) FROM shared, jsonb_object_keys(payload->'tables') k WHERE id=1" 2>/dev/null)" \
-  "api_keys,app_keys,apps,branch_owners,change_requests,install_info,oauth_identities,pipelines,pipeline_targets,users"
+  "api_keys,app_keys,apps,branch_owners,change_request_meta,change_requests,install_info,oauth_identities,pipelines,pipeline_targets,unproven_emails,users"
 # Sessions are deliberately absent: a browser session is minutes old and cheap
 # to replace, and carrying bearer tokens between machines would widen what a
 # stolen document is worth for the convenience of not signing in again.
@@ -682,8 +688,11 @@ assert_eq "unexpose exits 0" "$?" "0"
 assert_eq "…so no host port is published" "$(sudo docker port pg-main 2>/dev/null | wc -l | tr -d ' ')" "0"
 assert_eq "…the peer rule is gone" \
   "$(sudo docker exec -u postgres pg-main bash -c 'grep -c "^hostssl" "$PGDATA/pg_hba.conf" || true')" "0"
+# The image's own pg_hba.conf mentions "reject" in a comment (it is one of the
+# auth methods the file documents). Count rules, not that word, or putting the
+# original file back looks like a reject rule was left behind.
 assert_eq "…the rules from before the exposure are back" \
-  "$(sudo docker exec -u postgres pg-main bash -c 'grep -c "reject" "$PGDATA/pg_hba.conf" || true')" "0"
+  "$(sudo docker exec -u postgres pg-main bash -c 'grep -v "^[[:space:]]*#" "$PGDATA/pg_hba.conf" | grep -c "reject" || true')" "0"
 assert_eq "…and the local standby's rule is kept" \
   "$(sudo docker exec -u postgres pg-main bash -c 'grep -cF "host replication db_replica samenet" "$PGDATA/pg_hba.conf"')" "1"
 # Publishing and unpublishing each restart main, which interrupts replication.
@@ -1156,7 +1165,7 @@ rmc() { sudo docker run --rm --network "$DB_NETWORK" -e MC_HOST_r="http://$RAK:$
 for i in $(seq 1 20); do rmc ls r >/dev/null 2>&1 && break; sleep 1; done
 rmc mb --with-lock r/itremote >/dev/null; rmc retention set --default GOVERNANCE 1d r/itremote >/dev/null
 assert_eq "a plain-HTTP target is refused without --allow-http" \
-  "$(FOX_BACKUP_S3_SECRET_KEY="$RSK" $S backup target set s3://itremote/fox --endpoint "http://$RS:9000" --access-key "$RAK" --path-style 2>&1 | grep -c 'allow-http')" "1"
+  "$(FOX_BACKUP_S3_SECRET_KEY="$RSK" $S backup target set s3://itremote/fox --endpoint "http://$RS:9000" --access-key "$RAK" --path-style 2>&1 | grep -c 'allow-insecure-http')" "1"
 OUT="$(FOX_BACKUP_S3_SECRET_KEY="$RSK" $S backup target set s3://itremote/fox --endpoint "http://$RS:9000" --access-key "$RAK" --path-style --allow-http 2>&1)"
 assert_eq "setting a remote target reports its Object Lock and moves backups there" \
   "$(echo "$OUT" | grep -c 'with Object Lock')|$(echo "$OUT" | grep -c 'Backups now go to s3://itremote/fox')" "1|1"

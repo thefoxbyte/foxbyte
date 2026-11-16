@@ -328,24 +328,20 @@ func planEnable(t Table, cols TableColumns, pii []PIIColumn, req Request) (enabl
 	events := req.EventList()
 	res := Result{Table: t.Qualified(), Events: events}
 
-	// The identity. FULL only when somebody asked for what it costs: either
-	// old values by name, or --replica-identity=full on a table that has
-	// nothing else to name a row by. A table with a key keeps it, so its old
-	// image is the key and nothing more.
+	// The identity. FULL when somebody asked for it: --old-values, or
+	// --replica-identity=full. The second flag is also how a table with
+	// nothing else to name a row by becomes streamable, and on a table that
+	// already has a key it is still what it says — the whole previous row,
+	// which costs WAL on every update. Leaving a keyed table as it was made
+	// the flag a no-op, and a delete then carried only the key.
 	identity := t.ReplicaIdentity
 	setFull := false
 	switch {
 	case identity == 'f':
 		// Already FULL, from an earlier enable or by hand. Not reverted: that
 		// would be a schema change nobody asked for here.
-	case req.OldValues:
+	case req.OldValues || req.FullIdentity:
 		setFull = true
-	case req.FullIdentity && !t.Identifiable() && req.PublishesChanges():
-		setFull = true
-	case req.FullIdentity && t.Identifiable():
-		res.Notes = append(res.Notes, fmt.Sprintf("%s already has a way to name its rows, so REPLICA IDENTITY "+
-			"was left as it is and an update or delete carries only the key. Ask for old values to get the "+
-			"whole previous row (it costs WAL on every update)", t.Qualified()))
 	}
 	if setFull {
 		identity = 'f'
