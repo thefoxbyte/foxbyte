@@ -3,6 +3,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -95,5 +96,25 @@ func TestSessionNoticeOncePerBranch(t *testing.T) {
 	// Judged as the agent's own role: a masked account's agent key reads masks.
 	if (*asked)[len(*asked)-1] != "dev as agent:o@x.io" {
 		t.Errorf("asked %v", *asked)
+	}
+}
+
+// The notice is a content item of its own, after the answer, so a tool's JSON
+// answer is still JSON (execute_change's is parsed by clients).
+func TestNoticeApartFromTheAnswer(t *testing.T) {
+	res := toolResult(`{"status":"applied"}`, "Notice (main): holds unmasked personal data")
+	content := res["content"].([]map[string]any)
+	if len(content) != 2 {
+		t.Fatalf("content %v", content)
+	}
+	var v map[string]any
+	if err := json.Unmarshal([]byte(content[0]["text"].(string)), &v); err != nil || v["status"] != "applied" {
+		t.Errorf("the answer is not the tool's JSON: %q (%v)", content[0]["text"], err)
+	}
+	if content[1]["text"] != "Notice (main): holds unmasked personal data" {
+		t.Errorf("notice %q", content[1]["text"])
+	}
+	if c := toolResult("ok", "")["content"].([]map[string]any); len(c) != 1 || c[0]["text"] != "ok" {
+		t.Errorf("without a notice: %v", c)
 	}
 }

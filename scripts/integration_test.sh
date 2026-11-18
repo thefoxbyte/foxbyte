@@ -186,6 +186,10 @@ assert_eq "the console's own origin, and a client that is no browser, sign in as
 echo "### 1d. accounts own their branches (audit v2: G02, G10, G12, G16)"
 # test@ is the first account (an admin). alice and bob are ordinary accounts.
 for who in alice bob; do $S user delete "$who@foxbyte.dev" >/dev/null 2>&1; printf 'password123\n' | $S user create "$who@foxbyte.dev" >/dev/null 2>&1; done
+# A new install's main is read-only for an account not granted write (LIVE-1,
+# §1e has its own checks). alice edits rows on main in §11p and §11q
+# as an ordinary account that may write; bob is left read-only.
+$S access write grant alice@foxbyte.dev >/dev/null 2>&1 || bad "granting alice@foxbyte.dev write on main"
 KA="$($S apikey create alice@foxbyte.dev it 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 KB="$($S apikey create bob@foxbyte.dev it 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 as() { local k="$1"; shift; curl -sk -H "Authorization: Bearer $k" "$@"; }
@@ -277,6 +281,38 @@ c.execute("UPDATE security_events SET actor='someone-else' WHERE id=(SELECT min(
 PY
 assert_eq "an edited event is caught (exit 1)" "$($S audit verify >/dev/null 2>&1; echo $?)|$($S audit verify | grep -c 'TAMPERED')" "1|1"
 curl -sk -o /dev/null -H "Authorization: Bearer $KA" -X DELETE https://localhost:8080/api/branches/alice-dev
+
+echo "### 1e. main is read-only for an account not granted write (LIVE-1)"
+# A new install starts in mode "granted": admins, and accounts an admin grants
+# write, change main; everyone else reads it. Postgres refuses the write (the
+# account's role on main is in db_main_reader, not db_client); a branch the
+# account makes is its own and writable.
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ro_main; CREATE TABLE ro_main (id int PRIMARY KEY, v text); INSERT INTO ro_main VALUES (1, 'a'); GRANT ALL ON ro_main TO db_client" >/dev/null
+$S user delete ro-main@foxbyte.dev >/dev/null 2>&1; printf 'password123\n' | $S user create ro-main@foxbyte.dev >/dev/null 2>&1
+KRO="$($S apikey create ro-main@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+gwr() { PGPASSWORD="$1" psql "$GATEWAY/$2?sslmode=require" -X -q -tA -c "$3" 2>&1; }
+roq() { curl -sk -H "Authorization: Bearer $1" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"$2\"}" https://localhost:8080/api/branches/main/query; }
+MW="$($S access main-write 2>&1)"
+assert_eq "a new install's main is in mode granted, and lists who may change it" \
+  "$(grep -c '^main write: granted' <<<"$MW")|$(grep -E '^ro-main@foxbyte.dev ' <<<"$MW" | grep -c 'no (reads)')|$(grep -E '^test@foxbyte.dev ' <<<"$MW" | grep -c 'yes *admin')" "1|1|1"
+assert_eq "an account not granted write reads main through the Gateway, and its write is refused" \
+  "$(gwr "$KRO" main "SELECT v FROM ro_main WHERE id = 1")|$(gwr "$KRO" main "UPDATE ro_main SET v = 'x' WHERE id = 1" | grep -c 'permission denied')|$(gwr "$KRO" main "CREATE TABLE ro_mine (id int)" | grep -c 'permission denied')|$(pg pg-main "SELECT v FROM ro_main WHERE id = 1")" "a|1|1|a"
+assert_eq "…and in the console, which says why and what lifts it" \
+  "$(roq "$KRO" "UPDATE ro_main SET v = 'x' WHERE id = 1" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("main_read_only"), "access write grant ro-main@foxbyte.dev" in d.get("hint", ""))')" "True True"
+OUT="$($S access write grant ro-main@foxbyte.dev 2>&1)"
+assert_eq "write grant: it changes main" \
+  "$(grep -c 'ro-main@foxbyte.dev may now change main' <<<"$OUT")|$(gwr "$KRO" main "UPDATE ro_main SET v = 'b' WHERE id = 1 RETURNING v")|$(pg pg-main "SELECT v FROM ro_main WHERE id = 1")" "1|b|b"
+$S access write revoke ro-main@foxbyte.dev >/dev/null 2>&1
+assert_eq "write revoke: it reads main again, and no more" \
+  "$(gwr "$KRO" main "SELECT v FROM ro_main WHERE id = 1")|$(gwr "$KRO" main "UPDATE ro_main SET v = 'c' WHERE id = 1" | grep -c 'permission denied')" "b|1"
+$S branch delete ro-dev >/dev/null 2>&1
+assert_eq "a branch it makes is its own, and it writes there" \
+  "$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KRO" -H 'Content-Type: application/json' -X POST -d '{"name":"ro-dev"}' https://localhost:8080/api/branches)|$(gwr "$KRO" ro-dev "UPDATE ro_main SET v = 'mine' WHERE id = 1 RETURNING v")|$(pg pg-main "SELECT v FROM ro_main WHERE id = 1")" "201|mine|b"
+AUD="$($S audit --limit 200)"
+assert_eq "each grant and revoke is in the security log" \
+  "$(grep 'ro-main@foxbyte.dev' <<<"$AUD" | grep -c 'main-write.granted')|$(grep 'ro-main@foxbyte.dev' <<<"$AUD" | grep -c 'main-write.revoked')" "1|1"
+$S branch delete ro-dev >/dev/null 2>&1; $S user delete ro-main@foxbyte.dev >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ro_main" >/dev/null
 
 echo "### 2. branch isolation"
 $S branch delete itb >/dev/null 2>&1
@@ -528,7 +564,7 @@ assert_eq "…and the standby has the same document, through replication" "$SB" 
 # failover would refuse every application's tokens.
 assert_eq "…carrying the tables a second machine needs" \
   "$(sudo docker exec pg-main psql -U dbadmin -d statedb -tAc "SELECT string_agg(k, ',' ORDER BY k) FROM shared, jsonb_object_keys(payload->'tables') k WHERE id=1" 2>/dev/null)" \
-  "api_keys,app_keys,apps,branch_owners,change_request_meta,change_requests,install_info,oauth_identities,pipelines,pipeline_targets,unproven_emails,users"
+  "api_keys,app_keys,apps,branch_owners,change_request_meta,change_requests,install_info,install_settings,main_writers,oauth_identities,pipelines,pipeline_targets,unproven_emails,users"
 # Sessions are deliberately absent: a browser session is minutes old and cheap
 # to replace, and carrying bearer tokens between machines would widen what a
 # stolen document is worth for the convenience of not signing in again.
@@ -2304,6 +2340,7 @@ $S branch delete arq >/dev/null 2>&1
 ARD="$(mktemp -d)"
 ( cd "$(dirname "$0")/.." && go build -o "$ARD/mint" ./scripts/f1/mint ) || bad "the token tool builds"
 printf 'password123\n' | $S user create rev-svc@foxbyte.dev >/dev/null 2>&1
+$S access write grant rev-svc@foxbyte.dev >/dev/null 2>&1 || bad "granting rev-svc@foxbyte.dev write on main"   # its application writes main (LIVE-1)
 RK="$($S apikey create rev-svc@foxbyte.dev app 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 "$ARD/mint" keygen "$ARD" k1 >"$ARD/k1.pub"; "$ARD/mint" keygen "$ARD" k2 >"$ARD/k2.pub"
 for a in revapp adminapp; do $S app remove $a >/dev/null 2>&1; done
@@ -2368,6 +2405,7 @@ echo "### 11u. application identity: an application says which of its users a ch
 F1D="$(mktemp -d)"
 ( cd "$(dirname "$0")/.." && go build -o "$F1D/mint" ./scripts/f1/mint ) || bad "the token tool builds"
 printf 'password123\n' | $S user create shop-svc@foxbyte.dev >/dev/null 2>&1
+$S access write grant shop-svc@foxbyte.dev >/dev/null 2>&1 || bad "granting shop-svc@foxbyte.dev write on main"   # its application writes main (LIVE-1)
 SK="$($S apikey create shop-svc@foxbyte.dev app 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 SAK="$($S apikey create shop-svc@foxbyte.dev bot --agent 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 "$F1D/mint" keygen "$F1D" k1 >"$F1D/k1.pub"
@@ -2469,6 +2507,7 @@ echo "### 11v. last_modified_for: whom each row was last changed for, through th
 F5D="$(mktemp -d)"
 ( cd "$(dirname "$0")/.." && go build -o "$F5D/mint" ./scripts/f1/mint ) || bad "the token tool builds"
 printf 'password123\n' | $S user create trk-svc@foxbyte.dev >/dev/null 2>&1
+$S access write grant trk-svc@foxbyte.dev >/dev/null 2>&1 || bad "granting trk-svc@foxbyte.dev write on main"   # its application writes main (LIVE-1)
 TK="$($S apikey create trk-svc@foxbyte.dev app 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 "$F5D/mint" keygen "$F5D" k1 >"$F5D/k1.pub"
 $S app remove trkapp >/dev/null 2>&1
@@ -3338,6 +3377,9 @@ pg pg-main "CREATE TABLE m_customers (id bigint PRIMARY KEY, email text, phone t
   CREATE TABLE m_kyc (id int PRIMARY KEY, aadhaar_no text); INSERT INTO m_kyc VALUES (1, '234567890124');
   CREATE TABLE m_plain (id int PRIMARY KEY, v text); INSERT INTO m_plain VALUES (1, 'open');" >/dev/null
 printf 'password123\n' | $S user create mask-analyst@foxbyte.dev >/dev/null 2>&1
+# It may write main (LIVE-1), so "writes as before" after it is unmasked says
+# masking gives the write back, not that main is open to everyone.
+$S access write grant mask-analyst@foxbyte.dev >/dev/null 2>&1 || bad "granting mask-analyst@foxbyte.dev write on main"
 MK="$($S apikey create mask-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 assert_eq "before masking, nothing is masked: an account reads real values" \
   "$($S mask | head -1)|$(gwm "$MK" main "SELECT email FROM m_customers WHERE id = 1")" "Masking: not set up on this install.|asha@example.com"
@@ -3616,6 +3658,10 @@ echo "### 11al. masking: every access path (F5 Gate 1, step 4)"
 for b in pmown pmpit; do $S branch delete "$b" >/dev/null 2>&1; done
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS p_people, p_logins, p_notes, p_late CASCADE; DROP FUNCTION IF EXISTS p_phone_of(text)" >/dev/null
 for u in path-dev path-analyst; do printf 'password123\n' | $S user create "$u@foxbyte.dev" >/dev/null 2>&1; done
+$S access write grant path-dev@foxbyte.dev >/dev/null 2>&1 || bad "granting path-dev@foxbyte.dev write on main"   # it makes the tables on main (LIVE-1)
+# The analyst may write main too, so what refuses its writes below is masking,
+# not main being read-only for it (LIVE-1 refuses execute_change first).
+$S access write grant path-analyst@foxbyte.dev >/dev/null 2>&1 || bad "granting path-analyst@foxbyte.dev write on main"
 PD="$($S apikey create path-dev@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 PM="$($S apikey create path-analyst@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 PA="$($S apikey create path-analyst@foxbyte.dev agent --agent 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
@@ -3805,6 +3851,8 @@ RID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$RQ" 
 assert_eq "a change request from a masked branch carries only its own change, nothing of its making" \
   "$(hjson "print([e['command'] for e in d], [e['object'] for e in d])" <<<"$RQ")" "['CREATE TABLE'] ['public.b_feature']"
 APR="$(curl -sk -X POST -H "$AUTH" -H 'content-type: application/json' -d '{}' "https://localhost:8080/api/requests/$RID/approve")"
+# Said only when the change did not reach main, so a failure below shows why.
+[ "$(pg pg-main "SELECT to_regclass('public.b_feature') IS NOT NULL")" = t ] || echo "  (request $RID: approve answered: $(head -c 400 <<<"$APR"))"
 assert_eq "…approved, main has the change and keeps every mask: the masked account still reads masks there" \
   "$(pg pg-main "SELECT to_regclass('public.b_feature') IS NOT NULL")|$(gwm "$MB" main "SELECT phone FROM b_people WHERE id = 1")|$(pg pg-main "SELECT to_regclass('bb_mask.b_people') IS NOT NULL")" "t|XXXXXXXXXXX3210|t"
 [ -n "$RID" ] && grep -q '"status":"approved"' <<<"$APR" || { echo "--- request $RID, approval ---"; head -c 600 <<<"$APR"; echo; echo "--- end ---"; }

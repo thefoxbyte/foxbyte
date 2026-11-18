@@ -346,34 +346,46 @@ func callTool(params json.RawMessage) map[string]any {
 			"isError": true,
 		}
 	}
-	text, err := runTool(p.Name, p.Arguments)
+	text, notice, err := runTool(p.Name, p.Arguments)
 	if err != nil {
 		return map[string]any{
 			"content": []map[string]any{{"type": "text", "text": err.Error()}},
 			"isError": true,
 		}
 	}
-	return map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
+	return toolResult(text, notice)
 }
 
-func runTool(name string, args json.RawMessage) (string, error) {
+// toolResult is a tool's answer and, when there is one, the session's
+// personal-data notice (PRIV-1). The notice is a content item of its own,
+// after the answer, so the answer stays exactly what the tool returns: a
+// client that parses execute_change's JSON from the first item still can.
+func toolResult(text, notice string) map[string]any {
+	content := []map[string]any{{"type": "text", "text": text}}
+	if notice != "" {
+		content = append(content, map[string]any{"type": "text", "text": notice})
+	}
+	return map[string]any{"content": content}
+}
+
+// runTool runs a tool and says the session's notice for the branches it
+// reached, apart from its answer.
+func runTool(name string, args json.RawMessage) (text, notice string, err error) {
 	tool := resolveTool(name)
 	// A branch-scoped key reaches one branch and no further.
 	scoped, err := applyScope(tool, args)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	args = scoped
 	if err := checkAccess(tool, args); err != nil {
-		return "", err
+		return "", "", err
 	}
-	text, err := runAllowedTool(tool, name, args)
-	if err == nil {
-		if n := sessionNotice(tool, args); n != "" {
-			text += "\n\n" + n
-		}
+	text, err = runAllowedTool(tool, name, args)
+	if err != nil {
+		return text, "", err
 	}
-	return text, err
+	return text, sessionNotice(tool, args), nil
 }
 
 // What the personal-data warnings call, as variables so they can be tested

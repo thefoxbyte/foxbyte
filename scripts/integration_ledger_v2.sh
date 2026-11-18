@@ -80,6 +80,9 @@ printf 'password123\n' | $S user create "$USER_EMAIL" >/dev/null 2>&1 || true
 KEY="$($S apikey create "$USER_EMAIL" v2 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
 AUTH="Authorization: Bearer $KEY"
 $S admin revoke "$USER_EMAIL" >/dev/null 2>&1 || true   # start from a non-admin user
+# …that may write main: a new install's main is read-only for an account not
+# granted write (LIVE-1), and this suite's changes are made on main.
+$S access write grant "$USER_EMAIL" >/dev/null 2>&1 || bad "granting $USER_EMAIL write on main"
 assert_eq "test API key minted" "$([ -n "$KEY" ] && echo yes)" "yes"
 
 echo "### 0. behaviour unchanged (characterization)"
@@ -356,6 +359,9 @@ integrity_state() { $S ledger integrity "$1" 2>&1 | head -1 | grep -o 'INTACT\|T
 
 fresh_branch v2int
 V2DSN="postgresql://dbadmin:$KEY@127.0.0.1:6432/v2int"
+# fox-verify reads the statement text every hash covers, which only an admin's
+# login may (PRIV-3), so the account is made an admin of this branch for it.
+$S admin grant "$USER_EMAIL" --branch v2int >/dev/null 2>&1 || bad "making $USER_EMAIL an admin of v2int"
 assert_eq "integrity is INTACT on an untampered branch" "$(integrity_state v2int)" "INTACT"
 assert_eq "REST integrity agrees" "$(curl -sk -H "$AUTH" "$API/api/branches/v2int/ledger/integrity" | jget intact)" "True"
 assert_eq "MCP ledger_integrity agrees" "$(mcp_call ledger_integrity '{"branch":"v2int"}' | grep -c 'INTACT')" "1"
@@ -399,6 +405,7 @@ assert_eq "forged edit: the in-database hash-chain check is fooled" "$($S ledger
 assert_eq "forged edit: integrity against the anchors is TAMPERED" "$(integrity_state v2int)" "TAMPERED"
 "$VERIFY" --dsn "$V2DSN" --anchors "$ANCH/v2int" >/dev/null 2>&1
 assert_eq "forged edit: fox-verify exits 1" "$?" "1"
+$S admin revoke "$USER_EMAIL" --branch v2int >/dev/null 2>&1
 
 fresh_branch v2int
 pg pg-v2int "SET session_replication_role = replica; DELETE FROM bb.schema_ledger WHERE id = (SELECT max(id) FROM bb.schema_ledger)" >/dev/null
@@ -893,8 +900,10 @@ assert_eq "clients can't write agent sessions" \
   "$(gw "$KEY" main "INSERT INTO bb.agent_sessions(session_id, agent_id) VALUES ('x','y')" | grep -c 'permission denied')" "1"
 
 R="$(curl -sk -H "$AUTH" -X POST "$AGENTS/agents/v2plain/branch")"
+# Beside it, "warnings" when main holds personal data the branch hands on
+# unmasked (PRIV-1); omitted when there are none.
 assert_eq "Agent API without provenance keeps its response" \
-  "$(echo "$R" | python3 -c 'import sys,json; print(",".join(sorted(json.load(sys.stdin))))')" "agent,branch,dsn,host,port,status"
+  "$(echo "$R" | python3 -c 'import sys,json; print(",".join(sorted(k for k in json.load(sys.stdin) if k != "warnings")))')" "agent,branch,dsn,host,port,status"
 assert_eq "…and sets no session on the agent's branch" \
   "$(pg pg-agent-v2plain "SELECT count(*) FROM pg_db_role_setting s, unnest(s.setconfig) c WHERE c LIKE 'bb.session=%'")" "0"
 curl -sk -H "$AUTH" -X DELETE "$AGENTS/agents/v2plain/branch" >/dev/null 2>&1
