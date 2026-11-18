@@ -91,6 +91,18 @@ describe('Access review page', () => {
     expect(screen.getByRole('link', { name: 'Applications' }).getAttribute('href')).toMatch(/section=applications$/)
   })
 
+  it('shows what each account may do in the vault, and the vault grants with any unused for 90 days', async () => {
+    const r = structuredClone(report)
+    r.accounts![1].vault = 'detokenise aadhaar (100 an hour, until 1 Dec 2026)'
+    r.vaultGrants = [{ id: 4, email: 'gone@example.com', kind: 'aadhaar', permission: 'detokenise', perHour: 100, expires: '2026-12-01T00:00:00Z',
+      grantedBy: 'admin@example.com', grantedAt: '2026-01-01T00:00:00Z', lastUsed: null, unused: true }]
+    vi.mocked(getAccessReview).mockResolvedValue(r)
+    render(<MemoryRouter><AccessReview /></MemoryRouter>)
+    expect((await screen.findByTestId('vault-gone@example.com')).textContent).toBe('detokenise aadhaar (100 an hour, until 1 Dec 2026)')
+    expect(screen.getByTestId('vault-admin@example.com').textContent).toBe('–')
+    expect(screen.getByTestId('vault-grant-4').textContent).toMatch(/gone@example.com.*aadhaar.*read values back.*100.*admin@example.com.*never.*unused 90 days/)
+  })
+
   it('says so when no application is registered', async () => {
     page()
     await screen.findByRole('table', { name: 'Accounts' })

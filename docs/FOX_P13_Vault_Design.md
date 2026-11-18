@@ -613,6 +613,17 @@ stopped by the engine; `fox vault status|kinds|tokenise|find|detokenise`;
 kept in the security log and checked by `status`. Detokenising stays the
 operator's, on the machine, until 13.2's grants.
 
+**13.2 is built** (`feat/p13-vault-132`): use and detokenise grants per kind,
+given by admins and the operator, each with a limit an hour (100 for
+detokenise, 100,000 for use, by default) and an optional expiry, kept in the
+install's store; admins put values in and find keys without a grant, and read
+values back only with one; a masked account never does; refusals are in the
+security log as `vault.refused`, apart from the calls whose head is checked;
+grants are in the access review; `fox check` has a vault group; the console
+has the grants, the access log and a read-back box that shows a value masked
+until revealed. Not built: grants to agent keys, which do not reach the API,
+and a fresh MFA code before reading back, which waits for point 15.
+
 ---
 
 ## 20. What the prototype found (Gate 0)

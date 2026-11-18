@@ -736,6 +736,23 @@ export const vaultTokenise = (kind: string, values: string[], format?: 'opaque' 
   req('POST', `${API}/api/vault/tokenise`, { kind, values, ...(format ? { format } : {}) }) as Promise<VaultReply>
 export const vaultFind = (kind: string, values: string[]) =>
   req('POST', `${API}/api/vault/find`, { kind, values }) as Promise<VaultReply>
+// 13.2: grants, what the caller may do, reading values back, the access log.
+export type VaultGrant = {
+  id: number; email: string; kind: string; permission: 'use' | 'detokenise'; per_hour: number
+  expires?: string; granted_by: string; granted_at: string; revoked_by?: string; revoked_at?: string; last_used?: string
+  used_last_hour: number
+}
+export type VaultMine = { set_up: boolean; admin: boolean; grants: VaultGrant[]; kinds: VaultKind[] }
+export type VaultLogEntry = { seq: number; at: string; actor: string; action: string; kind: string; refs: string[]; n: number; purpose: string; result: string }
+export type VaultReadReply = { values?: string[]; results?: string[]; error?: string }
+export const getVaultMine = () => req('GET', `${API}/api/vault/mine`) as Promise<VaultMine>
+export const getVaultGrants = (all = false) => req('GET', `${API}/api/vault/grants${all ? '?all=1' : ''}`) as Promise<VaultGrant[]>
+export const grantVault = (g: { email: string; kind: string; permission: 'use' | 'detokenise'; per_hour?: number; expires?: string }) =>
+  req('POST', `${API}/api/vault/grants`, g) as Promise<VaultGrant>
+export const revokeVaultGrant = (id: number) => req('DELETE', `${API}/api/vault/grants/${id}`) as Promise<VaultGrant>
+export const getVaultLog = (limit = 50) => req('GET', `${API}/api/vault/log?limit=${limit}`) as Promise<{ entries: VaultLogEntry[] }>
+export const vaultDetokenise = (kind: string, refs: string[], purpose: string) =>
+  req('POST', `${API}/api/vault/detokenise`, { kind, refs, purpose }) as Promise<VaultReadReply>
 
 // The data grid's save (point 12.2): rows added, changed and deleted, applied
 // together as you, or not at all.
@@ -987,6 +1004,8 @@ export type ReviewAccount = {
   overrideOn: string[] | null
   keys: number
   unmasked: string
+  // What it may do in the vault (point 13.2); "" for nothing.
+  vault?: string
   lastSignIn: string | null
   lastKeyUse: string | null
   lastQuery: string | null
@@ -1028,22 +1047,27 @@ export type ReviewApp = {
   keys: ReviewAppKey[] | null
   findings: string[] | null
 }
+export type ReviewVaultGrant = {
+  id: number; email: string; kind: string; permission: 'use' | 'detokenise'; perHour: number
+  expires: string | null; grantedBy: string; grantedAt: string; lastUsed: string | null; unused: boolean
+}
 export type AccessReview = {
   generated: string
   dormantDays: number
   summary: {
     accounts: number; admins: number; dormant: number; keys: number; agentKeys: number; staleKeys: number; branches: number; unowned: number
-    applications?: number; appsWithFindings?: number
+    applications?: number; appsWithFindings?: number; vaultGrants?: number
   }
   accounts: ReviewAccount[] | null
   keys: ReviewKey[] | null
   branches: ReviewBranch[] | null
   applications?: ReviewApp[] | null
+  vaultGrants?: ReviewVaultGrant[] | null
   limits: string[] | null
 }
 export const getAccessReview = (dormant: number) =>
   req('GET', `${API}/api/access-review?dormant=${dormant}`) as Promise<AccessReview>
-export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches' | 'applications') =>
+export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches' | 'applications' | 'vault') =>
   `${API}/api/access-review?dormant=${dormant}&format=csv&section=${section}`
 
 // Application identity (F1): the applications that may say which of their

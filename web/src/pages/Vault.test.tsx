@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,14 +9,24 @@ vi.mock('../api', async () => {
     ...actual,
     getVault: vi.fn(),
     getVaultKinds: vi.fn(),
+    getVaultMine: vi.fn(),
+    getVaultGrants: vi.fn(),
+    getVaultLog: vi.fn(),
+    grantVault: vi.fn(),
+    revokeVaultGrant: vi.fn(),
     vaultTokenise: vi.fn(),
     vaultFind: vi.fn(),
+    vaultDetokenise: vi.fn(),
     getStatus: vi.fn(),
   }
 })
 
-import { getStatus, getVault, getVaultKinds, vaultFind, vaultTokenise, type Status, type VaultState } from '../api'
-import Vault from './Vault'
+import {
+  getStatus, getVault, getVaultGrants, getVaultKinds, getVaultLog, getVaultMine, grantVault, revokeVaultGrant, vaultDetokenise, vaultFind,
+  vaultTokenise, type Status, type VaultGrant, type VaultKind, type VaultMine, type VaultState,
+} from '../api'
+import { ConfirmProvider } from '../confirm'
+import Vault, { masked } from './Vault'
 
 const status = (features: string[], edition: 'standard' | 'enterprise' = 'enterprise') =>
   ({ edition, features }) as unknown as Status
@@ -44,19 +54,29 @@ const setUp: VaultState = {
   anchor: { recorded: '7:' + 'a'.repeat(64), holds: true, note: 'entry 7 is as the security log saw it' },
 }
 
+const KINDS: VaultKind[] = [
+  { name: 'aadhaar', prefix: 'AR', check: '12 digits, the first 2 to 9, passing the Verhoeff check', legacy: '12 digits starting with 1, which no Aadhaar number does', rules: 'UIDAI Circular No. 14 of 2025', hsm_required: true },
+  { name: 'text', prefix: 'TX', check: 'any text, up to 4,096 bytes', hsm_required: false },
+]
+
+const grant = (id: number, email: string, kind: string, permission: 'use' | 'detokenise', extra: Partial<VaultGrant> = {}): VaultGrant => ({
+  id, email, kind, permission, per_hour: permission === 'detokenise' ? 100 : 100000, granted_by: 'admin@example.com',
+  granted_at: '2026-11-15T10:00:00Z', used_last_hour: 0, ...extra,
+})
+
+const mine = (over: Partial<VaultMine> = {}): VaultMine => ({ set_up: true, admin: true, grants: [], kinds: KINDS, ...over })
+
 function page() {
-  render(<MemoryRouter><Vault /></MemoryRouter>)
+  render(<MemoryRouter><ConfirmProvider><Vault /></ConfirmProvider></MemoryRouter>)
 }
 
 describe('Vault page', () => {
   beforeEach(() => {
-    vi.mocked(getVault).mockReset()
-    vi.mocked(vaultTokenise).mockReset()
-    vi.mocked(vaultFind).mockReset()
-    vi.mocked(getVaultKinds).mockResolvedValue([
-      { name: 'aadhaar', prefix: 'AR', check: '12 digits, the first 2 to 9, passing the Verhoeff check', legacy: '12 digits starting with 1, which no Aadhaar number does', rules: 'UIDAI Circular No. 14 of 2025', hsm_required: true },
-      { name: 'text', prefix: 'TX', check: 'any text, up to 4,096 bytes', hsm_required: false },
-    ])
+    for (const f of [getVault, getVaultMine, getVaultGrants, getVaultLog, grantVault, revokeVaultGrant, vaultTokenise, vaultFind, vaultDetokenise]) vi.mocked(f).mockReset()
+    vi.mocked(getVaultKinds).mockResolvedValue(KINDS)
+    vi.mocked(getVaultMine).mockResolvedValue(mine())
+    vi.mocked(getVaultGrants).mockResolvedValue([])
+    vi.mocked(getVaultLog).mockResolvedValue({ entries: [] })
     vi.mocked(getStatus).mockResolvedValue(status(['vault']))
   })
   afterEach(cleanup)
@@ -65,10 +85,12 @@ describe('Vault page', () => {
     vi.mocked(getStatus).mockResolvedValue(status([], 'standard'))
     page()
     expect((await screen.findByTestId('vault-locked')).textContent).toMatch(/part of Enterprise/)
+    expect(getVaultMine).not.toHaveBeenCalled()
     expect(getVault).not.toHaveBeenCalled()
   })
 
   it('says how to set it up when the install has none', async () => {
+    vi.mocked(getVaultMine).mockResolvedValue(mine({ set_up: false }))
     vi.mocked(getVault).mockResolvedValue({ set_up: false, database_running: false, service_running: false, anchor: { holds: true, note: '' } })
     page()
     expect((await screen.findByTestId('vault-state')).textContent).toMatch(/Not set up.*fox vault setup/)
@@ -127,9 +149,107 @@ describe('Vault page', () => {
     expect(screen.queryByTestId('vault-ref')).toBeNull()
   })
 
-  it('shows the engine’s refusal to a non-admin', async () => {
-    vi.mocked(getVault).mockRejectedValue(new Error('the vault is for admins'))
+  it('an admin holds no read-back by being one: no box to read values back without a grant', async () => {
+    vi.mocked(getVault).mockResolvedValue(setUp)
     page()
-    expect((await screen.findByTestId('vault-err')).textContent).toContain('the vault is for admins')
+    await screen.findByTestId('vault-tool')
+    expect(screen.queryByTestId('vault-read')).toBeNull()
+  })
+
+  it('an account with no grant is told so, and asks nothing an admin would', async () => {
+    vi.mocked(getVaultMine).mockResolvedValue(mine({ admin: false, kinds: [] }))
+    page()
+    expect((await screen.findByTestId('vault-mine')).textContent).toContain('You hold no vault grant')
+    expect(getVault).not.toHaveBeenCalled()
+    expect(getVaultGrants).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('vault-tool')).toBeNull()
+    expect(screen.queryByTestId('vault-read')).toBeNull()
+  })
+
+  it('an account with a use grant on text may put text in, and nothing else', async () => {
+    vi.mocked(getVaultMine).mockResolvedValue(mine({ admin: false, grants: [grant(4, 'dev@example.com', 'text', 'use', { used_last_hour: 3 })] }))
+    page()
+    expect((await screen.findByTestId('vault-mine')).textContent).toMatch(/Put in and find text values, 3 of 100000 this hour/)
+    const kind = screen.getByLabelText('Kind') as HTMLSelectElement
+    expect([...kind.options].map(o => o.value)).toEqual(['text'])
+    expect(screen.queryByTestId('vault-read')).toBeNull()
+    expect(screen.queryByLabelText('Vault grants')).toBeNull()
+  })
+
+  it('reads a value back with a purpose, shows it masked, and reveals it only when asked', async () => {
+    vi.mocked(getVaultMine).mockResolvedValue(mine({ admin: false, grants: [grant(5, 'kyc@example.com', 'aadhaar', 'detokenise')] }))
+    vi.mocked(vaultDetokenise).mockResolvedValue({ values: ['234123412346'], results: ['done'] })
+    page()
+    await screen.findByTestId('vault-read')
+    fireEvent.change(screen.getByLabelText('Reference key'), { target: { value: 'AR' + '7'.repeat(26) } })
+    const go = screen.getByText('Read back') as HTMLButtonElement
+    expect(go.disabled).toBe(true) // no purpose yet
+    fireEvent.change(screen.getByLabelText('Purpose'), { target: { value: 'KYC re-check, ticket 42' } })
+    fireEvent.click(go)
+    await waitFor(() => expect(vaultDetokenise).toHaveBeenCalledWith('aadhaar', ['AR' + '7'.repeat(26)], 'KYC re-check, ticket 42'))
+    expect((await screen.findByTestId('vault-value')).textContent).toBe('XXXX XXXX 2346')
+    expect(document.body.textContent).not.toContain('234123412346')
+    fireEvent.click(screen.getByText('Reveal'))
+    expect(screen.getByTestId('vault-value').textContent).toBe('234123412346')
+    fireEvent.click(screen.getByText('Hide'))
+    expect(screen.getByTestId('vault-value').textContent).toBe('XXXX XXXX 2346')
+  })
+
+  it('says when a reference key is not there, or its record did not verify', async () => {
+    vi.mocked(getVaultMine).mockResolvedValue(mine({ admin: false, grants: [grant(5, 'kyc@example.com', 'aadhaar', 'detokenise')] }))
+    vi.mocked(vaultDetokenise).mockResolvedValueOnce({ values: [''], results: ['did not verify'] })
+    page()
+    await screen.findByTestId('vault-read')
+    fireEvent.change(screen.getByLabelText('Reference key'), { target: { value: 'ARX' } })
+    fireEvent.change(screen.getByLabelText('Purpose'), { target: { value: 'audit' } })
+    fireEvent.click(screen.getByText('Read back'))
+    expect((await screen.findByTestId('vault-read-answer')).textContent).toMatch(/did not verify: it was changed, or moved/)
+    expect(screen.queryByTestId('vault-value')).toBeNull()
+  })
+
+  it('shows the engine’s refusal: a limit reached, say', async () => {
+    vi.mocked(getVaultMine).mockResolvedValue(mine({ admin: false, grants: [grant(5, 'kyc@example.com', 'aadhaar', 'detokenise', { used_last_hour: 100 })] }))
+    vi.mocked(vaultDetokenise).mockRejectedValue(new Error('limit reached: the grant allows 100 values an hour, and 100 were used in the last hour'))
+    page()
+    await screen.findByTestId('vault-read')
+    fireEvent.change(screen.getByLabelText('Reference key'), { target: { value: 'ARX' } })
+    fireEvent.change(screen.getByLabelText('Purpose'), { target: { value: 'audit' } })
+    fireEvent.click(screen.getByText('Read back'))
+    expect((await screen.findByTestId('vault-err')).textContent).toMatch(/limit reached/)
+  })
+
+  it('an admin gives a grant from the page', async () => {
+    vi.mocked(getVault).mockResolvedValue(setUp)
+    vi.mocked(grantVault).mockResolvedValue(grant(9, 'kyc@example.com', 'aadhaar', 'detokenise', { per_hour: 5 }))
+    page()
+    const form = await screen.findByRole('form', { name: 'Give a vault grant' })
+    fireEvent.change(within(form).getByLabelText('Account'), { target: { value: 'kyc@example.com' } })
+    fireEvent.change(within(form).getByLabelText('Permission'), { target: { value: 'detokenise' } })
+    fireEvent.change(within(form).getByLabelText('Limit an hour'), { target: { value: '5' } })
+    fireEvent.change(within(form).getByLabelText('Expires'), { target: { value: '7d' } })
+    fireEvent.click(within(form).getByText('Give the grant'))
+    await waitFor(() => expect(grantVault).toHaveBeenCalledWith({ email: 'kyc@example.com', kind: 'aadhaar', permission: 'detokenise', per_hour: 5, expires: '7d' }))
+    expect((await screen.findByTestId('vault-msg')).textContent).toMatch(/Grant 9: kyc@example.com may read back aadhaar values, up to 5 an hour/)
+  })
+
+  it('an admin revokes a grant after confirming, and the log shows calls without values', async () => {
+    vi.mocked(getVault).mockResolvedValue(setUp)
+    vi.mocked(getVaultGrants).mockResolvedValue([grant(9, 'kyc@example.com', 'aadhaar', 'detokenise', { used_last_hour: 2 })])
+    vi.mocked(getVaultLog).mockResolvedValue({ entries: [{ seq: 7, at: '2026-11-15T10:00:00Z', actor: 'kyc@example.com', action: 'detokenise', kind: 'aadhaar', refs: ['ARX'], n: 1, purpose: 'audit', result: 'done 1' }] })
+    vi.mocked(revokeVaultGrant).mockResolvedValue(grant(9, 'kyc@example.com', 'aadhaar', 'detokenise', { revoked_at: '2026-11-16T10:00:00Z' }))
+    page()
+    const row = await screen.findByTestId('grant-kyc@example.com-aadhaar-detokenise')
+    expect(row.textContent).toMatch(/read back.*2 of 100/)
+    const log = screen.getByRole('table', { name: 'Vault access log' })
+    expect(log.textContent).toMatch(/kyc@example.com.*detokenise.*aadhaar.*audit.*done 1/)
+    fireEvent.click(within(row).getByText('Revoke…'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
+    await waitFor(() => expect(revokeVaultGrant).toHaveBeenCalledWith(9))
+  })
+
+  it('masks a value read back by its kind', () => {
+    expect(masked('aadhaar', '234123412346')).toBe('XXXX XXXX 2346')
+    expect(masked('text', 'Asha Rao')).toBe('(8 characters)')
+    expect(masked('pan', 'ABCDE1234F')).toBe('••••')
   })
 })
