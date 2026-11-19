@@ -94,6 +94,15 @@ sudo rm -rf "${HOME:?}/${BRAND_STATE_DIR:?}/mask"; rm -f "${HOME:?}/${BRAND_STAT
 # an absent pointer means main -- which is what a fresh start expects.
 rm -f "$HOME/$BRAND_STATE_DIR/primary"
 BANNER="$($S start 2>&1)"; sleep 5
+# The store was emptied above, so change requests are numbered from 1 again;
+# main's record of the requests applied to it (bb.applied_requests, append-only)
+# is emptied with it, or a request would be refused as one a run before
+# already applied. Replica mode skips the append-only triggers.
+for _ in $(seq 1 30); do
+  sudo docker exec -e PGPASSWORD=foxbyte pg-main psql -U dbadmin -d appdb -tAc "SET session_replication_role = replica; DELETE FROM bb.applied_requests" >/dev/null 2>&1 && break
+  [ "$(pg pg-main "SELECT to_regclass('bb.applied_requests') IS NULL")" = t ] && break   # a main that never had one
+  sleep 1
+done
 assert_eq "start prints no API key" "$(echo "$BANNER" | grep -c "$DB_KEY_PREFIX[A-Za-z0-9]")" "0"
 assert_eq "…and caches none on disk" "$([ -f "$HOME/$BRAND_STATE_DIR/config" ] && echo present || echo none)" "none"
 assert_eq "…and says how to make one" "$(echo "$BANNER" | grep -c 'apikey create')" "1"
