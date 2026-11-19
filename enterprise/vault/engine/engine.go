@@ -27,6 +27,9 @@ func init() {
 			return h, err == nil, err
 		},
 		Kinds: kinds,
+		Entries: func(socket, secret string, limit int, before int64) ([]byte, error) {
+			return vault.NewClient(socket, secret, "engine").EntriesRaw(limit, before)
+		},
 	})
 }
 

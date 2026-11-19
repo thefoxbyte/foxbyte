@@ -91,3 +91,59 @@ test('the vault: a value put in from the page comes back as a reference key, and
   // The numbers went to the vault and are nowhere on the page.
   for (const x of [n, spaced, m]) await expect(page.locator('body')).not.toContainText(x)
 })
+
+test('reading a value back needs a grant, even for an admin: given, used with a purpose, shown masked, revoked', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: 'Vault', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Vault', exact: true })).toBeVisible()
+
+  const n = synthetic()
+  await page.getByLabel('Kind', { exact: true }).selectOption('aadhaar')
+  await page.getByLabel('Value', { exact: true }).fill(n)
+  await page.getByRole('button', { name: 'Put in the vault' }).click()
+  const ref = (await page.getByTestId('vault-ref').textContent()) ?? ''
+  expect(ref).toMatch(/^AR[0-9A-Z]{26}$/)
+
+  // An admin has no box to read values back until they hold a grant.
+  await expect(page.getByTestId('vault-read')).toHaveCount(0)
+  const form = page.getByRole('form', { name: 'Give a vault grant' })
+  await form.getByLabel('Account', { exact: true }).fill(email)
+  await form.getByLabel('Grant kind', { exact: true }).selectOption('aadhaar')
+  await form.getByLabel('Permission', { exact: true }).selectOption('detokenise')
+  await form.getByLabel('Limit an hour', { exact: true }).fill('2')
+  await form.getByRole('button', { name: 'Give the grant' }).click()
+  await expect(page.getByTestId('vault-msg')).toContainText(`may read back aadhaar values, up to 2 an hour`)
+  const row = page.getByTestId(`grant-${email}-aadhaar-detokenise`)
+  await expect(row).toContainText('0 of 2')
+
+  // Read back with a purpose: masked to its last four digits until revealed.
+  const read = page.getByTestId('vault-read')
+  await read.getByLabel('Reference key', { exact: true }).fill(ref)
+  await expect(read.getByRole('button', { name: 'Read back' })).toBeDisabled()
+  await read.getByLabel('Purpose', { exact: true }).fill('e2e: KYC re-check')
+  await read.getByRole('button', { name: 'Read back' }).click()
+  await expect(page.getByTestId('vault-value')).toHaveText(`XXXX XXXX ${n.slice(-4)}`)
+  await expect(page.locator('body')).not.toContainText(n)
+  await page.getByRole('button', { name: 'Reveal' }).click()
+  await expect(page.getByTestId('vault-value')).toHaveText(n)
+  await page.getByRole('button', { name: 'Hide' }).click()
+  await expect(page.locator('body')).not.toContainText(n)
+  await expect(row).toContainText('1 of 2')
+
+  // The limit an hour: one more is allowed, then the engine says no.
+  await read.getByRole('button', { name: 'Read back' }).click()
+  await expect(row).toContainText('2 of 2')
+  await read.getByRole('button', { name: 'Read back' }).click()
+  await expect(page.getByTestId('vault-err')).toContainText('limit reached')
+
+  // The access log has the reads, with their purpose, and never the number.
+  const log = page.getByRole('table', { name: 'Vault access log' })
+  await expect(log).toContainText('e2e: KYC re-check')
+  await expect(log).not.toContainText(n)
+
+  // Revoked from the page: the box to read values back goes.
+  await row.getByRole('button', { name: 'Revoke…' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Revoke' }).click()
+  await expect(page.getByTestId('vault-msg')).toContainText('revoked')
+  await expect(page.getByTestId('vault-read')).toHaveCount(0)
+})

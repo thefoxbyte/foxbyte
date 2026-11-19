@@ -2569,7 +2569,7 @@ paths:
   /api/vault/tokenise:
     post:
       tags: [vault]
-      summary: Put values in the vault and get their reference keys (admins; Enterprise).
+      summary: Put values in the vault and get their reference keys (admins, and holders of a use grant on the kind; Enterprise).
       description: >-
         One reference key per value within a kind: a value already in the vault gets the key it has. A value
         failing the kind's check is refused and nothing is made for it. format legacy asks for a key shaped like
@@ -2594,7 +2594,7 @@ paths:
   /api/vault/find:
     post:
       tags: [vault]
-      summary: Find values' reference keys without making any (admins; Enterprise).
+      summary: Find values' reference keys without making any (admins, and holders of a use grant on the kind; Enterprise).
       requestBody:
         required: true
         content:
@@ -2613,13 +2613,96 @@ paths:
   /api/vault/detokenise:
     post:
       tags: [vault]
-      summary: Read values back. Refused over the API for now.
+      summary: Read values back (holders of a detokenise grant on the kind; Enterprise).
       description: >-
-        Reading values back is its own permission, which admins will grant per kind (step 13.2); being an admin is
-        not enough. Until then only the operator can, on the machine, with fox vault detokenise --purpose.
+        Only an account holding a detokenise grant on the kind, given by an admin, reads values back; an admin is
+        not one by being an admin, and a masked account never is. Every call states its purpose, is in the vault's
+        log and the security log with the purpose (never the value), and counts against the grant's limit an hour.
+        A refusal is in the security log as vault.refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, refs, purpose]
+              properties:
+                kind: { type: string }
+                refs: { type: array, items: { type: string }, maxItems: 1000 }
+                purpose: { type: string }
       responses:
+        "200": { description: '{"values": [...], "results": ["done"|"not found"|"did not verify", ...]}', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No purpose, or not between 1 and 1,000 reference keys }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: Always, until detokenise grants exist }
+        "403": { description: No detokenise grant on the kind, a masked account, or a licence without the vault }
+        "409": { description: The vault is not set up }
+        "429": { description: The grant's limit an hour is reached }
+  /api/vault/mine:
+    get:
+      tags: [vault]
+      summary: What the caller may do in the vault (any signed-in account; Enterprise).
+      responses:
+        "200": { description: '{"set_up", "admin", "grants": [the caller''s grants that hold], "kinds": [the kinds, when the caller holds a grant or is an admin]}', content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/vault/grants:
+    get:
+      tags: [vault]
+      summary: The vault's grants that hold, or every one ever given with all=1 (admins; Enterprise).
+      parameters:
+        - { name: all, in: query, schema: { type: string, enum: ["1"] } }
+      responses:
+        "200": { description: '[{"id", "email", "kind", "permission": "use"|"detokenise", "per_hour", "expires", "granted_by", "granted_at", "revoked_by", "revoked_at", "last_used", "used_last_hour"}]', content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+    post:
+      tags: [vault]
+      summary: Give an account use or detokenise on a kind (admins; Enterprise).
+      description: >-
+        Replaces the account's grant of the same permission on the kind, if one holds. per_hour defaults to 100 for
+        detokenise and 100,000 for use; expires is days or hours from now (30d, 12h) or a date. Detokenise is
+        refused to a masked account. In the security log as vault.grant.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, kind, permission]
+              properties:
+                email: { type: string }
+                kind: { type: string }
+                permission: { type: string, enum: [use, detokenise] }
+                per_hour: { type: integer, minimum: 1 }
+                expires: { type: string, example: 30d }
+      responses:
+        "201": { description: The grant., content: { application/json: { schema: { type: object } } } }
+        "400": { description: No such account or kind, a masked account given detokenise, or a bad expiry }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+  /api/vault/grants/{id}:
+    delete:
+      tags: [vault]
+      summary: Revoke a grant (admins; Enterprise).
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: The grant, revoked., content: { application/json: { schema: { type: object } } } }
+        "400": { description: No grant with that number that still holds }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+  /api/vault/log:
+    get:
+      tags: [vault]
+      summary: The vault's access log, newest first (admins; Enterprise).
+      description: Who called, what, on which kind, which reference keys, the purpose and the result; never a value.
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 1000 } }
+        - { name: before, in: query, description: list entries before this one, schema: { type: integer } }
+      responses:
+        "200": { description: '{"entries": [{"seq", "at", "actor", "action", "kind", "refs", "n", "purpose", "result"}]}', content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+        "409": { description: The vault is not set up }
   /api/masking:
     get:
       tags: [audit-log]

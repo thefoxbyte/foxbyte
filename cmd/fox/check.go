@@ -92,6 +92,7 @@ func checks() []check {
 		one("change feed", checkRealtime),
 		one("personal data", checkPersonalData),
 		group("audit log", checkAuditLogLines),
+		group("vault", checkVaultLines),
 		one("durability", checkDurability),
 		one("replication", checkReplicationAccess),
 		one("backup target", checkBackupTarget),

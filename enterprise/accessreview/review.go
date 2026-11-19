@@ -37,6 +37,27 @@ type inputs struct {
 	masked  map[string]bool
 	unmasks map[string][]string // email → branches
 	auditOn bool
+	// The vault's grants that hold (point 13.2), and whether it is set up.
+	vaultOn     bool
+	vaultGrants []auth.VaultGrant
+}
+
+// vaultText says what an account may do in the vault (point 13.2): its
+// grants that hold, one phrase each; "" for none.
+func vaultText(in inputs, email string) string {
+	var parts []string
+	for _, g := range in.vaultGrants {
+		if !strings.EqualFold(g.Email, email) {
+			continue
+		}
+		p := fmt.Sprintf("%s %s (%d an hour", g.Permission, g.Kind, g.PerHour)
+		if g.Expires != nil {
+			p += ", until " + g.Expires.Format("2 Jan 2006")
+		}
+		parts = append(parts, p+")")
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "; ")
 }
 
 // unmaskedText says what an account sees without masking (4.8's column).
@@ -117,6 +138,12 @@ func gather(store *auth.Store) (inputs, error) {
 	}
 	for _, g := range branch.UnmaskGrants() {
 		in.unmasks[g.Email] = append(in.unmasks[g.Email], g.Branch)
+	}
+	in.vaultOn = branch.VaultSetUp()
+	if gs, err := store.VaultGrants(false); err == nil {
+		in.vaultGrants = gs
+	} else {
+		in.limits = append(in.limits, "The vault's grants could not be read, so none is listed.")
 	}
 	if in.apps, err = store.Apps(); err != nil {
 		return in, fmt.Errorf("listing applications: %w", err)
@@ -229,6 +256,7 @@ func build(in inputs, dormantDays int, now time.Time) access.Review {
 			ra.Reaches = "main"
 		}
 		ra.Unmasked = unmaskedText(in, a.Email, ra.Admin, ra.Owns)
+		ra.Vault = vaultText(in, a.Email)
 		ra.LastSignIn = ptr(in.signIns[a.Email])
 		ra.LastKeyUse = ptr(lastKeyUse[a.ID])
 		ra.LastQuery = ptr(in.queries[a.Email])
@@ -284,6 +312,18 @@ func build(in inputs, dormantDays int, now time.Time) access.Review {
 		}
 	}
 
+	r.VaultGrants = []access.ReviewVaultGrant{}
+	for _, g := range in.vaultGrants {
+		last := g.GrantedAt
+		if g.LastUsed != nil {
+			last = *g.LastUsed
+		}
+		r.VaultGrants = append(r.VaultGrants, access.ReviewVaultGrant{
+			ID: g.ID, Email: g.Email, Kind: g.Kind, Permission: g.Permission, PerHour: g.PerHour, Expires: g.Expires,
+			GrantedBy: g.GrantedBy, GrantedAt: g.GrantedAt, LastUsed: g.LastUsed, Unused: now.Sub(last) >= branch.VaultGrantUnused,
+		})
+	}
+	r.Summary.VaultGrants = len(r.VaultGrants)
 	r.Summary.Accounts, r.Summary.Keys, r.Summary.Branches = len(r.Accounts), len(r.Keys), len(r.Branches)
 	r.Summary.Applications = len(r.Applications)
 	masking := "No masking is in place yet (point 7), so there are no unmask rights to review: every account sees, unmasked, what the branches it reaches hold."
@@ -291,8 +331,13 @@ func build(in inputs, dormantDays int, now time.Time) access.Review {
 		masking = "Sees unmasked is from masking (point 7): who an admin masked, and where each masked account owns a branch or holds unmask. " +
 			"An unmask holder's reads of marked tables are audited while the audit log is on. A role someone made directly in Postgres is not seen."
 	}
+	vault := "There is no vault on this install (point 13), so there are no vault grants to review."
+	if in.vaultOn {
+		vault = "Vault is from the vault's grants (point 13): who may put values of a kind in and find their keys (use), and who may read them back (detokenise), each within a limit an hour. Admins put values in and find keys without a grant, and read values back only with one."
+	}
 	r.Limits = append([]string{
 		masking,
+		vault,
 		fmt.Sprintf("Last active is the newest of a console sign-in, a key's use (recorded to the minute) and a query kept in history. Dormant means no activity FoxByte saw in %d days: a role someone made directly in Postgres is not seen.", dormantDays),
 		"Identity is what each credential is: an agent key marks an agent by how it logs in. Whom a change was made for is what a registered application asserted with its key (Applications), which means the application vouched for the user, not that the user was there.",
 		"What an application's key asserted is counted in the Blackbox and the agent sessions of running branches. A branch made from main holds main's records from before it was made, so two branches' counts can overlap; rows whose last_modified_for names an application are not counted.",

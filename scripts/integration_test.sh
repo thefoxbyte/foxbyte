@@ -4438,8 +4438,8 @@ assert_eq "POST /api/vault/tokenise: an admin gets the same keys" "$(hjson 'prin
 assert_eq "POST /api/vault/find: an admin finds them; anyone else is refused" \
   "$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\"]}" "$VA/find" | hjson 'print(d["refs"][0])')|$(code "$KV" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\"]}" "$VA/find")" "$R1|403"
 OUT="$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$R1\"],\"purpose\":\"x\"}" "$VA/detokenise")"
-assert_eq "POST /api/vault/detokenise: refused even to an admin, until there are grants" \
-  "$(code "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$R1\"],\"purpose\":\"x\"}" "$VA/detokenise")|$(grep -c 'only the operator can' <<<"$OUT")|$(grep -c "$N1" <<<"$OUT")" "403|1|0"
+assert_eq "POST /api/vault/detokenise: refused to an admin without a detokenise grant (13.2 gives them)" \
+  "$(code "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$R1\"],\"purpose\":\"x\"}" "$VA/detokenise")|$(grep -c 'needs a detokenise grant on aadhaar' <<<"$OUT")|$(grep -c "$N1" <<<"$OUT")" "403|1|0"
 assert_eq "an unknown kind is a bad request" "$(code "$KEY" -H "$H" -X POST -d '{"kind":"pan","values":["x"]}' "$VA/tokenise")" "400"
 OUT="$(as "$KEY" "$VA")"
 assert_eq "GET /api/vault: running, the software token, 2 Aadhaar records (the API gave the same keys), 1 text" \
@@ -4476,6 +4476,100 @@ assert_eq "…and the console's API says so too" "$(as "$KEY" "$VA" | hjson 'pri
 # The next call writes a new head; the vault goes on.
 $S vault find --kind aadhaar "$N1" >/dev/null 2>&1
 assert_eq "the vault goes on, its new head recorded" "$($S vault status 2>&1 | grep -c 'is as the security log saw it')" "1"
+
+echo "### 11au. the vault's grants: who may put values in, find keys and read values back, within a limit an hour (point 13.2)"
+# The vault §11at set up, and its records: R1 is N1's reference key. test@ is
+# the admin (KEY); vault-kyc and vault-masked are made here, neither an admin.
+H='Content-Type: application/json'
+for u in vault-kyc vault-masked; do printf 'password123\n' | $S user create "$u@foxbyte.dev" >/dev/null 2>&1; done
+KK="$($S apikey create vault-kyc@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+KM="$($S apikey create vault-masked@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+det() { as "$1" -H "$H" -X POST -d "{\"kind\":\"$2\",\"refs\":$3,\"purpose\":\"$4\"}" "$VA/detokenise"; }
+detc() { code "$1" -H "$H" -X POST -d "{\"kind\":\"$2\",\"refs\":$3,\"purpose\":\"$4\"}" "$VA/detokenise"; }
+REFUSED_BEFORE="$($S audit --limit 5000 | grep -c 'vault.refused')"
+
+assert_eq "GET /api/vault/mine: an account with no grant sees none, and is no admin" \
+  "$(as "$KK" "$VA/mine" | hjson 'print(d["set_up"], d["admin"], len(d["grants"]), len(d["kinds"]))')" "True False 0 0"
+OUT="$(as "$KK" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\"]}" "$VA/find")"
+assert_eq "without a grant, an account may not even find a key" \
+  "$(code "$KK" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\"]}" "$VA/find")|$(grep -c 'needs a use grant on aadhaar' <<<"$OUT")" "403|1"
+OUT="$(det "$KEY" aadhaar "[\"$R1\"]" "an admin, curious")"
+assert_eq "an admin reads nothing back by being one" \
+  "$(detc "$KEY" aadhaar "[\"$R1\"]" "an admin, curious")|$(grep -c 'needs a detokenise grant on aadhaar' <<<"$OUT")|$(grep -c "$N1" <<<"$OUT")" "403|1|0"
+
+OUT="$($S vault grant vault-kyc@foxbyte.dev --kind aadhaar --detokenise --per-hour 3 2>&1)"
+assert_eq "grant without --yes says what it gives, and gives nothing" \
+  "$(grep -c 'This lets vault-kyc@foxbyte.dev read aadhaar values back from the vault, stating a purpose each time, up to 3 an hour' <<<"$OUT")|$($S vault grants --json | hjson 'print(len(d))')" "1|0"
+OUT="$($S vault grant vault-kyc@foxbyte.dev --kind aadhaar --detokenise --per-hour 3 --yes 2>&1)"; RC=$?
+GK="$(sed -n 's/^Done: grant \([0-9]*\),.*/\1/p' <<<"$OUT")"
+assert_eq "grant --yes: vault-kyc may read aadhaar back, 3 an hour" "$RC|$(grep -c 'may detokenise on aadhaar, up to 3 an hour' <<<"$OUT")" "0|1"
+assert_eq "GET /api/vault/mine: the grant, and the kinds, for its holder" \
+  "$(as "$KK" "$VA/mine" | hjson 'print([(g["kind"], g["permission"], g["per_hour"]) for g in d["grants"]], len(d["kinds"]) > 0)')" "[('aadhaar', 'detokenise', 3)] True"
+
+assert_eq "the holder reads a value back, with a purpose" \
+  "$(det "$KK" aadhaar "[\"$R1\"]" "integration: KYC re-check" | hjson 'print(d["values"][0], d["results"][0])')" "$N1 done"
+assert_eq "…and not without one" "$(detc "$KK" aadhaar "[\"$R1\"]" "")" "400"
+OUT="$(det "$KK" aadhaar "[\"$R1\",\"$R1\",\"$R1\"]" "integration: a batch")"
+assert_eq "past the limit an hour, counted in values: 1 used, 3 more asked, 3 allowed" \
+  "$(detc "$KK" aadhaar "[\"$R1\",\"$R1\",\"$R1\"]" "integration: a batch")|$(grep -c 'limit reached: the grant allows 3 values an hour, and 1 were used in the last hour' <<<"$OUT")" "429|1"
+assert_eq "…up to it is allowed, and then nothing more this hour" \
+  "$(detc "$KK" aadhaar "[\"$R1\",\"$R1\"]" "integration: up to the limit")|$(detc "$KK" aadhaar "[\"$R1\"]" "integration: one more")" "200|429"
+assert_eq "a detokenise grant is not use: the holder still may not find a key" \
+  "$(code "$KK" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N1\"]}" "$VA/find")" "403"
+assert_eq "the grant shows the hour's use" "$($S vault grants --json | hjson "print([g['used_last_hour'] for g in d if g['id'] == $GK][0])")" "3"
+
+OUT="$(as "$KEY" -H "$H" -X POST -d '{"email":"vault-kyc@foxbyte.dev","kind":"text","permission":"use","expires":"7d"}' "$VA/grants")"
+GT="$(hjson 'print(d["id"])' <<<"$OUT")"
+assert_eq "POST /api/vault/grants: an admin gives use on text, for 7 days" \
+  "$(hjson 'print(d["permission"], d["kind"], d["per_hour"], d["granted_by"], d["expires"] is not None)' <<<"$OUT")" "use text 100000 test@foxbyte.dev True"
+assert_eq "…so the holder puts text in, and still no Aadhaar" \
+  "$(code "$KK" -H "$H" -X POST -d '{"kind":"text","values":["vault-kyc note"]}' "$VA/tokenise")|$(code "$KK" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"values\":[\"$N2\"]}" "$VA/tokenise")" "200|403"
+assert_eq "only admins see, give and revoke grants, and read the log" \
+  "$(code "$KK" "$VA/grants")|$(code "$KK" -H "$H" -X POST -d '{"email":"vault-kyc@foxbyte.dev","kind":"aadhaar","permission":"use"}' "$VA/grants")|$(code "$KK" -X DELETE "$VA/grants/$GT")|$(code "$KK" "$VA/log")" "403|403|403|403"
+assert_eq "a grant names an account that exists, a kind that exists, and use or detokenise" \
+  "$(code "$KEY" -H "$H" -X POST -d '{"email":"nobody@foxbyte.dev","kind":"aadhaar","permission":"use"}' "$VA/grants")|$(code "$KEY" -H "$H" -X POST -d '{"email":"vault-kyc@foxbyte.dev","kind":"pan","permission":"use"}' "$VA/grants")|$(code "$KEY" -H "$H" -X POST -d '{"email":"vault-kyc@foxbyte.dev","kind":"aadhaar","permission":"admin"}' "$VA/grants")|$(code "$KEY" -H "$H" -X POST -d '{"email":"vault-kyc@foxbyte.dev","kind":"aadhaar","permission":"use","expires":"3w"}' "$VA/grants")" "400|400|400|400"
+
+# A masked account never reads values back: refused a grant, and refused a
+# call if it was masked after the grant was given.
+$S vault grant vault-masked@foxbyte.dev --kind aadhaar --detokenise --yes >/dev/null 2>&1
+GM="$($S vault grants --json | hjson "print([g['id'] for g in d if g['email'] == 'vault-masked@foxbyte.dev'][0])")"
+$S mask account vault-masked@foxbyte.dev --yes >/dev/null 2>&1 || bad "masking vault-masked"
+OUT="$(det "$KM" aadhaar "[\"$R1\"]" "masked, trying")"
+assert_eq "a masked account is refused, though its grant still holds" \
+  "$(detc "$KM" aadhaar "[\"$R1\"]" "masked, trying")|$(grep -c 'a masked account never reads values back' <<<"$OUT")|$(grep -c "$N1" <<<"$OUT")" "403|1|0"
+OUT="$($S vault grant vault-masked@foxbyte.dev --kind aadhaar --detokenise --yes 2>&1)"; RC=$?
+assert_eq "…and is given no new detokenise grant" "$RC|$(grep -c 'is masked' <<<"$OUT")" "1|1"
+$S mask account vault-masked@foxbyte.dev --off --yes >/dev/null 2>&1
+$S vault revoke "$GM" >/dev/null 2>&1
+
+OUT="$($S vault revoke "$GK" 2>&1)"
+assert_eq "revoke: the holder reads nothing back any more" \
+  "$(grep -c "grant $GK revoked" <<<"$OUT")|$(detc "$KK" aadhaar "[\"$R1\"]" "after revoke")" "1|403"
+assert_eq "…a grant revoked twice is not there to revoke" "$($S vault revoke "$GK" >/dev/null 2>&1; echo $?)" "1"
+assert_eq "DELETE /api/vault/grants: an admin revokes the text grant" "$(code "$KEY" -X DELETE "$VA/grants/$GT")|$(code "$KK" -H "$H" -X POST -d '{"kind":"text","values":["x"]}' "$VA/tokenise")" "200|403"
+assert_eq "grants: none hold now; every one given is kept, revoked" \
+  "$($S vault grants --json | hjson 'print(len([g for g in d if g["email"].startswith("vault-")]))')|$($S vault grants --all --json | hjson 'print(len([g for g in d if g["email"].startswith("vault-") and g.get("revoked_at")]))')" "0|3"
+
+LOG="$($S vault log --limit 200)"
+assert_eq "fox vault log: the reads with their purposes, and no number" \
+  "$(grep -c 'vault-kyc@foxbyte.dev.*detokenise.*integration: KYC re-check.*done 1' <<<"$LOG")|$(grep -cE "$N1|$N2" <<<"$LOG")" "1|0"
+OUT="$(as "$KEY" "$VA/log?limit=500")"
+assert_eq "GET /api/vault/log: the holder's three reads (one refused there for want of a purpose), and no number" \
+  "$(hjson 'print(len([e for e in d if e["actor"] == "vault-kyc@foxbyte.dev" and e["action"] == "detokenise"]))' <<<"$OUT")|$(grep -cE "$N1|$N2" <<<"$OUT")" "3|0"
+AUD="$($S audit --limit 5000)"
+assert_eq "the security log: each grant given and revoked, and each refusal, never a value" \
+  "$(grep 'vault.grant' <<<"$AUD" | grep -c 'granted grant')|$(grep 'vault.grant' <<<"$AUD" | grep -c 'revoked grant')|$(( $(grep -c 'vault.refused' <<<"$AUD") - REFUSED_BEFORE >= 8 ))|$(grep -cE "$N1|$N2" <<<"$AUD")" "3|3|1|0"
+assert_eq "…and refusals leave the head the security log keeps as it was" "$($S vault status 2>&1 | grep -c 'is as the security log saw it')" "1"
+
+$S vault grant vault-kyc@foxbyte.dev --kind aadhaar --use --expires 30d --yes >/dev/null 2>&1
+REV="$($S access review --json)"
+assert_eq "the access review: the account's vault column, and the grants table" \
+  "$(hjson "print([a['vault'] for a in d['accounts'] if a['email'] == 'vault-kyc@foxbyte.dev'][0].startswith('use aadhaar (100000 an hour, until'))" <<<"$REV")|$(hjson "print(len([g for g in d['vaultGrants'] if g['email'] == 'vault-kyc@foxbyte.dev']), d['summary']['vaultGrants'] >= 1)" <<<"$REV")" "True|1 True"
+assert_eq "…and as CSV" "$($S access review --csv vault | head -1)" "id,email,kind,permission,per_hour,expires,granted_by,granted_at,last_used,unused_90_days"
+CHK="$($S check 2>&1)"
+assert_eq "fox check: the log holds, the software token is said to be for trials, the day's refusals are counted" \
+  "$(grep -c 'vault log.*the chain holds and agrees with the security log' <<<"$CHK")|$(grep -c 'vault token.*require an HSM' <<<"$CHK")|$(grep -c 'vault refusals.*refused in the last day' <<<"$CHK")|$(grep -c 'vault grants' <<<"$CHK")" "1|1|1|1"
+$S vault revoke "$($S vault grants --json | hjson "print([g['id'] for g in d if g['email'] == 'vault-kyc@foxbyte.dev'][0])")" >/dev/null 2>&1
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

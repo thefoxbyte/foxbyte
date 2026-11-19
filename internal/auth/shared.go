@@ -53,6 +53,9 @@ import (
 //   - aadhaar_log_runs, aadhaar_log_places: deliberately not. Where this
 //     node's logs hold an Aadhaar number, and who typed it (aadhaarlog.go): of
 //     this node's history and audit log, and as unfit to carry as they are.
+//   - vault_grants, vault_grant_uses: deliberately not. The vault is one
+//     per install (point 13), so its grants are this install's, and an hour's
+//     use of one counts on the node that served it.
 //   - branch_activity: deliberately not. When the console last used a branch
 //     is for this node's own idle reaper (branchuse.go).
 //   - security_events: deliberately not. It is a hash chain, and a chain is a
