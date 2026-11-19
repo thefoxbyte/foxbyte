@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
 	"github.com/thefoxbyte/foxbyte/internal/branch"
@@ -26,10 +28,15 @@ import (
 //	fox vault tokenise --kind k [--format opaque|legacy] <value>... | -
 //	fox vault find --kind k <value>... | -
 //	fox vault detokenise --kind k --purpose "why" <reference key>... | -
+//	fox vault grant <email> --kind k --use|--detokenise [--per-hour n] [--expires 30d] [--yes]
+//	fox vault revoke <grant id>
+//	fox vault grants [--all] [--json]
+//	fox vault log [--limit n] [--before seq] [--json]
 //
 // The CLI is the operator's, on the machine: it reaches the vault service
 // directly, and each call is in the security log with the vault's log head.
-// Detokenising is the operator's only, until admins can grant it (13.2).
+// Over the API, a call needs a grant (13.2), which the operator and admins
+// give.
 func vaultCmd(args []string) {
 	requireFeature(edition.Vault)
 	sub := "status"
@@ -45,6 +52,14 @@ func vaultCmd(args []string) {
 		vaultKinds(args)
 	case "tokenise", "tokenize", "find", "detokenise", "detokenize":
 		vaultCall(strings.Replace(sub, "z", "s", 1), args)
+	case "grant":
+		vaultGrant(args)
+	case "revoke":
+		vaultRevoke(args)
+	case "grants":
+		vaultGrants(args)
+	case "log":
+		vaultLog(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown vault command %q\n\n%s", sub, vaultUsage)
 		os.Exit(2)
@@ -58,6 +73,10 @@ const vaultUsage = `usage:
   fox vault tokenise --kind KIND [--format opaque|legacy] VALUE... | -
   fox vault find --kind KIND VALUE... | -
   fox vault detokenise --kind KIND --purpose "WHY" REF... | -
+  fox vault grant EMAIL --kind KIND --use|--detokenise [--per-hour N] [--expires 30d|2026-12-31] [--yes]
+  fox vault revoke GRANT-ID
+  fox vault grants [--all] [--json]
+  fox vault log [--limit N] [--before SEQ] [--json]
 `
 
 func vaultSetup(args []string) {
@@ -325,4 +344,162 @@ func vaultCall(path string, args []string) {
 			"tokenise": "taken: they fail the kind's check", "find": "in the vault", "detokenise": "read: see the line for each"}[path])
 		os.Exit(1)
 	}
+}
+
+// vaultGrant is `fox vault grant`: an account may put values of a kind in the
+// vault and find their keys (--use), or read them back (--detokenise).
+func vaultGrant(args []string) {
+	pos := positionals(args, "--kind", "--per-hour", "--expires")
+	kind := optValue(args, "--kind")
+	use, det := hasFlag(args, "--use"), hasFlag(args, "--detokenise") || hasFlag(args, "--detokenize")
+	if len(pos) != 1 || kind == "" || use == det {
+		fmt.Fprint(os.Stderr, "usage: fox vault grant EMAIL --kind KIND --use|--detokenise [--per-hour N] [--expires 30d|2026-12-31] [--yes]\n")
+		os.Exit(2)
+	}
+	perm := auth.VaultUse
+	if det {
+		perm = auth.VaultDetokenise
+	}
+	per := 0
+	if v := optValue(args, "--per-hour"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			must(fmt.Errorf("--per-hour is a number of values an hour, not %q", v))
+		}
+		per = n
+	}
+	exp, err := branch.ParseVaultExpiry(optValue(args, "--expires"), time.Now())
+	must(err)
+	if !hasFlag(args, "--yes") {
+		what := "put " + kind + " values in the vault and find their reference keys"
+		if det {
+			what = "read " + kind + " values back from the vault, stating a purpose each time"
+		}
+		limit := per
+		if limit == 0 {
+			limit = auth.VaultDefaultUsePerHour
+			if det {
+				limit = auth.VaultDefaultDetokenisePerHour
+			}
+		}
+		fmt.Printf("This lets %s %s, up to %d an hour", pos[0], what, limit)
+		if exp != nil {
+			fmt.Printf(", until %s", exp.Format("2 Jan 2006 15:04 MST"))
+		}
+		fmt.Printf(".\nIt replaces a grant of the same kind they hold, is in the security log and the access review,\n" +
+			"and is revoked with `fox vault revoke`.\n\nRun again with --yes to go ahead.\n")
+		return
+	}
+	st := openStore()
+	if st == nil {
+		must(fmt.Errorf("the install's store could not be opened"))
+	}
+	defer st.Close()
+	g, err := branch.GrantVault(st, branch.VaultGrantOptions{Email: pos[0], Kind: kind, Permission: perm, PerHour: per, Expires: exp}, cliActor(), "")
+	must(err)
+	fmt.Printf("Done: grant %d, %s may %s on %s, up to %d an hour.\n", g.ID, g.Email, g.Permission, g.Kind, g.PerHour)
+}
+
+// vaultRevoke is `fox vault revoke <grant id>`.
+func vaultRevoke(args []string) {
+	pos := positionals(args)
+	if len(pos) != 1 {
+		fmt.Fprint(os.Stderr, "usage: fox vault revoke GRANT-ID (fox vault grants lists them)\n")
+		os.Exit(2)
+	}
+	id, err := strconv.ParseInt(pos[0], 10, 64)
+	if err != nil {
+		must(fmt.Errorf("a grant is named by its number, not %q (fox vault grants lists them)", pos[0]))
+	}
+	st := openStore()
+	if st == nil {
+		must(fmt.Errorf("the install's store could not be opened"))
+	}
+	defer st.Close()
+	g, err := branch.RevokeVault(st, id, cliActor(), "")
+	must(err)
+	fmt.Printf("Done: grant %d revoked; %s may no longer %s on %s.\n", g.ID, g.Email, g.Permission, g.Kind)
+}
+
+// vaultGrants is `fox vault grants`: who may do what, with how much of the
+// hour's limit is used.
+func vaultGrants(args []string) {
+	requireFeature(edition.Vault)
+	st := openStore()
+	if st == nil {
+		must(fmt.Errorf("the install's store could not be opened"))
+	}
+	defer st.Close()
+	gs, err := st.VaultGrants(hasFlag(args, "--all"))
+	must(err)
+	if hasFlag(args, "--json") {
+		if gs == nil {
+			gs = []auth.VaultGrant{}
+		}
+		b, _ := json.MarshalIndent(gs, "", "  ")
+		fmt.Println(string(b))
+		return
+	}
+	if len(gs) == 0 {
+		fmt.Printf("No vault grants. Give one with `%s vault grant`.\n", brand.CLI)
+		return
+	}
+	now := time.Now()
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tACCOUNT\tKIND\tMAY\tLAST HOUR\tEXPIRES\tLAST USED\tGIVEN BY")
+	for _, g := range gs {
+		exp, last := "never", "never"
+		if g.Expires != nil {
+			exp = g.Expires.Format("2006-01-02 15:04")
+		}
+		if g.LastUsed != nil {
+			last = g.LastUsed.Format("2006-01-02 15:04")
+		}
+		may := g.Permission
+		switch {
+		case g.RevokedAt != nil:
+			may += " (revoked " + g.RevokedAt.Format("2006-01-02") + " by " + g.RevokedBy + ")"
+		case !g.Active(now):
+			may += " (expired)"
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%d of %d\t%s\t%s\t%s\n", g.ID, g.Email, g.Kind, may, g.UsedLastHour, g.PerHour, exp, last, g.GrantedBy)
+	}
+	_ = w.Flush()
+}
+
+// vaultLog is `fox vault log`: the vault's access log, newest first. Never a
+// value: reference keys, purposes and results.
+func vaultLog(args []string) {
+	limit, _ := strconv.Atoi(optValue(args, "--limit"))
+	before, _ := strconv.ParseInt(optValue(args, "--before"), 10, 64)
+	b, err := branch.VaultLog(limit, before)
+	must(err)
+	if hasFlag(args, "--json") {
+		fmt.Println(strings.TrimSpace(string(b)))
+		return
+	}
+	var r struct {
+		Entries []struct {
+			Seq     int64     `json:"seq"`
+			At      time.Time `json:"at"`
+			Actor   string    `json:"actor"`
+			Action  string    `json:"action"`
+			Kind    string    `json:"kind"`
+			Refs    []string  `json:"refs"`
+			N       int       `json:"n"`
+			Purpose string    `json:"purpose"`
+			Result  string    `json:"result"`
+		} `json:"entries"`
+	}
+	must(json.Unmarshal(b, &r))
+	if len(r.Entries) == 0 {
+		fmt.Println("The vault's access log is empty.")
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SEQ\tWHEN\tWHO\tCALL\tKIND\tN\tPURPOSE\tRESULT")
+	for _, e := range r.Entries {
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", e.Seq, e.At.Local().Format("2006-01-02 15:04:05"), e.Actor, e.Action, e.Kind, e.N, e.Purpose, e.Result)
+	}
+	_ = w.Flush()
 }

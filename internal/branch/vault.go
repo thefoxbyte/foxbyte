@@ -48,7 +48,8 @@ const (
 
 	// VaultImageRevision is the vault image this fox needs, as the image's
 	// dev.dbengine.image-revision label numbers it.
-	VaultImageRevision = 1
+	// 2 lists the access log (13.2).
+	VaultImageRevision = 2
 
 	// vaultSoftLib is FoxByte's own software token, inside the image.
 	vaultSoftLib = "/usr/lib/softhsm/libsofthsm2.so"
@@ -597,6 +598,10 @@ type Vaulter struct {
 	// log does not hold that entry.
 	LogAt func(socket, secret string, seq int64) (head string, found bool, err error)
 	Kinds func() []VaultKind
+	// Entries lists the access log, newest first, as JSON
+	// ({"entries": [...]}): limit entries before entry before (0: the
+	// newest).
+	Entries func(socket, secret string, limit int, before int64) ([]byte, error)
 }
 
 var vaulter *Vaulter
@@ -821,4 +826,20 @@ func vaultCheckAnchor(st *auth.Store) VaultAnchor {
 		return VaultAnchor{Recorded: recorded, Note: fmt.Sprintf("entry %d of the vault's access log is not what the security log saw", seq)}
 	}
 	return VaultAnchor{Recorded: recorded, Holds: true, Note: fmt.Sprintf("entry %d is as the security log saw it", seq)}
+}
+
+// VaultLog lists the vault's access log, newest first, as JSON: who called,
+// what, which reference keys and why, never a value.
+func VaultLog(limit int, before int64) ([]byte, error) {
+	if err := requireVault(); err != nil {
+		return nil, err
+	}
+	if vaulter.Entries == nil {
+		return nil, notLicensed{edition.Vault}
+	}
+	secret, err := vaultSecret()
+	if err != nil {
+		return nil, err
+	}
+	return vaulter.Entries(VaultSocket(), secret, limit, before)
 }

@@ -128,7 +128,11 @@ Stack:
   vault tokenise|find --kind k [--format legacy] <value>... | -
                        Put values in the vault and get their reference keys, or find a value's key (Enterprise)
   vault detokenise --kind k --purpose "why" <reference key>... | -
-                       Read values back, on this machine only, each call logged with its purpose (Enterprise)
+                       Read values back, each call logged with its purpose (Enterprise)
+  vault grant <email> --kind k --use|--detokenise [--per-hour n] [--expires 30d] [--yes] | revoke <id>
+                       Let an account put values in and find keys, or read values back, within a limit an hour (Enterprise)
+  vault grants [--all] [--json] | log [--limit n] [--before seq] [--json]
+                       Who may do what in the vault; its access log, never a value (Enterprise)
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)

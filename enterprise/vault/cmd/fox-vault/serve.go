@@ -172,6 +172,7 @@ func serve(args []string) error {
 	mux.HandleFunc("/v1/rotate", s.auth("rotate", s.rotate))
 	mux.HandleFunc("/v1/status", s.auth("status", s.status))
 	mux.HandleFunc("/v1/log", s.auth("log", s.logAt))
+	mux.HandleFunc("/v1/entries", s.auth("entries", s.entries))
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
@@ -870,4 +871,38 @@ func (s *server) logAt(w http.ResponseWriter, r *http.Request, c *call) {
 		return
 	}
 	reply(w, http.StatusOK, vault.Response{Results: []string{vault.FormatHead(seq, hash)}})
+}
+
+// entries lists the access log, newest first: limit entries (100 by default,
+// at most 1,000) before entry before, or the newest when before is 0. An
+// entry names reference keys and a purpose, never a value.
+func (s *server) entries(w http.ResponseWriter, r *http.Request, c *call) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
+	rows, err := s.db.Query(r.Context(), `SELECT seq, at_us, actor, action, kind, refs, n, purpose, result
+		FROM vault.access_log WHERE ($1 = 0 OR seq < $1) ORDER BY seq DESC LIMIT $2`, before, limit)
+	if err != nil {
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := vault.Entries{Entries: []vault.LogRow{}}
+	for rows.Next() {
+		var e vault.LogRow
+		var us int64
+		if err := rows.Scan(&e.Seq, &us, &e.Actor, &e.Action, &e.Kind, &e.Refs, &e.N, &e.Purpose, &e.Result); err != nil {
+			reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+			return
+		}
+		e.At = time.UnixMicro(us).UTC()
+		out.Entries = append(out.Entries, e)
+	}
+	reply(w, http.StatusOK, out)
 }

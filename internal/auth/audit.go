@@ -210,6 +210,11 @@ const (
 	// log FoxByte already anchors.
 	EvVaultSetup = "vault.setup"
 	EvVaultCall  = "vault.call"
+	// A grant given or revoked (13.2), and a call the engine refused before it
+	// reached the vault: no grant, a masked account, a limit reached. Refusals
+	// are a kind of their own so the head check reads only vault.call.
+	EvVaultGrant   = "vault.grant"
+	EvVaultRefused = "vault.refused"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

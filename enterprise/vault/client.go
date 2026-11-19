@@ -243,3 +243,44 @@ func (c *Client) StatusRaw() ([]byte, error) {
 	}
 	return json.Marshal(st)
 }
+
+// LogRow is one entry of the access log as the service lists it: who, what,
+// which reference keys and why, never a value.
+type LogRow struct {
+	Seq     int64     `json:"seq"`
+	At      time.Time `json:"at"`
+	Actor   string    `json:"actor"`
+	Action  string    `json:"action"`
+	Kind    string    `json:"kind"`
+	Refs    []string  `json:"refs"`
+	N       int       `json:"n"`
+	Purpose string    `json:"purpose"`
+	Result  string    `json:"result"`
+}
+
+// Entries is GET /v1/entries.
+type Entries struct {
+	Entries []LogRow `json:"entries"`
+}
+
+// EntriesRaw lists the access log, newest first, as JSON.
+func (c *Client) EntriesRaw(limit int, before int64) ([]byte, error) {
+	r, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://vault/v1/entries?limit=%d&before=%d", limit, before), nil)
+	if err != nil {
+		return nil, err
+	}
+	c.sign(r)
+	resp, err := c.hc.Do(r)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("entries: %d %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return b, nil
+}

@@ -135,11 +135,24 @@ func printReview(w io.Writer, r access.Review) {
 
 	printReviewApps(w, r.Applications, day)
 
+	fmt.Fprintln(w, "\nVAULT GRANTS")
+	if len(r.VaultGrants) == 0 {
+		fmt.Fprintln(w, "  none")
+	} else {
+		tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tACCOUNT\tKIND\tMAY\tAN HOUR\tEXPIRES\tGIVEN BY\tLAST USED\tUNUSED 90 DAYS")
+		for _, g := range r.VaultGrants {
+			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", g.ID, g.Email, g.Kind, g.Permission, g.PerHour, day(g.Expires),
+				g.GrantedBy, day(g.LastUsed), yes(g.Unused, "unused"))
+		}
+		tw.Flush()
+	}
+
 	fmt.Fprintln(w, "\nWhat this report cannot claim:")
 	for _, l := range r.Limits {
 		fmt.Fprintf(w, "  - %s\n", l)
 	}
-	fmt.Fprintf(w, "\nThe tables as CSV: %s access review --csv accounts|keys|branches\n", brand.CLI)
+	fmt.Fprintf(w, "\nThe tables as CSV: %s access review --csv accounts|keys|branches|applications|vault\n", brand.CLI)
 }
 
 // printReviewApps is the report's Applications table: one line per key, then

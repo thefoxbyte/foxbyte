@@ -92,13 +92,14 @@ export default function AccessReview() {
           <h2 style={{ marginTop: 22 }}>Accounts</h2>
           <div className="table-wrap">
             <table aria-label="Accounts">
-              <thead><tr><th>Account</th><th>Reaches</th><th>Sees unmasked</th><th>May override on</th><th className="num">Keys</th><th>Last active</th><th>Status</th></tr></thead>
+              <thead><tr><th>Account</th><th>Reaches</th><th>Sees unmasked</th><th>Vault</th><th>May override on</th><th className="num">Keys</th><th>Last active</th><th>Status</th></tr></thead>
               <tbody>
                 {(report.accounts ?? []).map(a => (
                   <tr key={a.id}>
                     <td>{a.email}{a.admin && <> <span className="badge primary">admin</span></>}</td>
                     <td>{a.reaches}{(a.owns ?? []).length > 0 && <div className="muted" style={{ fontSize: 12 }}>owns {a.owns!.join(', ')}</div>}</td>
                     <td style={{ fontSize: 13 }} data-testid={`unmasked-${a.email}`}>{a.unmasked}</td>
+                    <td style={{ fontSize: 13 }} data-testid={`vault-${a.email}`}>{a.vault || '–'}</td>
                     <td>{(a.overrideOn ?? []).length > 0 ? a.overrideOn!.join(', ') : '–'}</td>
                     <td className="num">{a.keys}</td>
                     <td title={`sign-in ${day(a.lastSignIn)} · key ${day(a.lastKeyUse)} · query ${day(a.lastQuery)}`}>{day(a.lastActive)}</td>
@@ -188,6 +189,30 @@ export default function AccessReview() {
                 </ul>
               )}
             </>
+          )}
+
+          <h2 style={{ marginTop: 22 }}>Vault grants</h2>
+          {(report.vaultGrants ?? []).length === 0 ? (
+            <p className="muted">No vault grants.</p>
+          ) : (
+            <div className="table-wrap">
+              <table aria-label="Vault grants">
+                <thead><tr><th>Account</th><th>Kind</th><th>May</th><th className="num">An hour</th><th>Expires</th><th>Given by</th><th>Last used</th></tr></thead>
+                <tbody>
+                  {report.vaultGrants!.map(g => (
+                    <tr key={g.id} data-testid={`vault-grant-${g.id}`}>
+                      <td>{g.email}</td>
+                      <td>{g.kind}</td>
+                      <td>{g.permission === 'detokenise' ? 'read values back' : 'put in, find keys'}</td>
+                      <td className="num">{g.perHour}</td>
+                      <td>{g.expires ? day(g.expires) : 'never'}</td>
+                      <td>{g.grantedBy}</td>
+                      <td>{day(g.lastUsed)}{g.unused && <> <span className="badge">unused 90 days</span></>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
 
           <div className="panel" style={{ marginTop: 14 }}>

@@ -15,7 +15,7 @@
 #
 # Both bases are pinned by content, as the database image's are: a tag
 # replaced upstream fails the build instead of shipping.
-ARG GO_IMAGE=golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c
+ARG GO_IMAGE=golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0
 ARG BASE_IMAGE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 FROM ${GO_IMAGE} AS build
@@ -28,7 +28,7 @@ RUN CGO_ENABLED=1 GOFLAGS=-buildvcs=false GOTOOLCHAIN=local \
 FROM ${BASE_IMAGE}
 # The engine fetches or builds the image again when its revision is older than
 # the one it needs (internal/branch/vault.go, VaultImageRevision).
-LABEL dev.dbengine.image-revision="1" dev.dbengine.vault="1"
+LABEL dev.dbengine.image-revision="2" dev.dbengine.vault="1"
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends softhsm2; \

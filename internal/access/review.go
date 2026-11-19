@@ -43,9 +43,29 @@ type Review struct {
 	// a transaction acts for (application identity, fox app), with their
 	// keys and what each has asserted.
 	Applications []ReviewApp `json:"applications"`
+	// VaultGrants are the vault's grants that hold (point 13.2): who may
+	// put values of a kind in and find their keys, and who may read them
+	// back.
+	VaultGrants []ReviewVaultGrant `json:"vaultGrants"`
 	// Limits are what the report cannot claim, in sentences, as a
 	// personal-data scan's are.
 	Limits []string `json:"limits"`
+}
+
+// ReviewVaultGrant is one vault grant that holds.
+type ReviewVaultGrant struct {
+	ID         int64      `json:"id"`
+	Email      string     `json:"email"`
+	Kind       string     `json:"kind"`
+	Permission string     `json:"permission"`
+	PerHour    int        `json:"perHour"`
+	Expires    *time.Time `json:"expires"`
+	GrantedBy  string     `json:"grantedBy"`
+	GrantedAt  time.Time  `json:"grantedAt"`
+	LastUsed   *time.Time `json:"lastUsed"`
+	// Unused is a grant not used in 90 days, which a reviewer should
+	// question.
+	Unused bool `json:"unused"`
 }
 
 // ReviewSummary is the counts a reader looks at first.
@@ -62,6 +82,8 @@ type ReviewSummary struct {
 	// at (they have findings).
 	Applications    int `json:"applications"`
 	AppsWithFinding int `json:"appsWithFindings"`
+	// VaultGrants is how many vault grants hold (point 13.2).
+	VaultGrants int `json:"vaultGrants"`
 }
 
 // ReviewAccount is one account and what it can reach.
@@ -81,7 +103,10 @@ type ReviewAccount struct {
 	OverrideOn []string `json:"overrideOn"`
 	Keys       int      `json:"keys"`
 	// Unmasked says what it can see without masking.
-	Unmasked   string     `json:"unmasked"`
+	Unmasked string `json:"unmasked"`
+	// Vault says what it may do in the vault (point 13.2): use or
+	// detokenise, on which kinds; "" for nothing.
+	Vault      string     `json:"vault"`
 	LastSignIn *time.Time `json:"lastSignIn"`
 	LastKeyUse *time.Time `json:"lastKeyUse"`
 	LastQuery  *time.Time `json:"lastQuery"`
@@ -186,7 +211,7 @@ func (r Review) LogLine() string {
 }
 
 // ReviewSections are the report's tables, each its own CSV.
-var ReviewSections = []string{"accounts", "keys", "branches", "applications"}
+var ReviewSections = []string{"accounts", "keys", "branches", "applications", "vault"}
 
 // CSV writes one section of the report. Each value goes through csvCell, so
 // a name a person chose cannot become a formula in a spreadsheet.
@@ -225,6 +250,13 @@ func (r Review) CSV(section string, w io.Writer) error {
 		rows = append(rows, []string{"branch", "state", "owner", "admins", "admins_read"})
 		for _, b := range r.Branches {
 			rows = append(rows, []string{b.Name, b.State, b.Owner, strings.Join(b.Admins, " "), yes(b.Asked)})
+		}
+	case "vault":
+		rows = append(rows, []string{"id", "email", "kind", "permission", "per_hour", "expires", "granted_by", "granted_at",
+			"last_used", "unused_90_days"})
+		for _, g := range r.VaultGrants {
+			rows = append(rows, []string{strconv.FormatInt(g.ID, 10), g.Email, g.Kind, g.Permission, strconv.Itoa(g.PerHour),
+				when(g.Expires), g.GrantedBy, g.GrantedAt.UTC().Format(time.RFC3339), when(g.LastUsed), yes(g.Unused)})
 		}
 	case "applications":
 		// One row per key, the application's columns repeated: what a
