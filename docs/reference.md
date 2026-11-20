@@ -390,6 +390,7 @@ fox check                        # is this install healthy? each failure says wh
 fox status                       # servers, primary readiness, branches
 fox branch create qa             # copy-on-write branch of main; prints its connection string
 fox connect qa                   # that string again, then a psql shell on the branch
+fox psql qa                      # straight to a psql shell on a branch (default 'main')
 fox sql --branch qa "SELECT 1"   # run SQL and print the result
 fox sql --format csv "SELECT …" > out.csv   # or tsv, markdown, json, insert --table <t>
 fox sql --format xlsx "SELECT …" > out.xlsx # an Excel workbook
@@ -632,6 +633,61 @@ than taking anyone's word for it: it kills the primary with writes in flight,
 recovers through the same path `fox ha failover` uses, and writes a dated report
 to `~/.fox/drills/` with the writes lost and the time to service — alongside the
 configuration that produced them, and what the drill did not test.
+
+**Sessions and maintenance**
+
+```bash
+fox sessions                       # who is connected to a branch, and what each is running
+fox sessions --branch qa --json
+fox sessions cancel <pid>          # cancel that session's query, leaving the session
+fox sessions end <pid> --yes       # end the session itself
+fox maintain                       # each table's rows, dead rows, last vacuum and analyse
+fox maintain vacuum-analyze orders # or vacuum, or analyze — on one table
+```
+
+**Hardening**
+
+```bash
+fox hardening                          # how a branch's PostgreSQL and this install stand
+fox hardening --level strict --failed  # only what fails, at the stricter level
+fox hardening fix <check> --yes        # make one fix, after a preview (Enterprise)
+fox hardening profile baseline         # every fix a profile covers (Enterprise)
+```
+
+Each check reports **pass**, **fail**, **manual** or **n/a**, with the evidence
+it read and the fix. The report is in Standard; making the fixes is Enterprise,
+and each one previews what it will change before it changes it.
+
+**Impact: what a change would reach**
+
+```bash
+fox impact "ALTER TABLE orders DROP COLUMN total"   # dependents, other branches, policy, a score
+fox impact --object orders --column total --json    # the same for an object, without a statement
+```
+
+Enterprise. Dependents means views, foreign keys and indexes. It answers before
+a change runs; `fox branch request` (under **Blackbox**, above) is the same
+question after one has run on a branch.
+
+**The vault** (Enterprise)
+
+```bash
+fox vault setup                    # FoxByte's software token, or --hsm-dir/--hsm-lib/--token/--pin-file
+fox vault status                   # the HSM, the kinds, the records, the access log's head
+fox vault kinds                    # what it will hold: aadhaar first, then text
+fox vault tokenise --kind aadhaar <value>…    # values in, reference keys out
+fox vault find --kind aadhaar <value>         # the key for a value you already hold
+fox vault detokenise --kind aadhaar --purpose "grievance 4821" <key>…
+fox vault grant you@example.com --kind aadhaar --detokenise --per-hour 100 --expires 30d
+fox vault revoke <id>              # and: fox vault grants [--all], fox vault log
+```
+
+Values are encrypted inside an HSM and never leave it in the clear; a reference
+key stands in their place in your tables. Every call is in the access log with
+its purpose, and the log never holds a value. Reading values back needs a grant,
+which carries a limit an hour and may expire. `fox check` has a vault group.
+Finding one person's data for an access or erasure request is
+[`fox subject find`](data-subject-requests.md).
 
 **Accounts & keys**
 
@@ -945,8 +1001,15 @@ features need a licence — without one it behaves exactly like Standard.
 | Reading rules, checking a statement against them, the evaluations log, listing and rejecting requests | yes | yes |
 | Blackbox export (the compliance bundle) | — | yes |
 | ETL pipelines (`fox import` is free: migrating in is onboarding, not ETL) | — | yes |
-| Scanning for personal data (`fox pii scan`); reading what earlier scans found | — / yes | yes |
+| Scanning for personal data (`fox pii scan`) and the Aadhaar exposure report (`fox pii aadhaar run`); reading what earlier scans found | — / yes | yes |
 | The access review report (`fox access review`) | — | yes |
+| Masking personal data (`fox mask`): rules, masked accounts, key domains, `unmask`, masked branches | — | yes |
+| The vault for sensitive values (`fox vault`), Aadhaar first, kept in an HSM | — | yes |
+| Making the hardening fixes (`fox hardening fix`, `profile`); reading the hardening report | — / yes | yes |
+
+**Masks already made keep working in every edition.** A licence that lapses
+stops new masking rules being written; it never reveals a value that was masked
+while the licence was live.
 
 **Which columns the change feed carries.** `fox realtime enable <table>` streams
 every column unless you name them: `--columns id,status,total` sends only those,
