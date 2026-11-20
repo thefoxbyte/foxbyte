@@ -1,1064 +1,265 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/foxbyte-logo-dark.png" />
-    <img src="docs/brand/foxbyte-logo.png" alt="FoxByte — every schema change on record, every row change live" width="420" />
+    <img src="docs/brand/foxbyte-logo.png" alt="FoxByte" width="420" />
   </picture>
 </p>
 
 <p align="center">
-  <b>Postgres for AI agents — instant branches, and a tamper-evident record of every schema change.</b>
+  <b>Self-hosted PostgreSQL 18 with copy-on-write branches, point-in-time recovery, and a hash-chained record of every schema change.</b>
 </p>
 
-FoxByte is **PostgreSQL with instant branching**, for a situation that did not
-use to exist: code writing to your database without a person having read it
-first.
+<p align="center">
+  <a href="https://github.com/thefoxbyte/foxbyte/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/thefoxbyte/foxbyte/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="#license"><img alt="License: AGPL-3.0 for the core" src="https://img.shields.io/badge/license-AGPL--3.0-blue" /></a>
+  <a href="https://github.com/thefoxbyte/foxbyte/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/thefoxbyte/foxbyte" /></a>
+  <a href="https://github.com/thefoxbyte/foxbyte/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/thefoxbyte/foxbyte?style=social" /></a>
+</p>
 
-Branching is how an agent gets a database of its own — a full copy in seconds,
-thrown away when it is done. The **[Blackbox](#blackbox)** is why you can let it
-near one. Every `CREATE`, `ALTER`, `DROP` and `GRANT` is recorded as it happens,
-attributed to the login that made it, in an append-only hash chain you can
-verify. A change an agent made at 3am is distinguishable from one you made, and
-a policy gate can refuse the destructive ones before they run.
+<!--
+  DEMO GIF PLACEHOLDER
+  Record docs/assets/demo.gif (a branch being created) and replace this
+  comment with the image. How to record it: docs/assets/README.md.
+  The tape is docs/assets/demo.tape.
 
-Underneath it is stock **PostgreSQL 18** on local NVMe, so commits keep native
-latency. Branching and time-travel move *off* the commit path — **ZFS
-copy-on-write** clones, and **asynchronous WAL archival** (`wal-g`) for
-point-in-time recovery. It speaks the native Postgres wire protocol, so your
-driver, ORM and SQL are unchanged.
+  <p align="center">
+    <img src="docs/assets/demo.gif" alt="Creating a FoxByte branch" width="720" />
+  </p>
+-->
 
-The command-line tool is **`fox`**. Everything below is a `fox …` command.
+> **Demo GIF goes here** (`docs/assets/demo.gif`). It is not recorded yet. The
+> tape that records a branch being created is [`docs/assets/demo.tape`](docs/assets/demo.tape);
+> [how to run it](docs/assets/README.md) (vhs, or asciinema plus agg).
 
-> **New here?** Jump to [Install](#install) · [Quickstart](#quickstart) · [Blackbox](#blackbox)
+FoxByte gives you a Postgres you can branch like a working copy, on a machine
+you run, and a record of who changed the schema. The command is **`fox`**.
 
 ---
 
-## Screenshots
+## Why FoxByte
 
-The web console is served by the engine itself at **https://localhost:8080** — no
-separate dev server to run.
+An agent, a migration, or a pull request needs a database of its own. Copying
+one is slow. FoxByte makes a branch with a **ZFS snapshot and clone** (a
+**btrfs subvolume snapshot** on Windows), then starts a stock Postgres on that
+clone. The clone itself is O(1) in the size of the data. `fox branch create`
+prints how long the whole operation took on your machine. The docs say
+seconds, not a single published benchmark. `main` is not written.
 
-![The FoxByte landing page](docs/screenshots/landing.png)
+That branch is still Postgres 18 (a fresh install; an older install stays on
+the major it was created with). Your driver, ORM, and SQL do not change. The
+gateway speaks the wire protocol. The database name **is** the branch.
 
-| Ops dashboard | Blackbox |
+The **Blackbox** is why you can hand a branch to something that writes SQL
+without a person reading it first. Every `CREATE`, `ALTER`, `DROP`, and
+`GRANT` is appended to a hash chain, attributed to the login that ran it. A
+policy gate blocks `DROP TABLE`, `DROP SCHEMA`, and `TRUNCATE` unless an admin
+overrides them. Agents' `UPDATE` and `DELETE` are recorded and limited. Checking the chain is free.
+Writing signed checkpoints of it is an Enterprise feature.
+
+**Who it is for.** Teams that want branching without sending the database to a
+hosted product. People giving a coding agent a database they can throw away.
+Anyone who wants the schema record on stock Postgres, on one machine.
+
+It is one machine today. High availability in this tree is a single-VM
+demonstration, not a multi-host deployment. Masking is Enterprise and off
+until you turn it on: a branch is a real copy, and FoxByte says so.
+
+| | |
 | --- | --- |
-| ![Dashboard](docs/screenshots/dashboard.png) | ![Blackbox](docs/screenshots/ledger.png) |
-| **SQL console** | **Realtime** |
-| ![Console](docs/screenshots/console.png) | ![Realtime](docs/screenshots/realtime.png) |
+| ![Ops dashboard](docs/screenshots/dashboard.png) | ![Blackbox](docs/screenshots/ledger.png) |
 
----
-
-## What you get
-
-- **[Blackbox](#blackbox)** — every `CREATE`/`ALTER`/`DROP`/`GRANT`
-  recorded with the actor (human or agent), tool, and branch; **tamper-evident**
-  (hash-chained and append-only, checked by `fox blackbox verify`, with signed
-  anchors for what a database superuser could rewrite). The actor is the login
-  the session authenticated as, which nothing the session runs can change:
-  people and agents each log in through the gateway as a role of their own.
-  Where an application acts for one of its users, it can say which with a signed
-  token, and the record shows the change was made *for* that user, asserted by
-  the application.
-- **Instant branching** — `fox branch create qa` clones the whole database in
-  seconds (copy-on-write), fully isolated; `main` is untouched. Plus
-  `fox branch reset` (start over) and `fox branch diff` (what changed, from Blackbox).
-- **Time travel / PITR** — continuous WAL archival; restore to any point.
-- **One endpoint** — connect to `:6432`; the database name *is* the branch.
-  Idle branches scale to zero and wake on connect. TLS on by default, so
-  `sslmode=require` clients connect out of the box.
-- **A database per AI agent** — the Agent Branch API over HTTP, or the
-  **Model Context Protocol** (`fox mcp`): an agent gets a database, runs SQL, sees
-  what it changed (from Blackbox), and throws it away — one standard interface.
-- **Migrate from anything** — import from PostgreSQL, MySQL/MariaDB, MongoDB, and
-  `.sql`/`.csv`/`.json`/`.ndjson` files, each landing in a fresh branch.
-- **ETL pipelines** *(experimental)* — dbt-style SQL models with data-quality
-  tests, each run against a throwaway branch.
-- **High availability** — a hot standby with transparent `ha failover`
-  (single-VM demonstration).
-- **Accounts, API keys, RLS** — email/password or GitHub/Google OAuth; keys are
-  the gateway password; Postgres row-level security and GRANTs apply to clients.
-- **Web console** — a React UI served by the engine: dashboard, SQL console,
-  Blackbox viewer, import, pipelines, API keys.
-- **Client SDKs** — an OpenAPI spec (served at `/api/openapi.yaml`) plus
-  dependency-free [Python and TypeScript clients](clients/).
-
-Per-install credentials are generated on first run — **nothing is hardcoded**.
-
----
-
-## Blackbox
-
-The differentiator: **Blackbox**, the database's own flight recorder for schema
-changes (formerly called the Schema Ledger — `fox ledger …`, the `/ledger` API
-routes and the original MCP tool names all still work). Three Postgres event triggers, installed into `main` and
-inherited by every branch, capture **every** schema change and attribute it:
-
-- **who** — the actor (a human email, or `agent-alice`) and whether it was a
-  human or an agent;
-- **for whom** — where an application said so, the user it acted for:
-  `asserted by shop` when the application vouched with a token signed by its
-  key, or `claimed` when a client only said so;
-- **what** — the command, the object, and the full statement;
-- **context** — the tool (`application_name`, e.g. `cursor/opus`), the branch,
-  and the session;
-- **a guardrail** — destructive commands (`DROP TABLE`, `DROP SCHEMA`,
-  `TRUNCATE`) are blocked by policy unless an admin overrides them, and blocked
-  attempts are recorded too;
-- **data changes by agents** — every `UPDATE` and `DELETE` an agent runs is
-  recorded with its table and statement (people's are not, to keep ordinary
-  writes fast), and every `TRUNCATE` from anyone;
-- **limits on agents' changes** — an agent's `UPDATE` or `DELETE` is refused
-  once it has changed more rows of a table than that table's limit (100 by
-  default, whatever its `WHERE` says), and refused outright with no `WHERE` at
-  all, and over time each agent may change at most 1,000 rows of a table per
-  hour across all its statements. `fox guardrail limit` and `fox guardrail
-  budget` change them, per table if needed; an admin can let one statement
-  through. An agent's transactions on one table take turns with the budget,
-  so holding several open at once does not multiply it.
-
-**Who can read it.** Every client login can read who changed what, when, and
-the hashes. The statement text can hold the values a change wrote, so a client
-reads only the text of its own entries (`bb.ledger_statement(id)`, for a
-per-user or per-agent login); the superuser and admins (`fox admin grant`)
-read all of it, and `bb.ledger_verify()` checks the chain for anyone. The text
-is part of the hash chain, so it cannot be erased later: an application that
-writes personal data with bind parameters keeps the values out of it, and
-[docs/data-subject-requests.md](docs/data-subject-requests.md#the-blackbox-keeps-statement-text)
-says what that means for an erasure request.
-
-```bash
-fox blackbox            # every schema change on this branch, most recent first
-fox blackbox verify     # check the hash chain: an edited or deleted entry breaks it
-```
-
-**It cannot be quietly rewritten.** The table is append-only, and each row is
-hash-chained to the one before it, so a deleted or edited entry breaks the chain
-and `fox blackbox verify` catches it. A database superuser could rewrite rows
-*and* recompute every hash after them; that is what **anchors** are for. Every
-few minutes the engine writes a checkpoint of the chain to a file outside the
-database, signed with a key the database cannot read, and
-`fox blackbox integrity` (or the standalone `fox-verify --pubkey`) checks the
-rows against them. **Writing** those anchors for a branch's Blackbox is an
-Enterprise feature; **checking** them is not, in any edition — an independent
-verifier you have to buy is not much of an independent verifier, and an install
-that anchored before upgrading keeps every anchor it has and can still prove it.
-The security log's own anchors are free as well: that is the accountability
-trail, and safety stays free. Keep anchors off the machine and give the
-public key (`fox blackbox anchor-key`) to whoever audits; someone with root on
-the machine itself holds the key too, so for them anchors held elsewhere are
-the proof. `fox blackbox anchor-target set s3://bucket …` copies every anchor to
-a bucket of its own, ideally one the database administrators do not control,
-locked in Object Lock's COMPLIANCE mode for a year so nobody can remove or
-rewrite it; `fox check` warns while there is none. And
-because the gateway logs each client in as a **per-user Postgres role**, the
-recorded actor is the login the session authenticated as, and no `SET` in the
-session changes it: a person's own role, an agent key's agent role
-(`agent:<email>`), an agent branch's role (`agent-<id>`), and for MCP the key's
-account's agent role. A database superuser is outside that, as for any record a
-database keeps about itself: they can attribute anything to anyone, which is
-what anchors held where they cannot reach are for. There is a **Blackbox** page
-in the web console too.
-
-**Who a change was for.** An application that serves many people through one
-account can say, per transaction, which of its users a change is for. Register
-it once (`fox app register shop --account shop-svc@example.com --key shop.pub`),
-sign a short-lived token per user with its private key, and pass it with the
-change (`SELECT bb.act_for($1)`, or `withActor` in the clients). The record then
-shows `alice, asserted by shop`. That means the application vouched for alice,
-with a key only it holds and from its own login, not that alice was present:
-the application, or whoever holds both its key and its credentials, can assert
-anyone, which is why a key can be revoked and reported compromised from a given
-moment. A value a client sets by hand is never taken for an assertion.
-
-**And what the event triggers miss.** The record is written by event triggers,
-and a database superuser can stop them (`SET event_triggers = off`, `SET
-session_replication_role = replica`, `ALTER EVENT TRIGGER … DISABLE`); roles,
-role memberships, databases and settings never reach them at all. So every five
-minutes the engine compares the catalogue with what it saw last time, and writes
-what no entry accounts for into the Blackbox: `UNRECORDED` for a change made
-with the triggers stopped, `OBSERVED` for a role, a membership or a setting, and
-risk `kill-switch` for one that switches the record off. Who made such a change
-is unknown, but it is on the record. `fox blackbox scan` runs it now, and
-[docs/blackbox-coverage.md](docs/blackbox-coverage.md) lists exactly what the
-Blackbox records and what it does not.
-
-**Undo a change you should not have made.** Because every entry carries the
-transaction that made it, and `main` archives its write-ahead log, the record is
-not only evidence — it is a way back. Point at an entry and get a **new branch
-holding `main` exactly as it was just before that change**, with `main` left
-alone:
-
-```bash
-fox blackbox entries            # the newest entries with their ids
-fox blackbox branch-before 42   # a branch of main as it was just before entry 42
-fox blackbox branch-before 42 --as before-the-drop   # …under a name you choose
-```
-
-It restores a base backup and replays WAL, so it takes a few minutes and needs a
-base backup taken before the change. Inspect the new branch, copy what you need
-back, and throw it away — or point your application at it. The same action is on
-every row of the **Blackbox** page in the console, and at
-`POST /api/branches/main/ledger/{id}/branch`. `main` is the only branch this
-works from: it is the only one that archives WAL.
-
-**Bring a branch's changes back.** Branching was half a workflow until this: you
-could copy the database, change it, and prove what changed — and then there was
-no way to apply it to `main`. A **change request** offers a branch's recorded
-statements for review, and someone who can manage the target applies them:
-
-```bash
-fox branch request dev --to main   # what dev has that main does not; nothing is applied
-fox request show 3                 # the statements, in the order they ran on dev
-fox request approve 3              # applied to main in one transaction
-```
-
-What is applied is the Blackbox's own record of what ran on `dev`, so `main` ends
-up holding the same statements, each attributed to whoever wrote it, with the
-approver beside it. It is refused if both branches changed the same object since
-they split, if `main`'s policy gate would block a statement, or if there is
-nothing to promote. **Schema only, unless you ask.** The Blackbox records an
-agent's data changes too, and on its branch those are usually test rows, so a
-request leaves out every INSERT, UPDATE, DELETE, MERGE, TRUNCATE and COPY and
-lists what it left out; a statement that would change rows inside a schema
-change's text is refused. `fox branch request dev --include-data` (API and MCP:
-`include_data`) carries them, and the request says so in capitals to whoever
-approves it.
-
-A request is applied once. The apply writes the request's id into the target's
-own `bb.applied_requests` in the same transaction as the changes, and an id
-already there is refused; the transaction also checks again that the target has
-not changed the same objects since the fork. If the changes committed but
-recording the outcome failed, the next request from that branch reads the
-target's record and marks the request applied rather than offering its
-statements again. Asking twice for exactly the same changes while a request is
-open returns the open one. Approving, rejecting and applying are each written to
-the security log before they happen and again with the outcome; if the first
-write fails, nothing is decided.
-
-An agent can ask (MCP `request_changes`) and cannot approve its own: approving
-needs the right to manage the target. There is a **Requests** page in the
-console.
-
-Beside it, a **security log** records what happens at the doors — sign-ins and
-failed ones, sign-ups, API keys made and revoked, password changes, deleted
-accounts, admin grants and every refused request — chained and anchored the
-same way: `fox audit`, `fox audit verify`, and `GET /api/audit` for admins.
-
-It keeps everything until you say otherwise. **Set `FOX_SECURITY_LOG_RETENTION`
-(for example `400d`) to the period your own policy requires**; there is no
-default, because how long sign-in records are kept is your decision to make.
-Older events are removed after they are anchored, and the log records where it
-now starts, so `fox audit verify` still checks everything that is left. When an
-account is deleted — by an admin, by `fox user delete`, or by its holder from
-`DELETE /api/account` — its email and the addresses it signed in from are
-replaced in the log by a keyed pseudonym, without breaking the chain. Account
-holders can download their own data from `GET /api/account/export`. For access
-and erasure requests about people in your databases, see
-[docs/data-subject-requests.md](docs/data-subject-requests.md).
-
----
-
-## Install
-
-One command installs the `fox` CLI; a second brings everything up. On macOS and
-Windows the Linux engine (ZFS/btrfs + Docker + Postgres) runs transparently
-inside a managed VM, so day-to-day you only ever type `fox …`.
-
-Every install pulls the **latest** engine build and (re)installs it, so re-running
-setup always updates you to the newest version rather than reusing an old one.
-
-### macOS
-
-```bash
-curl -fsSL https://get.thefoxbyte.com/install.sh | sh
-```
-
-That one command does the lot. It installs `fox`, installs
-[Lima](https://lima-vm.io) for the local Linux VM if it isn't there (with
-Homebrew when you have it, otherwise Lima's own release, checked against
-checksums the installer carries), and runs `fox setup`, which creates a dedicated
-Lima VM, installs Docker + ZFS in it, and brings the stack up. The first setup
-downloads Ubuntu (a few minutes); after that it's fast.
-
-`fox setup` runs only from a terminal, and only when there is no FoxByte VM
-yet: re-running the installer to update leaves a running VM as it is (run
-`fox setup` to bring the engine inside it up to date), and a Lima VM of your own
-named `default` is never used without you choosing it. `FOX_SETUP=1` runs setup
-anyway (unattended provisioning, or an existing VM), `FOX_LIMA=skip` leaves Lima
-to you, and `FOX_NO_SETUP=1` stops after installing. Lima is installed on macOS
-13 or later.
-
-### Linux
-
-The engine runs directly (no VM). ZFS + Docker are provisioned on first start.
-
-```bash
-curl -fsSL https://get.thefoxbyte.com/install.sh | sh
-sudo fox start
-```
-
-The services listen on `127.0.0.1` only. To reach them from other machines, set
-`FOX_LISTEN=0.0.0.0` — TLS is then required, so give it a real certificate with
-`FOX_TLS_CERT`/`FOX_TLS_KEY` — and put a firewall in front (see
-[Security defaults](#security-defaults)).
-
-### Windows
-
-Run **in PowerShell** (not Command Prompt — `irm`/`iex` are PowerShell commands).
-Needs Windows 10 21H2+/11 with virtualization enabled; everything else is handled
-for you. The engine runs in a dedicated **WSL2** distro that stores branches on
-**btrfs**, so it works on any WSL kernel — nothing kernel-specific to build.
-
-```powershell
-irm https://get.thefoxbyte.com/install.ps1 | iex
-```
-
-That installs WSL if absent (no Linux distribution of your own needed —
-FoxByte brings its own dedicated distro), downloads FoxByte, puts it on your
-PATH, and runs `fox setup`. If Windows needs a reboot to finish enabling WSL, it
-says so and resumes automatically afterwards. Your other WSL distros and Docker
-Desktop are untouched. Full prerequisites and troubleshooting:
-**[docs/windows-setup.md](docs/windows-setup.md)**.
-
-### From source (contributors)
-
-```bash
-make build       # host binary -> ./bin/fox
-make vm-build    # build the Linux engine into the Lima VM (macOS)
-```
-
-Set `FOX_NO_REFRESH=1` when running `fox setup` from a source build, so it
-keeps your locally-built engine instead of downloading a release.
-
-### Verifying a release
-
-Every release's `SHA256SUMS` is signed with the FoxByte release key
-(`SHA256SUMS.sig`, Ed25519). `install.sh` checks the signature against the key
-it carries wherever `openssl` can do Ed25519 (OpenSSL 3). `fox update` checks it
-on every update, `fox setup` on the engine it downloads, and neither installs a
-release that fails. The Windows distro image, built by its own workflow, has
-its own signed `SHA256SUMS.distro`.
-
-Releases can also carry a second signature, `SHA256SUMS.p256.sig` (ECDSA P-256
-over SHA-256), because macOS's LibreSSL and Windows PowerShell cannot check
-Ed25519. `install.sh` tries Ed25519 first and then P-256; `install.ps1` checks
-P-256. Until the P-256 key is made (below), those machines install on checksums
-alone and say so (`FOX_REQUIRE_SIGNATURE=1` refuses instead on macOS). Once it
-is made, they refuse a release they cannot check, unless `FOX_ALLOW_UNSIGNED=1`.
-
-The signed `SHA256SUMS` also names the release it belongs to, in a first line
-that older verifiers read as the checksum of a file nobody asks for:
-
-```
-0000000000000000000000000000000000000000000000000000000000000000  VERSION=v2.3.0
-```
-
-fox and both installers refuse a release whose line names a different tag (an
-old release republished under a newer tag), and, from v2.3.0 on, a release with
-no line at all. Older releases never had it and still install when you name
-them (`FOX_VERSION=v2.2.1`). `fox update` never moves to an older version;
-going back is a reinstall with the installer and `FOX_VERSION`.
-
-To check a download by hand, `sha256sum -c --ignore-missing SHA256SUMS` passes
-over the version line, and the signatures check with
-`openssl pkeyutl -verify -rawin` (Ed25519) or `openssl dgst -sha256 -verify`
-(P-256). Each file also has a GitHub build attestation and the release an SBOM
-(`foxbyte-sbom.spdx.json`):
-
-```bash
-gh attestation verify fox-darwin-arm64 --repo thefoxbyte/foxbyte
-gh attestation verify oci://ghcr.io/thefoxbyte/postgres-walg:18 --repo thefoxbyte/foxbyte
-```
-
-The one-line installers come from the latest release (`install.sh` and
-`install.ps1` are release assets, listed in the signed `SHA256SUMS`), not from
-`main`: `get.thefoxbyte.com` redirects to them. See `deploy/get/README.md`.
-
-### Release signing (maintainers)
-
-The Ed25519 key's private half is the `FOX_RELEASE_SIGNING_KEY` secret (and a
-password manager); `make release-key` made it once, and replacing it would stop
-released builds from updating. The Actions are pinned by commit and the images
-by digest; Dependabot proposes Action and module updates, and
-`scripts/check-image-digests.sh` reports image pins that have fallen behind
-their tags.
-
-**Turning on the P-256 signature.** Nothing in the repository holds that key
-yet: `internal/update/signing.go`, `deploy/install.sh` and `deploy/install.ps1`
-carry an empty one, and releases go out without `SHA256SUMS.p256.sig` until it
-is made. To make it, once:
-
-```sh
-go run ./cmd/releasesign generate-p256 --write
-gh secret set FOX_RELEASE_SIGNING_KEY_P256 --env release < release-signing-p256.key
-# put release-signing-p256.key in the password manager, then delete it
-git add internal/update/signing.go deploy/install.sh deploy/install.ps1   # the public key
-```
-
-Set the secret before the commit is released: from then on the release
-workflow fails rather than publish a release without the P-256 signature,
-because installers carrying the key would refuse it. Releases cut before that
-have no P-256 signature, so installing one of them on a Mac with LibreSSL or on
-Windows needs `FOX_ALLOW_UNSIGNED=1` once the key is in the installer.
-
-**GitHub settings, by hand.** The workflows do what code can do: the signing
-jobs (`release` in release.yml, `distro` in wsl-distro.yml) run only for a `v*`
-tag, in an environment named `release`, and a manual run must be started from
-the tag ("Use workflow from" → Tags). The rest is repository settings:
-
-1. **Environment.** Settings → Environments → New environment `release`. Add
-   required reviewers (a maintainer other than the one tagging, where there is
-   one), and under Deployment branches and tags choose "Selected branches and
-   tags" with the tag rule `v*`.
-2. **Secrets into the environment.** Add `FOX_RELEASE_SIGNING_KEY` (and
-   `FOX_RELEASE_SIGNING_KEY_P256`) as environment secrets of `release`, then
-   delete the repository secrets of the same name, so no other job or branch
-   can read them.
-3. **Tags.** Settings → Rules → Rulesets → New tag ruleset targeting `v*`:
-   restrict creation, updates and deletion to maintainers, and block force
-   pushes. A tag that can be moved can be re-pointed at other code after the
-   review.
-4. **main.** A branch ruleset (or branch protection) on `main`: pull requests
-   with a review, required status checks, no force pushes or deletion. The
-   installers' pinned keys and the workflows live there.
-5. **Workflow token.** Settings → Actions → General → Workflow permissions:
-   "Read repository contents". Jobs that publish ask for `contents: write`
-   themselves; any other workflow then cannot upload release assets, which
-   matters now that the install host serves the installers from them.
-6. **Vercel.** The install host's project deploys `deploy/get` from `main`.
-   Before that change reaches it, upload the installers to the current latest
-   release (`gh release upload <tag> deploy/install.sh deploy/install.ps1`), or
-   the one-liner 404s until the next release.
+The console is served by the engine at **https://localhost:8080**. More
+screenshots: [landing](docs/screenshots/landing.png),
+[SQL console](docs/screenshots/console.png),
+[realtime](docs/screenshots/realtime.png).
 
 ---
 
 ## Quickstart
 
-After `fox setup` (macOS/Windows) or `fox start` (Linux), **the console opens by
-itself** at <https://localhost:8080>, with the one-time **setup token** already
-in the link — choose an email and a password and you are in. (`fox setup-token`
-prints the token if you need it; `fox user create <email>` works too, and
-`FOX_NO_BROWSER=1` leaves the browser alone.) The first account on an install can
-override the destructive-change guardrail, which is why it needs the token.
-
-`main` already has three small sample tables — `users`, `projects` and `events`,
-with five rows each — so there is something to query, alter and branch straight
-away. `FOX_NO_DEMO=1` starts empty; `fox demo drop` removes them later.
-
-Then make an API key on the API keys page (or `fox apikey create <email> <name>`;
-it is shown once) and use it as the password in the connection string below:
+One installer. On macOS, in a terminal, it installs `fox`, installs
+[Lima](https://lima-vm.io) if it is missing, and runs `fox setup`. On Linux it
+installs `fox` and stops; the script's next line is `sudo fox start`.
 
 ```bash
-fox check                        # is this install healthy? each failure says what to run
-fox status                       # servers, primary readiness, branches
-fox branch create qa             # copy-on-write branch of main; prints its connection string
-fox connect qa                   # that string again, then a psql shell on the branch
-fox sql --branch qa "SELECT 1"   # run SQL and print the result
-fox sql --format csv "SELECT …" > out.csv   # or tsv, markdown, json, insert --table <t>
-fox sql --format xlsx "SELECT …" > out.xlsx # an Excel workbook
-fox export "SELECT …" > all.csv             # every row, streamed (csv, tsv, json, xlsx); read only
-fox history                                 # the SQL you ran (never results), kept 90 days
-fox history --search orders                 # find one; then: fox history run <id>, show <id>, save <name> --from <id>
-fox schema                                  # what a branch holds; fox schema orders [--ddl] for one, with its CREATE script
-fox track orders                            # keep created_at, updated_at and last_modified_by on every row
-fox pii scan                                # where personal data is (Aadhaar, PAN, mobile, card…); never the values (Enterprise)
+curl -fsSL https://get.thefoxbyte.com/install.sh | sh
 ```
 
-Connect any Postgres client through the gateway — the **database name is the
-branch**, and the **password is your API key**:
+```bash
+sudo fox start   # Linux only: ZFS, Docker, the Postgres image, then the stack
+```
+
+Windows, in PowerShell (not Command Prompt):
+
+```powershell
+irm https://get.thefoxbyte.com/install.ps1 | iex
+```
+
+That command is the usage line in [`deploy/install.sh`](deploy/install.sh) and
+the host described in [`deploy/get/README.md`](deploy/get/README.md). There is
+**no Compose file**. The engine image is
+[`docker/postgres/Dockerfile`](docker/postgres/Dockerfile) (`ARG PG_MAJOR=18`)
+and is published as `ghcr.io/thefoxbyte/postgres-walg:18`
+(`internal/branch/images.go`). `fox setup` and `fox start` are what pull it
+and bring the stack up. Windows stores branches on btrfs inside a dedicated
+WSL2 distro ([docs/windows-setup.md](docs/windows-setup.md)).
+
+The first run opens **https://localhost:8080** with a one-time setup token in
+the link. `fox setup-token` prints it again. The first account is the admin.
+Nothing is hardcoded, and no API key is minted for you.
+
+Longer install notes, release signatures, and every flag:
+[docs/reference.md](docs/reference.md).
+
+---
+
+## Branch a database in seconds
+
+`main` already has three small sample tables (`users`, `projects`, `events`)
+unless you started with `FOX_NO_DEMO=1`.
+
+```bash
+fox branch create qa
+```
+
+Prints the elapsed time and a connection string. `qa` is its own Postgres on
+a copy-on-write clone. `main` is unchanged.
+
+```bash
+fox sql --branch qa "CREATE TABLE notes (id int primary key, body text);"
+```
+
+`fox sql` runs through the same path as the console and records you as the
+actor. Any other client uses the gateway. The password is an API key
+(`fox apikey create <email> <name>`, shown once), not your account password:
 
 ```bash
 psql "postgresql://dbadmin:<API_KEY>@localhost:6432/qa?sslmode=require"
 ```
 
-```sql
-CREATE TABLE notes (id serial PRIMARY KEY, body text, created_at timestamptz DEFAULT now());
-INSERT INTO notes(body) VALUES ('hello');
+```bash
+fox blackbox qa
 ```
 
-```bash
-fox blackbox qa                  # see that CREATE TABLE, attributed to you
-fox branch delete qa             # throw it away; main is untouched
-```
-
-Mint more keys with `fox apikey create <email>` (or on the web *API keys* page).
-
----
-
-## The web console
-
-`fox start` serves the console at **https://localhost:8080** (a self-signed cert,
-so your browser shows a one-time "not private" warning to accept; point
-`FOX_TLS_CERT`/`_KEY` at a real pair to avoid it). It has:
-
-- a **dashboard** (live status + branch create/suspend/resume/delete),
-- a **SQL console** (run queries against any branch, expand rows as JSON),
-- a **Blackbox** viewer (filter by actor, table, risk, kind),
-- **import** and **pipelines** pages, and **API keys**.
-
-> The web app is embedded in the engine binary and served same-origin — there is
-> no separate dev server to run.
-
----
-
-## Usage
+The `CREATE TABLE` is in the chain, with the login that ran it.
 
 ```bash
-fox start        # bring EVERYTHING up in the background: stack + gateway + APIs
-fox status       # servers, main readiness, backups, HA, branches
-fox logs gateway # tail a background server's log
-fox stop         # stop servers and containers (data preserved)
-```
-
-**Branching**
-
-```bash
-fox branch create qa            # instant copy-on-write branch of main
-fox branch list                 # branches and their containers
-fox branch reset qa             # re-clone from parent, discarding changes
-fox branch diff main qa         # schema changes distinguishing two branches (from Blackbox)
-fox branch suspend qa           # stop a branch (data preserved); wakes on connect
-fox branch resume qa
 fox branch delete qa
-fox branch owner qa you@example.com  # hand a CLI-made branch to an account (shows the owner without an email)
 ```
 
-**Blackbox** (`fox ledger …` works too)
-
-```bash
-fox blackbox [branch] [--limit N] # captured DDL — attributed and policy-checked
-fox blackbox verify [branch]    # verify the tamper-evident hash chain
-fox blackbox revert --to <ts>   # point-in-time restore of main on :5433 (like fox restore)
-```
-
-**Durability / time travel**
-
-> **Send the backups off the machine before you rely on them.** By default the
-> write-ahead-log archive and every base backup go to the object store beside
-> `main`, on the same disk — so one disk or host failure takes the database and
-> every backup of it at the same moment, and there is nothing left to restore
-> from. `fox check` says so until a remote target is set. One command fixes it,
-> and a bucket with Object Lock means nothing written there can be deleted
-> before its retention ends.
-
-```bash
-fox backup create               # base backup -> object storage
-fox backup list
-fox backup target               # where backups go (the local store, or a bucket)
-fox backup target set s3://my-bucket/fox --endpoint https://s3.eu-west-1.amazonaws.com \
-    --access-key AKIA… --region eu-west-1   # asks for the secret key; encrypted client-side
-fox backup key export           # the backup encryption key: keep it off this machine and the bucket
-fox backup prune --keep 7       # delete all but the newest 7 full backups
-fox restore --to latest         # PITR into a disposable container on port 5433
-fox restore --to '2026-08-24 15:07:00+00'
-fox backup export               # portable copy of every branch, on this machine
-fox backup restore <file> --as <new-branch>
-```
-
-**The object store's images come from FoxByte's own registry.** MinIO's images
-left Docker Hub, and then quay.io stopped serving them without credentials, so
-they are mirrored to `ghcr.io/thefoxbyte` and pinned there. If you run your own
-copy, point the engine at it with `FOX_MINIO_IMAGE` and `FOX_MC_IMAGE`.
-
-**Backups are taken for you.** `fox start` takes a first base backup on an
-install that has none, so point-in-time restore works from the first minutes;
-the control plane takes another whenever the newest is older than
-`FOX_BACKUP_INTERVAL` (24h) and keeps the newest `FOX_BACKUP_RETAIN` (7), with
-the WAL they need. `fox status` shows how old the newest one is, and warns.
-
-**Keep them off this machine.** By default the WAL archive and base backups are
-in the object store beside main — on the same disk, so a disk failure takes
-both. `fox backup target set` sends them to any S3-compatible bucket instead
-(the secret key is asked for, or read from `FOX_BACKUP_S3_SECRET_KEY`, and kept
-in a 0600 file). Create the bucket with **Object Lock** and a default retention,
-and nothing written there — backups, WAL, and the copies of the Blackbox's and
-security log's anchors that go there too — can be changed or deleted before it
-expires, not even by whoever controls this machine. Tested against MinIO with
-Object Lock; AWS S3 and other providers are expected to work the same way.
-Moving the target restarts main and takes a first backup there; backups left on
-the old target stay there, and are restorable after moving back.
-
-**Backups in a bucket are encrypted before they leave.** A remote target set
-on an empty prefix is encrypted client-side by wal-g (libsodium) with a key
-FoxByte makes once and keeps at `~/.fox/backup-encryption.key` (0600) — never
-in the bucket, so whoever can read the bucket cannot read the database. Every
-wal-g run gets the key the same way the bucket's keys arrive, in a 0600 env
-file and never on a command line: WAL archiving, base backups, point-in-time
-restores, `fox backup verify` and the HA standby.
-
-- **Export the key now, and keep it off this machine and out of the bucket.**
-  `fox backup key export` prints it; a password manager or a sealed record is
-  the place for it. Lose it and the backups are lost — nobody can decrypt them,
-  including FoxByte. On a replacement machine, `fox backup key import` (it reads
-  the key from stdin) before setting the same target again.
-- **One archive is all encrypted or all plain.** wal-g, given a key, decrypts
-  everything it reads, and an object written without a key does not open. So
-  encryption is decided when the target is set, never switched on in place: a
-  target set before this release stays unencrypted and keeps restoring, and
-  `fox check` warns about it until it is moved to a new prefix. Setting a
-  target whose prefix already holds backups asks you to say how they were
-  written: `--no-encrypt` for plain ones, `--encrypt` for ones encrypted with
-  this install's key. Backups on an old target stay readable only with the
-  setting they were written with.
-- **HTTPS only, off this machine.** A plain `http://` endpoint is refused
-  unless it is this machine (loopback, or the engine's own object store);
-  `--allow-insecure-http` accepts one anyway, with a warning, and `fox check`
-  and `fox start` keep warning while it is in force. The bucket's secret key
-  would cross the network readable.
-- The local object store beside main is not encrypted: the key would sit on the
-  same disk as the backups, and the host's disk encryption is the control there.
-
-**Branches are disposable.** Only `main` archives WAL; a branch is a
-copy-on-write clone for experiments and agents. If a branch holds work that
-matters, `fox backup export --branch <name>` keeps a copy.
-
-A base backup belongs to one PostgreSQL major; an export (`pg_dump`, roles and
-the Blackbox, verified against its own checksums) restores into the same or any
-newer one.
-
-**High availability**
-
-A standby streams from `main`, authenticating as `db_replica` — a role that can
-copy the database and read none of it — admitted by a single `pg_hba` rule
-naming it and this install's own network. `fox check` carries a **replication**
-line saying so.
-
-```bash
-fox ha enable                   # hot standby streaming from main
-fox ha status
-fox ha failover [--force]       # promote the standby; 'main' reroutes to it
-fox ha disable
-fox ha failback                 # after a failover: back to main's own container, keeping every write
-fox ha sync on | off            # zero data loss: a commit waits for the standby
-fox ha drill --yes              # kill the primary for real, and report what it cost
-fox node expose --address A --peer B --yes   # let a standby on another machine copy this one
-fox node join <token>           # on the other machine: become its standby
-fox node unexpose | leave | status | token
-fox ha witness --primary H:5432 --token T              # on a third host: the second opinion
-fox ha watch --witness https://W:7070/ha/primary --token T --accept-unfenced   # on the standby: automatic failover
-```
-
-`fox node expose` is the only thing that puts Postgres on a network, and it is
-off until you ask. It publishes on the one IP address you name, over TLS with a
-certificate that standby verifies, admitting only `db_replica` — which can copy
-the database and read none of it — and only from the one peer address. While
-published, main's `pg_hba.conf` admits nothing else from outside its own docker
-network: every other role and address is rejected, and `fox node unexpose` puts
-the previous rules back. The join token it prints carries that CA and that
-role's password, and deliberately not the install secret. `fox check` reports
-the exposure on every run. After upgrading from a release before this rule
-change, run `fox node expose` again on a published install.
-
-`fox ha witness` and `fox ha watch` need the same token (`--token` or
-`FOX_HA_WITNESS_TOKEN`, at least 16 characters): every witness answer is signed
-with it and served over HTTPS, and an answer that does not verify never leads to
-a promotion. A setup from an older release without a token stops with an error
-saying how to set one; its `--witness` URL also changes from `http://` to
-`https://`.
-
-On the second machine, `fox node join <token>` copies that primary over TLS and
-runs the copy as a standby, verifying the primary's certificate. Everything else
-then works as it does on one machine: `fox ha status` shows how far behind it is,
-`fox ha failover` promotes it, and `fox ha drill` measures what a failover costs.
-That machine's own `main` sits idle while it follows another primary.
-
-`fox ha failover` fences before it promotes. On one machine it stops the old
-primary, waits until docker reports it stopped, and only then promotes the
-standby and routes `main` to it. When docker cannot confirm the stop, it refuses
-and names the container to stop by hand. `--force` promotes anyway, at the risk
-it states: sessions still connected to the old primary can commit writes the new
-primary never sees, and those are lost. `fox up` never starts the old main
-beside a promoted standby, and stops it if something else did. A failover or
-failback interrupted by a crash is settled at the next `fox up`, by asking which
-server is out of recovery, before anything starts as primary.
-
-`fox ha failover` on a machine that follows a remote primary refuses while that
-primary still answers — promoting would make a second primary and the two copies
-would diverge, and this command cannot stop a database on another machine. Stop
-it first, or pass `--force` if something else already has. The check cannot tell
-a dead primary from one it merely cannot reach, so a network partition still
-needs a failover manager to arbitrate. A promotion past it is recorded as not
-fenced, and `fox ha status` says so until a failback. `fox ha watch` will only
-promote with `--accept-unfenced` (or watch with `--dry-run`), because a primary
-on another machine can never be confirmed stopped from this one.
-
-Replication is asynchronous by default: commits never wait, and losing the
-machine costs up to a minute of writes (`archive_timeout=60`). `fox ha sync on`
-trades the first for the second — the primary holds a commit until the standby
-has it on disk, so nothing is lost, and every write is slower by the round trip
-to the standby. There is one standby, so **if it stops, writes stop**;
-`fox ha sync off` releases them and works while they are waiting. `fox check`
-carries a **durability** line saying which of the two is in effect.
-
-`fox ha drill` is how you find out what a failover actually costs here rather
-than taking anyone's word for it: it kills the primary with writes in flight,
-recovers through the same path `fox ha failover` uses, and writes a dated report
-to `~/.fox/drills/` with the writes lost and the time to service — alongside the
-configuration that produced them, and what the drill did not test.
-
-**Accounts & keys**
-
-```bash
-fox apikey create <email> [name]   # mint an API key (shown once)
-fox apikey create <email> [name] --agent   # a key to give an AI agent
-fox apikey list <email>
-fox apikey revoke <email> <id>
-fox user create <email>            # create an account (prompts for a password)
-fox user passwd <email>            # forgotten password: set a new one
-fox user list | delete <email>     # accounts: list, delete
-```
-
-**Giving a key to an AI agent?** Mint an agent key (`--agent`, or "for an AI agent"
-on the console's Keys page). It opens your branches through the Gateway, but as an
-agent: its changes are recorded as an agent's and the agent guardrails apply to it.
-It never holds your admin grant, and the console and the control-plane API refuse it.
-
-**Forgotten a password?** It cannot be recovered — only a hash of it is stored, so
-nobody can read it back, not even an admin. Set a new one from the machine FoxByte
-runs on:
-
-```bash
-fox user passwd you@example.com
-```
-
-That signs the account out everywhere and is recorded in the security log
-(`fox audit`). It needs no sign-in, only access to the machine — which is what
-owning an install means. On macOS and Windows run it exactly the same way; the
-launcher passes it into the VM for you.
+`main` still has its sample tables. `fox branch reset qa` would have thrown
+away `qa`'s changes and cloned again, instead of deleting it.
 
 ---
 
-## Connect your app
+## Features
 
-FoxByte **is** PostgreSQL, so every driver and ORM connects unchanged — set one
-env var to the gateway address (database = branch, password = API key):
-
-```bash
-DATABASE_URL="postgresql://dbadmin:<API_KEY>@localhost:6432/main?sslmode=require"
-```
-
-Point Prisma, Drizzle, SQLAlchemy, Django, GORM, ActiveRecord, etc. at that URL.
-
-For the REST API there is an **OpenAPI spec** (served at
-`https://localhost:8080/api/openapi.yaml`) and thin, dependency-free SDKs under
-[`clients/`](clients/):
-
-```python
-from foxbyte import FoxByte
-db = FoxByte(api_key="key_…", verify_tls=False)   # local self-signed cert
-db.create_branch("qa")
-print(db.query("qa", "select 1"))
-print(db.verify_blackbox("qa"))
-```
-
-Generate a client for any other language from the spec (see [`clients/README.md`](clients/README.md)).
-
----
-
-## A database per AI agent
-
-Give each agent its own instant, disposable database — over HTTP:
-
-```bash
-fox serve --addr :8088          # the Agent Branch API
-curl -k -H "Authorization: Bearer $FOX_KEY" -X POST https://localhost:8088/agents/alice/branch
-# -> { "dsn": "postgresql://agent-alice:key_…@localhost:6432/agent-alice?sslmode=require", … }
-curl -k -H "Authorization: Bearer $FOX_KEY" -X DELETE https://localhost:8088/agents/alice/branch
-```
-
-The agent connects with that DSN — through the gateway, so it works from your
-machine as well as inside the VM. Its password is an API key **scoped to that
-one branch**: it opens no other branch, and the control plane and this API both
-refuse it. Deleting the branch revokes the key.
-
-…or over the **Model Context Protocol**, so an agent framework drives it through
-one standard interface:
-
-```bash
-FOX_API_KEY=key_… fox mcp   # MCP server on stdio (needs a key)
-```
-
-Client setup and the full tool reference: [docs/mcp.md](docs/mcp.md).
-
-MCP tools: `create_branch`, `run_sql`, `changes` (what did I change, from
-Blackbox), `verify_blackbox`, `list_branches`, `delete_branch`. DDL an agent runs is
-attributed to that agent automatically.
-
----
-
-## Import & migration
-
-Every import lands in a **fresh branch**, so migration is safe and reversible.
-
-```bash
-fox import --from postgres://user:pw@host/db  --as prod-copy
-fox import --from mysql://user:pw@host/db     --as legacy
-fox import --from mongodb://host/db           --as events     # collections -> JSONB
-fox import --from ./dump.sql                  --as fromfile    # .sql/.csv/.json/.ndjson
-
-fox import --from postgres://… --continuous --as live          # logical replication
-fox import-cutover live                                         # finish the cutover
-```
-
----
-
-## PostgreSQL versions
-
-A fresh install runs **PostgreSQL 18** (stock, plus `wal-g`). An install created
-on an older major keeps running that major: FoxByte reads the version from your
-data directory and runs the matching image, so `fox update` never moves your data
-between majors behind your back. That is a migration, and it stays your call.
-
-| | |
-|---|---|
-| Fresh install | PostgreSQL 18 |
-| Still supported for existing installs | PostgreSQL 16 |
-| Moving an install to a newer major | `fox pg upgrade` — shows every change first, takes an export, keeps the old databases until you say so ([how](docs/postgres-versions.md#moving-an-install-to-a-newer-major)) |
-
-A base backup (`fox backup create`) belongs to one major and cannot be restored
-into another; an export (`fox backup export`) can. [docs/postgres-versions.md](docs/postgres-versions.md)
-has the details, and the checklist for moving FoxByte itself to the next major.
-
-## Security defaults
-
-A fresh install exposes nothing it does not have to:
-
-- **Loopback only.** The control plane (`:8080`), Gateway (`:6432`) and Agent API
-  (`:8088`) listen on `127.0.0.1`; the backup store's ports and a point-in-time
-  restore's `:5433` are published on `127.0.0.1` too. On macOS and Windows the
-  VM forwards them to your machine's loopback. `FOX_LISTEN=0.0.0.0` exposes the
-  three services.
-- **TLS, and no silent fallback.** All three serve TLS (self-signed unless you
-  give a certificate). A service that cannot load its certificate refuses to
-  start rather than serve plain HTTP, unless it listens on loopback, and the
-  Gateway refuses a client on another machine that has not switched to TLS
-  (`sslmode=require`).
-- **The first account needs the setup token**, and sign-up is closed after it:
-  an admin adds people with `fox user create`, or `FOX_SIGNUP=open` lets them
-  register. Signing in with GitHub or Google needs a verified email, and makes
-  no account while sign-up is closed. An open sign-up's email is unproven, so
-  the first GitHub or Google sign-in with that verified email takes the account
-  over: its password, sessions and API keys are removed, and the security log
-  records it (`account.claimed`).
-- **Brakes on guessing and flooding.** Ten failed sign-ins for one address or
-  one email in 15 minutes hold further attempts; request bodies are capped; the
-  Gateway serves at most `FOX_GATEWAY_MAX_CONNS` connections (96 by default,
-  one under Postgres's non-superuser limit) and gives a
-  client 30 seconds to authenticate. Within that, at most
-  `FOX_GATEWAY_MAX_PREAUTH_CONNS` may still be authenticating (half the cap,
-  48 by default), one address may hold `FOX_GATEWAY_MAX_CONNS_PER_IP` (two
-  thirds of the cap, 64; IPv6 counted per /64; connections from this machine
-  are exempt) and one API key `FOX_GATEWAY_MAX_CONNS_PER_KEY` (64). Every
-  refusal is `53300 too_many_connections`. Many clients behind one NAT or load
-  balancer share an address, so raise the per-address cap for that. Sessions
-  are never closed for being idle unless you set `FOX_GATEWAY_IDLE_TIMEOUT`
-  (`30m`, or seconds): pooled connections sit silent for hours, and TCP
-  keepalive already frees a slot whose client has vanished.
-- **Every request has a deadline.** An ordinary API request has
-  `FOX_HTTP_TIMEOUT` (5m) to send its body and receive its answer, a file
-  import's upload `FOX_UPLOAD_TIMEOUT` (2h), an export `FOX_EXPORT_TIMEOUT`
-  (1h); a progress or change stream may run on, but a reader that stops
-  reading is dropped after a minute. At most `FOX_MAX_IMPORTS` imports and
-  `FOX_MAX_EXPORTS` exports (4 each) run at once; past that the answer is 429.
-- **Queries stop on the server.** A console query runs for at most
-  `FOX_CONSOLE_STATEMENT_TIMEOUT` (60s), on connections pooled per branch and
-  per login (`FOX_CONSOLE_POOL_SIZE`, 4; `0` turns pooling off) and reset
-  before reuse. MCP `run_sql` returns at most 1,000 rows a statement and
-  256 KiB in all, says when it left rows out, and stops a statement after
-  `FOX_MCP_STATEMENT_TIMEOUT` (60s). Apps connecting through the Gateway get
-  no statement timeout: long queries and migrations are legitimate work.
-- **Branches belong to whoever made them.** Every account may read `main`; a
-  branch made through the console, the API, the Agent API or MCP is its
-  maker's to use, change and delete; an admin (the first account, or anyone
-  given `fox admin grant`) may do anything. Other people's branches are not
-  listed, and answer "not found" — through the Gateway too. A branch made with
-  the CLI is an admin's.
-- **`main` is read-only unless you are granted write.** On a new install only
-  admins and accounts an admin grants write (`fox access write grant <email>`)
-  may change `main`; everyone else reads it, and changes it through a branch
-  and a change request. Postgres enforces it: such an account's role on `main`
-  is not in `db_client` but in `db_main_reader`, which may read what
-  `db_client` reads and nothing more, and its agent keys follow it. The
-  console and MCP say why a change was refused. `fox access list` shows who
-  may change `main`; `fox access main-write all` lets every account again.
-  **Upgrading:** an install that already had accounts keeps every account able
-  to change `main` (mode `all`) until an admin runs `fox access main-write
-  granted`, which first lists the accounts that will lose write and ends their
-  open sessions on `main`. `fox check` warns while an install is in mode `all`.
-  On Postgres before 15, switching also takes `CREATE` on schema `public` from
-  `PUBLIC` on `main`, and switching back does not return it.
-- **A limit on branches per account.** Each branch is a whole Postgres, so an
-  account may own at most `FOX_MAX_BRANCHES_PER_ACCOUNT` branches (20 by
-  default; `0` for no limit), and may start at most
-  `FOX_BRANCH_CREATES_PER_MINUTE` creates, imports and point-in-time branches a
-  minute (10 by default; `0` for no limit; over it the API answers 429). Admins
-  and the CLI are exempt.
-- **Branches are unmasked by default, and say so.** A branch is a copy of its
-  source, and an agent's branch a byte-for-byte copy of main, so whoever uses
-  one reads the personal data it holds as real values unless masking applies.
-  Masking is opt-in and stays so; what FoxByte adds is a warning wherever a
-  branch is handed on: in the answer to creating one (`fox branch create`, the
-  console, the Agent API's `warnings` field, MCP's `create_branch`), once per
-  session in an MCP tool result when an agent first reaches such a branch, as
-  an "unmasked personal data" badge in the console's branch list, and in
-  `fox check`, which names the branches agents or non-admin accounts read real
-  personal data on, and the ones with agents on them that were never scanned.
-  The warnings read only what `fox pii` review confirmed and the masking rules
-  (never table data), and a branch no scan has looked at is said to be "never
-  scanned", not clean. To mask: scan and review (`fox pii scan --branch main`,
-  then confirm findings), set a rule on each column
-  (`fox mask rule customers.aadhaar --branch main`), and mask the accounts that
-  should read masks (`fox mask account you@example.com`); a masked account's
-  agents are then given masked branches. Scanning and masking are Enterprise;
-  Standard shows the warnings, from scans made earlier, and says masking needs
-  Enterprise. A warning never stops a branch being made.
-- **A branch's keys go with it.** Deleting a branch, by any route, revokes the
-  keys scoped to it, and making a branch under a name revokes any key still
-  scoped to that name; each revocation is in the security log.
-- **One change to a branch at a time.** A wake, suspend, create, delete, reset
-  or restore holds a lock on the branch, so they cannot overlap across
-  processes; one that waits longer than `FOX_BRANCH_LOCK_TIMEOUT` (2m by
-  default) gives up with an error saying the branch is busy.
-- **A password per database role.** Each account, each agent and the client
-  role log in to Postgres with their own password, derived from the install
-  secret; the secret itself is the superuser's alone and never appears on a
-  command line.
-- **Imports reach public databases.** Importing from this machine, a private
-  network or a container is for admins; cloud metadata addresses are refused.
-- **No superuser switches in release builds.** `FOX_AGENT_SUPERUSER` and
-  `FOX_MCP_SUPERUSER`, like `FOX_GATEWAY_NOAUTH`, only work in a build made with
-  `-tags insecure`.
-
-- **Backups can leave the machine.** `fox backup target set` sends the WAL
-  archive, base backups and anchor copies to an S3 bucket (see
-  [Durability](#usage)); the keys never appear on a command line. A new
-  remote archive is encrypted client-side with a key kept on this machine
-  (`fox backup key export` for disaster recovery), and an `http://` endpoint
-  on another machine is refused without `--allow-insecure-http`.
-- **Secrets on disk are plain files, readable only by their owner.** The
-  install's passwords and keys (`~/.fox/secrets.json`, the backup target, the
-  backup encryption key, the env files handed to docker) are 0600 files, not
-  encrypted at rest. Encrypt the host's disk: that is the control for them, and
-  for the databases and the local backup store beside them.
-
-## What FoxByte is not
-
-- **One machine, for now.** Compute and storage are separated *logically*
-  (stateless containers over persistent storage, scale-to-zero) but still run on
-  one host; there is no multi-host deployment. Networked storage disaggregation
-  is on the roadmap.
-- **HA is a single-VM demonstration**, not a production multi-host deployment.
-- **Not a vector database** — it is PostgreSQL (use `pgvector` on it if you like).
-- **One instance, shared** — accounts own their branches and share `main`; there
-  are no separate projects or per-project quotas yet.
-- **Not the first to branch Postgres.** The copy-on-write-clone-as-a-database
-  idea is [postgres.ai / Database Lab](https://postgres.ai)'s, and Neon,
-  Supabase and PlanetScale all offer branching of some kind. What is ours is
-  what happens *after* the branch exists: the Blackbox, the attribution, and the
-  policy gate.
-
----
-
-## Development
-
-```bash
-make build        # host binary -> ./bin/fox
-make vm-build     # Linux engine binary into the Lima VM (macOS)
-make vet test     # go vet + unit tests (also run in CI on Linux and Windows)
-make integration  # full end-to-end test, in a throwaway test VM
-make integration-sdks  # the published Python and TypeScript clients, against a live engine
-make integration-ui    # the web console in a real browser (Playwright; first run downloads Chromium)
-```
-
-All of them run **nightly in CI** as well (Actions → nightly), one runner per
-suite, and one can be run there on demand.
-
-The integration suites (`make integration`, `integration-v2`, `integration-update`,
-`integration-pg-upgrade`, `integration-sdks`, `integration-ui`)
-are destructive — they wipe Blackbox history, restore `main` to an earlier point and
-fail HA over — so they run in a VM of their own (`fox-test`, created on first use by
-`make test-vm`), never in the VM that holds your install, and refuse to start
-anywhere else. `make test-vm-stop` frees its memory; `make test-vm-delete` removes it.
-
-The web app lives in `web/` (Vite + React + TypeScript) and is embedded into the
-engine binary via the `embedui` build tag, then served same-origin by `fox start`.
-
-Releases are automated: pushing a `v*` tag builds every binary + the install
-assets and publishes the multi-arch Postgres image to GHCR.
-
----
-
-## Editions
-
-FoxByte ships as two binaries built from this one tree. `fox` is the Standard
-edition and is what the installer gives you by default. `fox-enterprise` is the
-same engine with the code under [`enterprise/`](enterprise/) compiled in, and its
-features need a licence — without one it behaves exactly like Standard.
+- **Branches** — `create`, `list`, `reset`, `diff`, `suspend`, `resume`, `delete`. An idle branch stops; the next connection to `:6432` wakes it. The database name is the branch.
+- **Blackbox** — hash-chained DDL ledger, in the Standard edition. `fox blackbox verify` recomputes it. Agents' data changes are recorded; destructive DDL is refused unless an admin overrides it. Detail: [docs/blackbox-coverage.md](docs/blackbox-coverage.md).
+- **Point-in-time recovery** — `wal-g` archives WAL. `fox restore --to '<timestamp>'`. Backups start in a store on the same disk; `fox backup target set` sends them to S3. A base backup does not survive a major upgrade; `fox backup export` does.
+- **Gateway** — Postgres wire protocol on `127.0.0.1:6432`, TLS by default. Loopback unless you set `FOX_LISTEN`.
+- **Agents** — `fox mcp` (Model Context Protocol) and an HTTP Agent Branch API. A branch per agent, a key scoped to that branch. [docs/mcp.md](docs/mcp.md).
+- **Console** — React UI embedded in the `fox` binary: dashboard, SQL, Blackbox, import, API keys. No separate dev server.
+- **SDKs** — dependency-free [Python and TypeScript](clients/) clients (Apache-2.0). OpenAPI at `/api/openapi.yaml`.
+- **Import** — Postgres, MySQL/MariaDB, MongoDB, and `.sql` / `.csv` / `.json` / `.ndjson`, each into a new branch.
+- **Enterprise** (a licence; without one the binary behaves as Standard) — column masking and PII scan, writing signed Blackbox anchors, policy authoring, change requests, realtime change feed, ETL pipelines. The Standard binary does not contain this code.
 
 | | Standard | Enterprise |
-|---|---|---|
-| Branching, gateway, backups, PITR, time travel | yes | yes |
-| Blackbox: the hash-chained record of every schema change | yes | yes |
-| Agent guardrails: TRUNCATE blocked; agents' DELETE/UPDATE limited by rows changed, and refused without a WHERE | yes | yes |
-| Realtime row-level change feed | — | yes |
-| Writing signed Blackbox anchors (checkpoints, on a schedule) | — | yes |
-| Checking anchors: `fox blackbox integrity`, `fox-verify`, `anchor-key` | yes | yes |
-| The security log's own anchors (`fox audit verify`) | yes | yes |
-| Writing Blackbox policy rules; impact analysis; asking for and applying a change request | — | yes |
-| Reading rules, checking a statement against them, the evaluations log, listing and rejecting requests | yes | yes |
-| Blackbox export (the compliance bundle) | — | yes |
-| ETL pipelines (`fox import` is free: migrating in is onboarding, not ETL) | — | yes |
-| Scanning for personal data (`fox pii scan`); reading what earlier scans found | — / yes | yes |
-| The access review report (`fox access review`) | — | yes |
+| --- | --- | --- |
+| Branching, gateway, PITR, Blackbox hash chain, agent guardrails | yes | yes |
+| Checking anchors (`fox blackbox integrity`, `fox-verify`) | yes | yes |
+| Writing signed anchors, masking, policy authoring, change requests, realtime, pipelines | — | yes |
 
-**Which columns the change feed carries.** `fox realtime enable <table>` streams
-every column unless you name them: `--columns id,status,total` sends only those,
-plus the primary key, which always streams because updates and deletes are
-located by it. On PostgreSQL 15 and later (every major FoxByte runs) the list goes
-into the publication, so the other columns never leave Postgres; the decoder drops
-them again in any case, and is the only filter on an older major or under
-`REPLICA IDENTITY FULL`. A table with a primary key sends only the key as the old
-row of an update or delete; `--old-values` asks for the whole previous row
-(REPLICA IDENTITY FULL, which costs WAL on every update). A table with columns
-that `fox pii` review confirmed, or that have a masking rule, is refused until
-those columns are left out or you pass `--allow-pii`, which is recorded in the
-security log: masking does not apply to a change feed. Tables enabled before this
-keep streaming every column; `fox realtime status`, `tables` and `doctor` warn
-about any that send confirmed personal data. The console API takes the same
-choice as `columns`, `old_values` and `allow_pii` on `POST
-/api/branches/{name}/realtime/enable`.
+A fresh install runs **PostgreSQL 18**. An install created before 21 Sep 2026
+stays on **16** until you run `fox pg upgrade`.
+[docs/postgres-versions.md](docs/postgres-versions.md).
 
-```sh
-curl -fsSL https://get.thefoxbyte.com/install.sh \
-  | FOX_EDITION=enterprise sh
+```bash
+curl -fsSL https://get.thefoxbyte.com/install.sh | FOX_EDITION=enterprise sh
 ```
 
-The command is `fox` either way. On macOS and Windows the engine runs in a managed
-Linux VM, and the installer puts the matching edition on both sides.
+---
 
-Already running Standard? An admin can choose **Upgrade → Install Enterprise** in
-the console, or switch from a terminal, at the version you have:
+## Compared with Neon, Xata, and Supabase
 
-```sh
-fox upgrade --edition enterprise     # sudo on Linux; --edition standard switches back
+Checked against their public docs on **20 Nov 2026**. The other columns are
+their claims and docs, not a benchmark we ran. FoxByte's own limits are in
+the first column on purpose.
+
+| | Self-hosted | How a branch copies data | Hash-chained DDL ledger | Masking |
+| --- | --- | --- | --- | --- |
+| **FoxByte** | Yes, on one machine you run. macOS uses a Lima VM. Windows uses a dedicated WSL2 distro. HA here is a single-VM demonstration. | ZFS snapshot + clone, or a btrfs subvolume snapshot on Windows, then a Postgres container. The clone is O(1) in data size. Documented as seconds. `fox branch create` prints the elapsed time for that run. | Yes, in Standard (the Blackbox). Writing signed anchors is Enterprise. Checking them is free. | Enterprise and opt-in (`fox pii scan`, `fox mask`). A branch is unmasked unless you mask it, and FoxByte warns. |
+| **Neon** | The product people use is hosted. The storage engine is open source and can branch by creating a pageserver timeline. Neon does not publish a supported one-command self-hosted install. | Copy-on-write timeline: a new pageserver timeline from an ancestor timeline. | Not described in the docs checked. | Not described as a first-party column-masking feature in the docs checked. |
+| **Xata** | Hosted. On 9 Nov 2026 Xata announced it is joining ClickHouse and is still accepting sign-ups. Instant branching was not yet part of ClickHouse Managed Postgres. | Their 9 Nov 2026 post: a copy-on-write branch in around 3 seconds, including for large databases. Their figure, not ours. | Not described in the docs checked. | They document anonymized production data on branches. |
+| **Supabase branching** | Supabase itself can be self-hosted. Branching, as documented, is a cloud feature. | Schema comes from migrations, not from a storage clone. Data is absent by default. "Include data" (dashboard, requires their PITR add-on) copies production data. Their setup waits up to 2 minutes for the branch to be healthy. | Not described in the docs checked. | No documented dynamic column masking. Keeping production rows off the branch is the default. Row Level Security and Vault are different controls. |
+
+Sources: [Neon pageserver timeline API](https://github.com/neondatabase/neon/discussions/3413),
+[Xata joining ClickHouse](https://xata.io/blog/xata-is-joining-clickhouse),
+[Supabase branching](https://supabase.com/docs/guides/deployment/branching).
+
+FoxByte did not invent copy-on-write Postgres branches. That idea is
+[postgres.ai / Database Lab](https://postgres.ai)'s, and the products above
+ship branching of their own. What this repository adds on top of a branch is
+the Blackbox, the attribution, and the policy gate, on a Postgres you run.
+
+---
+
+## Architecture
+
+Plain-language picture, then the storage note, then the parts that are easy
+to get wrong:
+
+- [Architecture overview](docs/foxbyte-architecture.html) — apps, gateway, branches, backups.
+- [Storage engine](docs/FOX_Storage_Engine.html) — ZFS and btrfs. FoxByte does not replace Postgres's heap.
+- [Blackbox coverage](docs/blackbox-coverage.md) — what the ledger records, and what a superuser can still do.
+- [PostgreSQL versions](docs/postgres-versions.md) — 18 for a fresh install, 16 still supported for old data.
+- [MCP](docs/mcp.md) — the agent tools.
+- [Reference](docs/reference.md) — command list, security defaults, backups, HA, release signing.
+
+A commit hits stock Postgres on local disk. Branching and WAL archival stay
+off that path. The control plane, gateway, and Agent API are Go beside
+Postgres, not inside the query.
+
+---
+
+## Contributing
+
+The smallest useful change is welcome, including docs and tests.
+[CONTRIBUTING.md](CONTRIBUTING.md) is the dev setup, how to run tests, and the
+pull-request flow. **The [CLA](CLA.md) has to be signed** before a first
+contribution is merged. You keep the copyright. The licence you grant covers
+the paid edition as well as the AGPL core. Read that before you open a pull
+request.
+
+Candidate issues, not yet filed: [docs/good-first-issues.md](docs/good-first-issues.md).
+Behaviour in the community: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+Vulnerabilities: [SECURITY.md](SECURITY.md), not a public issue.
+
+```bash
+make build     # ./bin/fox
+make vet test  # no VM required
 ```
 
-It shows the Enterprise licence and asks you to accept it before downloading
-anything, checks the signed release the way `fox update` does, and replaces `fox`
-on both sides of the VM. Databases, accounts, keys and settings are not touched.
-The command is part of the free edition, but all it knows about Enterprise is the
-file to fetch: the paid code only ever arrives in that download.
+---
+
+## Star the repo
+
+If a self-hosted Postgres you can branch is what you wanted, [star the
+repository](https://github.com/thefoxbyte/foxbyte). Stars are how the next
+person finds it on GitHub, Show HN, and the READMEs that link here.
+
+A star is the one-click version. A fork and a pull request are the useful
+version. The [good first issues](docs/good-first-issues.md) list is the short
+path in.
+
+---
 
 ## License
 
-- **Core / server** (this repo, except `clients/` and `enterprise/`):
-  **AGPL-3.0-or-later** — see [`LICENSE`](LICENSE).
-- **Clients & SDKs** (`clients/`): **Apache-2.0** — see [`clients/LICENSE`](clients/LICENSE).
-- **Enterprise edition** (`enterprise/`): a commercial licence — see
-  [`enterprise/LICENSE`](enterprise/LICENSE). Source-available, not open source.
-  The Standard binary contains none of this code, which is checked against the
-  built binary rather than the source (`scripts/test_editions.sh`).
+- **Core and server** (this repo, except `clients/` and `enterprise/`): **AGPL-3.0-or-later** — [LICENSE](LICENSE).
+- **Clients** (`clients/`): **Apache-2.0** — [clients/LICENSE](clients/LICENSE).
+- **Enterprise** (`enterprise/`): commercial, source-available — [enterprise/LICENSE](enterprise/LICENSE). Not in the Standard binary.
 
-> **Using FoxByte does not make your application AGPL.** Connecting over the
-> Postgres wire protocol is not a derivative work, and the client libraries are
-> Apache-2.0. The copyleft applies only if you modify FoxByte itself and offer
-> it to others as a service.
+Connecting with a Postgres driver does not make your application AGPL. The
+copyleft applies if you modify FoxByte and offer that modification to others
+as a service.
