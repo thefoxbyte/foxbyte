@@ -129,7 +129,7 @@ person or an agent (creating one, an MCP session's first call on one, the
 console's branch list, `fox check`) FoxByte warns when it holds confirmed
 personal data that reader sees as real values, or has never been scanned. Those
 warnings are a quick answer to "which copies hold this person's data"; masking
-(Enterprise; see the README's Security defaults) is how to stop handing it on.
+(Enterprise; see [the reference](reference.md#security-defaults)) is how to stop handing it on.
 
 ### Erasing them
 

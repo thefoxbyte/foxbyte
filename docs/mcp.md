@@ -87,7 +87,7 @@ was never scanned), `create_branch` adds a `Warning:` line after the DSN, and
 the first call of a session on such a branch ends with a one-time `Notice`. A
 key scoped to one branch gets that notice as the session's `instructions` at
 `initialize`. None of these refuses anything; masking is how to hide the values
-(see the README's Security defaults).
+(see [the reference](reference.md#security-defaults)).
 
 Blackbox — the tamper-evident record of every schema change:
 
