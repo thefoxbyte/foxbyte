@@ -27,10 +27,6 @@
   </p>
 -->
 
-> **Demo GIF goes here** (`docs/assets/demo.gif`). It is not recorded yet. The
-> tape that records a branch being created is [`docs/assets/demo.tape`](docs/assets/demo.tape);
-> [how to run it](docs/assets/README.md) (vhs, or asciinema plus agg).
-
 FoxByte gives you a Postgres you can branch like a working copy, on a machine
 you run, and a record of who changed the schema. The command is **`fox`**.
 
@@ -161,23 +157,40 @@ away `qa`'s changes and cloned again, instead of deleting it.
 
 ## Features
 
+Everything here is in this tree. The installer and `fox update` give you the
+latest **release**, which can be behind `main`; `make build` builds what you
+are reading.
+
 - **Branches** — `create`, `list`, `reset`, `diff`, `suspend`, `resume`, `delete`. An idle branch stops; the next connection to `:6432` wakes it. The database name is the branch.
-- **Blackbox** — hash-chained DDL ledger, in the Standard edition. `fox blackbox verify` recomputes it. Agents' data changes are recorded; destructive DDL is refused unless an admin overrides it. Detail: [docs/blackbox-coverage.md](docs/blackbox-coverage.md).
+- **Blackbox** — hash-chained DDL ledger, in the Standard edition. `fox blackbox verify` recomputes it. Agents' data changes are recorded; destructive DDL is refused unless an admin overrides it. `fox policy` is the gate's rule engine: `list`, `check "<SQL>"` and `evaluations` in Standard, authoring rules in Enterprise. Detail: [docs/blackbox-coverage.md](docs/blackbox-coverage.md).
 - **Point-in-time recovery** — `wal-g` archives WAL. `fox restore --to '<timestamp>'`. Backups start in a store on the same disk; `fox backup target set` sends them to S3. A base backup does not survive a major upgrade; `fox backup export` does.
 - **Gateway** — Postgres wire protocol on `127.0.0.1:6432`, TLS by default. Loopback unless you set `FOX_LISTEN`.
-- **Agents** — `fox mcp` (Model Context Protocol) and an HTTP Agent Branch API. A branch per agent, a key scoped to that branch. [docs/mcp.md](docs/mcp.md).
-- **Console** — React UI embedded in the `fox` binary: dashboard, SQL, Blackbox, import, API keys. No separate dev server.
+- **Agents** — `fox mcp` (Model Context Protocol) and an HTTP Agent Branch API. A branch per agent, a key scoped to that branch. `fox guardrail limit` caps the rows one statement may change; `fox guardrail budget` caps them per hour. `fox app register` gives a non-human caller its own signed identity and rotatable keys instead of a shared password. [docs/mcp.md](docs/mcp.md).
+- **Console** — React UI embedded in the `fox` binary, in six sections: Overview (dashboard); Data (SQL console, import, pipelines, realtime, sessions); Blackbox (changes, integrity, requests, policies); Compliance (personal data, Aadhaar exposure, masking, vault, access review, applications, audit log, hardening); Account (API keys, licence); Help (guide, docs). No separate dev server.
 - **SDKs** — dependency-free [Python and TypeScript](clients/) clients (Apache-2.0). OpenAPI at `/api/openapi.yaml`.
-- **Import** — Postgres, MySQL/MariaDB, MongoDB, and `.sql` / `.csv` / `.json` / `.ndjson`, each into a new branch.
+- **Import** — `fox import`: Postgres, MySQL/MariaDB, MongoDB, and `.sql` / `.csv` / `.json` / `.ndjson`, each into a new branch. `--continuous` keeps a source in sync until `fox import-cutover`.
+- **Audit trails** — three separate records. `fox audit-log` is pgAudit: who changed the schema, roles and marked tables, and optionally who read them. `fox audit` is the security log — sign-ins, keys, passwords, admins, refusals — hash-chained, anchored and signed. `fox history` is the SQL people ran (console, API, `fox sql`, `fox export`), never the results, kept 90 days. `fox track` adds `last_modified_by` and `last_modified_for` columns to a table.
+- **Hardening** — `fox hardening` says how a branch's PostgreSQL and this install stand against the checks at `basic` or `strict`: pass, fail, manual or n/a, with the evidence and the fix. The report is in Standard; making the fixes (`fox hardening fix`, `fox hardening profile`) is Enterprise.
+- **Operations** — `fox check` tests an install and says what to do about anything wrong. `fox status`, `fox logs`, `fox sessions` (cancel a query, end a session), `fox maintain` (vacuum, analyze), `fox psql`, `fox connect`, `fox export` (query results as csv/tsv/json/xlsx), `fox schema` (objects and their DDL), `fox user` (accounts and passwords), `fox update`.
 - **Realtime** (Enterprise) — `fox realtime enable` publishes a table on a branch you host. Subscribers read server-sent events and resume with `?since=<lsn>`. Enabling a table, or opening the stream, wakes a suspended branch. [Below](#realtime).
 - **ETL pipelines** (Enterprise, experimental) — `fox pipeline run` extracts a source onto a new branch, runs SQL models, then data-quality tests. No schedule, no incremental models, no dependency graph. [Below](#etl-pipelines).
-- **Enterprise** (a licence; without one the binary behaves as Standard) — column masking and PII scan, writing signed Blackbox anchors, policy authoring, change requests, the change feed, and pipelines. The Standard binary does not contain this code. `fox realtime status`, `setup`, `teardown`, and `slots` stay in Standard so an install can see and undo a feed it turned on.
+- **Personal data** (Enterprise) — `fox pii scan` finds personal data in a branch by column name and sampled values; you confirm or reject each finding. `fox pii aadhaar run` reports where Aadhaar numbers are exposed, and with `--logs` reads the branch's query history, audit text and Blackbox too. `fox subject find` locates one person's data for an access or erasure request.
+- **Masking** (Enterprise) — `fox mask rule` masks a confirmed finding (`partial`, `hash`, `fake` or `empty`) for masked accounts, under key domains that never hash alike and can be rotated. `fox mask unmask` lets one account see real values on one branch, every read audited. `fox branch create --masked` makes a branch that stays closed until its marked columns hold their masks. Masks already made keep working in every edition.
+- **Vault** (Enterprise) — sensitive values kept encrypted in an HSM with reference keys in their place: `fox vault tokenise`, `detokenise`, `find`, per-account grants with a rate limit and an expiry, and an access log that never holds a value. Aadhaar first.
+- **Access review** (Enterprise) — `fox access review`: every account, key, branch and application, what each can reach, and who has gone quiet. The tables come out as CSV for whoever is asking.
+- **Change requests** (Enterprise) — `fox branch request` proposes what a branch holds that its target does not; `fox request approve` applies those statements to the target in one transaction. `fox impact` is the blast radius first: dependents, other branches, policy, a score.
+- **Enterprise** (a licence; without one the binary behaves as Standard) — twelve features: the change feed, ETL pipelines, masking, the vault, personal-data discovery, the access review report, hardening fixes, impact analysis, change requests, policy authoring, writing signed Blackbox anchors, and Blackbox export and compliance bundles. The Standard binary does not contain this code. `fox realtime status`, `setup`, `teardown`, and `slots` stay in Standard so an install can see and undo a feed it turned on.
 
 | | Standard | Enterprise |
 | --- | --- | --- |
 | Branching, gateway, PITR, Blackbox hash chain, agent guardrails | yes | yes |
 | Checking anchors (`fox blackbox integrity`, `fox-verify`) | yes | yes |
-| Writing signed anchors, masking, policy authoring, change requests, realtime, pipelines | — | yes |
+| Audit log, security log, query history, row attribution, the hardening report | yes | yes |
+| Import, SQL console, sessions, maintenance, `fox check` | yes | yes |
+| Realtime change feed, ETL pipelines | — | yes |
+| Masking, the vault, personal-data discovery, the Aadhaar exposure report, access review | — | yes |
+| Policy authoring, change requests, impact analysis, hardening fixes | — | yes |
+| Writing signed anchors, Blackbox export and compliance bundles | — | yes |
 
 A fresh install runs **PostgreSQL 18**. An install created before 21 Sep 2026
 stays on **16** until you run `fox pg upgrade`.
@@ -186,6 +199,11 @@ stays on **16** until you run `fox pg upgrade`.
 ```bash
 curl -fsSL https://get.thefoxbyte.com/install.sh | FOX_EDITION=enterprise sh
 ```
+
+That installs the Enterprise build. `fox license activate <file>` installs the
+licence that unlocks the features, `fox license show` prints what it covers and
+this machine's fingerprint, and the console's Licence page does the same.
+Without a licence the Enterprise build behaves as Standard.
 
 ---
 
