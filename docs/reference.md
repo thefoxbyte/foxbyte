@@ -352,6 +352,23 @@ the tag ("Use workflow from" → Tags). The rest is repository settings:
 
 ---
 
+### What the installer actually brings up
+
+The one-liner is the usage line in [`deploy/install.sh`](../deploy/install.sh),
+served from the host described in
+[`deploy/get/README.md`](../deploy/get/README.md). There is **no Compose
+file**. The engine image is
+[`docker/postgres/Dockerfile`](../docker/postgres/Dockerfile)
+(`ARG PG_MAJOR=18`) and is published as `ghcr.io/thefoxbyte/postgres-walg:18`
+(`internal/branch/images.go`). `fox setup` and `fox start` are what pull it and
+bring the stack up.
+
+The first run opens **https://localhost:8080** with a one-time setup token in
+the link. `fox setup-token` prints it again. The first account is the admin.
+Nothing is hardcoded, and no API key is minted for you.
+
+---
+
 ## Quickstart
 
 After `fox setup` (macOS/Windows) or `fox start` (Linux), **the console opens by
