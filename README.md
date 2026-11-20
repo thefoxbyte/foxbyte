@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <b>Self-hosted PostgreSQL 18 with copy-on-write branches, point-in-time recovery, and a hash-chained record of every schema change.</b>
+  <b>Self-hosted PostgreSQL 18 with copy-on-write branches, row-level change streams, experimental ETL, and a hash-chained record of every schema change.</b>
 </p>
 
 <p align="center">
@@ -48,6 +48,13 @@ seconds, not a single published benchmark. `main` is not written.
 That branch is still Postgres 18 (a fresh install; an older install stays on
 the major it was created with). Your driver, ORM, and SQL do not change. The
 gateway speaks the wire protocol. The database name **is** the branch.
+
+On that same machine, an Enterprise licence turns a branch into a change
+feed: server-sent events of row changes, resumed from a log position, including
+on a branch that had gone idle. The feed reads only that branch. The same
+edition runs an experimental ETL pipeline that extracts a source (including
+a database elsewhere), lands it on a fresh branch, transforms it with SQL,
+and checks the result.
 
 The **Blackbox** is why you can hand a branch to something that writes SQL
 without a person reading it first. Every `CREATE`, `ALTER`, `DROP`, and
@@ -162,7 +169,9 @@ away `qa`'s changes and cloned again, instead of deleting it.
 - **Console** — React UI embedded in the `fox` binary: dashboard, SQL, Blackbox, import, API keys. No separate dev server.
 - **SDKs** — dependency-free [Python and TypeScript](clients/) clients (Apache-2.0). OpenAPI at `/api/openapi.yaml`.
 - **Import** — Postgres, MySQL/MariaDB, MongoDB, and `.sql` / `.csv` / `.json` / `.ndjson`, each into a new branch.
-- **Enterprise** (a licence; without one the binary behaves as Standard) — column masking and PII scan, writing signed Blackbox anchors, policy authoring, change requests, realtime change feed, ETL pipelines. The Standard binary does not contain this code.
+- **Realtime** (Enterprise) — `fox realtime enable` publishes a table on a branch you host. Subscribers read server-sent events and resume with `?since=<lsn>`. Enabling a table, or opening the stream, wakes a suspended branch. [Below](#realtime).
+- **ETL pipelines** (Enterprise, experimental) — `fox pipeline run` extracts a source onto a new branch, runs SQL models, then data-quality tests. No schedule, no incremental models, no dependency graph. [Below](#etl-pipelines).
+- **Enterprise** (a licence; without one the binary behaves as Standard) — column masking and PII scan, writing signed Blackbox anchors, policy authoring, change requests, the change feed, and pipelines. The Standard binary does not contain this code. `fox realtime status`, `setup`, `teardown`, and `slots` stay in Standard so an install can see and undo a feed it turned on.
 
 | | Standard | Enterprise |
 | --- | --- | --- |
@@ -180,22 +189,133 @@ curl -fsSL https://get.thefoxbyte.com/install.sh | FOX_EDITION=enterprise sh
 
 ---
 
+## Realtime
+
+The change feed is logical decoding of a branch's own write-ahead log, on the
+Postgres this install is already running. It is not a connector aimed at some
+other server. `fox realtime enable` needs an Enterprise licence.
+`fox realtime setup` is what makes the databases ready for it, and that command
+restarts `main`.
+
+```bash
+fox realtime setup
+fox branch create qa
+fox realtime enable orders --branch qa --columns id,status
+fox realtime key create qa    # a stream-only key, shown once; it cannot run SQL
+fox realtime url qa           # fox-realtime://…@127.0.0.1:8080/qa
+```
+
+`--branch` defaults to `main`. The same commands work on any branch. Enabling
+a table on a suspended branch starts that branch. The HTTP route does it
+first (`POST /api/branches/{name}/realtime/enable` is wrapped so
+`EnsureRunning` runs before the publication change). The CLI's `docker exec`
+retries once after the same wake when the container answers "is not running"
+(`retryIfStopped`). Opening the stream wakes it too: the decoder calls
+`branch.Wake` before it reads the log, and `main` is only resolved to the
+current primary, never restarted by that call.
+
+The feed is server-sent events. A realtime key uses its own path, on the same
+port as the console:
+
+```text
+GET /realtime/v1/branches/qa/stream?since=0/1A2B3C
+Authorization: Bearer rtk_…
+```
+
+`0/1A2B3C` is the shape of a `commit_lsn` (`enterprise/realtime/dsn_test.go`
+builds that exact query). It is the log position of a transaction the client
+already applied, not a special value. Leave `since` off and the stream starts
+from now, not from the beginning of the log. A position the slot can no longer
+replay is refused; the client refetches. The Python client sends the same
+parameter, on `GET /api/branches/qa/realtime`:
+
+```python
+from foxbyte.realtime import subscribe
+
+for tx in subscribe(
+    "fox-realtime://rtk_…@127.0.0.1:8080/qa",
+    since="0/1A2B3C",
+    transactions=True,
+    verify_tls=False,  # the local certificate is self-signed
+):
+    save(tx.commit_lsn)
+```
+
+An account API key can open that `/api/branches/qa/realtime` URL directly.
+A masked account is refused when the branch has masking rules: the feed is
+decoded from the log, under the masks, so it would carry the real values.
+`fox realtime disable orders --branch qa` stops the publication. A one-hour
+cap ends a forgotten stream; reconnect with the same `since`.
+
+---
+
+## ETL pipelines
+
+Experimental, and Enterprise. The feature catalogue still titles it that way:
+a run works, and several things a warehouse tool would have are absent. There
+is no schedule, no incremental model, and no dependency graph — models run in
+the order listed. A run deletes and recreates its target branch. If a test
+fails, the data is left there and `fox pipeline run` exits 1. The API does not
+return a stored run log, and a run whose process dies can stay marked
+`running`.
+
+There is no separate connector catalogue. Extract is the import path: a
+`postgres://`, `mysql://`, `mariadb://`, or `mongodb://` source, and from the
+CLI a local `.sql`, `.csv`, or `.json` file. Through the API the source has to
+be a connection string. A path would be read on the server, with the engine's
+permissions.
+
+`shop.json`:
+
+```json
+{
+  "source": "postgres://user:password@db.example/shop",
+  "models": [
+    {
+      "name": "active_users",
+      "materialized": "table",
+      "sql": "SELECT id, email FROM {{ source('users') }} WHERE email IS NOT NULL"
+    }
+  ],
+  "tests": [
+    {"name": "email present", "type": "not_null", "model": "active_users", "column": "email"}
+  ]
+}
+```
+
+```bash
+fox pipeline run shop.json --as shop-etl
+```
+
+That branch is new. Raw tables land in schema `raw` (`{{ source('users') }}`
+is `raw.users`). Models land in `public` (`{{ ref('active_users') }}` is
+`public.active_users`). `materialized` is `table` or `view`. Tests are
+`not_null`, `unique`, `accepted_values`, `row_count_min`, and `custom` (a
+query that must return zero rows). Omit `--as` and the branch is named
+`pl-shop`. The console has a pipeline editor; `POST /api/pipelines` stores a
+spec and `POST /api/pipelines/{id}/run` streams the log.
+
+---
+
 ## Compared with Neon, Xata, and Supabase
 
 Checked against their public docs on **20 Nov 2026**. The other columns are
 their claims and docs, not a benchmark we ran. FoxByte's own limits are in
 the first column on purpose.
 
-| | Self-hosted | How a branch copies data | Hash-chained DDL ledger | Masking |
-| --- | --- | --- | --- | --- |
-| **FoxByte** | Yes, on one machine you run. macOS uses a Lima VM. Windows uses a dedicated WSL2 distro. HA here is a single-VM demonstration. | ZFS snapshot + clone, or a btrfs subvolume snapshot on Windows, then a Postgres container. The clone is O(1) in data size. Documented as seconds. `fox branch create` prints the elapsed time for that run. | Yes, in Standard (the Blackbox). Writing signed anchors is Enterprise. Checking them is free. | Enterprise and opt-in (`fox pii scan`, `fox mask`). A branch is unmasked unless you mask it, and FoxByte warns. |
-| **Neon** | The product people use is hosted. The storage engine is open source and can branch by creating a pageserver timeline. Neon does not publish a supported one-command self-hosted install. | Copy-on-write timeline: a new pageserver timeline from an ancestor timeline. | Not described in the docs checked. | Not described as a first-party column-masking feature in the docs checked. |
-| **Xata** | Hosted. On 9 Nov 2026 Xata announced it is joining ClickHouse and is still accepting sign-ups. Instant branching was not yet part of ClickHouse Managed Postgres. | Their 9 Nov 2026 post: a copy-on-write branch in around 3 seconds, including for large databases. Their figure, not ours. | Not described in the docs checked. | They document anonymized production data on branches. |
-| **Supabase branching** | Supabase itself can be self-hosted. Branching, as documented, is a cloud feature. | Schema comes from migrations, not from a storage clone. Data is absent by default. "Include data" (dashboard, requires their PITR add-on) copies production data. Their setup waits up to 2 minutes for the branch to be healthy. | Not described in the docs checked. | No documented dynamic column masking. Keeping production rows off the branch is the default. Row Level Security and Vault are different controls. |
+| | Self-hosted | How a branch copies data | Hash-chained DDL ledger | Masking | Change feed | ETL |
+| --- | --- | --- | --- | --- | --- | --- |
+| **FoxByte** | Yes, on one machine you run. macOS uses a Lima VM. Windows uses a dedicated WSL2 distro. HA here is a single-VM demonstration. | ZFS snapshot + clone, or a btrfs subvolume snapshot on Windows, then a Postgres container. The clone is O(1) in data size. Documented as seconds. `fox branch create` prints the elapsed time for that run. | Yes, in Standard (the Blackbox). Writing signed anchors is Enterprise. Checking them is free. | Enterprise and opt-in (`fox pii scan`, `fox mask`). A branch is unmasked unless you mask it, and FoxByte warns. | Enterprise. Logical decoding of a branch on this install, as server-sent events. Resume with `?since=<lsn>`. Enable and subscribe wake a suspended branch. Not a feed of some other server's database. | Enterprise, experimental. Extract with the import sources, SQL models, then tests, on a branch the run replaces. No schedule, no incremental models. |
+| **Neon** | The product people use is hosted. The storage engine is open source and can branch by creating a pageserver timeline. Neon does not publish a supported one-command self-hosted install. | Copy-on-write timeline: a new pageserver timeline from an ancestor timeline. | Not described in the docs checked. | Not described as a first-party column-masking feature in the docs checked. | Not described in the docs checked for this table. | Not described in the docs checked for this table. |
+| **Xata** | Hosted. On 9 Nov 2026 Xata announced it is joining ClickHouse and is still accepting sign-ups. Instant branching was not yet part of ClickHouse Managed Postgres. | Their 9 Nov 2026 post: a copy-on-write branch in around 3 seconds, including for large databases. Their figure, not ours. | Not described in the docs checked. | They document anonymized production data on branches. | Not in their 9 Nov 2026 announcement. | Not in their 9 Nov 2026 announcement. |
+| **Supabase** | The platform can be self-hosted. Branching, as documented, is a cloud feature. | Schema comes from migrations, not from a storage clone. Data is absent by default. "Include data" (dashboard, requires their PITR add-on) copies production data. Their setup waits up to 2 minutes for the branch to be healthy. | Not described in the docs checked. | No documented dynamic column masking. Keeping production rows off the branch is the default. Row Level Security and Vault are different controls. | They document Postgres Changes over a WebSocket, including on a self-hosted Realtime server. Replay there is a broadcast timestamp, not a Postgres LSN. | Not described as an extract-transform-test pipeline in the docs checked. |
 
 Sources: [Neon pageserver timeline API](https://github.com/neondatabase/neon/discussions/3413),
 [Xata joining ClickHouse](https://xata.io/blog/xata-is-joining-clickhouse),
-[Supabase branching](https://supabase.com/docs/guides/deployment/branching).
+[Supabase branching](https://supabase.com/docs/guides/deployment/branching),
+[Supabase Postgres Changes](https://supabase.com/docs/guides/realtime/postgres-changes).
+The Neon and Xata change-feed and ETL cells are "not described" in those
+pages, not a claim that no such feature exists anywhere else.
 
 FoxByte did not invent copy-on-write Postgres branches. That idea is
 [postgres.ai / Database Lab](https://postgres.ai)'s, and the products above
