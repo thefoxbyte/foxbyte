@@ -25,10 +25,10 @@ func requestStore(t *testing.T) (*auth.Store, string) {
 }
 
 // targetRecord stands in for the target's bb.applied_requests.
-func targetRecord(t *testing.T, rec map[int64]int, err error) {
+func targetRecord(t *testing.T, rec map[AppliedKey]int, err error) {
 	t.Helper()
 	old := appliedRequestsOf
-	appliedRequestsOf = func(string) (map[int64]int, error) { return rec, err }
+	appliedRequestsOf = func(string) (map[AppliedKey]int, error) { return rec, err }
 	t.Cleanup(func() { appliedRequestsOf = old })
 }
 
@@ -54,7 +54,7 @@ func TestRequestHistoryReconcilesFromTheTargetsRecord(t *testing.T) {
 	if err := s.FinishChangeRequest(failed.ID, 0, "a statement failed"); err != nil {
 		t.Fatal(err)
 	}
-	targetRecord(t, map[int64]int{lost.ID: 2}, nil)
+	targetRecord(t, map[AppliedKey]int{AppliedKeyOf(lost): 2}, nil)
 
 	hist, err := RequestHistory(s, "dev", "main")
 	if err != nil {
@@ -111,7 +111,7 @@ func stubApply(t *testing.T, n int, err error) {
 func TestFinishFailureIsReconciledNotReapplied(t *testing.T) {
 	s, path := requestStore(t)
 	c := approved(t, s, `[{"id":5},{"id":6}]`)
-	targetRecord(t, map[int64]int{}, nil) // before the apply, the target has none
+	targetRecord(t, map[AppliedKey]int{}, nil) // before the apply, the target has none
 	stubApply(t, 2, nil)
 
 	// The store refuses to record an outcome, as a full disk or a lock would.
@@ -135,7 +135,7 @@ func TestFinishFailureIsReconciledNotReapplied(t *testing.T) {
 	if _, err := db.Exec(`DROP TRIGGER no_outcome`); err != nil {
 		t.Fatal(err)
 	}
-	targetRecord(t, map[int64]int{c.ID: 2}, nil) // what the apply's transaction wrote
+	targetRecord(t, map[AppliedKey]int{AppliedKeyOf(c): 2}, nil) // what the apply's transaction wrote
 	hist, err := RequestHistory(s, "dev", "main")
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestFinishFailureIsReconciledNotReapplied(t *testing.T) {
 func TestAlreadyAppliedIsReconciled(t *testing.T) {
 	s, _ := requestStore(t)
 	c := approved(t, s, `[{"id":5},{"id":6},{"id":7}]`)
-	targetRecord(t, map[int64]int{}, nil)
+	targetRecord(t, map[AppliedKey]int{}, nil)
 	stubApply(t, 3, fmt.Errorf("applying: %w", ErrAlreadyApplied))
 	n, applyErr, recordErr := ApplyClaimed(s, c, "carol@example.com")
 	if !errors.Is(applyErr, ErrAlreadyApplied) || recordErr != nil || n != 3 {
@@ -183,5 +183,53 @@ func TestFormatRequestSaysWhatWasLeftOut(t *testing.T) {
 	c.IncludeData, c.OmittedCount, c.Omitted = true, 0, ""
 	if out := FormatRequest(c, nil); !strings.Contains(out, "INCLUDES DATA CHANGES") {
 		t.Errorf("a request carrying data does not say so:\n%s", out)
+	}
+}
+
+// A store recreated, or restored from an older backup, numbers its requests
+// again: a new request with an old one's id is not the old one, and is not
+// taken as applied from the old one's record.
+func TestRequestHistoryTellsARequestFromAnOldOneWithItsID(t *testing.T) {
+	s, _ := requestStore(t)
+	c := approved(t, s, `[{"id":5}]`) // approved; Finish never ran
+	if c.UID == "" {
+		t.Fatal("a new request has no name")
+	}
+	// The target holds an earlier store's request with this id: one with
+	// another name, and one from before requests had names.
+	targetRecord(t, map[AppliedKey]int{{c.ID, "0123456789abcdef"}: 7, {c.ID, ""}: 9}, nil)
+	hist, err := RequestHistory(s, "dev", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hist) != 1 || hist[0].Applied != 0 {
+		t.Fatalf("a new request was taken for an old one with its id: %+v", hist)
+	}
+	if ok, err := Reconcile(s, c); ok || err != nil {
+		t.Errorf("Reconcile took it for the old one: %v %v", ok, err)
+	}
+	if got, _ := s.ChangeRequest(c.ID); got.Applied != 0 {
+		t.Errorf("the store was reconciled from another request's record: %+v", got)
+	}
+}
+
+func TestParseAppliedLine(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		k    AppliedKey
+		n    int
+		okay bool
+	}{
+		{"3 2 ab12", AppliedKey{3, "ab12"}, 2, true},
+		{"3 2", AppliedKey{3, ""}, 2, true}, // recorded without a name
+		{"3 2 ", AppliedKey{3, ""}, 2, true},
+		{"x 2", AppliedKey{}, 0, false},
+		{"3", AppliedKey{}, 0, false},
+		{"3 2 a b", AppliedKey{}, 0, false},
+	} {
+		k, n, ok := parseAppliedLine(tc.in)
+		if k != tc.k || n != tc.n || ok != tc.okay {
+			t.Errorf("%q: %v %d %v", tc.in, k, n, ok)
+		}
 	}
 }

@@ -49,9 +49,16 @@ GRANT SELECT ON bb.agent_sessions TO db_client;
 -- together or not at all, and the database itself can answer "was request N
 -- applied?" even when the engine's own store failed to note the outcome.
 --
--- The primary key is what stops a request being applied twice: a second apply
--- of the same id finds the row (or waits on the first apply's uncommitted one)
+-- The key is what stops a request being applied twice: a second apply of the
+-- same request finds the row (or waits on the first apply's uncommitted one)
 -- and is refused before any statement runs.
+--
+-- A request is its id and the random name its store gave it (request_uid):
+-- the id alone repeats once a store is recreated, or restored from an older
+-- backup, and a new request would be refused as an old one already applied.
+-- A request made before stores named them has no name, and two without one
+-- are one request as before (NULLS NOT DISTINCT); a row without a name is
+-- never a request that has one, since only requests made since have one.
 --
 -- db_client may add rows and read them, and nothing else: the table is owned
 -- by the Blackbox's owner, UPDATE, DELETE and TRUNCATE are not granted, and the
@@ -61,13 +68,31 @@ GRANT SELECT ON bb.agent_sessions TO db_client;
 -- worst a made-up one can do is make the engine refuse to apply that id, which
 -- is the safe direction to fail in.
 CREATE TABLE IF NOT EXISTS bb.applied_requests (
-  request_id  bigint PRIMARY KEY CHECK (request_id > 0),
+  request_id  bigint NOT NULL CHECK (request_id > 0),
   source      text NOT NULL,              -- the branch the statements came from
   approver    text NOT NULL,              -- who approved it, as the engine names them
   statements  integer NOT NULL CHECK (statements >= 0),
   xid         bigint NOT NULL DEFAULT txid_current(),
   applied_at  timestamptz NOT NULL DEFAULT clock_timestamp()
 );
+-- Added: a table made before it has the id as its primary key, which is
+-- replaced by the id and the name together.
+ALTER TABLE bb.applied_requests ADD COLUMN IF NOT EXISTS request_uid text
+  CHECK (request_uid IS NULL OR length(request_uid) BETWEEN 1 AND 100);
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'bb.applied_requests'::regclass
+              AND conname = 'applied_requests_pkey') THEN
+    ALTER TABLE bb.applied_requests DROP CONSTRAINT applied_requests_pkey;
+    -- On PostgreSQL 18 the key's NOT NULL can go with it.
+    ALTER TABLE bb.applied_requests ALTER COLUMN request_id SET NOT NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'bb.applied_requests'::regclass
+                  AND conname = 'applied_requests_request_key') THEN
+    ALTER TABLE bb.applied_requests ADD CONSTRAINT applied_requests_request_key
+      UNIQUE NULLS NOT DISTINCT (request_id, request_uid);
+  END IF;
+END $$;
 CREATE OR REPLACE TRIGGER key_applied_requests_append_only BEFORE UPDATE OR DELETE ON bb.applied_requests
   FOR EACH ROW EXECUTE FUNCTION bb.deny_ext_change();
 CREATE OR REPLACE TRIGGER key_applied_requests_no_truncate BEFORE TRUNCATE ON bb.applied_requests
@@ -76,9 +101,10 @@ REVOKE ALL ON bb.applied_requests FROM PUBLIC;
 REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON bb.applied_requests FROM db_client;
 GRANT SELECT, INSERT ON bb.applied_requests TO db_client;
 
--- Which provenance definition is installed. 2: bb.applied_requests.
+-- Which provenance definition is installed. 2: bb.applied_requests. 3: a
+-- request recorded by its id and its store's name for it.
 CREATE OR REPLACE FUNCTION bb.blackbox_provenance_version() RETURNS text
-LANGUAGE sql IMMUTABLE AS $$ SELECT '2' $$;
+LANGUAGE sql IMMUTABLE AS $$ SELECT '3' $$;
 GRANT EXECUTE ON FUNCTION bb.blackbox_provenance_version() TO db_client;
 
 SET session_replication_role = DEFAULT;

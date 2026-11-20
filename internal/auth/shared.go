@@ -34,7 +34,8 @@ import (
 //   - users, api_keys, oauth_identities, branch_owners — who exists, what they
 //     may use, and which credential proves it. Without these a failover leaves
 //     nobody able to sign in, which is the phase's stated unlock.
-//   - pipelines, pipeline_targets, change_requests — authored records. Small,
+//   - pipelines, pipeline_targets, change_requests (with change_request_meta
+//     and change_request_uids) — authored records. Small,
 //     slow-changing, and losing them to a machine failure would be losing
 //     somebody's work.
 //   - apps, app_keys, install_info — which applications may say whom they act
@@ -109,6 +110,10 @@ var mirrored = []mirror{
 	// older than the table leaves this node's rows as they are.
 	{table: "change_request_meta", cols: []string{"request_id", "entry_key", "include_data", "omitted", "omitted_count"},
 		pk: []string{"request_id"}, optional: true},
+	// The random name each request is recorded under on its target, beside its
+	// id (requests.go). Carried, or a standby that takes over could not tell a
+	// request it has from another with the same id. Optional, as above.
+	{table: "change_request_uids", cols: []string{"request_id", "uid"}, pk: []string{"request_id"}, optional: true},
 	// Application identity (apps.go): which applications may assert, with
 	// which keys, and the install id their tokens name. Without these a
 	// failover would refuse every application's tokens.

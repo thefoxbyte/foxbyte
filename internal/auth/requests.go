@@ -60,6 +60,13 @@ type ChangeRequest struct {
 	// be cut short; the count never is).
 	Omitted      string `json:"omitted,omitempty"`
 	OmittedCount int    `json:"omitted_count"`
+	// UID is a random name the store gave the request when it was made, ""
+	// for one made before requests had one. A target records it beside the
+	// id (bb.applied_requests), because the id alone is not unique for long:
+	// a store recreated, or restored from an older backup, numbers its
+	// requests again from where it was, and a new request would be taken for
+	// an old one already applied.
+	UID string `json:"-"`
 }
 
 // requestMetaSchema is what a request carries beside the columns it was first
@@ -78,7 +85,14 @@ CREATE TABLE IF NOT EXISTS change_request_meta (
   omitted TEXT NOT NULL DEFAULT '',
   omitted_count INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS change_request_meta_key ON change_request_meta(entry_key);`
+CREATE INDEX IF NOT EXISTS change_request_meta_key ON change_request_meta(entry_key);
+
+-- A random name for each request made since (ChangeRequest.UID): a table of
+-- its own, for the same reason as change_request_meta.
+CREATE TABLE IF NOT EXISTS change_request_uids (
+  request_id INTEGER PRIMARY KEY REFERENCES change_requests(id) ON DELETE CASCADE,
+  uid TEXT NOT NULL UNIQUE
+);`
 
 // NewChangeRequest is what a new request is made from.
 type NewChangeRequest struct {
@@ -176,6 +190,10 @@ func (s *Store) openChangeRequestOnce(userID int64, n NewChangeRequest) (int64, 
 		id, n.EntryKey, boolInt(n.IncludeData), n.Omitted, n.OmittedCount); err != nil {
 		return 0, false, err
 	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO change_request_uids (request_id, uid) VALUES (?,?)`,
+		id, randHex(16)); err != nil {
+		return 0, false, err
+	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return 0, false, err
 	}
@@ -195,7 +213,8 @@ const requestColumns = `r.id, r.source, r.target,
 	CASE WHEN r.decided_by IS NULL THEN '' WHEN r.decided_by = 0 THEN '` + cliLabel + `'
 	     ELSE coalesce(d.email,'(deleted account)') END,
 	coalesce(r.decided,0), r.note, r.applied,
-	coalesce(m.include_data,0), coalesce(m.omitted,''), coalesce(m.omitted_count,0)`
+	coalesce(m.include_data,0), coalesce(m.omitted,''), coalesce(m.omitted_count,0),
+	coalesce(k.uid,'')`
 
 // requestFrom is the join every read of a request uses. A request made before
 // change_request_meta existed has no row there, and reads as schema-only with
@@ -203,14 +222,15 @@ const requestColumns = `r.id, r.source, r.target,
 const requestFrom = ` FROM change_requests r
 	LEFT JOIN users u ON u.id = r.created_by
 	LEFT JOIN users d ON d.id = r.decided_by
-	LEFT JOIN change_request_meta m ON m.request_id = r.id`
+	LEFT JOIN change_request_meta m ON m.request_id = r.id
+	LEFT JOIN change_request_uids k ON k.request_id = r.id`
 
 func scanRequest(row interface{ Scan(...any) error }) (ChangeRequest, error) {
 	var c ChangeRequest
 	var created, decided, includeData int64
 	if err := row.Scan(&c.ID, &c.Source, &c.Target, &c.CreatedBy, &created, &c.Status,
 		&c.ForkAfterID, &c.Entries, &c.DecidedBy, &decided, &c.Note, &c.Applied,
-		&includeData, &c.Omitted, &c.OmittedCount); err != nil {
+		&includeData, &c.Omitted, &c.OmittedCount, &c.UID); err != nil {
 		return ChangeRequest{}, err
 	}
 	c.IncludeData = includeData != 0

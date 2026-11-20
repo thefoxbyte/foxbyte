@@ -346,7 +346,7 @@ func RequestHistory(s *auth.Store, source, target string) ([]auth.ChangeRequest,
 		return nil, fmt.Errorf("reading which change requests %q already has: %w", target, err)
 	}
 	for i := range list {
-		n, ok := recorded[list[i].ID]
+		n, ok := recorded[AppliedKeyOf(list[i])]
 		if !ok || list[i].Applied != 0 {
 			continue
 		}
@@ -366,7 +366,7 @@ func Reconcile(s *auth.Store, c auth.ChangeRequest) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	n, ok := recorded[c.ID]
+	n, ok := recorded[AppliedKeyOf(c)]
 	if !ok {
 		return false, nil
 	}
@@ -377,30 +377,65 @@ func Reconcile(s *auth.Store, c auth.ChangeRequest) (bool, error) {
 // the target's record without a database.
 var appliedRequestsOf = AppliedRequests
 
+// AppliedKey is how a target knows a change request: its id and its store's
+// name for it (auth.ChangeRequest.UID, "" for one made before requests had
+// one). The id alone repeats once a store is recreated or restored from an
+// older backup, and a new request must not be taken for an old one applied.
+type AppliedKey struct {
+	ID  int64
+	UID string
+}
+
+// AppliedKeyOf is the key the target records c under.
+func AppliedKeyOf(c auth.ChangeRequest) AppliedKey { return AppliedKey{c.ID, c.UID} }
+
 // AppliedRequests reads a branch's record of the change requests applied to it
-// (bb.applied_requests): request id to the number of statements. A branch
-// whose Blackbox predates the table has applied none that it recorded.
-func AppliedRequests(name string) (map[int64]int, error) {
-	has, err := ledgerLines(name, "SELECT (to_regclass('bb.applied_requests') IS NOT NULL)::text")
+// (bb.applied_requests): each request to the number of statements. A branch
+// whose Blackbox predates the table has applied none that it recorded; one
+// whose table predates the name column recorded every request without one.
+func AppliedRequests(name string) (map[AppliedKey]int, error) {
+	has, err := ledgerLines(name, "SELECT (to_regclass('bb.applied_requests') IS NOT NULL)::text || ' ' || "+
+		"EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('bb.applied_requests') "+
+		"AND attname = 'request_uid' AND NOT attisdropped)::text")
 	if err != nil {
 		return nil, err
 	}
-	out := map[int64]int{}
-	if len(has) == 0 || has[0] != "true" {
+	out := map[AppliedKey]int{}
+	if len(has) == 0 || !strings.HasPrefix(has[0], "true") {
 		return out, nil
 	}
-	lines, err := ledgerLines(name, "SELECT request_id || ' ' || statements FROM bb.applied_requests")
+	uid := "''"
+	if has[0] == "true true" {
+		uid = "coalesce(request_uid, '')"
+	}
+	lines, err := ledgerLines(name, "SELECT request_id || ' ' || statements || ' ' || "+uid+" FROM bb.applied_requests")
 	if err != nil {
 		return nil, err
 	}
 	for _, l := range lines {
-		var id int64
-		var n int
-		if _, err := fmt.Sscan(l, &id, &n); err == nil {
-			out[id] = n
+		if k, n, ok := parseAppliedLine(l); ok {
+			out[k] = n
 		}
 	}
 	return out, nil
+}
+
+// parseAppliedLine reads "id statements [uid]", the uid absent for a request
+// recorded without a name.
+func parseAppliedLine(l string) (AppliedKey, int, bool) {
+	f := strings.Fields(l)
+	if len(f) < 2 || len(f) > 3 {
+		return AppliedKey{}, 0, false
+	}
+	var k AppliedKey
+	var n int
+	if _, err := fmt.Sscan(f[0]+" "+f[1], &k.ID, &n); err != nil {
+		return AppliedKey{}, 0, false
+	}
+	if len(f) == 3 {
+		k.UID = f[2]
+	}
+	return k, n, true
 }
 
 // ApplyClaimed applies a request that has just been claimed as approved, and
