@@ -427,12 +427,14 @@ func checkSnapshot(c auth.ChangeRequest, entries []branch.RequestEntry) error {
 	return checkSchemaOnly(entries)
 }
 
-// ensureAppliedRecord makes sure the target has bb.applied_requests before the
-// transaction that writes to it. A target whose Blackbox predates the table is
-// upgraded, the way `fox ledger upgrade` does it; if that fails nothing is
-// applied, since a request applied without the record could be applied again.
+// ensureAppliedRecord makes sure the target has bb.applied_requests, with the
+// column for a request's name, before the transaction that writes to it. A
+// target whose Blackbox predates either is upgraded, the way `fox ledger
+// upgrade` does it; if that fails nothing is applied, since a request applied
+// without the record could be applied again.
 func ensureAppliedRecord(target string) error {
-	if has, err := branch.LedgerQuery(target, "SELECT (to_regclass('bb.applied_requests') IS NOT NULL)::text"); err == nil &&
+	if has, err := branch.LedgerQuery(target, "SELECT EXISTS (SELECT 1 FROM pg_attribute "+
+		"WHERE attrelid = to_regclass('bb.applied_requests') AND attname = 'request_uid' AND NOT attisdropped)::text"); err == nil &&
 		len(has) == 1 && has[0] == "true" {
 		return nil
 	}
@@ -464,12 +466,15 @@ func applyIn(ctx context.Context, tx applyTx, inTx func() bool, c auth.ChangeReq
 }
 
 // recordApplied writes the request into the target's record, first, so that a
-// second apply of the same id finds it and stops. Two applies at once meet on
-// the primary key: the second waits for the first to commit or roll back, and
-// then either finds the row or writes its own.
+// second apply of the same request finds it and stops. A request is its id and
+// its store's name for it (auth.ChangeRequest.UID): another request with the
+// same id, from a store recreated or restored since, is not it. Two applies at
+// once meet on the key: the second waits for the first to commit or roll back,
+// and then either finds the row or writes its own.
 func recordApplied(ctx context.Context, tx applyTx, c auth.ChangeRequest, approver string, statements int) (int, error) {
-	tag, err := tx.Exec(ctx, "INSERT INTO bb.applied_requests (request_id, source, approver, statements) "+
-		"VALUES ($1, $2, $3, $4) ON CONFLICT (request_id) DO NOTHING", c.ID, c.Source, approver, statements)
+	tag, err := tx.Exec(ctx, "INSERT INTO bb.applied_requests (request_id, request_uid, source, approver, statements) "+
+		"VALUES ($1, $2, $3, $4, $5) ON CONFLICT ON CONSTRAINT applied_requests_request_key DO NOTHING",
+		c.ID, requestUID(c), c.Source, approver, statements)
 	if err != nil {
 		return 0, fmt.Errorf("recording request #%d in %q's Blackbox: %w", c.ID, c.Target, err)
 	}
@@ -477,10 +482,20 @@ func recordApplied(ctx context.Context, tx applyTx, c auth.ChangeRequest, approv
 		return 0, nil
 	}
 	had := 0
-	if err := tx.QueryRow(ctx, "SELECT statements FROM bb.applied_requests WHERE request_id = $1", c.ID).Scan(&had); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT statements FROM bb.applied_requests "+
+		"WHERE request_id = $1 AND request_uid IS NOT DISTINCT FROM $2", c.ID, requestUID(c)).Scan(&had); err != nil {
 		return 0, fmt.Errorf("%w: request #%d (reading its record: %v)", branch.ErrAlreadyApplied, c.ID, err)
 	}
 	return had, fmt.Errorf("%w: request #%d is in %q's record of applied requests", branch.ErrAlreadyApplied, c.ID, c.Target)
+}
+
+// requestUID is the name a request is recorded under: NULL for one made
+// before requests had one, so it is one request with its earlier record.
+func requestUID(c auth.ChangeRequest) any {
+	if c.UID == "" {
+		return nil
+	}
+	return c.UID
 }
 
 // conflictsSince asks the target, inside the apply's transaction, whether it

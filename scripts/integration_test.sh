@@ -573,7 +573,7 @@ assert_eq "…and the standby has the same document, through replication" "$SB" 
 # failover would refuse every application's tokens.
 assert_eq "…carrying the tables a second machine needs" \
   "$(sudo docker exec pg-main psql -U dbadmin -d statedb -tAc "SELECT string_agg(k, ',' ORDER BY k) FROM shared, jsonb_object_keys(payload->'tables') k WHERE id=1" 2>/dev/null)" \
-  "api_keys,app_keys,apps,branch_owners,change_request_meta,change_requests,install_info,install_settings,main_writers,oauth_identities,pipelines,pipeline_targets,unproven_emails,users"
+  "api_keys,app_keys,apps,branch_owners,change_request_meta,change_requests,change_request_uids,install_info,install_settings,main_writers,oauth_identities,pipelines,pipeline_targets,unproven_emails,users"
 # Sessions are deliberately absent: a browser session is minutes old and cheap
 # to replace, and carrying bearer tokens between machines would widen what a
 # stolen document is worth for the convenience of not signing in again.

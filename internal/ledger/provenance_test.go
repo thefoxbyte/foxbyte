@@ -42,7 +42,12 @@ func TestAppliedRequestsIsAppendOnlyForClients(t *testing.T) {
 	s := lf(SchemaProvenance)
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS bb.applied_requests",
-		"request_id  bigint PRIMARY KEY",
+		// The key: the id and the store's name for the request together, a
+		// table made before it migrated (drop the old key, add the new one).
+		"request_id  bigint NOT NULL",
+		"ADD COLUMN IF NOT EXISTS request_uid text",
+		"DROP CONSTRAINT applied_requests_pkey",
+		"UNIQUE NULLS NOT DISTINCT (request_id, request_uid)",
 		"BEFORE UPDATE OR DELETE ON bb.applied_requests",
 		"BEFORE TRUNCATE ON bb.applied_requests",
 		"REVOKE ALL ON bb.applied_requests FROM PUBLIC;",

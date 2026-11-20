@@ -1166,6 +1166,40 @@ curl -sk -o /dev/null -X POST -H "$AUTH" -H 'content-type: application/json' -d 
 assert_eq "…and it lands on the target" \
   "$(pg pg-main "SELECT count(*) FROM information_schema.columns WHERE table_name='$PT' AND column_name='second_round'")" "1"
 
+# A store restored from an older backup, or made again, numbers its requests
+# again from where it was (here: the newest request and the id counter taken
+# back to before it, as a backup made then would have them). The target records a request by its id and the
+# random name its store gave it, so a new request with an old one's id is not
+# taken for the old one: neither refused as already applied, nor marked
+# applied from the old one's record.
+assert_eq "the target records a request by its id and its name" \
+  "$(pg pg-main "SELECT count(*) FROM bb.applied_requests WHERE request_id = $RID2 AND request_uid ~ '^[0-9a-f]{32}\$'")" "1"
+python3 - "$HOME/.fox/auth.db" "$RID2" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1], timeout=10)
+for t, c in (("change_request_uids", "request_id"), ("change_request_meta", "request_id"), ("change_requests", "id")):
+    db.execute(f"DELETE FROM {t} WHERE {c} = ?", (int(sys.argv[2]),))
+# A store never reuses an id (AUTOINCREMENT); one restored from a backup made
+# before the request does, as its counter is the backup's.
+db.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'change_requests'", (int(sys.argv[2]) - 1,))
+db.commit()
+PY
+$S branch delete v2promo3 >/dev/null 2>&1
+$S branch create v2promo3 >/dev/null 2>&1
+$S branch owner v2promo3 "$USER_EMAIL" >/dev/null 2>&1
+gw "$KEY" v2promo3 "ALTER TABLE $PT ADD COLUMN third_round int" >/dev/null
+REQ3="$(curl -sk -X POST -H "$AUTH" -H 'content-type: application/json' -d '{"target":"main"}' "$API/api/branches/v2promo3/request")"
+RID3="$(python3 -c 'import sys,json; print(json.loads(sys.argv[1])["id"])' "$REQ3" 2>/dev/null)"
+assert_eq "a store that lost its newest request gives the next one the same id, and it reads as open, not applied" \
+  "$RID3|$($S request list --open | grep -c "#$RID3")" "$RID2|1"
+OUT="$(curl -sk -X POST -H "$AUTH" -H 'content-type: application/json' -d '{}' "$API/api/requests/$RID3/approve")"
+assert_eq "…approving it applies it: the old request's record is not this one's" \
+  "$(python3 -c 'import sys,json;d=json.loads(sys.argv[1]);print(d["status"], d["applied"])' "$OUT" 2>/dev/null)|$(pg pg-main "SELECT count(*) FROM information_schema.columns WHERE table_name='$PT' AND column_name='third_round'")|$(pg pg-main "SELECT count(DISTINCT request_uid) FROM bb.applied_requests WHERE request_id = $RID2")" \
+  "approved 1|1|2"
+assert_eq "…and approving it again is still refused (409)" \
+  "$(curl -sk -o /dev/null -w '%{http_code}' -X POST -H "$AUTH" -H 'content-type: application/json' -d '{}' "$API/api/requests/$RID3/approve")" "409"
+$S branch delete v2promo3 >/dev/null 2>&1
+
 # Owned exactly as a change made through the gateway would be. Applied as the
 # superuser it would belong to the admin role, and the next ALTER through the
 # gateway would fail with "must be owner of table" — the change would arrive and

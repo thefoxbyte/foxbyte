@@ -192,7 +192,7 @@ func TestApplyRefusesDataInASchemaOnlySnapshot(t *testing.T) {
 // applied requests, and a Blackbox holding the target's own changes.
 type targetTx struct {
 	recordingTx
-	applied map[int64]int
+	applied map[appliedKey]int
 	touched string // what the conflict query answers
 	queries []execCall
 }
@@ -217,14 +217,29 @@ func (r row) Scan(dest ...any) error {
 	return nil
 }
 
+// appliedKey is the target's key: the id, and the name (nil for none, as
+// NULLS NOT DISTINCT treats it).
+type appliedKey struct {
+	id  int64
+	uid string
+}
+
+func keyOf(id, uid any) appliedKey {
+	k := appliedKey{id: id.(int64)}
+	if u, ok := uid.(string); ok {
+		k.uid = u
+	}
+	return k
+}
+
 func (f *targetTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	if strings.HasPrefix(sql, "INSERT INTO bb.applied_requests") {
 		f.calls = append(f.calls, execCall{sql, args})
-		id := args[0].(int64)
-		if _, ok := f.applied[id]; ok {
+		k := keyOf(args[0], args[1])
+		if _, ok := f.applied[k]; ok {
 			return pgconn.NewCommandTag("INSERT 0 0"), nil
 		}
-		f.applied[id] = args[3].(int)
+		f.applied[k] = args[4].(int)
 		return pgconn.NewCommandTag("INSERT 0 1"), nil
 	}
 	return f.recordingTx.Exec(ctx, sql, args...)
@@ -234,7 +249,7 @@ func (f *targetTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row 
 	f.queries = append(f.queries, execCall{sql, args})
 	switch {
 	case strings.Contains(sql, "FROM bb.applied_requests"):
-		n, ok := f.applied[args[0].(int64)]
+		n, ok := f.applied[keyOf(args[0], args[1])]
 		if !ok {
 			return row{err: pgx.ErrNoRows}
 		}
@@ -264,7 +279,7 @@ func twoEntries() []branch.RequestEntry {
 }
 
 func TestASecondApplyOfTheSameRequestIsRefused(t *testing.T) {
-	tx := &targetTx{applied: map[int64]int{}}
+	tx := &targetTx{applied: map[appliedKey]int{}}
 	c := auth.ChangeRequest{ID: 7, Source: "dev", Target: "main", ForkAfterID: 20}
 	if n, err := applyIn(context.Background(), tx, alwaysInTx, c, "carol@example.com", twoEntries(), nil); err != nil || n != 0 {
 		t.Fatalf("first apply: %d, %v", n, err)
@@ -291,7 +306,7 @@ func TestASecondApplyOfTheSameRequestIsRefused(t *testing.T) {
 }
 
 func TestAConflictIsFoundAtApplyTime(t *testing.T) {
-	tx := &targetTx{applied: map[int64]int{}, touched: "public.a"}
+	tx := &targetTx{applied: map[appliedKey]int{}, touched: "public.a"}
 	c := auth.ChangeRequest{ID: 8, Source: "dev", Target: "main", ForkAfterID: 20}
 	_, err := applyIn(context.Background(), tx, alwaysInTx, c, "carol@example.com", twoEntries(),
 		map[string]bool{"request-3": true})
@@ -319,18 +334,59 @@ func TestAConflictIsFoundAtApplyTime(t *testing.T) {
 		t.Errorf("asked with %v", q.args)
 	}
 	// The record was written in the same transaction, and goes with its rollback.
-	if _, ok := tx.applied[8]; !ok {
+	if _, ok := tx.applied[appliedKey{id: 8}]; !ok {
 		t.Error("the record was not written before the check")
 	}
 }
 
 func TestNoConflictLetsTheApplyThrough(t *testing.T) {
-	tx := &targetTx{applied: map[int64]int{}}
+	tx := &targetTx{applied: map[appliedKey]int{}}
 	c := auth.ChangeRequest{ID: 9, Source: "dev", Target: "main"}
 	if _, err := applyIn(context.Background(), tx, alwaysInTx, c, "carol@example.com", twoEntries(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := tx.ran(); len(got) != 2 {
 		t.Fatalf("ran %q", got)
+	}
+}
+
+// A request with an id another request was applied under, from a store
+// recreated or restored since, is not that request: it is applied. The same
+// request, and two requests from before requests had names, are one.
+func TestARequestWithAnOldIDButAnotherNameIsApplied(t *testing.T) {
+	tx := &targetTx{applied: map[appliedKey]int{}}
+	old := auth.ChangeRequest{ID: 7, UID: "aaaa", Source: "dev", Target: "main", ForkAfterID: 20}
+	if _, err := applyIn(context.Background(), tx, alwaysInTx, old, "carol@example.com", twoEntries(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if tx.calls[0].args[1] != "aaaa" {
+		t.Errorf("the record does not carry the request's name: %v", tx.calls[0].args)
+	}
+	fresh := old
+	fresh.UID = "bbbb"
+	again := &targetTx{applied: tx.applied}
+	if _, err := applyIn(context.Background(), again, alwaysInTx, fresh, "carol@example.com", twoEntries(), nil); err != nil {
+		t.Fatalf("a new request with an old id was refused: %v", err)
+	}
+	if got := again.ran(); len(got) != 2 {
+		t.Fatalf("it ran %q", got)
+	}
+	same := &targetTx{applied: again.applied}
+	if _, err := applyIn(context.Background(), same, alwaysInTx, fresh, "carol@example.com", twoEntries(), nil); !errors.Is(err, branch.ErrAlreadyApplied) {
+		t.Fatalf("the same request again: %v, want ErrAlreadyApplied", err)
+	}
+
+	// Without names (made before requests had them): one request, as before.
+	legacy := auth.ChangeRequest{ID: 9, Source: "dev", Target: "main", ForkAfterID: 20}
+	nameless := &targetTx{applied: map[appliedKey]int{}}
+	if _, err := applyIn(context.Background(), nameless, alwaysInTx, legacy, "carol@example.com", twoEntries(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if nameless.calls[0].args[1] != nil {
+		t.Errorf("a request without a name is recorded with %v, want NULL", nameless.calls[0].args[1])
+	}
+	if _, err := applyIn(context.Background(), &targetTx{applied: nameless.applied}, alwaysInTx, legacy, "carol@example.com",
+		twoEntries(), nil); !errors.Is(err, branch.ErrAlreadyApplied) {
+		t.Fatalf("a nameless request again: %v, want ErrAlreadyApplied", err)
 	}
 }
