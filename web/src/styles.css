@@ -396,9 +396,13 @@ td.name-cell { white-space: nowrap; }
 .cow > span { display: block; height: 100%; background: var(--grad); }
 .actions { display: flex; gap: var(--s-2); justify-content: flex-end; white-space: nowrap; }
 /* An action column stays as narrow as its buttons. Result grids are exempt:
-   there the last column is data, and squeezing it would wrap every value. */
-.table-wrap:not(.grid-wrap) td:last-child,
-.table-wrap:not(.grid-wrap) th:last-child { white-space: nowrap; width: 1%; }
+   there the last column is data, and squeezing it would wrap every value. A
+   last column of words (a result, the checks behind a verdict) wraps like any
+   other: held to one line it ran past the panel's edge and crushed the
+   columns before it. */
+.table-wrap:not(.grid-wrap) td:last-child:not(.dsn-cell):has(button, .btn, .copy-icon, select, input):not(:has(li)),
+.table-wrap:not(.grid-wrap) td:last-child:empty { white-space: nowrap; width: 1%; }
+.table-wrap:not(.grid-wrap) th:last-child { white-space: nowrap; }
 
 /* ---------- landing ---------- */
 .hero { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 30px; align-items: center;
@@ -622,6 +626,37 @@ td.cell-picked { outline: 2px solid var(--accent); outline-offset: -2px; }
 .fld > span:first-child { font-size: 13px; font-weight: 600; color: var(--text); }
 .fld input { width: 100%; }
 .fld .hint { font-size: 12px; color: var(--muted); }
+/* Fields stacked one under another keep apart (the pipeline editor's name and
+   source had 3px between them). */
+.fld + .fld { margin-top: var(--s-3); }
+.copy-pop .fld + .fld { margin-top: 0; }   /* the menu spaces its own fields */
+/* A label that wraps its control ("Kind <select>"): the words and the field
+   never touch. :where() keeps it at no specificity, so a class that lays a
+   label out (.fld, .field, .ddl-field, .field-inline) decides for itself. */
+:where(label:not([class]):has(> input:not([type='checkbox'], [type='radio'], [type='hidden']), > select, > textarea)) {
+  display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--s-2);
+}
+/* A labelled field: the words above, the control under them. Was styled only
+   on the Applications page, so elsewhere (Audit log, Hardening, Masking) the
+   words ran into the field. */
+.field { display: inline-flex; flex-direction: column; align-items: stretch; flex-wrap: nowrap; gap: var(--s-1); font-size: var(--t-sm); color: var(--muted); }
+.field > :is(input, select, textarea) { color: var(--text); }
+/* In a row of such fields, everything sits on the fields' line: buttons at
+   their foot, a checkbox centred on the controls rather than on the labels. */
+.row:has(> .field) { align-items: flex-end; }
+.row:has(> .field) > :is(.check-row, label:has(> input[type='checkbox'])) {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 38px; margin: 0;
+}
+/* A checkbox and its words; the same everywhere, not only in the menus. */
+.check-row { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.check-row input { width: auto; margin: 0; }
+/* Query history's admin settings: one under another, with room between. */
+.history-admin { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s-2); }
+.history-admin legend { margin-bottom: var(--s-2); }
+/* A small stacked form (the password change): fields one under another, the
+   button under them, never touching. */
+.form { display: flex; flex-direction: column; align-items: stretch; gap: var(--s-2); }
+.form > button { align-self: flex-start; margin-top: var(--s-1); }
 .err { color: color-mix(in srgb, var(--red) 78%, var(--text)); background: color-mix(in srgb, var(--red) 14%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--red) 55%, var(--border));
   border-radius: 12px; padding: 11px 15px; margin-top: 14px; font-size: 13.5px; font-family: var(--font-mono); }
@@ -1317,7 +1352,6 @@ td button.sm { padding: 2px 10px; font-size: 12px; }
 }
 
 /* Applications (application identity, F1) */
-.applications .field { display: flex; flex-direction: column; gap: 4px; font-size: var(--t-sm); color: var(--muted); }
 .applications .field input, .applications .field select { min-width: 180px; }
 .applications .ok { color: var(--green); font-size: var(--t-sm); }
 .lg-for { font-size: 12px; margin-top: 2px; white-space: normal; }

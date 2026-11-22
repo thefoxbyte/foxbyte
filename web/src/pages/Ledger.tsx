@@ -371,7 +371,7 @@ export default function Ledger() {
               <th>Time</th>
               <th title="Who made the change: the login role the database saw, which a client cannot change; and, where an application asserted it, the user it was made for">Actor</th>
               <th title="What the client called itself (application_name) — declared by the client, not verified">Tool <span className="lg-declared">declared</span></th>
-              <th>Change</th>
+              <th style={{ width: '34%' }}>Change</th>
               <th>Status</th>
             </tr>
           </thead>
@@ -389,8 +389,8 @@ export default function Ledger() {
                     <span>{r.actor || '—'}</span>
                     <ForWhom r={r} />
                   </td>
-                  <td className="muted" style={{ whiteSpace: 'nowrap' }}>{r.tool || '—'}</td>
-                  <td>
+                  <td className="muted" style={{ maxWidth: 220, overflowWrap: 'anywhere' }}>{r.tool || '—'}</td>
+                  <td style={{ overflowWrap: 'anywhere' }}>
                     <span className="lg-caret">{open === rowKey(r, i) ? '▾' : '▸'}</span>{' '}
                     <code className="mono">{r.command_tag}</code>
                     {r.object_identity && <span className="muted"> {r.object_identity}</span>}

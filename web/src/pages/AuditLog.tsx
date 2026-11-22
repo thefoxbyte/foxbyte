@@ -280,7 +280,7 @@ function Forwarding({ data, onChange }: { data: AuditLogReply; onChange: () => v
             <input aria-label="Forward token" type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} />
           </label>
         </div>
-        <label className="field" style={{ marginTop: 10 }}>CA bundle (PEM), if the server's certificate is not one the system trusts
+        <label className="field" style={{ display: 'flex', marginTop: 10 }}>CA bundle (PEM), if the server's certificate is not one the system trusts
           <textarea aria-label="Forward CA" rows={3} value={ca} onChange={e => setCa(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----" />
         </label>
         <div className="row" style={{ flexWrap: 'wrap', gap: 14, alignItems: 'center', marginTop: 10 }}>
@@ -475,7 +475,7 @@ export default function AuditLog() {
         the console (<b>Audit…</b>), or with <code>fox audit-log table &lt;table&gt; [--reads]</code>. A branch made from this
         one has the same marks.
       </p>
-      <label className="field" style={{ display: 'inline-block' }}>Branch{' '}
+      <label className="field">Branch
         <select aria-label="Branch" value={branch} onChange={e => setBranch(e.target.value)}>
           {(branches.length ? branches.map(b => b.name) : ['main']).map(n => <option key={n} value={n}>{n}</option>)}
         </select>
