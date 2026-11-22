@@ -294,6 +294,44 @@ The one-line installers come from the latest release (`install.sh` and
 `install.ps1` are release assets, listed in the signed `SHA256SUMS`), not from
 `main`: `get.thefoxbyte.com` redirects to them. See `deploy/get/README.md`.
 
+### Release candidates (maintainers)
+
+A GitHub draft cannot be tested: its files are not downloadable without
+signing in, so neither installer can fetch them, `fox update` skips drafts,
+and nothing builds until a tag is pushed. Test a release as a **release
+candidate** instead: a tag with a pre-release suffix, such as `v2.3.0-rc.1`.
+
+The release workflow builds, signs and publishes a candidate exactly like a
+release, and checks that the previous release updates to it, but it stops
+short of offering it to anybody:
+
+- it stays a **prerelease** (`release-verify` does not promote it to Latest),
+  so the installers' `latest` and a plain `fox update` never pick it;
+- its images are pushed only under their own tags
+  (`postgres-walg:18-v2.3.0-rc.1`, `fox-vault:<rev>-v2.3.0-rc.1`), never the
+  bare `postgres-walg:16`/`:18` and `fox-vault:<rev>` every install pulls.
+
+To cut one: Releases → Draft a new release → new tag `v2.3.0-rc.1` on `main` →
+**Pre-release** → Publish (or push the tag). Then test it by name, with the
+candidate's own installer:
+
+```sh
+curl -fsSL https://github.com/thefoxbyte/foxbyte/releases/download/v2.3.0-rc.1/install.sh | FOX_VERSION=v2.3.0-rc.1 sh
+fox update --version v2.3.0-rc.1      # an existing install, to the candidate
+```
+
+On Windows: `$env:FOX_VERSION = 'v2.3.0-rc.1'; irm https://github.com/thefoxbyte/foxbyte/releases/download/v2.3.0-rc.1/install.ps1 | iex`.
+
+When it is good, tag the release itself (`v2.3.0`, no suffix) on the same
+commit; that one is promoted as usual, and installs on the candidate update to
+it, since `2.3.0-rc.1` sorts before `2.3.0`. A candidate is gated on the
+nightly like any tag.
+
+**Limit:** because a candidate does not move `postgres-walg:18`, an install of
+it runs the current release's PostgreSQL image. A candidate tests the `fox`
+binaries, the installers, signing and the update path, not a change to that
+image.
+
 ### Release signing (maintainers)
 
 The Ed25519 key's private half is the `FOX_RELEASE_SIGNING_KEY` secret (and a

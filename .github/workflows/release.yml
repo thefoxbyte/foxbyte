@@ -42,6 +42,8 @@ jobs:
     permissions:
       actions: read
       contents: read
+    outputs:
+      candidate: ${{ steps.kind.outputs.candidate }}
     steps:
       # Everything after this gate publishes something (binaries, signatures,
       # images), so a run that is not for a release tag stops here, loudly,
@@ -60,6 +62,26 @@ jobs:
           if [ -n "$INPUT_TAG" ] && [ "$INPUT_TAG" != "$REF_NAME" ]; then
             echo "::error::the tag input ($INPUT_TAG) is not the tag this run was started from ($REF_NAME)"
             exit 1
+          fi
+
+      # A tag with a pre-release suffix (v2.3.0-rc.1) is a release candidate:
+      # built, signed and published like any release, so it can be installed
+      # and tested by name, but never offered to anybody. release-verify leaves
+      # it a prerelease, and the image jobs push only its own tags, never the
+      # bare ones every install pulls.
+      - name: Is this a release candidate
+        id: kind
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "${TAG#v}" in
+            *-*) candidate=true ;;
+            *)   candidate=false ;;
+          esac
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          if [ "$candidate" = true ]; then
+            echo "::notice::$TAG is a release candidate: it stays a prerelease, and moves no image tag an install pulls."
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -401,7 +423,7 @@ jobs:
   # check is covered by the nightly's `update` suite against a real stack; what
   # is covered only here is the published artifact.
   release-verify:
-    needs: [release, image, vault-image]
+    needs: [nightly-gate, release, image, vault-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # promotes the release on success
@@ -470,12 +492,17 @@ jobs:
           # given three-part tags, where the two forms coincide -- v2.0 was the
           # first release this check could not pass, and it held a release whose
           # assets were all correct.
+          # A release candidate's suffix is kept apart, so v2.3-rc.1 is
+          # looked for as 2.3.0-rc.1.
           want="${TAG#v}"
-          case "$want" in
+          base="${want%%-*}"
+          pre="${want#"$base"}"
+          case "$base" in
             *.*.*) ;;
-            *.*)   want="$want.0" ;;
-            *)     want="$want.0.0" ;;
+            *.*)   base="$base.0" ;;
+            *)     base="$base.0.0" ;;
           esac
+          want="$base$pre"
           if printf '%s' "$out" | grep -qF "engine $want runs"; then
             echo "$prev accepts the $TAG engine."
           else
@@ -483,13 +510,25 @@ jobs:
             exit 1
           fi
 
-      # Only now may a user be offered it.
+      # Only now may a user be offered it -- unless it is a release candidate,
+      # which nobody is offered: it is installed only by asking for its tag.
       - name: Promote the release
+        if: needs.nightly-gate.outputs.candidate != 'true'
         run: |
           set -euo pipefail
           gh release edit "$TAG" --prerelease=false --latest
           echo "### $TAG promoted: an older install was shown to accept it" >> "$GITHUB_STEP_SUMMARY"
           echo "The Windows install path is still not covered by CI (A9) — smoke-test it on a real machine." >> "$GITHUB_STEP_SUMMARY"
+      - name: Hold the release candidate
+        if: needs.nightly-gate.outputs.candidate == 'true'
+        run: |
+          {
+            echo "### $TAG is a release candidate, held as a prerelease"
+            echo "Nobody is offered it. To test it:"
+            echo '    curl -fsSL https://get.thefoxbyte.com/install.sh | FOX_VERSION='"$TAG"' sh'
+            echo "    fox update --version $TAG"
+            echo "Tag the release itself (no suffix) on the same commit once it has been tried."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   image:
     needs: nightly-gate
@@ -520,6 +559,23 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The bare major tag (postgres-walg:18) is the one every install pulls, so
+      # a release candidate that moved it would reach users on their next start
+      # however it is labelled on GitHub. A candidate pushes only its own tag.
+      - name: Choose the image's tags
+        id: tags
+        env:
+          PG: ${{ matrix.pg }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          CANDIDATE: ${{ needs.nightly-gate.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          {
+            echo 'list<<EOF'
+            if [ "$CANDIDATE" != true ]; then echo "ghcr.io/thefoxbyte/postgres-walg:$PG"; fi
+            echo "ghcr.io/thefoxbyte/postgres-walg:$PG-$TAG"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
       - name: Build and push PostgreSQL ${{ matrix.pg }} (amd64 + arm64)
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -536,9 +592,7 @@ jobs:
           # The source label links the package to this repository, so it takes
           # the repository's permissions instead of starting out unlinked.
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          tags: |
-            ghcr.io/thefoxbyte/postgres-walg:${{ matrix.pg }}
-            ghcr.io/thefoxbyte/postgres-walg:${{ matrix.pg }}-${{ inputs.tag || github.ref_name }}
+          tags: ${{ steps.tags.outputs.list }}
 
       # A signed statement that this image digest was built by this workflow.
       #   gh attestation verify oci://ghcr.io/thefoxbyte/postgres-walg:18 --repo thefoxbyte/foxbyte
@@ -579,6 +633,22 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # As for the PostgreSQL image: fox-vault:<rev> is what installs pull, so a
+      # release candidate pushes only its own tag.
+      - name: Choose the image's tags
+        id: tags
+        env:
+          REV: ${{ steps.rev.outputs.rev }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          CANDIDATE: ${{ needs.nightly-gate.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          {
+            echo 'list<<EOF'
+            if [ "$CANDIDATE" != true ]; then echo "ghcr.io/thefoxbyte/fox-vault:$REV"; fi
+            echo "ghcr.io/thefoxbyte/fox-vault:$REV-$TAG"
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
       - name: Build and push the vault service (amd64 + arm64)
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -590,9 +660,7 @@ jobs:
           provenance: mode=max
           sbom: true
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          tags: |
-            ghcr.io/thefoxbyte/fox-vault:${{ steps.rev.outputs.rev }}
-            ghcr.io/thefoxbyte/fox-vault:${{ steps.rev.outputs.rev }}-${{ inputs.tag || github.ref_name }}
+          tags: ${{ steps.tags.outputs.list }}
       - name: Attest the image
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:

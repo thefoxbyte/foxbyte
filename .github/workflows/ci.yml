@@ -60,6 +60,10 @@ jobs:
       # either direction is worse than none, so its own shell is exercised.
       - name: Release gate on the nightly suites
         run: bash scripts/test_nightly_gate.sh
+      # A release candidate (v2.3.0-rc.1) is published for testing but must
+      # never be promoted, nor move an image tag that installs pull.
+      - name: Release candidates reach nobody
+        run: bash scripts/test_release_candidate.sh
       # A suite that removes a container without -v leaks its volume into the
       # shared test VM, and enough of them fill its disk.
       - name: Suites remove containers with their volumes
