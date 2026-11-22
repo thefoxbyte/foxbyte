@@ -709,6 +709,8 @@ export const getAccount = () => req('GET', `${API}/api/account`) as Promise<{ ad
 export type VaultKey = {
   label: string; role: 'data' | 'index'; current: boolean; destroyed: boolean; uses: number; records: number
   sensitive: boolean; extractable: boolean; always_sensitive: boolean; never_extractable: boolean; local: boolean
+  // 13.4: absent from a service older than image revision 4.
+  gen?: number; created?: string; destroyed_at?: string
 }
 export type VaultKindStatus = {
   name: string; prefix: string; rules: string; hsm_required: boolean; compliant: string; records: number; keys: VaultKey[]
@@ -753,6 +755,13 @@ export const revokeVaultGrant = (id: number) => req('DELETE', `${API}/api/vault/
 export const getVaultLog = (limit = 50) => req('GET', `${API}/api/vault/log?limit=${limit}`) as Promise<{ entries: VaultLogEntry[] }>
 export const vaultDetokenise = (kind: string, refs: string[], purpose: string) =>
   req('POST', `${API}/api/vault/detokenise`, { kind, refs, purpose }) as Promise<VaultReadReply>
+// 13.4: admins only. A rotation answers when every record has moved.
+export const vaultRotate = (kind: string, key: 'data' | 'index') =>
+  req('POST', `${API}/api/vault/rotate`, { kind, key }) as Promise<VaultReply>
+export const vaultDelete = (kind: string, refs: string[], purpose: string) =>
+  req('POST', `${API}/api/vault/delete`, { kind, refs, purpose }) as Promise<VaultReply>
+export const vaultUpdate = (kind: string, refs: string[], values: string[], purpose: string) =>
+  req('POST', `${API}/api/vault/update`, { kind, refs, values, purpose }) as Promise<VaultReply>
 // 13.3: a branch's Aadhaar numbers moved into the vault, keys left where they
 // stood; main only after a branch made from main has moved the same columns.
 export type VaultMigrateColumn = {

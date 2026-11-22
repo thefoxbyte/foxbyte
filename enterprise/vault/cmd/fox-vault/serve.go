@@ -86,7 +86,11 @@ type server struct {
 
 	keyMu   sync.Mutex
 	current map[string]map[string]string // kind -> role -> label
-	base    map[string]int64             // label -> uses before this process
+	// retired are a kind's index keys still in the token though no longer
+	// current: while an index rotation runs (13.4), a record not yet moved
+	// is found under its old key, so tokenise and find look under each.
+	retired map[string][]string
+	base    map[string]int64 // label -> uses before this process
 
 	logMu   sync.Mutex
 	lastSeq int64
@@ -147,7 +151,7 @@ func serve(args []string) error {
 	}
 	s := &server{tok: tok, db: db, secret: []byte(secret), work: *sessions * 2,
 		kindMu: map[string]*sync.RWMutex{}, rotMu: map[string]*sync.Mutex{},
-		current: map[string]map[string]string{}, base: map[string]int64{}}
+		current: map[string]map[string]string{}, retired: map[string][]string{}, base: map[string]int64{}}
 	if err := s.loadKeys(ctx); err != nil {
 		return err
 	}
@@ -170,6 +174,7 @@ func serve(args []string) error {
 	mux.HandleFunc("/v1/detokenise", s.auth("detokenise", s.detokenise))
 	mux.HandleFunc("/v1/delete", s.auth("delete", s.delete))
 	mux.HandleFunc("/v1/rotate", s.auth("rotate", s.rotate))
+	mux.HandleFunc("/v1/update", s.auth("update", s.update))
 	mux.HandleFunc("/v1/status", s.auth("status", s.status))
 	mux.HandleFunc("/v1/log", s.auth("log", s.logAt))
 	mux.HandleFunc("/v1/entries", s.auth("entries", s.entries))
@@ -208,6 +213,24 @@ func (s *server) loadKeys(ctx context.Context) error {
 				return err
 			}
 			s.current[k.Name][role] = label
+		}
+		// An index rotation the service stopped in the middle of: its records
+		// not yet moved are found under the old key until it is run again.
+		rows, err := s.db.Query(ctx, `SELECT label FROM vault.keys WHERE kind = $1 AND role = 'index' AND NOT current AND destroyed_at IS NULL ORDER BY gen`, k.Name)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var l string
+			if err := rows.Scan(&l); err != nil {
+				rows.Close()
+				return err
+			}
+			s.retired[k.Name] = append(s.retired[k.Name], l)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
 		}
 	}
 	rows, err := s.db.Query(ctx, `SELECT label, uses FROM vault.keys WHERE destroyed_at IS NULL`)
@@ -260,6 +283,24 @@ func (s *server) currentKey(kind, role string) string {
 	s.keyMu.Lock()
 	defer s.keyMu.Unlock()
 	return s.current[kind][role]
+}
+
+// indexes is a normalised value's index under the kind's current index key,
+// then under each retired one (an index rotation in progress): the first is
+// what a new record is written with, all of them are where a record may be.
+// The caller holds the kind for reading, so the keys cannot change meanwhile.
+func (s *server) indexes(kind, norm string) (cur []byte, all [][]byte, err error) {
+	s.keyMu.Lock()
+	keys := append([]string{s.current[kind]["index"]}, s.retired[kind]...)
+	s.keyMu.Unlock()
+	for _, k := range keys {
+		idx, err := s.tok.HMAC(k, []byte(norm))
+		if err != nil {
+			return nil, nil, err
+		}
+		all = append(all, idx)
+	}
+	return all[0], all, nil
 }
 
 // flushUses writes each key's count of encryptions every second, for the
@@ -474,11 +515,11 @@ func (s *server) tokeniseOne(ctx context.Context, c *call, v string) (ref string
 		return "", false, vault.ResultRefused, nil
 	}
 	idxKey, dataKey := s.currentKey(c.kind.Name, "index"), s.currentKey(c.kind.Name, "data")
-	idx, err := s.tok.HMAC(idxKey, []byte(norm))
+	idx, all, err := s.indexes(c.kind.Name, norm)
 	if err != nil {
 		return "", false, "", err
 	}
-	if ref, err = s.lookup(ctx, c.kind.Name, idx); err != nil || ref != "" {
+	if ref, err = s.lookup(ctx, c.kind.Name, all); err != nil || ref != "" {
 		return ref, false, vault.ResultDone, err
 	}
 	for try := 0; try < 5; try++ {
@@ -502,16 +543,18 @@ func (s *server) tokeniseOne(ctx context.Context, c *call, v string) (ref string
 		}
 		// Either the same value arrived at once from another call, or the
 		// reference key was drawn before: the first is its answer.
-		if ref, err = s.lookup(ctx, c.kind.Name, idx); err != nil || ref != "" {
+		if ref, err = s.lookup(ctx, c.kind.Name, all); err != nil || ref != "" {
 			return ref, false, vault.ResultDone, err
 		}
 	}
 	return "", false, "", errors.New("five reference keys in a row were taken")
 }
 
-func (s *server) lookup(ctx context.Context, kind string, idx []byte) (string, error) {
+// lookup finds the record whose index is any of idxs (a value's index under
+// each live index key).
+func (s *server) lookup(ctx context.Context, kind string, idxs [][]byte) (string, error) {
 	var ref string
-	err := s.db.QueryRow(ctx, `SELECT ref FROM vault.records WHERE kind = $1 AND idx = $2`, kind, idx).Scan(&ref)
+	err := s.db.QueryRow(ctx, `SELECT ref FROM vault.records WHERE kind = $1 AND idx = ANY($2) LIMIT 1`, kind, idxs).Scan(&ref)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
@@ -539,9 +582,9 @@ func (s *server) find(w http.ResponseWriter, r *http.Request, c *call) {
 			out.Results[i] = vault.ResultRefused
 			return
 		}
-		idx, err := s.tok.HMAC(s.currentKey(c.kind.Name, "index"), []byte(norm))
+		_, all, err := s.indexes(c.kind.Name, norm)
 		if err == nil {
-			out.Refs[i], err = s.lookup(ctx, c.kind.Name, idx)
+			out.Refs[i], err = s.lookup(ctx, c.kind.Name, all)
 		}
 		switch {
 		case err != nil:
@@ -659,7 +702,7 @@ func (s *server) delete(w http.ResponseWriter, r *http.Request, c *call) {
 			out.Results[i] = vault.ResultNotFound
 		}
 	}
-	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "delete", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Result: summary(out.Results)}); err != nil {
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "delete", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Purpose: strings.TrimSpace(c.req.Purpose), Result: summary(out.Results)}); err != nil {
 		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
 		return
 	}
@@ -745,15 +788,33 @@ func (s *server) deleteOwned(w http.ResponseWriter, r *http.Request, c *call) {
 
 // rotate moves a kind's records to a new data key, in batches, while the vault
 // keeps answering, then destroys the old key in the token (design, section 6).
+// rotate makes a kind's data key (the default) or index key anew, moves every
+// record to it while the vault keeps answering, then destroys the old key in
+// the token (design, sections 6 and 12; 13.4). Either way the kind's rotation
+// lock is held, so its data and index keys never rotate at once.
 func (s *server) rotate(w http.ResponseWriter, r *http.Request, c *call) {
-	ctx := context.WithoutCancel(r.Context())
-	kind := c.kind.Name
-	rm := s.rotMu[kind]
+	switch c.req.Key {
+	case "", "data", "index":
+	default:
+		reply(w, http.StatusBadRequest, vault.Response{Error: fmt.Sprintf("no key %q to rotate: data or index", c.req.Key)})
+		return
+	}
+	rm := s.rotMu[c.kind.Name]
 	if !rm.TryLock() {
-		reply(w, http.StatusConflict, vault.Response{Error: "a rotation of " + kind + " is already running"})
+		reply(w, http.StatusConflict, vault.Response{Error: "a rotation of " + c.kind.Name + " is already running"})
 		return
 	}
 	defer rm.Unlock()
+	if c.req.Key == "index" {
+		s.rotateIndex(w, r, c)
+		return
+	}
+	s.rotateData(w, r, c)
+}
+
+func (s *server) rotateData(w http.ResponseWriter, r *http.Request, c *call) {
+	ctx := context.WithoutCancel(r.Context())
+	kind := c.kind.Name
 	start := time.Now()
 	var gen int
 	if err := s.db.QueryRow(ctx, `SELECT coalesce(max(gen), 0) + 1 FROM vault.keys WHERE kind = $1 AND role = 'data'`, kind).Scan(&gen); err != nil {
@@ -825,7 +886,7 @@ func (s *server) rotate(w http.ResponseWriter, r *http.Request, c *call) {
 			}
 		})
 		if failed != nil {
-			_ = s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Result: "failed: " + failed.Error()})
+			_ = s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Purpose: "data key", Result: "failed: " + failed.Error()})
 			reply(w, http.StatusInternalServerError, vault.Response{Error: failed.Error() + " (run it again: records already moved stay moved)"})
 			return
 		}
@@ -852,11 +913,217 @@ func (s *server) rotate(w http.ResponseWriter, r *http.Request, c *call) {
 		_, _ = s.db.Exec(ctx, `UPDATE vault.keys SET destroyed_at = now() WHERE label = $1`, l)
 	}
 	res := fmt.Sprintf("done: %d records moved to %s in %s; destroyed %s", moved, label, time.Since(start).Round(time.Millisecond), strings.Join(old, ", "))
-	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Result: res}); err != nil {
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Purpose: "data key", Result: res}); err != nil {
 		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
 		return
 	}
 	reply(w, http.StatusOK, vault.Response{Results: []string{res}})
+}
+
+// rotateIndex makes the kind's index key anew. From the switch, new records
+// are indexed under the new key, and tokenise and find look under the new
+// and the old (indexes), so a value is found throughout; each record is
+// indexed again from its decrypted value, then the old key is destroyed. The
+// caller holds the kind's rotation lock.
+func (s *server) rotateIndex(w http.ResponseWriter, r *http.Request, c *call) {
+	ctx := context.WithoutCancel(r.Context())
+	kind := c.kind.Name
+	start := time.Now()
+	fail := func(moved int, err error) {
+		_ = s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Purpose: "index key", Result: "failed: " + err.Error()})
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error() + " (run it again: records already moved stay moved)"})
+	}
+	var gen int
+	if err := s.db.QueryRow(ctx, `SELECT coalesce(max(gen), 0) + 1 FROM vault.keys WHERE kind = $1 AND role = 'index'`, kind).Scan(&gen); err != nil {
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	label := fmt.Sprintf("vault-%s-index-%d", kind, gen)
+	if err := s.makeKey(ctx, kind, "index", label, gen, false); err != nil {
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	// Switch, between calls: the old current key joins the retired ones.
+	mu := s.kindMu[kind]
+	mu.Lock()
+	_, err := s.db.Exec(ctx, `UPDATE vault.keys SET current = (label = $2) WHERE kind = $1 AND role = 'index'`, kind, label)
+	if err == nil {
+		s.keyMu.Lock()
+		if old := s.current[kind]["index"]; old != label {
+			s.retired[kind] = append(s.retired[kind], old)
+		}
+		s.current[kind]["index"] = label
+		s.keyMu.Unlock()
+	}
+	mu.Unlock()
+	if err != nil {
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	moved := 0
+	for {
+		rows, err := s.db.Query(ctx, `SELECT ref, nonce, ct, data_key, index_key FROM vault.records WHERE kind = $1 AND index_key <> $2 LIMIT 2000`, kind, label)
+		if err != nil {
+			fail(moved, err)
+			return
+		}
+		type rec struct {
+			ref, key, old string
+			nonce, ct     []byte
+		}
+		var batch []rec
+		for rows.Next() {
+			var x rec
+			if err := rows.Scan(&x.ref, &x.nonce, &x.ct, &x.key, &x.old); err != nil {
+				rows.Close()
+				fail(moved, err)
+				return
+			}
+			batch = append(batch, x)
+		}
+		rows.Close()
+		if len(batch) == 0 {
+			break
+		}
+		var failed error
+		var fmu sync.Mutex
+		s.each(len(batch), func(i int) {
+			x := batch[i]
+			plain, err := s.tok.Decrypt(x.key, x.nonce, vault.AAD(kind, x.ref), x.ct)
+			if err == nil {
+				var idx []byte
+				if idx, err = s.tok.HMAC(label, plain); err == nil {
+					// Only where the record is still as read: an update or a
+					// delete meanwhile has written it under the new key, or
+					// removed it.
+					_, err = s.db.Exec(ctx, `UPDATE vault.records SET idx = $3, index_key = $4
+						WHERE ref = $1 AND index_key = $2`, x.ref, x.old, idx, label)
+				}
+			}
+			if err != nil {
+				fmu.Lock()
+				failed = fmt.Errorf("%s: %w", x.ref, err)
+				fmu.Unlock()
+			}
+		})
+		if failed != nil {
+			fail(moved, failed)
+			return
+		}
+		moved += len(batch)
+	}
+	// No call looks under the old keys once they are no longer retired; one
+	// in flight holds the kind for reading, so the switch waits for it.
+	mu.Lock()
+	s.keyMu.Lock()
+	old := s.retired[kind]
+	s.retired[kind] = nil
+	s.keyMu.Unlock()
+	mu.Unlock()
+	for _, l := range old {
+		if err := s.tok.Destroy(l); err != nil {
+			reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+			return
+		}
+		_, _ = s.db.Exec(ctx, `UPDATE vault.keys SET destroyed_at = now() WHERE label = $1`, l)
+	}
+	res := fmt.Sprintf("done: %d records indexed under %s in %s; destroyed %s", moved, label, time.Since(start).Round(time.Millisecond), strings.Join(old, ", "))
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "rotate", Kind: kind, N: moved, Purpose: "index key", Result: res}); err != nil {
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	reply(w, http.StatusOK, vault.Response{Results: []string{res}})
+}
+
+// update replaces the values under existing reference keys (design, section
+// 12; 13.4): Refs[i] gets Values[i], which must pass the kind's check. The
+// key stays; the old ciphertext stays only in the database's history and
+// backups, under a data key the next rotation destroys. A value another key
+// already holds is refused and that key named, since a value has one key. The
+// kind is held for writing: no tokenise or find can hand out a key whose
+// value is changing.
+func (s *server) update(w http.ResponseWriter, r *http.Request, c *call) {
+	ctx := r.Context()
+	n := len(c.req.Refs)
+	purpose := strings.TrimSpace(c.req.Purpose)
+	if purpose == "" {
+		_ = s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "update", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Result: "refused: no purpose"})
+		reply(w, http.StatusBadRequest, vault.Response{Error: "an update needs a purpose"})
+		return
+	}
+	if n == 0 || n > 1000 || len(c.req.Values) != n {
+		reply(w, http.StatusBadRequest, vault.Response{Error: "between 1 and 1,000 reference keys a call, each with its new value"})
+		return
+	}
+	mu := s.kindMu[c.kind.Name]
+	mu.Lock()
+	defer mu.Unlock()
+	out := vault.Response{Refs: make([]string, n), Results: make([]string, n)}
+	var failed error
+	for i, ref := range c.req.Refs {
+		res, other, err := s.updateOne(ctx, c.kind, ref, c.req.Values[i])
+		out.Results[i], out.Refs[i] = res, other
+		if err != nil {
+			failed = fmt.Errorf("%s: %w", ref, err)
+			break
+		}
+	}
+	res := summary(out.Results)
+	if failed != nil {
+		res += "; failed: " + failed.Error()
+	}
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "update", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Purpose: purpose, Result: res}); err != nil || failed != nil {
+		if err == nil {
+			err = failed
+		}
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	reply(w, http.StatusOK, out)
+}
+
+// updateOne writes one record's new value; other is the key that holds the
+// value already, when it is not ref. The caller holds the kind for writing.
+func (s *server) updateOne(ctx context.Context, k *vault.Kind, ref, v string) (result, other string, err error) {
+	norm, err := k.Accept(v)
+	if err != nil {
+		return vault.ResultRefused, "", nil
+	}
+	var exists bool
+	if err := s.db.QueryRow(ctx, `SELECT true FROM vault.records WHERE kind = $1 AND ref = $2`, k.Name, ref).Scan(&exists); errors.Is(err, pgx.ErrNoRows) {
+		return vault.ResultNotFound, "", nil
+	} else if err != nil {
+		return "", "", err
+	}
+	idx, all, err := s.indexes(k.Name, norm)
+	if err != nil {
+		return "", "", err
+	}
+	holder, err := s.lookup(ctx, k.Name, all)
+	if err != nil {
+		return "", "", err
+	}
+	switch holder {
+	case "":
+	case ref:
+		return vault.ResultUnchanged, "", nil
+	default:
+		return vault.ResultTaken, holder, nil
+	}
+	dataKey, idxKey := s.currentKey(k.Name, "data"), s.currentKey(k.Name, "index")
+	nonce, ct, err := s.tok.Encrypt(dataKey, vault.AAD(k.Name, ref), []byte(norm))
+	if err != nil {
+		return "", "", err
+	}
+	tag, err := s.db.Exec(ctx, `UPDATE vault.records SET idx = $3, index_key = $4, nonce = $5, ct = $6, data_key = $7, updated_at = now()
+		WHERE kind = $1 AND ref = $2`, k.Name, ref, idx, idxKey, nonce, ct, dataKey)
+	if err != nil {
+		return "", "", err
+	}
+	if tag.RowsAffected() == 0 {
+		return vault.ResultNotFound, "", nil
+	}
+	return vault.ResultDone, "", nil
 }
 
 func (s *server) status(w http.ResponseWriter, r *http.Request, c *call) {
@@ -879,7 +1146,9 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, c *call) {
 			return
 		}
 		rows, err := s.db.Query(ctx, `SELECT k.label, k.role, k.current, k.destroyed_at IS NOT NULL,
-			(SELECT count(*) FROM vault.records r WHERE r.data_key = k.label OR r.index_key = k.label)
+			(SELECT count(*) FROM vault.records r WHERE r.data_key = k.label OR r.index_key = k.label),
+			k.gen, to_char(k.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+			coalesce(to_char(k.destroyed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '')
 			FROM vault.keys k WHERE k.kind = $1 ORDER BY k.role, k.gen`, k.Name)
 		if err != nil {
 			reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
@@ -887,7 +1156,7 @@ func (s *server) status(w http.ResponseWriter, r *http.Request, c *call) {
 		}
 		for rows.Next() {
 			var ky vault.KeyStatus
-			if err := rows.Scan(&ky.Label, &ky.Role, &ky.Current, &ky.Destroyed, &ky.Records); err != nil {
+			if err := rows.Scan(&ky.Label, &ky.Role, &ky.Current, &ky.Destroyed, &ky.Records, &ky.Gen, &ky.Created, &ky.DestroyedAt); err != nil {
 				rows.Close()
 				reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
 				return

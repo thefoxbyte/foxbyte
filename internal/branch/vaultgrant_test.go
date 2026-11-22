@@ -50,8 +50,19 @@ func TestVaultAuthorize(t *testing.T) {
 		t.Fatalf("the sixth and seventh are not: %v", err)
 	}
 	// An unknown call is refused as such.
-	if _, err := vaultAuthorize(st, kyc, "rotate", "aadhaar", 1); !errors.Is(err, ErrInvalidRequest) {
-		t.Fatalf("rotate over the API: %v", err)
+	if _, err := vaultAuthorize(st, kyc, "entries", "aadhaar", 1); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("entries over the API: %v", err)
+	}
+	// Deleting, updating and rotating are for admins, whatever an account
+	// holds (13.4).
+	_, _ = st.GrantVault("kyc@x.com", "aadhaar", auth.VaultUse, 100, nil, "admin@x.com")
+	for _, p := range []string{"delete", "update", "rotate"} {
+		if _, err := vaultAuthorize(st, kyc, p, "aadhaar", 1); !errors.Is(err, ErrVaultForbidden) || !strings.Contains(err.Error(), "for admins") {
+			t.Fatalf("%s by a grant holder: %v", p, err)
+		}
+		if id, err := vaultAuthorize(st, admin, p, "aadhaar", 1); err != nil || id != 0 {
+			t.Fatalf("%s by an admin: %d, %v", p, id, err)
+		}
 	}
 }
 

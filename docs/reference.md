@@ -684,6 +684,9 @@ fox vault migrate --branch rehearse --dry-run   # what would move: the exposure 
 fox vault migrate --branch rehearse             # numbers into the vault, keys where they stood
 fox vault migrate --branch main --yes           # main, once a branch of main moved the same columns
 fox vault orphans [delete --yes]   # keys made on branches since deleted; and: fox vault migrations
+fox vault rotate --kind aadhaar [--key data|index] --yes   # a new key, records moved, the old one destroyed
+fox vault delete --kind aadhaar --purpose "account closed" <key>… --yes
+echo "<new value>" | fox vault update --kind aadhaar --purpose "corrected" <key>   # the key stays
 ```
 
 Values are encrypted inside an HSM and never leave it in the clear; a reference
@@ -695,6 +698,10 @@ replaced where it stands (a whole value, or inside text or JSON), columns that
 only hold numbers get legacy keys (12 digits starting with 1, never a valid
 Aadhaar), and main is then moved with the same keys. Query history, the audit
 log, the Blackbox and backups taken before are not changed.
+Rotating a kind's data key or index key, and deleting or updating values, is for
+admins and the operator, and the vault keeps answering during a rotation. A
+deleted or replaced value stays in the vault database's backups until the next
+data-key rotation destroys the key it was encrypted under.
 Finding one person's data for an access or erasure request is
 [`fox subject find`](data-subject-requests.md).
 

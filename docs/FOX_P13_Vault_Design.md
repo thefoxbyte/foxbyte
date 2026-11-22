@@ -158,10 +158,14 @@ works for every kind.
 | 9 | The HSM is FIPS 140-2 Level 3 or higher, logically separate per entity, and supports key generation, secure key storage, multi-factor multi-role access control and audit logging | The customer's HSM. FoxByte generates keys in it and reads back that they cannot leave it (section 4); the certificate is declared by the customer | Customer |
 | 10 | Authentication applications are hosted on premises or on GCC only | Not the vault's | Customer |
 
-**Still to read:** the circular points to a 2025 FAQ on the vault, but its
-link is unreadable in the PDF, and the 2017 FAQ the plan cites now returns
-404. Both are to be found and read before Gate 1. If either changes a row
-above, the table changes with it.
+**Read on 22 November 2026:** UIDAI's FAQs on the Aadhaar Data Vault and
+HSM, updated 3 November 2025 (`FAQs_Aadhaar_Data_Vault_03112025_v10.pdf` on
+uidai.gov.in; the 2017 FAQ is superseded). They change no row above. They set
+no retention period for the vault's logs, so it stays the customer's policy;
+encryption is to follow UIDAI's API 2.5 specification; one number may have
+several reference keys; a hash of the number may not be one; and the HSM's
+own multi-factor access, roles, audit logging and IP allow-listing (FAQ 5 and
+6) are the customer's.
 
 ---
 
@@ -436,7 +440,7 @@ nothing about Aadhaar.
   who did what has it too. Detokenise lines say whose reference key was read,
   never the value.
 - **Kept** as long as the customer's retention policy says, at least a year
-  by default **(for Aadhaar, to confirm against the 2025 FAQ)**.
+  by default. UIDAI's 2025 FAQ sets no period for Aadhaar.
 
 ---
 
@@ -645,6 +649,26 @@ actor's access-log entry names it (image revision 3). Differences from section
 15: step 5 is the same migration run on main, not `fox promote`; the map of
 numbers to keys is held in the engine's memory for the run, not an unlogged
 table in the branch; kinds other than Aadhaar wait for a later step.
+
+**13.4 is two parts**, with the four decisions of 22 November 2026: what
+FoxByte cannot check is recorded as the customer's declaration, by whom and
+when; both keys rotate online; deleting and updating values is for admins and
+the operator; the evidence reads each branch's latest exposure report and
+runs no scan. UIDAI's FAQ of 3 November 2025 was read in full (section 3's
+open item): it sets no retention for the vault's logs, refers encryption to
+UIDAI's API 2.5 specification, allows several reference keys for one number,
+and forbids a hash as one, so no row of section 3 changes.
+
+**13.4a is built** (`feat/p13-vault-134a`): `fox vault rotate --kind k
+[--key data|index]`, `fox vault delete` and `fox vault update`, the same over
+`/api/vault/rotate|delete|update` for admins, and on the Vault page. While an
+index key rotates, tokenise and find look under the old key and the new, so a
+value keeps its key throughout; a rotation stopped by a restart is found under
+both until it is run again, which finishes it. An update keeps the reference
+key, must pass the kind's check, and is refused, naming the key, when another
+key holds the new value; it holds the kind for writing while it runs. A delete
+and an update need a purpose. Every key is dated and numbered in the status
+(image revision 4). 13.4b is the evidence and the declarations.
 
 ---
 

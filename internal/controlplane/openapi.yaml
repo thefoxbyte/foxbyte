@@ -2678,6 +2678,81 @@ paths:
         "403": { description: No detokenise grant on the kind, a masked account, or a licence without the vault }
         "409": { description: The vault is not set up }
         "429": { description: The grant's limit an hour is reached }
+  /api/vault/delete:
+    post:
+      tags: [vault]
+      summary: Delete values by their reference keys (admins; Enterprise).
+      description: >-
+        Admins only, with a purpose, kept in the vault's log and the security log. A deleted key answers "not found"
+        to everyone. The ciphertext stays in the vault database's backups until the kind's data key is rotated,
+        which destroys the key it was made under.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, refs, purpose]
+              properties:
+                kind: { type: string }
+                refs: { type: array, items: { type: string }, maxItems: 1000 }
+                purpose: { type: string }
+      responses:
+        "200": { description: '{"results": ["done"|"not found", ...]}', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No purpose, or not between 1 and 1,000 reference keys }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+        "409": { description: The vault is not set up }
+  /api/vault/update:
+    post:
+      tags: [vault]
+      summary: Replace values under their reference keys (admins; Enterprise).
+      description: >-
+        Admins only, with a purpose, kept in the vault's log and the security log (never a value). Each key keeps its
+        name; its new value must pass the kind's check. A value another key already holds is refused, and that key is
+        named in refs.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, refs, values, purpose]
+              properties:
+                kind: { type: string }
+                refs: { type: array, items: { type: string }, maxItems: 1000 }
+                values: { type: array, items: { type: string }, maxItems: 1000 }
+                purpose: { type: string }
+      responses:
+        "200": { description: '{"refs": [...], "results": ["done"|"unchanged"|"another key holds it"|"refused"|"not found", ...]}', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No purpose, or the keys and values do not pair up }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+        "409": { description: The vault is not set up }
+  /api/vault/rotate:
+    post:
+      tags: [vault]
+      summary: Rotate a kind's data key or index key (admins; Enterprise).
+      description: >-
+        Admins only. A new key is made in the HSM, every record of the kind is moved to it in batches while the vault
+        keeps answering, and the old key is destroyed in the HSM. Answers when the rotation is done; a second rotation
+        of the same kind meanwhile is refused.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string }
+                key: { type: string, enum: [data, index], default: data }
+      responses:
+        "200": { description: '{"results": ["done: N records moved to LABEL in T; destroyed OLD"]}', content: { application/json: { schema: { type: object } } } }
+        "400": { description: No such kind or key }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+        "409": { description: The vault is not set up, or a rotation of the kind is already running }
   /api/vault/mine:
     get:
       tags: [vault]
