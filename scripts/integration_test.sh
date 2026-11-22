@@ -4886,6 +4886,111 @@ assert_eq "the vault's log holds, and agrees with the head the security log saw"
   "$($S vault status 2>&1 | grep -c 'the chain holds')|$($S vault status 2>&1 | grep -c 'is as the security log saw it')" "1|1"
 rm -f "$VNUMS" "$ROT_OUT"
 
+echo "### 11ax. the vault's evidence, rule by rule, and the customer's declarations (point 13.4b)"
+# The vault §11at set up, still on FoxByte's software token. test@ (KEY) is an
+# admin; vault-kyc (KK) is not. Declarations from an earlier run on this VM
+# are withdrawn first, so each item starts open.
+H='Content-Type: application/json'
+for it in hosting soc2 no-input-storage network-zone dr monitoring retention hsm-certificate hsm-access auth-apps; do
+  $S vault declare --kind aadhaar "$it" --withdraw >/dev/null 2>&1
+done
+EVD() { $S vault evidence --kind aadhaar --json; }
+verdict() { hjson "print([r['verdict'] for r in d['kinds'][0]['rows'] if r['para'] == '$1'][0])"; }
+
+OUT="$($S vault declare --kind aadhaar 2>&1)"
+assert_eq "declare with no item lists what Aadhaar's rules ask: ten items, each with its para" \
+  "$(grep -cE '^  (5|6|4|7\(g\)|7\(f\)|7\(i\)|7\(j\)|9|10) +[a-z0-9-]+ ' <<<"$OUT")" "10"
+assert_eq "…and the text kind, with no rules mapped, asks nothing" "$($S vault declare --kind text 2>&1 | grep -c 'no rules mapped')" "1"
+
+EV0="$(EVD)"
+assert_eq "the evidence: its format, Aadhaar's 19 rules, the software token" \
+  "$(hjson 'print(d["format"], len(d["kinds"][0]["rows"]), d["token"]["software"])' <<<"$EV0")" "vault-evidence/1 19 True"
+assert_eq "…para 8 is not met on the software token, and says why" \
+  "$(verdict 8 <<<"$EV0")|$(hjson "print([c['detail'] for r in d['kinds'][0]['rows'] if r['para'] == '8' for c in r['checks']][0])" <<<"$EV0" | grep -c 'the software token, for trials and testing only')" "not met|1"
+assert_eq "…7(f) is not met: FoxByte does not back up the vault database yet" \
+  "$(verdict '7(f)' <<<"$EV0")|$(hjson "print([c['detail'] for r in d['kinds'][0]['rows'] if r['para'] == '7(f)' for c in r['checks']][0])" <<<"$EV0" | grep -c 'does not back up the vault database yet')" "not met|1"
+assert_eq "…what FoxByte checks on this machine holds: its own database, an internal network, no port, the log" \
+  "$(verdict 2 <<<"$EV0")|$(verdict '7(d)' <<<"$EV0")|$(verdict '7(h)' <<<"$EV0")|$(verdict '7(k)' <<<"$EV0")" "met|met|met|met"
+assert_eq "…and the customer's rules are open until declared" \
+  "$(verdict 5 <<<"$EV0")|$(verdict 6 <<<"$EV0")|$(verdict 10 <<<"$EV0")|$(verdict 9 <<<"$EV0")" "open|open|open|open"
+assert_eq "para 3 is met exactly when every branch's latest report shows it clean" \
+  "$(hjson 'b=d["kinds"][0]["branches"]; v=[r["verdict"] for r in d["kinds"][0]["rows"] if r["para"]=="3"][0]; print(len(b) > 0 and (v == "met") == all(x.get("flag", "") == "" for x in b))' <<<"$EV0")" "True"
+assert_eq "the text kind has no rules to judge" "$($S vault evidence --kind text --json | hjson 'print(len(d["kinds"][0]["rows"]), d["kinds"][0]["records"] >= 1)')" "0 True"
+
+# A branch never scanned is flagged, and para 3 cannot be met while it is.
+$S branch delete evb >/dev/null 2>&1
+$S branch create evb >/dev/null 2>&1
+EV="$(EVD)"
+assert_eq "a branch never scanned is flagged, and para 3 is not met" \
+  "$(hjson "print([b['flag'] for b in d['kinds'][0]['branches'] if b['branch'] == 'evb'][0])" <<<"$EV")|$(verdict 3 <<<"$EV")|$(verdict '7(c)' <<<"$EV")" "never scanned|not met|not met"
+$S pii aadhaar run --branch evb >/dev/null 2>&1
+assert_eq "…once scanned and clean, it is no longer flagged" \
+  "$(EVD | hjson "print(repr([b.get('flag', '') for b in d['kinds'][0]['branches'] if b['branch'] == 'evb'][0]))")" "''"
+$S branch delete evb >/dev/null 2>&1
+
+# Declarations: kept with who and when; the evidence shows them as declared.
+OUT="$($S vault declare --kind aadhaar hosting 'somewhere nice' 2>&1)"; RC=$?
+assert_eq "hosting begins on premises, GCC or vault as a service" "$RC|$(grep -c 'on premises' <<<"$OUT")" "1|1"
+OUT="$($S vault declare --kind aadhaar firewall 'yes' 2>&1)"; RC=$?
+assert_eq "an item the rules do not ask for is refused, and the items are named" "$RC|$(grep -c 'hsm-certificate' <<<"$OUT")" "1|1"
+OUT="$($S vault declare --kind aadhaar hosting 'on premises, the integration VM' 2>&1)"; RC=$?
+assert_eq "declare: kept, and said to be shown as declared, not checked" "$RC|$(grep -c 'declared, not checked' <<<"$OUT")" "0|1"
+EV="$(EVD)"
+assert_eq "para 5 is met by the declaration; para 6 (SOC 2) does not apply on premises" \
+  "$(verdict 5 <<<"$EV")|$(verdict 6 <<<"$EV")|$(hjson "print([x['declared_by'] for r in d['kinds'][0]['rows'] if r['para'] == '5' for x in r['declared']][0])" <<<"$EV")" "met|not applicable|cli:${SUDO_USER:-$USER}"
+$S vault declare --kind aadhaar hsm-certificate 'SoftHSM2: none, a software token' >/dev/null 2>&1
+assert_eq "para 9 needs both its items: one declared leaves it open" "$(EVD | verdict 9)" "open"
+$S vault declare --kind aadhaar hsm-access 'none: a software token' >/dev/null 2>&1
+assert_eq "…both declared, and the keys checked, it is met; a declaration never meets para 8" \
+  "$(EVD | verdict 9)|$(EVD | verdict 8)" "met|not met"
+$S vault declare --kind aadhaar hosting --withdraw >/dev/null 2>&1
+EV="$(EVD)"
+assert_eq "withdrawn: para 5 and 6 are open again" "$(verdict 5 <<<"$EV")|$(verdict 6 <<<"$EV")" "open|open"
+OUT="$($S vault declarations --kind aadhaar --all)"
+assert_eq "declarations --all keeps every statement, the withdrawal too" \
+  "$(grep -c 'on premises, the integration VM' <<<"$OUT")|$(( $(grep -c '(withdrawn)' <<<"$OUT") >= 1 ))" "1|1"
+assert_eq "declarations: each item, declared or not" \
+  "$($S vault declarations --kind aadhaar | grep -c '(not declared)')|$($S vault declarations --kind aadhaar | grep -c 'hsm-access.*none: a software token')" "8|1"
+
+# A value deleted since the current data key was made is counted, still in
+# the database's history until the next rotation.
+CH0="$(EVD | hjson 'print(d["kinds"][0]["activity"]["changed_since_data_key"])')"
+X="$(sed -n '1p' <<<"$(python3 -c '
+import random
+D=[[0,1,2,3,4,5,6,7,8,9],[1,2,3,4,0,6,7,8,9,5],[2,3,4,0,1,7,8,9,5,6],[3,4,0,1,2,8,9,5,6,7],[4,0,1,2,3,9,5,6,7,8],[5,9,8,7,6,0,4,3,2,1],[6,5,9,8,7,1,0,4,3,2],[7,6,5,9,8,2,1,0,4,3],[8,7,6,5,9,3,2,1,0,4],[9,8,7,6,5,4,3,2,1,0]]
+P=[[0,1,2,3,4,5,6,7,8,9],[1,5,7,6,2,8,3,0,9,4],[5,8,0,3,7,9,6,1,4,2],[8,9,1,6,0,4,3,5,2,7],[9,4,5,3,1,2,6,8,7,0],[4,2,8,6,5,7,3,9,0,1],[2,7,9,3,8,0,6,4,1,5],[7,0,4,6,9,1,3,2,5,8]]
+INV=[0,4,3,2,1,5,6,7,8,9]
+d=str(random.randint(2,9))+"".join(str(random.randint(0,9)) for _ in range(10))
+c=0
+for i,ch in enumerate(reversed(d)): c=D[c][P[(i+1)%8][int(ch)]]
+print(d+str(INV[c]))')")"
+RX="$($S vault tokenise --kind aadhaar "$X" 2>&1 | awk '{print $1}')"
+$S vault delete --kind aadhaar --purpose 'integration: 13.4b' --yes "$RX" >/dev/null 2>&1
+EV="$(EVD)"
+assert_eq "a delete since the data key was made is counted, and the activity counts the period's calls" \
+  "$(( $(hjson 'print(d["kinds"][0]["activity"]["changed_since_data_key"])' <<<"$EV") - CH0 ))|$(hjson 'print(d["kinds"][0]["activity"]["calls"].get("delete", 0) >= 1)' <<<"$EV")" "1|True"
+
+# The API: admins only; the document with the access log's entries, never a
+# number.
+OUT="$(as "$KEY" "$VA/evidence?kind=aadhaar&since=30d&entries=1")"
+assert_eq "GET /api/vault/evidence: an admin gets it, with the period's entries and no Aadhaar number" \
+  "$(hjson 'print(d["format"], len(d["kinds"][0]["entries"]) > 0)' <<<"$OUT")|$(grep -cE "$X|\"[2-9][0-9]{11}\"" <<<"$OUT")" "vault-evidence/1 True|0"
+assert_eq "…anyone else is refused; a since or kind that is not one is a bad request" \
+  "$(code "$KK" "$VA/evidence")|$(code "$KEY" "$VA/evidence?since=yesterday")|$(code "$KEY" "$VA/evidence?kind=pan")" "403|400|400"
+assert_eq "GET /api/vault/declarations: the items to declare, and what is declared" \
+  "$(as "$KEY" "$VA/declarations?kind=aadhaar" | hjson 'print(len(d["items"]), sorted(x["item"] for x in d["declarations"]))')" "10 ['hsm-access', 'hsm-certificate']"
+assert_eq "POST /api/vault/declarations: an admin declares; anyone else, or an item not asked for, is refused" \
+  "$(code "$KEY" -H "$H" -X POST -d '{"kind":"aadhaar","item":"auth-apps","value":"on premises only"}' "$VA/declarations")|$(code "$KK" -H "$H" -X POST -d '{"kind":"aadhaar","item":"dr","value":"x"}' "$VA/declarations")|$(code "$KEY" -H "$H" -X POST -d '{"kind":"aadhaar","item":"firewall","value":"x"}' "$VA/declarations")" "201|403|400"
+assert_eq "…and the evidence shows it" "$(EVD | verdict 10)" "met"
+
+AUD="$($S audit --limit 5000)"
+assert_eq "the security log: each declaration with its statement, each withdrawal, and each read of the evidence" \
+  "$(grep 'vault.declare' <<<"$AUD" | grep -c 'declared hosting: on premises, the integration VM')|$(( $(grep 'vault.declare' <<<"$AUD" | grep -c 'withdrew hosting') >= 1 ))|$(( $(grep -c 'vault.evidence' <<<"$AUD") >= 10 ))" "1|1|1"
+OUT="$($S vault evidence --kind aadhaar 2>&1)"
+assert_eq "the printed evidence: the counts, why a rule is not met, what to declare, and its limits" \
+  "$(grep -cE '^  [0-9]+ met, [0-9]+ not met, [0-9]+ open' <<<"$OUT")|$(grep -c '8: the token is an HSM' <<<"$OUT")|$(grep -c 'vault declare --kind aadhaar dr' <<<"$OUT")|$(grep -c 'What this cannot show' <<<"$OUT")" "1|1|1|1"
+for it in hsm-certificate hsm-access auth-apps; do $S vault declare --kind aadhaar "$it" --withdraw >/dev/null 2>&1; done
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

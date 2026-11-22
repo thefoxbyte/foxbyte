@@ -141,6 +141,10 @@ Stack:
                        Make a kind's data or index key anew, records moved while the vault answers, the old key destroyed (Enterprise)
   vault delete|update --kind k --purpose "why" <reference key>... [--yes]
                        Delete values, or replace them under the same keys (new values on stdin) (Enterprise)
+  vault evidence [--kind k] [--since 90d] [--entries] [--json]
+                       Rule by rule (UIDAI's for Aadhaar): what was checked here, what is built in, what is declared (Enterprise)
+  vault declare --kind k [item "statement" | item --withdraw] | declarations [--all]
+                       Record what the rules ask that FoxByte cannot check: the HSM's certificate, the network zone… (Enterprise)
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)

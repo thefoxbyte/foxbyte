@@ -60,6 +60,8 @@ import (
 //   - vault_migrations, vault_migration_refs: deliberately not, for the same
 //     reason: the runs that moved a branch's numbers into this install's
 //     vault, and the keys they made there (vaultmigrate.go).
+//   - vault_declarations: deliberately not: what this install's admins state
+//     about this install's vault, for its evidence (vaultdecl.go).
 //   - branch_activity: deliberately not. When the console last used a branch
 //     is for this node's own idle reaper (branchuse.go).
 //   - security_events: deliberately not. It is a hash chain, and a chain is a

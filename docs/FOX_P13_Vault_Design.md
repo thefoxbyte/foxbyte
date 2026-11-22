@@ -670,6 +670,28 @@ key holds the new value; it holds the kind for writing while it runs. A delete
 and an update need a purpose. Every key is dated and numbered in the status
 (image revision 4). 13.4b is the evidence and the declarations.
 
+**13.4b is built** (`feat/p13-vault-134b`): `fox vault evidence [--kind k]
+[--since 90d] [--entries] [--json]`, `GET /api/vault/evidence` and the
+console's Vault evidence page judge each of the circular's 19 rules (section
+3) for Aadhaar: met, not met, open, or not applicable. Behind each verdict are
+its checks, each either *checked* on the machine when the document is made
+(the vault's database, service and internal network, no published port, the
+socket, the access log's chain and head, the keys read back from the token,
+the token not being the software one, each branch's latest exposure report)
+or *built in* (with where the design says so), and the customer's
+declarations, each kept with who made it and when (`fox vault declare`,
+`fox vault declarations`, `/api/vault/declarations`; `vault.declare` in the
+security log). A declaration never meets a rule a check fails; a rule
+waiting for one is open; SOC 2 (para 6) does not apply when the vault is
+declared on premises. 7(f) is not met while FoxByte does not back up the vault
+database (section 13). A branch whose latest report found a number, is older
+than 30 days, or never ran, is flagged, and paras 3, 4 and 7(c) are then not
+met. The document (`vault-evidence/1`) carries the keys with their dates, the
+period's activity, values deleted or replaced since the current data key, the
+grants, and what it cannot show; with `--entries`, the access log's entries
+in the period, without values or hashes. Each read is in the security log
+(`vault.evidence`). The text kind has no rules mapped, so nothing to judge.
+
 ---
 
 ## 20. What the prototype found (Gate 0)

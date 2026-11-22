@@ -38,6 +38,9 @@ import (
 //	fox vault rotate --kind k [--key data|index] [--yes]
 //	fox vault delete --kind k --purpose "why" <reference key>... | - [--yes]
 //	fox vault update --kind k --purpose "why" <reference key>...  (new values on stdin)
+//	fox vault evidence [--kind k] [--since 90d] [--entries] [--json]
+//	fox vault declare --kind k [ITEM "statement" | ITEM --withdraw]
+//	fox vault declarations [--kind k] [--all] [--json]
 //
 // The CLI is the operator's, on the machine: it reaches the vault service
 // directly, and each call is in the security log with the vault's log head.
@@ -78,6 +81,12 @@ func vaultCmd(args []string) {
 		vaultDelete(args)
 	case "update":
 		vaultUpdate(args)
+	case "evidence":
+		vaultEvidence(args)
+	case "declare":
+		vaultDeclare(args)
+	case "declarations":
+		vaultDeclarations(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown vault command %q\n\n%s", sub, vaultUsage)
 		os.Exit(2)
@@ -101,6 +110,9 @@ const vaultUsage = `usage:
   fox vault rotate --kind KIND [--key data|index] [--yes]
   fox vault delete --kind KIND --purpose "WHY" REF... | - [--yes]
   fox vault update --kind KIND --purpose "WHY" REF...   (new values on stdin, one a line, in order)
+  fox vault evidence [--kind KIND] [--since 90d|2026-08-01] [--entries] [--json]
+  fox vault declare --kind KIND [ITEM "STATEMENT" | ITEM --withdraw]
+  fox vault declarations [--kind KIND] [--all] [--json]
 `
 
 func vaultSetup(args []string) {

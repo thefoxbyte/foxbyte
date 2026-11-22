@@ -687,6 +687,10 @@ fox vault orphans [delete --yes]   # keys made on branches since deleted; and: f
 fox vault rotate --kind aadhaar [--key data|index] --yes   # a new key, records moved, the old one destroyed
 fox vault delete --kind aadhaar --purpose "account closed" <key>… --yes
 echo "<new value>" | fox vault update --kind aadhaar --purpose "corrected" <key>   # the key stays
+fox vault evidence --kind aadhaar  # UIDAI's rules, one by one: checked, built in, or declared
+fox vault evidence --kind aadhaar --json --entries > evidence.json   # for the auditor
+fox vault declare --kind aadhaar   # what you declare (the HSM's certificate, hosting…); then:
+fox vault declare --kind aadhaar hsm-certificate "Thales Luna 7, CMVP #4321"
 ```
 
 Values are encrypted inside an HSM and never leave it in the clear; a reference
@@ -701,7 +705,10 @@ log, the Blackbox and backups taken before are not changed.
 Rotating a kind's data key or index key, and deleting or updating values, is for
 admins and the operator, and the vault keeps answering during a rotation. A
 deleted or replaced value stays in the vault database's backups until the next
-data-key rotation destroys the key it was encrypted under.
+data-key rotation destroys the key it was encrypted under. The evidence judges
+UIDAI's rules from what it checks on the machine, what FoxByte builds in, and
+what you declare; a declaration is shown as yours, never as checked, and it
+runs no scan: each branch is read from its latest Aadhaar exposure report.
 Finding one person's data for an access or erasure request is
 [`fox subject find`](data-subject-requests.md).
 
