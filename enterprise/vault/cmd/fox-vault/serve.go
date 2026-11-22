@@ -430,6 +430,13 @@ func (s *server) tokenise(w http.ResponseWriter, r *http.Request, c *call) {
 	out := vault.Response{Refs: make([]string, n), New: make([]bool, n), Results: make([]string, n)}
 	var failed error
 	var fmu sync.Mutex
+	// The kind is held for reading from the first lookup to the log's entry:
+	// rotation switches keys only between calls, and a guarded delete
+	// (deleteOwned) reads the log knowing every key this call hands out is
+	// already named in it.
+	mu := s.kindMu[c.kind.Name]
+	mu.RLock()
+	defer mu.RUnlock()
 	s.each(n, func(i int) {
 		ref, made, res, err := s.tokeniseOne(ctx, c, c.req.Values[i])
 		out.Refs[i], out.New[i], out.Results[i] = ref, made, res
@@ -460,15 +467,12 @@ func (s *server) tokenise(w http.ResponseWriter, r *http.Request, c *call) {
 }
 
 // tokeniseOne returns the value's reference key, making the record if the
-// value is new.
+// value is new. The caller holds the kind for reading.
 func (s *server) tokeniseOne(ctx context.Context, c *call, v string) (ref string, made bool, result string, err error) {
 	norm, err := c.kind.Accept(v)
 	if err != nil {
 		return "", false, vault.ResultRefused, nil
 	}
-	mu := s.kindMu[c.kind.Name]
-	mu.RLock()
-	defer mu.RUnlock()
 	idxKey, dataKey := s.currentKey(c.kind.Name, "index"), s.currentKey(c.kind.Name, "data")
 	idx, err := s.tok.HMAC(idxKey, []byte(norm))
 	if err != nil {
@@ -524,6 +528,11 @@ func (s *server) find(w http.ResponseWriter, r *http.Request, c *call) {
 	out := vault.Response{Refs: make([]string, n), Results: make([]string, n)}
 	var failed error
 	var fmu sync.Mutex
+	// As tokenise: a key found is named in the log before a guarded delete
+	// can look.
+	mu := s.kindMu[c.kind.Name]
+	mu.RLock()
+	defer mu.RUnlock()
 	s.each(n, func(i int) {
 		norm, err := c.kind.Accept(c.req.Values[i])
 		if err != nil {
@@ -633,6 +642,10 @@ func (s *server) delete(w http.ResponseWriter, r *http.Request, c *call) {
 		reply(w, http.StatusBadRequest, vault.Response{Error: "between 1 and 1,000 reference keys a call"})
 		return
 	}
+	if len(c.req.Owners) > 0 {
+		s.deleteOwned(w, r, c)
+		return
+	}
 	out := vault.Response{Results: make([]string, n)}
 	for i, ref := range c.req.Refs {
 		tag, err := s.db.Exec(ctx, `DELETE FROM vault.records WHERE kind = $1 AND ref = $2`, c.kind.Name, ref)
@@ -647,6 +660,83 @@ func (s *server) delete(w http.ResponseWriter, r *http.Request, c *call) {
 		}
 	}
 	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "delete", Kind: c.kind.Name, Refs: c.req.Refs, N: n, Result: summary(out.Results)}); err != nil {
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	reply(w, http.StatusOK, out)
+}
+
+// deleteOwned is a delete guarded for orphans (point 13.3): reference keys a
+// migration made on a branch that is gone. A key is deleted only when its
+// record was made by one of the owners (the migration's actors) and no entry
+// in the access log, by anyone else, names it: a key someone else was handed
+// or read back is in use, wherever it is kept, and stays. The kind is held for
+// writing, so no tokenise or find can hand a key out between the log's read
+// and the delete.
+func (s *server) deleteOwned(w http.ResponseWriter, r *http.Request, c *call) {
+	ctx := r.Context()
+	refs, owners := c.req.Refs, c.req.Owners
+	for _, o := range owners {
+		if strings.TrimSpace(o) == "" || len(o) > 200 {
+			reply(w, http.StatusBadRequest, vault.Response{Error: "an owner is an actor, 1 to 200 characters"})
+			return
+		}
+	}
+	mu := s.kindMu[c.kind.Name]
+	mu.Lock()
+	defer mu.Unlock()
+	used := map[string]bool{}
+	rows, err := s.db.Query(ctx, `SELECT DISTINCT x FROM vault.access_log l CROSS JOIN LATERAL unnest(l.refs) AS x
+		WHERE l.refs && $1::text[] AND x = ANY($1::text[]) AND l.actor <> ALL($2::text[])`, refs, owners)
+	if err != nil {
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	for rows.Next() {
+		var x string
+		if err := rows.Scan(&x); err != nil {
+			rows.Close()
+			reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+			return
+		}
+		used[x] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+		return
+	}
+	out := vault.Response{Results: make([]string, len(refs))}
+	var gone []string
+	for i, ref := range refs {
+		if used[ref] {
+			out.Results[i] = vault.ResultInUse
+			continue
+		}
+		var by string
+		err := s.db.QueryRow(ctx, `DELETE FROM vault.records WHERE kind = $1 AND ref = $2 AND created_by = ANY($3::text[]) RETURNING created_by`,
+			c.kind.Name, ref, owners).Scan(&by)
+		switch {
+		case err == nil:
+			out.Results[i] = vault.ResultDone
+			gone = append(gone, ref)
+		case errors.Is(err, pgx.ErrNoRows):
+			var exists bool
+			if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM vault.records WHERE kind = $1 AND ref = $2)`, c.kind.Name, ref).Scan(&exists); err != nil {
+				reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+				return
+			}
+			out.Results[i] = vault.ResultNotFound
+			if exists {
+				out.Results[i] = vault.ResultNotTheirs
+			}
+		default:
+			reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
+			return
+		}
+	}
+	if err := s.record(ctx, w, vault.Entry{Actor: c.actor, Action: "delete", Kind: c.kind.Name, Refs: gone, N: len(refs),
+		Purpose: c.req.Purpose, Result: summary(out.Results)}); err != nil {
 		reply(w, http.StatusInternalServerError, vault.Response{Error: err.Error()})
 		return
 	}

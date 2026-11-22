@@ -17,13 +17,15 @@ vi.mock('../api', async () => {
     vaultTokenise: vi.fn(),
     vaultFind: vi.fn(),
     vaultDetokenise: vi.fn(),
+    getVaultOrphans: vi.fn(async () => []),
+    deleteVaultOrphans: vi.fn(),
     getStatus: vi.fn(),
   }
 })
 
 import {
-  getStatus, getVault, getVaultGrants, getVaultKinds, getVaultLog, getVaultMine, grantVault, revokeVaultGrant, vaultDetokenise, vaultFind,
-  vaultTokenise, type Status, type VaultGrant, type VaultKind, type VaultMine, type VaultState,
+  deleteVaultOrphans, getStatus, getVault, getVaultGrants, getVaultKinds, getVaultLog, getVaultMine, getVaultOrphans, grantVault, revokeVaultGrant,
+  vaultDetokenise, vaultFind, vaultTokenise, type Status, type VaultGrant, type VaultKind, type VaultMine, type VaultState,
 } from '../api'
 import { ConfirmProvider } from '../confirm'
 import Vault, { masked } from './Vault'
@@ -77,6 +79,7 @@ describe('Vault page', () => {
     vi.mocked(getVaultMine).mockResolvedValue(mine())
     vi.mocked(getVaultGrants).mockResolvedValue([])
     vi.mocked(getVaultLog).mockResolvedValue({ entries: [] })
+    vi.mocked(getVaultOrphans).mockReset().mockResolvedValue([])
     vi.mocked(getStatus).mockResolvedValue(status(['vault']))
   })
   afterEach(cleanup)
@@ -245,6 +248,27 @@ describe('Vault page', () => {
     fireEvent.click(within(row).getByText('Revoke…'))
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
     await waitFor(() => expect(revokeVaultGrant).toHaveBeenCalledWith(9))
+  })
+
+  it("an admin sees a migration's orphaned keys and deletes them after confirming; kept ones are said so", async () => {
+    vi.mocked(getVault).mockResolvedValue(setUp)
+    vi.mocked(getVaultOrphans).mockResolvedValue([
+      { run: 4, branch: 'rehearse', actor: 'ops@example.com', ran: '2026-11-21T10:00:00Z', why: 'the branch was deleted', keys: { made: 3, pending: 3, deleted: 0, kept: 0 } },
+    ])
+    vi.mocked(deleteVaultOrphans).mockResolvedValue({ runs: [4], deleted: 2, kept: 1 })
+    page()
+    const table = await screen.findByRole('table', { name: 'Orphaned keys' })
+    await waitFor(() => expect(table.textContent).toMatch(/rehearse.*ops@example.com.*the branch was deleted/))
+    fireEvent.click(within(table).getByRole('button', { name: "Delete run 4's orphaned keys" }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(deleteVaultOrphans).toHaveBeenCalledWith(4))
+    expect((await screen.findByTestId('orphans-note')).textContent).toBe('2 key(s) deleted; 1 kept, because someone else was handed them.')
+  })
+
+  it('says when there are no orphaned keys', async () => {
+    vi.mocked(getVault).mockResolvedValue(setUp)
+    page()
+    expect(await screen.findByText(/None: every branch a migration ran on is still there/)).toBeTruthy()
   })
 
   it('masks a value read back by its kind', () => {

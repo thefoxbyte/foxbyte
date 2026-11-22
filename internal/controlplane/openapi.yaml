@@ -1114,6 +1114,47 @@ paths:
         "404": { description: No such branch. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/personal-data/aadhaar/migrate:
+    post:
+      tags: [vault]
+      summary: Move the branch's Aadhaar numbers into the vault, or preview it (Enterprise; the branch's owner or an admin).
+      description: >-
+        The columns are the branch's latest exposure report's, or those named. Each number in them is put in
+        the vault and replaced, where it stands, by its reference key: a whole value, a number inside text, or
+        inside JSON. A column that cannot hold an opaque key (a number type, a short char or varchar) gets
+        legacy keys, 12 digits starting with 1. Rows are rewritten in batches, each only if unchanged since it
+        was read; the columns are then read again and what is left counted, with why; the tables are vacuumed.
+        Columns of a table with no primary key, in a key, or generated are skipped and said so. With dryRun,
+        nothing is put in the vault or written. Moving needs a use grant on Aadhaar unless the caller is an
+        admin, and its calls count against it. Main is moved only by an admin, and only once a branch made from
+        main has moved the same columns with no number left. The run is kept, and in the security log.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                columns: { type: array, items: { type: string }, description: "schema.table.column; none: the exposure report's columns." }
+                format: { type: string, enum: [opaque, legacy], description: "Force one format of key; left out, each column chooses." }
+                dryRun: { type: boolean }
+      responses:
+        "200": { description: 'The run: {"id", "branch", "dry", "state", "columns": [{"schema", "table", "column", "type", "format", "skipped", "rows", "numbers", "replaced", "left", "left_why"}], "distinct", "made", "reused", "passes", "vacuumed", "rehearsals", "limits"}', content: { application/json: { schema: { type: object } } } }
+        "400": { description: A column or format that is not one, no exposure report yet, or a masked branch }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Main by someone not an admin, no use grant on Aadhaar, or a licence without the vault }
+        "404": { description: No such branch }
+        "409": { description: 'Main with no rehearsal on a branch of main ({"error", "migration"}), or the vault is not set up' }
+        "429": { description: The use grant's limit an hour was reached }
+  /api/branches/{name}/personal-data/aadhaar/migrations:
+    get:
+      tags: [vault]
+      summary: The branch's vault migrations and previews, newest first (Enterprise; the branch's owner or an admin).
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      responses:
+        "200": { description: Each run as /migrate answers it., content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not the branch's owner or an admin, or a licence without the vault }
   /api/branches/{name}/personal-data/aadhaar/places:
     get:
       tags: [branches]
@@ -2700,6 +2741,36 @@ paths:
         - { name: before, in: query, description: list entries before this one, schema: { type: integer } }
       responses:
         "200": { description: '{"entries": [{"seq", "at", "actor", "action", "kind", "refs", "n", "purpose", "result"}]}', content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+        "409": { description: The vault is not set up }
+  /api/vault/orphans:
+    get:
+      tags: [vault]
+      summary: Reference keys migrations made on branches now gone (admins; Enterprise).
+      description: >-
+        Each migration run whose branch was deleted, or made again, and that put new keys in the vault: no
+        table holds those keys, unless someone else was handed them too. Per run, the keys made, still to
+        delete, deleted and kept.
+      responses:
+        "200": { description: '[{"run", "branch", "actor", "ran", "why", "keys": {"made", "pending", "deleted", "kept"}}]', content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+  /api/vault/orphans/delete:
+    post:
+      tags: [vault]
+      summary: Delete migrations' orphaned keys from the vault (admins; Enterprise).
+      description: >-
+        One run's ({"run": id}) or every run's. The vault deletes a key only if that branch's migrations made it
+        and no entry in its access log by anyone else names it; a key someone else was handed or read back is
+        kept, and counted as kept. A key deleted can never be read back. In the security log.
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { run: { type: integer } } }
+      responses:
+        "200": { description: '{"runs": [ids], "deleted": n, "kept": n}', content: { application/json: { schema: { type: object } } } }
+        "400": { description: The run has no orphaned keys, or there is no such run }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: Not an admin, or a licence without the vault }
         "409": { description: The vault is not set up }

@@ -48,8 +48,9 @@ const (
 
 	// VaultImageRevision is the vault image this fox needs, as the image's
 	// dev.dbengine.image-revision label numbers it.
-	// 2 lists the access log (13.2).
-	VaultImageRevision = 2
+	// 2 lists the access log (13.2); 3 deletes a migration's orphaned keys
+	// only when nobody else was handed them (13.3).
+	VaultImageRevision = 3
 
 	// vaultSoftLib is FoxByte's own software token, inside the image.
 	vaultSoftLib = "/usr/lib/softhsm/libsofthsm2.so"
@@ -524,6 +525,13 @@ func vaultUp(c *VaultConfig, img string) error {
 			return fmt.Errorf("starting the vault database: %w", err)
 		}
 	}
+	// A service made from an older image than this fox needs is made again
+	// from the current one: an older one answers calls it does not know in
+	// its old way (13.3's guarded delete would be a plain delete).
+	if vaultRunning(vaultSvcContainer) && strings.TrimSpace(brand.Getenv("VAULT_IMAGE")) == "" && vaultServiceRevision() < VaultImageRevision {
+		fmt.Println("Replacing the vault service with the image this fox needs…")
+		removeContainer(vaultSvcContainer)
+	}
 	if !vaultRunning(vaultSvcContainer) {
 		removeContainer(vaultSvcContainer)
 		_ = os.Remove(VaultSocket())
@@ -571,6 +579,16 @@ func vaultUp(c *VaultConfig, img string) error {
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// vaultServiceRevision is the image revision the running service was made
+// from, as its container's label says; 1 when it cannot be read.
+func vaultServiceRevision() int {
+	out, err := capture("docker", "inspect", "-f", "{{index .Config.Labels \""+imageRevisionLabel+"\"}}", vaultSvcContainer)
+	if err != nil {
+		return 1
+	}
+	return parseImageRevision(out)
 }
 
 // --- calls -----------------------------------------------------------------
@@ -659,6 +677,17 @@ type vaultReply struct {
 // section 10): never a value, only the kind, how many, the results, the
 // purpose and the head.
 func VaultCall(st *auth.Store, actor, ip, path string, body []byte) ([]byte, int, error) {
+	return VaultCallActor(st, actor, actor, ip, path, body)
+}
+
+// VaultCallActor is VaultCall with the vault knowing the caller by another
+// name than the security log does: a migration's calls are the account's in
+// the security log and the run's in the vault (point 13.3), so the keys a run
+// made can be told from everyone else's.
+func VaultCallActor(st *auth.Store, actor, vaultActor, ip, path string, body []byte) ([]byte, int, error) {
+	if vaultActor == "" {
+		vaultActor = actor
+	}
 	if err := requireVault(); err != nil {
 		return nil, 0, err
 	}
@@ -675,7 +704,7 @@ func VaultCall(st *auth.Store, actor, ip, path string, body []byte) ([]byte, int
 	if err != nil {
 		return nil, 0, err
 	}
-	reply, head, code, err := vaulter.Call(VaultSocket(), secret, actor, path, body)
+	reply, head, code, err := vaulter.Call(VaultSocket(), secret, vaultActor, path, body)
 	if err != nil && code == 0 {
 		return nil, 0, fmt.Errorf("the vault service: %w", err)
 	}
@@ -685,6 +714,9 @@ func VaultCall(st *auth.Store, actor, ip, path string, body []byte) ([]byte, int
 	detail := fmt.Sprintf("%s, %d %s: %s", path, n, vaultPlural(n, "value", "values"), vaultSummary(r))
 	if path == "detokenise" {
 		detail = fmt.Sprintf("detokenise, %d reference %s, purpose %q: %s", n, vaultPlural(n, "key", "keys"), strings.TrimSpace(req.Purpose), vaultSummary(r))
+	}
+	if vaultActor != actor {
+		detail += "; as " + vaultActor
 	}
 	if head != "" {
 		detail += "; head " + head

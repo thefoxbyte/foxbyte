@@ -28,7 +28,7 @@ RUN CGO_ENABLED=1 GOFLAGS=-buildvcs=false GOTOOLCHAIN=local \
 FROM ${BASE_IMAGE}
 # The engine fetches or builds the image again when its revision is older than
 # the one it needs (internal/branch/vault.go, VaultImageRevision).
-LABEL dev.dbengine.image-revision="2" dev.dbengine.vault="1"
+LABEL dev.dbengine.image-revision="3" dev.dbengine.vault="1"
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends softhsm2; \

@@ -4580,6 +4580,175 @@ assert_eq "fox check: the log holds, the software token is said to be for trials
   "$(grep -c 'vault log.*the chain holds and agrees with the security log' <<<"$CHK")|$(grep -c 'vault token.*require an HSM' <<<"$CHK")|$(grep -c 'vault refusals.*refused in the last day' <<<"$CHK")|$(grep -c 'vault grants' <<<"$CHK")" "1|1|1|1"
 $S vault revoke "$($S vault grants --json | hjson "print([g['id'] for g in d if g['email'] == 'vault-kyc@foxbyte.dev'][0])")" >/dev/null 2>&1
 
+echo "### 11av. moving Aadhaar into the vault: keys where the numbers stood, a branch first, then main; orphans (point 13.3)"
+# The vault §11at set up: N1's key R1 is opaque. vault-kyc (KK) is not an
+# admin, and holds no grant since §11au. Five synthetic numbers, new each run
+# so the vault makes keys for them: eleven random digits, the first 2 to 9, and
+# the Verhoeff check digit. Nobody's.
+read -r M1 M2 M3 M4 M5 <<<"$(python3 -c '
+import random
+D=[[0,1,2,3,4,5,6,7,8,9],[1,2,3,4,0,6,7,8,9,5],[2,3,4,0,1,7,8,9,5,6],[3,4,0,1,2,8,9,5,6,7],[4,0,1,2,3,9,5,6,7,8],[5,9,8,7,6,0,4,3,2,1],[6,5,9,8,7,1,0,4,3,2],[7,6,5,9,8,2,1,0,4,3],[8,7,6,5,9,3,2,1,0,4],[9,8,7,6,5,4,3,2,1,0]]
+P=[[0,1,2,3,4,5,6,7,8,9],[1,5,7,6,2,8,3,0,9,4],[5,8,0,3,7,9,6,1,4,2],[8,9,1,6,0,4,3,5,2,7],[9,4,5,3,1,2,6,8,7,0],[4,2,8,6,5,7,3,9,0,1],[2,7,9,3,8,0,6,4,1,5],[7,0,4,6,9,1,3,2,5,8]]
+INV=[0,4,3,2,1,5,6,7,8,9]
+out=set()
+while len(out)<5:
+    d=str(random.randint(2,9))+"".join(str(random.randint(0,9)) for _ in range(10))
+    c=0
+    for i,ch in enumerate(reversed(d)): c=D[c][P[(i+1)%8][int(ch)]]
+    out.add(d+str(INV[c]))
+print(" ".join(sorted(out)))')"
+sp() { echo "${1:0:4} ${1:4:4} ${1:8:4}"; }
+hy() { echo "${1:0:4}-${1:4:4}-${1:8:4}"; }
+mj() { hjson "$1"; }
+NUMS="$M1|$M2|$M3|$M4|$M5"
+# Runs and events from before this section (an install kept from an earlier
+# run) are not counted.
+VM_BASE="$($S vault migrations --json 2>/dev/null | hjson "print(max([m['id'] for m in d], default=0))" 2>/dev/null || echo 0)"
+ORPH_BEFORE="$($S audit --limit 5000 | grep -c 'vault.orphans')"
+$S branch delete vmr >/dev/null 2>&1; $S branch delete vmapi >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS vm_people, vm_nokey, vm_child, vm_parent, vm_late CASCADE" >/dev/null
+VM_SQL="$(cat <<SQL
+CREATE TABLE vm_people (id int PRIMARY KEY, aadhaar text, legacy_id bigint, code char(12), short varchar(20), note text, doc jsonb);
+INSERT INTO vm_people VALUES
+  (1, '$(sp "$M1")', $M2, '$M3', '$(hy "$M1")', 'caller read out $M1 and $M4, verified', '{"uid": $M2, "kyc": {"no": "$M3"}, "n": 7}'),
+  (2, '$M4', NULL, NULL, NULL, 'no number here', '{"uid": "x"}'),
+  (3, NULL, NULL, NULL, NULL, NULL, NULL);
+CREATE TABLE vm_nokey (aadhaar text);
+INSERT INTO vm_nokey VALUES ('$M1');
+CREATE TABLE vm_parent (aadhaar text PRIMARY KEY);
+INSERT INTO vm_parent VALUES ('$M4');
+CREATE TABLE vm_child (id int PRIMARY KEY, parent text REFERENCES vm_parent (aadhaar));
+INSERT INTO vm_child VALUES (1, '$M4');
+SQL
+)"
+pg pg-main "$VM_SQL" >/dev/null
+$S branch create vmr >/dev/null 2>&1
+# Only on the branch: a bigint holding N1, whose key in the vault (R1) is
+# opaque, so it cannot go there.
+pg pg-vmr "CREATE TABLE vm_odd (id int PRIMARY KEY, num bigint); INSERT INTO vm_odd VALUES (1, $N1)" >/dev/null
+$S pii aadhaar run --branch vmr >/dev/null 2>&1
+assert_eq "the vault service runs the image this fox needs (revision 3: the guarded delete)" \
+  "$(sudo docker inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' fox-vault)" "3"
+
+OUT="$($S vault migrate 2>&1)"; RC=$?
+assert_eq "migrate needs a branch" "$RC|$(grep -c 'branch is needed' <<<"$OUT")" "2|1"
+OUT="$($S vault migrate --branch vmr --format hash 2>&1)"; RC=$?
+assert_eq "…and a format that is one" "$RC|$(grep -c 'a format is opaque or legacy' <<<"$OUT")" "1|1"
+
+PV="$($S vault migrate --branch vmr --dry-run --json 2>&1)"; RC=$?
+assert_eq "a preview: the exposure report's columns, each with the keys it can hold" \
+  "$RC|$(mj "print(' '.join(sorted(c['table']+'.'+c['column']+':'+(c['format'] or '-') for c in d['columns'] if not c.get('skipped'))))" <<<"$PV")" \
+  "0|vm_odd.num:legacy vm_people.aadhaar:opaque vm_people.code:legacy vm_people.doc:mixed vm_people.legacy_id:legacy vm_people.note:opaque vm_people.short:legacy"
+assert_eq "…the columns it cannot move, and why" \
+  "$(mj "print(' | '.join(sorted(c['table']+'.'+c['column']+': '+c['skipped'] for c in d['columns'] if c.get('skipped'))))" <<<"$PV")" \
+  "vm_child.parent: it is part of a foreign key: its tables are moved together, by hand | vm_nokey.aadhaar: the table has no primary key, so its rows cannot be named to rewrite them safely | vm_parent.aadhaar: it is part of the table's primary key"
+assert_eq "…the distinct numbers (the four, and N1), and nothing changed or put in the vault" \
+  "$(mj "print(d['dry'], d['distinct'], d['made'])" <<<"$PV")|$(pg pg-vmr "SELECT aadhaar FROM vm_people WHERE id = 1")|$($S vault find --kind aadhaar "$M1" 2>/dev/null)" \
+  "True 5 0|$(sp "$M1")|(not found)"
+
+OUT="$($S vault migrate --branch main 2>&1)"; RC=$?
+assert_eq "main without --yes says what it does, and does nothing" \
+  "$RC|$(grep -c 'Run again with --yes' <<<"$OUT")|$(pg pg-main "SELECT aadhaar FROM vm_people WHERE id = 1")" "0|1|$(sp "$M1")"
+OUT="$($S vault migrate --branch main --yes --column public.vm_people.aadhaar 2>&1)"; RC=$?
+assert_eq "main is refused until a branch of main has moved the same columns, and nothing on main changes" \
+  "$RC|$(grep -c 'not rehearsed' <<<"$OUT")|$(grep -c 'Not yet rehearsed: public.vm_people.aadhaar' <<<"$OUT")|$(pg pg-main "SELECT aadhaar FROM vm_people WHERE id = 1")|$($S vault find --kind aadhaar "$M1" 2>/dev/null)" \
+  "1|1|1|$(sp "$M1")|(not found)"
+
+MIG="$($S vault migrate --branch vmr --json 2>&1)"; RC=$?
+VMR_RUN="$(mj "print(d['id'])" <<<"$MIG")"
+assert_eq "the move: exit 1 while columns are skipped, the four numbers' keys made, the table vacuumed" \
+  "$RC|$(mj "print(d['state'], d['made'], d['reused'], d['vacuumed'])" <<<"$MIG")" "1|done 4 1 ['public.vm_people']"
+assert_eq "…every movable column of vm_people rewritten, nothing left" \
+  "$(mj "print(' '.join(sorted(c['column']+':'+str(c['replaced'])+'/'+str(c['left']) for c in d['columns'] if c['table'] == 'vm_people')))" <<<"$MIG")" \
+  "aadhaar:2/0 code:1/0 doc:1/0 legacy_id:1/0 note:1/0 short:1/0"
+assert_eq "…and a bigint holding a number whose key is opaque is left, with why" \
+  "$(mj "print([(c['left'], c['left_why']) for c in d['columns'] if c['table'] == 'vm_odd'][0])" <<<"$MIG")" \
+  "(1, {'its key in the vault is opaque, which this column cannot hold': 1})"
+IFS='|' read -r A1 L2 C3 S1 NOTE DOC A4 <<<"$(pg pg-vmr "SELECT r1.aadhaar, r1.legacy_id, r1.code, r1.short, r1.note, r1.doc::text, r2.aadhaar FROM vm_people r1, vm_people r2 WHERE r1.id = 1 AND r2.id = 2")"
+assert_eq "M1, held in a varchar(20) too, got a legacy key, the same in every place it stood" \
+  "$(grep -cE '^1[0-9]{11}$' <<<"$A1")|$([ "$A1" = "$S1" ] && echo same)" "1|same"
+assert_eq "…M2 in a bigint and as a JSON number: a legacy key, kept a number" \
+  "$(grep -cE '^1[0-9]{11}$' <<<"$L2")|$(pg pg-vmr "SELECT jsonb_typeof(doc->'uid') || ' ' || (doc->>'uid' = legacy_id::text) FROM vm_people WHERE id = 1")" "1|number true"
+assert_eq "…M3 in a char(12) and a JSON string: a legacy key in both; the document's other values kept" \
+  "$(grep -cE '^1[0-9]{11}$' <<<"$C3")|$(pg pg-vmr "SELECT (doc#>>'{kyc,no}' = code) || ' ' || (doc->>'n')::text FROM vm_people WHERE id = 1")" "1|true 7"
+assert_eq "…M4 only in text: an opaque key, and the note keeps its words around both keys" \
+  "$(grep -cE '^AR[0-9A-Z]{26}$' <<<"$A4")|$NOTE" "1|caller read out $A1 and $A4, verified"
+assert_eq "no number is left in the rewritten rows, and the keys read back as the numbers" \
+  "$(pg pg-vmr "SELECT t::text FROM vm_people t" | grep -cE "$NUMS")|$($S vault detokenise --kind aadhaar --purpose 'integration: 13.3 check' "$A1" "$L2" "$C3" "$A4" 2>&1 | tr '\n' ' ')" \
+  "0|$M1 $M2 $M3 $M4 "
+$S pii aadhaar run --branch vmr >/dev/null 2>&1
+assert_eq "the exposure report, run again, finds numbers only where the move could not go" \
+  "$(mj "print(' '.join(sorted(set(c['table']+'.'+c['column'] for c in d['columns'] if c['table'].startswith('vm_')))))" <<<"$($S pii aadhaar --branch vmr --json 2>/dev/null)")" \
+  "vm_child.parent vm_nokey.aadhaar vm_odd.num vm_parent.aadhaar"
+AUD="$($S audit --limit 3000)"
+assert_eq "the security log: the run, its two vault calls (legacy keys first) as the run, and no number" \
+  "$(grep 'vault.migrate' <<<"$AUD" | grep -c "migration $VMR_RUN on vmr")|$(grep 'vault.call' <<<"$AUD" | grep -c "(vault migration $VMR_RUN)")|$(grep -cE "$NUMS" <<<"$AUD")" "1|2|0"
+
+MAIN="$($S vault migrate --branch main --yes --column public.vm_people.aadhaar,public.vm_people.legacy_id,public.vm_people.code,public.vm_people.short,public.vm_people.note,public.vm_people.doc 2>&1)"; RC=$?
+assert_eq "main, once rehearsed: every column moved, the rehearsal named" \
+  "$RC|$(grep -c 'Every column is moved, with no number left.' <<<"$MAIN")|$(grep -c "Rehearsed by run(s) $VMR_RUN." <<<"$MAIN")|$(grep -c 'Keys: 0 made in the vault, 4 it held already' <<<"$MAIN")" "0|1|1|1"
+[ "$RC" = 0 ] || echo "$MAIN" | tail -20
+assert_eq "…with the very keys the branch got" \
+  "$(pg pg-main "SELECT md5(string_agg(t::text, ',' ORDER BY id)) FROM vm_people t")" "$(pg pg-vmr "SELECT md5(string_agg(t::text, ',' ORDER BY id)) FROM vm_people t")"
+
+# Over the API: vmapi belongs to vault-kyc, who is not an admin; vm_late is on
+# main only, so no branch has moved it.
+pg pg-main "CREATE TABLE vm_late (id int PRIMARY KEY, a text); INSERT INTO vm_late VALUES (1, '$M5')" >/dev/null
+$S branch create vmapi >/dev/null 2>&1
+$S branch owner vmapi vault-kyc@foxbyte.dev >/dev/null 2>&1
+$S pii aadhaar run --branch vmapi >/dev/null 2>&1
+BA=https://localhost:8080/api/branches
+mig() { as "$1" -H "$H" -X POST -d "$3" "$BA/$2/personal-data/aadhaar/migrate"; }
+migc() { code "$1" -H "$H" -X POST -d "$3" "$BA/$2/personal-data/aadhaar/migrate"; }
+LATE='{"columns":["public.vm_late.a"]}'
+assert_eq "POST …/migrate: the branch's owner previews it" \
+  "$(migc "$KK" vmapi '{"columns":["public.vm_late.a"],"dryRun":true}')|$(mig "$KK" vmapi '{"columns":["public.vm_late.a"],"dryRun":true}' | mj "print(d['dry'], d['distinct'])")" "200|True 1"
+OUT="$(mig "$KK" vmapi "$LATE")"
+assert_eq "…but moves it only with a use grant on Aadhaar" \
+  "$(migc "$KK" vmapi "$LATE")|$(grep -c 'needs a use grant on aadhaar' <<<"$OUT")|$(pg pg-vmapi "SELECT a FROM vm_late")" "403|1|$M5"
+assert_eq "…and never main, which is an admin's" "$(migc "$KK" main "$LATE")" "403"
+OUT="$(mig "$KEY" main "$LATE")"
+assert_eq "an admin is refused main for a column no branch moved (409), with the run" \
+  "$(migc "$KEY" main "$LATE")|$(mj "print('not rehearsed' in d['error'], d['migration']['state'])" <<<"$OUT")|$(pg pg-main "SELECT a FROM vm_late")" "409|True failed|$M5"
+$S vault grant vault-kyc@foxbyte.dev --kind aadhaar --use --yes >/dev/null 2>&1
+OUT="$(mig "$KK" vmapi "$LATE")"
+assert_eq "with the grant, the owner moves the branch; the grant counts the number" \
+  "$(mj "print(d['state'], d['made'], [c['left'] for c in d['columns']])" <<<"$OUT")|$(pg pg-vmapi "SELECT a ~ '^AR[0-9A-Z]{26}\$' FROM vm_late")|$($S vault grants --json | hjson "print([g['used_last_hour'] for g in d if g['email'] == 'vault-kyc@foxbyte.dev'][0])")" \
+  "done 1 [0]|t|1"
+LATE_KEY="$(pg pg-vmapi "SELECT a FROM vm_late")"
+assert_eq "GET …/migrations: the branch's runs, newest first" \
+  "$(as "$KK" "$BA/vmapi/personal-data/aadhaar/migrations" | mj "print([(m['dry'], m['state']) for m in d][:2])")" "[(False, 'done'), (True, 'done')]"
+OUT="$($S vault migrations --branch vmr)"
+assert_eq "fox vault migrations: the runs, the clean ones said so" "$(grep -c "^$VMR_RUN .*vmr .*migrate *done " <<<"$OUT")" "1"
+
+assert_eq "no orphans while the branches are there" "$($S vault orphans --json | hjson "print(len([o for o in d if o['run'] > $VM_BASE]))")" "0"
+$S branch delete vmr >/dev/null 2>&1; $S branch delete vmapi >/dev/null 2>&1
+OR="$($S vault orphans --json)"
+assert_eq "once deleted, each run's keys are orphans: vmr's four, vmapi's one" \
+  "$(hjson "print(sorted((o['branch'], o['why'], o['keys']['made'], o['keys']['pending']) for o in d if o['run'] > $VM_BASE))" <<<"$OR")" \
+  "[('vmapi', 'the branch was deleted', 1, 1), ('vmr', 'the branch was deleted', 4, 4)]"
+assert_eq "GET /api/vault/orphans: admins only" "$(code "$KK" "$VA/orphans")|$(code "$KEY" "$VA/orphans")" "403|200"
+OUT="$($S vault orphans delete 2>&1)"
+# Nobody reads LATE_KEY back before the delete: a read is a use, and would
+# keep it.
+assert_eq "delete without --yes says what it does, and deletes nothing" \
+  "$(grep -c 'Run again with --yes' <<<"$OUT")|$($S vault orphans --json | hjson "print(sum(o['keys']['pending'] for o in d if o['run'] > $VM_BASE))")" "1|5"
+for r in $(hjson "print(' '.join(str(o['run']) for o in d if o['run'] > $VM_BASE))" <<<"$OR"); do
+  $S vault orphans delete --run "$r" --yes >/dev/null 2>&1
+done
+OR="$($S vault orphans --json)"
+assert_eq "the guarded delete: main's run was handed vmr's keys, so they stay; vmapi's key, held by no table, goes" \
+  "$(hjson "print(sorted((o['branch'], o['keys']['deleted'], o['keys']['kept'], o['keys']['pending']) for o in d if o['run'] > $VM_BASE))" <<<"$OR")" \
+  "[('vmapi', 1, 0, 0), ('vmr', 0, 4, 0)]"
+assert_eq "…main's keys still read back; the deleted one is gone" \
+  "$($S vault detokenise --kind aadhaar --purpose 'integration: 13.3 orphans' "$A1" 2>&1)|$($S vault detokenise --kind aadhaar --purpose 'integration: 13.3 orphans' "$LATE_KEY" 2>/dev/null)" "$M1|(not found)"
+AUD="$($S audit --limit 3000)"
+assert_eq "the security log: the orphans' deletes, and still no number" \
+  "$(( $(grep -c 'vault.orphans' <<<"$AUD") - ORPH_BEFORE ))|$(grep -cE "$NUMS" <<<"$AUD")|$($S vault log --limit 50 | grep -c 'delete.*orphaned by vault migration')" "2|0|2"
+assert_eq "…and the vault's log head is still the one the security log saw" "$($S vault status 2>&1 | grep -c 'is as the security log saw it')" "1"
+$S vault revoke "$($S vault grants --json | hjson "print([g['id'] for g in d if g['email'] == 'vault-kyc@foxbyte.dev'][0])")" >/dev/null 2>&1
+pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS vm_people, vm_nokey, vm_child, vm_parent, vm_late CASCADE" >/dev/null
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

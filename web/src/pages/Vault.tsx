@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from 'react'
 import {
-  getVault, getVaultGrants, getVaultKinds, getVaultLog, getVaultMine, grantVault, revokeVaultGrant, vaultDetokenise, vaultFind, vaultTokenise,
-  type VaultGrant, type VaultKind, type VaultLogEntry, type VaultMine, type VaultState,
+  deleteVaultOrphans, getVault, getVaultGrants, getVaultKinds, getVaultLog, getVaultMine, getVaultOrphans, grantVault, revokeVaultGrant,
+  vaultDetokenise, vaultFind, vaultTokenise,
+  type VaultGrant, type VaultKind, type VaultLogEntry, type VaultMine, type VaultOrphan, type VaultState,
 } from '../api'
 import { useConfirm } from '../confirm'
 import { useFeatures, why } from '../features'
@@ -246,9 +247,76 @@ export default function Vault() {
               </tbody>
             </table>
           </div>
+          <Orphans onChange={load} />
         </>
       )}
     </div>
+  )
+}
+
+// Orphans (13.3): keys migrations made on branches now gone. The vault
+// deletes one only if that branch's migrations made it and nobody else was
+// handed it; the rest are kept, and counted.
+function Orphans({ onChange }: { onChange: () => void }) {
+  const [orphans, setOrphans] = useState<VaultOrphan[] | null>(null)
+  const [note, setNote] = useState('')
+  const [err, setErr] = useState('')
+  const confirm = useConfirm()
+  const load = useCallback(async () => {
+    try { setOrphans(await getVaultOrphans()) } catch (e) { setOrphans([]); setErr((e as Error).message) }
+  }, [])
+  useEffect(() => { load() }, [load])
+  const pending = (orphans ?? []).reduce((n, o) => n + o.keys.pending, 0)
+  const del = async (run?: number) => {
+    const ok = await confirm({
+      title: 'Delete orphaned keys',
+      message: <>Delete from the vault the keys {run ? <>run {run}</> : 'these migrations'} made on branches now gone? A key is deleted only if
+        nobody else was handed it or read it back; the rest are kept. A key deleted can never be read back.</>,
+      confirmText: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    setErr(''); setNote('')
+    try {
+      const r = await deleteVaultOrphans(run)
+      setNote(`${r.deleted} key(s) deleted; ${r.kept} kept, because someone else was handed them.`)
+      await load(); onChange()
+    } catch (e) { setErr((e as Error).message) }
+  }
+  return (
+    <>
+      <h2 style={{ marginTop: 18 }}>Orphaned keys</h2>
+      <p className="muted" style={{ marginTop: -4, fontSize: 13 }}>
+        Keys a migration made on a branch that has since been deleted or made again: no table holds them, unless someone else was handed them too.
+      </p>
+      {err && <div className="err">{err}</div>}
+      {note && <p data-testid="orphans-note">{note}</p>}
+      <div className="table-wrap">
+        <table aria-label="Orphaned keys">
+          <thead><tr><th className="num">Run</th><th>Branch</th><th>Ran</th><th>By</th><th>Why</th><th className="num">Made</th><th className="num">To delete</th><th className="num">Deleted</th><th className="num">Kept</th><th /></tr></thead>
+          <tbody>
+            {(orphans ?? []).map(o => (
+              <tr key={o.run}>
+                <td className="num">{o.run}</td>
+                <td><code>{o.branch}</code></td>
+                <td style={{ fontSize: 13 }}>{new Date(o.ran).toLocaleString()}</td>
+                <td>{o.actor}</td>
+                <td style={{ fontSize: 13 }}>{o.why}</td>
+                <td className="num">{o.keys.made}</td>
+                <td className="num">{o.keys.pending}</td>
+                <td className="num">{o.keys.deleted}</td>
+                <td className="num">{o.keys.kept}</td>
+                <td>{o.keys.pending > 0 && <button className="ghost" aria-label={`Delete run ${o.run}'s orphaned keys`} onClick={() => del(o.run)}>Delete…</button>}</td>
+              </tr>
+            ))}
+            {orphans && orphans.length === 0 && <tr><td colSpan={10} className="muted">None: every branch a migration ran on is still there.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {pending > 1 && (orphans ?? []).filter(o => o.keys.pending > 0).length > 1 && (
+        <p><button className="ghost" onClick={() => del()}>Delete all {pending} orphaned keys…</button></p>
+      )}
+    </>
   )
 }
 

@@ -753,6 +753,31 @@ export const revokeVaultGrant = (id: number) => req('DELETE', `${API}/api/vault/
 export const getVaultLog = (limit = 50) => req('GET', `${API}/api/vault/log?limit=${limit}`) as Promise<{ entries: VaultLogEntry[] }>
 export const vaultDetokenise = (kind: string, refs: string[], purpose: string) =>
   req('POST', `${API}/api/vault/detokenise`, { kind, refs, purpose }) as Promise<VaultReadReply>
+// 13.3: a branch's Aadhaar numbers moved into the vault, keys left where they
+// stood; main only after a branch made from main has moved the same columns.
+export type VaultMigrateColumn = {
+  schema: string; table: string; column: string; type: string; format: string; skipped?: string
+  rows: number; numbers: number; replaced: number; left: number; left_why?: Record<string, number>
+}
+export type VaultMigration = {
+  id: number; branch: string; kind: string; actor: string; dry: boolean; state: 'running' | 'done' | 'failed'
+  started: string; finished?: string; error?: string; format?: string
+  columns: VaultMigrateColumn[]; distinct: number; made: number; reused: number; passes: number
+  vacuumed?: string[]; rehearsals?: number[]; limits: string[]
+}
+export type VaultOrphan = {
+  run: number; branch: string; actor: string; ran: string; why: string
+  keys: { made: number; pending: number; deleted: number; kept: number }
+}
+export const migrateToVault = (branch: string, o: { columns?: string[]; format?: 'opaque' | 'legacy'; dryRun?: boolean }) =>
+  req('POST', `${aadhaarURL(branch)}/migrate`, o) as Promise<VaultMigration>
+export const getVaultMigrations = (branch: string) => req('GET', `${aadhaarURL(branch)}/migrations`) as Promise<VaultMigration[]>
+export const getVaultOrphans = () => req('GET', `${API}/api/vault/orphans`) as Promise<VaultOrphan[]>
+export const deleteVaultOrphans = (run?: number) =>
+  req('POST', `${API}/api/vault/orphans/delete`, run ? { run } : {}) as Promise<{ runs: number[]; deleted: number; kept: number }>
+// A run moved every column it planned, with nothing left.
+export const migrationClean = (m: VaultMigration) =>
+  !m.dry && m.state === 'done' && m.columns.length > 0 && m.columns.every(c => !c.skipped && c.left === 0)
 
 // The data grid's save (point 12.2): rows added, changed and deleted, applied
 // together as you, or not at all.

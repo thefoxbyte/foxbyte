@@ -624,6 +624,28 @@ has the grants, the access log and a read-back box that shows a value masked
 until revealed. Not built: grants to agent keys, which do not reach the API,
 and a fresh MFA code before reading back, which waits for point 15.
 
+**13.3 is built** (`feat/p13-vault-133`), with the four decisions of 21
+November 2026: on a branch first, then the same run on main, which writes the
+same keys (a change request carries schema, not a rewrite of rows); numbers
+inside text and JSON replaced where they stand; legacy keys in columns that
+cannot hold an opaque one; orphans deleted only when nobody else was handed
+them. `fox vault migrate --branch b [--column s.t.c ...] [--format
+opaque|legacy] [--dry-run] [--yes]` takes the columns of the branch's latest
+exposure report, plans each (its key format, or why it is skipped: no primary
+key, a key or foreign-key column, generated, a view), reads every row that may
+hold a number, puts the numbers needing legacy keys in the vault first and the
+rest after, rewrites the rows in batches by primary key where the value is
+still what was read, passes again for rows written meanwhile, counts what is
+left with why, and vacuums the tables it rewrote. Main is refused unless a
+branch made from main moved the same columns clean, and needs an admin. Runs
+and the keys they made are in the install's store; `fox vault migrations`;
+`fox vault orphans [delete]` lists the keys of runs whose branch is gone and
+has the service delete each only if that branch's runs made it and no other
+actor's access-log entry names it (image revision 3). Differences from section
+15: step 5 is the same migration run on main, not `fox promote`; the map of
+numbers to keys is held in the engine's memory for the run, not an unlogged
+table in the branch; kinds other than Aadhaar wait for a later step.
+
 ---
 
 ## 20. What the prototype found (Gate 0)
