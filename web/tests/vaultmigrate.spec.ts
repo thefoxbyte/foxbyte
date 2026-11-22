@@ -40,9 +40,16 @@ const spaced = (n: string) => `${n.slice(0, 4)} ${n.slice(4, 8)} ${n.slice(8)}`
 test('a branch moved into the vault from the page keeps keys where its numbers stood; its keys are orphans once it is deleted', async ({ page }) => {
   test.setTimeout(240_000)
   await signIn(page)
-  const branch = `vmig${Date.now().toString().slice(-7)}`
-  const made = await page.request.post('/api/branches', { data: { name: branch, from: 'main' } })
-  expect(made.ok(), await made.text()).toBeTruthy()
+  // Made by scripts/integration_ui.sh before the browser starts, new each run:
+  // made here, its container started a moment before the page's first request,
+  // and Chromium aborted that request when the host's network changed
+  // (net::ERR_NETWORK_CHANGED, "Failed to fetch"; playwright.config.ts). Made
+  // here only when the spec runs without the harness.
+  const branch = process.env.FOX_E2E_VMIG_BRANCH ?? `vmig${Date.now().toString().slice(-7)}`
+  if (!process.env.FOX_E2E_VMIG_BRANCH) {
+    const made = await page.request.post('/api/branches', { data: { name: branch, from: 'main' } })
+    expect(made.ok(), await made.text()).toBeTruthy()
+  }
   const sql = async (q: string) => {
     const r = await page.request.post(`/api/branches/${branch}/query`, { data: { sql: q } })
     expect(r.ok(), await r.text()).toBeTruthy()
@@ -58,7 +65,7 @@ test('a branch moved into the vault from the page keeps keys where its numbers s
     await page.getByRole('link', { name: 'Aadhaar exposure' }).click()
     await page.getByLabel('Branch', { exact: true }).selectOption(branch)
     await page.getByRole('button', { name: 'Run the report' }).click()
-    const cols = page.getByRole('table', { name: 'Aadhaar by column' })
+    const cols = page.getByRole('table', { name: 'Aadhaar by column', exact: true })
     await expect(cols.getByText('public.vm_people.legacy_id', { exact: true })).toBeVisible({ timeout: 120_000 })
 
     // A preview says what would move, and moves nothing.
@@ -98,12 +105,16 @@ test('a branch moved into the vault from the page keeps keys where its numbers s
     await page.getByRole('button', { name: 'Run the report' }).click()
     await expect(page.getByRole('button', { name: 'Run the report' })).toBeEnabled({ timeout: 120_000 })
     for (const c of ['aadhaar', 'legacy_id', 'note']) {
-      await expect(page.getByRole('table', { name: 'Aadhaar by column' }).getByText(`public.vm_people.${c}`, { exact: true })).toHaveCount(0)
+      await expect(page.getByRole('table', { name: 'Aadhaar by column', exact: true }).getByText(`public.vm_people.${c}`, { exact: true })).toHaveCount(0)
     }
   } finally {
     const del = await page.request.delete(`/api/branches/${branch}`)
     expect(del.ok(), await del.text()).toBeTruthy()
   }
+  // Deleting the branch stopped its container, which changes the host's network
+  // as starting one does; the page's next request waits until Chromium has seen
+  // the change, rather than being aborted by it.
+  await page.waitForTimeout(3_000)
 
   // Its branch gone, the run's keys are orphans; the Vault page deletes them.
   await page.getByRole('link', { name: 'Vault', exact: true }).click()
