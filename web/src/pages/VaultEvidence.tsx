@@ -206,7 +206,7 @@ function Row({ r, items, editing, setEditing, onSave }: {
       <td style={{ fontSize: 13 }}>{r.whose}</td>
       <td><b style={{ color: verdictColour[r.verdict] }}>{r.verdict}</b></td>
       <td style={{ fontSize: 13 }}>
-        <ul style={{ margin: 0, paddingLeft: 16 }}>
+        <ul style={{ margin: 0, paddingLeft: 16, display: 'grid', gap: 6 }}>
           {r.checks.map((c, i) => (
             <li key={i} style={{ color: c.ok ? undefined : WARN }}>
               {c.ok ? '✓' : '✗'} {c.what} <span className="muted">({c.basis}: {c.detail})</span>

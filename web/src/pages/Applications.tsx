@@ -177,7 +177,7 @@ export default function Applications() {
       <h2 style={{ marginTop: 22 }}>Register an application</h2>
       <div className="panel">
         <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
-          <label className="field">Name (its tokens' <code>iss</code>)
+          <label className="field"><span>Name (its tokens' <code>iss</code>)</span>
             <input value={name} onChange={e => setName(e.target.value)} placeholder="shop" />
           </label>
           <label className="field">Account its connections use
@@ -198,11 +198,11 @@ export default function Applications() {
             </select>
           </label>
         </div>
-        <label className="field" style={{ display: 'block', marginTop: 10 }}>Public key (Ed25519)
+        <label className="field" style={{ display: 'flex', marginTop: 10 }}>Public key (Ed25519)
           <textarea rows={3} style={{ width: '100%', fontFamily: 'var(--font-mono)' }} value={pub} onChange={e => setPub(e.target.value)}
             placeholder="-----BEGIN PUBLIC KEY----- … (openssl pkey -in key.pem -pubout), a JWK, or the 32 bytes in hex" />
         </label>
-        <label className="field" style={{ display: 'block', marginTop: 10 }}>Key id (optional; the key's thumbprint if empty)
+        <label className="field" style={{ display: 'flex', marginTop: 10, maxWidth: 360 }}>Key id (optional; the key's thumbprint if empty)
           <input value={kid} onChange={e => setKid(e.target.value)} placeholder="2026-10" />
         </label>
         <p className="muted" style={{ fontSize: 13 }}>

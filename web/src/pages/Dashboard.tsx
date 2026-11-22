@@ -94,7 +94,7 @@ function Backups() {
                 const cmd = `fox restore --to '${(b.finished_at || '').replace('T', ' ').replace('Z', '+00')}'`
                 return (
                   <tr key={b.name}>
-                    <td>{when(b.finished_at)} {b.newest && <span className="badge primary">newest</span>}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{when(b.finished_at)} {b.newest && <span className="badge primary">newest</span>}</td>
                     <td className="cell-mono">{sizeLabel(b.size_bytes)}</td>
                     <td className="dsn-cell">
                       <div className="dsn-row">
