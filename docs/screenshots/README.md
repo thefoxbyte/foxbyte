@@ -4,8 +4,7 @@ These images are referenced by the top-level `README.md`.
 
 | File | Page | How to reach it |
 | --- | --- | --- |
-| `landing.png` | the public landing page | `/`, signed out |
-| `dashboard.png` | Ops dashboard | after login (default landing) |
+| `dashboard.png` | Ops dashboard | after login (the first page) |
 | `ledger.png` | Blackbox | **Changes** in the sidebar |
 | `console.png` | SQL console | **Console** in the sidebar |
 | `realtime.png` | Realtime | **Realtime** in the sidebar |
@@ -16,7 +15,7 @@ These images are referenced by the top-level `README.md`.
 make screenshots
 ```
 
-All five, from one harness, in about twenty seconds. Commit whatever changed.
+All four, from one harness, in about twenty seconds. Commit whatever changed.
 
 That command is the point of this directory's history. The previous retake was
 done by hand and the method was written down here without being shipped, so

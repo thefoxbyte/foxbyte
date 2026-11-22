@@ -72,19 +72,10 @@ they have signed in.
 
 Delete the claim. Point at `fox apikey create` and the API keys page only.
 
-### 5. The landing page states a branch time nobody measured
+### 5. (Closed) The landing page states a branch time nobody measured
 
-**Difficulty:** easy
-
-`web/src/pages/Landing.tsx` draws a fake terminal that says
-`branch "feature" ready in 1.9s`. `fox branch create` prints a real elapsed
-time (`cmd/fox/main.go`, `Branch %q is ready in %s`). The only `1.2s` in the
-tree is a dashboard-snapshot percentile in `internal/branch/snapshot.go`,
-which is not a clone.
-
-Drop the specific number, or mark the line as an illustration so it cannot
-be quoted as a benchmark. A component test is optional. Do not invent a
-replacement number.
+The console no longer has a landing page (22 Nov 2026): its address opens the
+sign-in page, so the fake terminal and its number are gone.
 
 ### 6. The architecture overview says backups go to the cloud, and that the product is simply open source
 
