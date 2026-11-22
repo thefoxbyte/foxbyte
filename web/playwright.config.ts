@@ -22,8 +22,11 @@ export default defineConfig({
   //
   // The two causes that made it recur are gone (Oct 2026): listing backups ran a
   // throwaway container on every dashboard load and now runs inside main, and
-  // integration_ui.sh runs a gateway that never auto-suspends a branch. What is
-  // left is anything new that starts or stops a container while a spec runs.
+  // integration_ui.sh runs a gateway that never auto-suspends a branch. A third
+  // went in Nov 2026: the scheduled restore check, five minutes after the engine
+  // started, ran a throwaway container under whichever spec was running, and
+  // integration_ui.sh now turns it off. What is left is anything new that starts
+  // or stops a container while a spec runs.
   //
   // This is the environment being non-deterministic, not the console being
   // flaky, and no assertion is weakened by retrying. A test that fails twice in a

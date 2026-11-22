@@ -32,6 +32,15 @@ TARGET_BRANCH="e2eui3"
 TABLE="e2e_notes"
 
 echo "### setup: a running stack, an account, a clean branch"
+# The scheduled restore check is off for this suite. It runs five minutes after
+# the control plane starts whenever none has run in a week, which on a fresh
+# runner is every night, and it starts and stops a container (pg-restore-check)
+# to restore into: that changes the host's network interfaces, and Chromium
+# aborts every request in flight. It landed under a different spec each night
+# (realtime, masking, personal data) from 15 Nov 2026, each time within the
+# three seconds the container lived. integration_test.sh and
+# integration_realtime.sh test the check itself, through `backup verify`.
+export FOX_RESTORE_CHECK_INTERVAL=off
 # Restarted with this binary: another suite may have left services running from
 # a build without the console (`-tags embedui`), and those would serve the API
 # with no UI behind it.
