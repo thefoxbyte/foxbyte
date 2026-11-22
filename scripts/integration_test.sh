@@ -4627,8 +4627,8 @@ $S branch create vmr >/dev/null 2>&1
 # opaque, so it cannot go there.
 pg pg-vmr "CREATE TABLE vm_odd (id int PRIMARY KEY, num bigint); INSERT INTO vm_odd VALUES (1, $N1)" >/dev/null
 $S pii aadhaar run --branch vmr >/dev/null 2>&1
-assert_eq "the vault service runs the image this fox needs (revision 3: the guarded delete)" \
-  "$(sudo docker inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' fox-vault)" "3"
+assert_eq "the vault service runs an image with the guarded delete (revision 3 or later)" \
+  "$(( $(sudo docker inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' fox-vault) >= 3 ))" "1"
 
 OUT="$($S vault migrate 2>&1)"; RC=$?
 assert_eq "migrate needs a branch" "$RC|$(grep -c 'branch is needed' <<<"$OUT")" "2|1"
@@ -4748,6 +4748,143 @@ assert_eq "the security log: the orphans' deletes, and still no number" \
 assert_eq "…and the vault's log head is still the one the security log saw" "$($S vault status 2>&1 | grep -c 'is as the security log saw it')" "1"
 $S vault revoke "$($S vault grants --json | hjson "print([g['id'] for g in d if g['email'] == 'vault-kyc@foxbyte.dev'][0])")" >/dev/null 2>&1
 pg pg-main "SET bb.allow_destructive = on; DROP TABLE IF EXISTS vm_people, vm_nokey, vm_child, vm_parent, vm_late CASCADE" >/dev/null
+
+echo "### 11aw. the vault's keys rotated while it answers; values deleted and updated, admins only (point 13.4)"
+# The vault §11at set up. test@ (KEY) is an admin; vault-kyc (KK) is not.
+# Synthetic numbers, new each run, nobody's: four to change by hand (W1..W4),
+# and 20,000 more so a rotation takes long enough to be watched while it runs.
+VNUMS="$(mktemp)"
+python3 -c '
+import random, sys
+D=[[0,1,2,3,4,5,6,7,8,9],[1,2,3,4,0,6,7,8,9,5],[2,3,4,0,1,7,8,9,5,6],[3,4,0,1,2,8,9,5,6,7],[4,0,1,2,3,9,5,6,7,8],[5,9,8,7,6,0,4,3,2,1],[6,5,9,8,7,1,0,4,3,2],[7,6,5,9,8,2,1,0,4,3],[8,7,6,5,9,3,2,1,0,4],[9,8,7,6,5,4,3,2,1,0]]
+P=[[0,1,2,3,4,5,6,7,8,9],[1,5,7,6,2,8,3,0,9,4],[5,8,0,3,7,9,6,1,4,2],[8,9,1,6,0,4,3,5,2,7],[9,4,5,3,1,2,6,8,7,0],[4,2,8,6,5,7,3,9,0,1],[2,7,9,3,8,0,6,4,1,5],[7,0,4,6,9,1,3,2,5,8]]
+INV=[0,4,3,2,1,5,6,7,8,9]
+out=set()
+while len(out)<20004:
+    d=str(random.randint(2,9))+"".join(str(random.randint(0,9)) for _ in range(10))
+    c=0
+    for i,ch in enumerate(reversed(d)): c=D[c][P[(i+1)%8][int(ch)]]
+    out.add(d+str(INV[c]))
+print("\n".join(out))' >"$VNUMS"
+read -r W1 W2 W3 W4 <<<"$(head -4 "$VNUMS" | tr '\n' ' ')"
+WNUMS="$W1|$W2|$W3|$W4"
+H='Content-Type: application/json'
+
+assert_eq "the vault service is image revision 4, the one this fox needs" \
+  "$(sudo docker inspect -f '{{index .Config.Labels "dev.dbengine.image-revision"}}' fox-vault)" "4"
+RW1="$($S vault tokenise --kind aadhaar "$W1" 2>&1 | awk '{print $1}')"
+RW2="$($S vault tokenise --kind aadhaar "$W2" 2>&1 | awk '{print $1}')"
+sed -n '5,10004p' "$VNUMS" | $S vault tokenise --kind aadhaar - >/dev/null 2>&1
+sed -n '10005,20004p' "$VNUMS" | $S vault tokenise --kind aadhaar - >/dev/null 2>&1
+ST="$(as "$KEY" "$VA")"
+AREC="$(hjson 'print([k["records"] for k in d["status"]["kinds"] if k["name"] == "aadhaar"][0])' <<<"$ST")"
+assert_eq "20,002 numbers more in the vault, each key dated and numbered" \
+  "$(( AREC >= 20002 ))|$(hjson 'print(all(k["gen"] >= 1 and k["created"].endswith("Z") for x in d["status"]["kinds"] for k in x["keys"]))' <<<"$ST")" "1|True"
+IDX_OLD="$(hjson 'print([k["label"] for x in d["status"]["kinds"] if x["name"] == "aadhaar" for k in x["keys"] if k["role"] == "index" and k["current"]][0])' <<<"$ST")"
+
+# Who may: admins and the operator, whatever an account holds.
+$S vault grant vault-kyc@foxbyte.dev --kind aadhaar --use --yes >/dev/null 2>&1
+OUT="$(as "$KK" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$RW1\"],\"values\":[\"$W3\"],\"purpose\":\"x\"}" "$VA/update")"
+assert_eq "a use grant is not enough to rotate, delete or update: admins only" \
+  "$(code "$KK" -H "$H" -X POST -d '{"kind":"aadhaar"}' "$VA/rotate")|$(code "$KK" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$RW1\"],\"purpose\":\"x\"}" "$VA/delete")|$(grep -c 'updating values in the vault is for admins' <<<"$OUT")" "403|403|1"
+$S vault revoke "$($S vault grants --json | hjson "print([g['id'] for g in d if g['email'] == 'vault-kyc@foxbyte.dev'][0])")" >/dev/null 2>&1
+
+# The index key, rotated while the vault answers: every find and tokenise of
+# a number already in it gets its key, under the old index key or the new.
+OUT="$($S vault rotate --kind aadhaar --key index 2>&1)"
+assert_eq "rotate without --yes says what it does, and does nothing" \
+  "$(grep -c 'Reference keys do not change' <<<"$OUT")|$(as "$KEY" "$VA" | hjson 'print(len([k for x in d["status"]["kinds"] if x["name"] == "aadhaar" for k in x["keys"] if k["role"] == "index"]))')" "1|1"
+ROT_OUT="$(mktemp)"
+$S vault rotate --kind aadhaar --key index --yes >"$ROT_OUT" 2>&1 &
+ROT=$!
+sleep 0.3
+DURING_CODE="$(code "$KEY" -H "$H" -X POST -d '{"kind":"aadhaar","key":"data"}' "$VA/rotate")"
+FINDS=0; WRONG=0
+while kill -0 "$ROT" 2>/dev/null; do
+  F="$($S vault find --kind aadhaar "$W1" 2>&1)"
+  T="$($S vault tokenise --kind aadhaar "$W2" 2>&1)"
+  FINDS=$((FINDS + 1))
+  [ "$F" = "$RW1" ] && [ "$T" = "$RW2" ] || WRONG=$((WRONG + 1))
+done
+wait "$ROT"; RC=$?
+assert_eq "the index rotation ran; meanwhile a second rotation of the kind was refused" \
+  "$RC|$(grep -c "^done: [0-9]* records indexed under vault-aadhaar-index-[0-9]* in .*; destroyed $IDX_OLD" "$ROT_OUT")|$DURING_CODE" "0|1|409"
+[ "$RC" = 0 ] || cat "$ROT_OUT"
+assert_eq "…and every find and tokenise while it ran got the number's own key, none new ($FINDS rounds)" "$(( FINDS > 0 ))|$WRONG" "1|0"
+ST="$(as "$KEY" "$VA")"
+assert_eq "the old index key is destroyed in the token, dated; the new one indexes every record" \
+  "$(hjson "print([(k['destroyed'], k['destroyed_at'] != '') for x in d['status']['kinds'] for k in x['keys'] if k['label'] == '$IDX_OLD'][0], [k['records'] for x in d['status']['kinds'] if x['name'] == 'aadhaar' for k in x['keys'] if k['role'] == 'index' and k['current']][0] == $AREC)" <<<"$ST")" "(True, True) True"
+assert_eq "after it: the same keys, found and read back" \
+  "$($S vault find --kind aadhaar "$W1" 2>&1)|$($S vault tokenise --kind aadhaar "$W2" 2>&1)|$($S vault detokenise --kind aadhaar --purpose 'integration: 13.4' "$RW1" 2>&1)" "$RW1|$RW2|$W1"
+
+# A rotation stopped in the middle, by the service restarting: the records not
+# yet moved are still found under the old key, and running it again finishes
+# it, destroying every old index key.
+$S vault rotate --kind aadhaar --key index --yes >/dev/null 2>&1 &
+ROT=$!
+sleep 0.5
+sudo docker restart fox-vault >/dev/null
+wait "$ROT" 2>/dev/null
+for i in $(seq 1 30); do $S vault status >/dev/null 2>&1 && break; sleep 1; done
+assert_eq "after a restart mid-rotation, every number is still found" \
+  "$($S vault find --kind aadhaar "$W1" 2>&1)|$(sed -n '5,2004p' "$VNUMS" | $S vault find --kind aadhaar - 2>&1 | grep -c '^AR')" "$RW1|2000"
+OUT="$($S vault rotate --kind aadhaar --key index --yes 2>&1)"
+assert_eq "…run again, it finishes: one index key left, holding every record" \
+  "$(grep -c '^done: ' <<<"$OUT")|$(as "$KEY" "$VA" | hjson "print([(k['records'] == $AREC) for x in d['status']['kinds'] if x['name'] == 'aadhaar' for k in x['keys'] if k['role'] == 'index' and not k['destroyed']])")" "1|[True]"
+
+# The data key, over the API: every record encrypted again, the old key gone.
+DATA_OLD="$(as "$KEY" "$VA" | hjson 'print([k["label"] for x in d["status"]["kinds"] if x["name"] == "aadhaar" for k in x["keys"] if k["role"] == "data" and k["current"]][0])')"
+OUT="$(as "$KEY" -H "$H" -X POST -d '{"kind":"aadhaar","key":"data"}' "$VA/rotate")"
+assert_eq "POST /api/vault/rotate: the data key, by an admin; the old one destroyed" \
+  "$(hjson 'print(d["results"][0].split(" records")[0])' <<<"$OUT" | grep -c '^done: [0-9]*$')|$(grep -c "destroyed $DATA_OLD" <<<"$OUT")" "1|1"
+assert_eq "…values still read back" "$($S vault detokenise --kind aadhaar --purpose 'integration: 13.4' "$RW2" 2>&1)" "$W2"
+assert_eq "a key to rotate is data or index" "$(code "$KEY" -H "$H" -X POST -d '{"kind":"aadhaar","key":"both"}' "$VA/rotate")" "400"
+
+# Update: the key stays, the value changes, after the kind's check.
+OUT="$(printf '%s\n' "$W3" | $S vault update --kind aadhaar "$RW1" 2>&1)"; RC=$?
+assert_eq "update needs a purpose" "$RC|$(grep -c 'purpose is needed' <<<"$OUT")" "2|1"
+OUT="$(printf '%s\n%s\n' "$W3" "$W4" | $S vault update --kind aadhaar --purpose 'integration: corrected' "$RW1" 2>&1)"; RC=$?
+assert_eq "…and one new value for each key" "$RC|$(grep -c '1 reference key(s) and 2 new value(s)' <<<"$OUT")" "2|1"
+OUT="$(printf '%s\n' "$W3" | $S vault update --kind aadhaar --purpose 'integration: corrected' "$RW1" 2>&1)"; RC=$?
+assert_eq "update: the key now holds the new number; the old number has no key" \
+  "$RC|$OUT|$($S vault detokenise --kind aadhaar --purpose 'integration: 13.4' "$RW1" 2>&1)|$($S vault find --kind aadhaar "$W3" 2>&1)|$($S vault find --kind aadhaar "$W1" 2>/dev/null)" \
+  "0|$RW1	done|$W3|$RW1|(not found)"
+OUT="$(printf '%s\n' "$W2" | $S vault update --kind aadhaar --purpose 'integration: corrected' "$RW1" 2>&1)"; RC=$?
+assert_eq "a number another key holds is refused, that key named" "$RC|$(grep -c "(another key holds it: $RW2)" <<<"$OUT")" "1|1"
+assert_eq "the same number again is unchanged; a number failing the check is refused" \
+  "$(printf '%s\n' "$W3" | $S vault update --kind aadhaar --purpose 'integration: corrected' "$RW1" 2>&1)|$(printf '123412341234\n' | $S vault update --kind aadhaar --purpose p "$RW1" 2>/dev/null)" \
+  "$RW1	unchanged|$RW1	(refused)"
+OUT="$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$RW1\"],\"values\":[\"$W4\"],\"purpose\":\"integration: by the API\"}" "$VA/update")"
+assert_eq "POST /api/vault/update: an admin updates; no purpose is a bad request" \
+  "$(hjson 'print(d["results"][0])' <<<"$OUT")|$($S vault detokenise --kind aadhaar --purpose 'integration: 13.4' "$RW1" 2>&1)|$(code "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$RW1\"],\"values\":[\"$W3\"]}" "$VA/update")" \
+  "done|$W4|400"
+
+# Delete: the key answers "not found" to everyone.
+OUT="$($S vault delete --kind aadhaar --purpose 'integration: account closed' "$RW1" 2>&1)"
+assert_eq "delete without --yes says what it does, and deletes nothing" \
+  "$(grep -c 'until the next' <<<"$OUT")|$($S vault find --kind aadhaar "$W4" 2>&1)" "1|$RW1"
+OUT="$($S vault delete --kind aadhaar --purpose 'integration: account closed' --yes "$RW1" 2>&1)"; RC=$?
+assert_eq "delete --yes: gone; its key reads nothing back, and its number has no key" \
+  "$RC|$(grep -c '^1 of 1 deleted' <<<"$OUT")|$($S vault detokenise --kind aadhaar --purpose 'integration: 13.4' "$RW1" 2>/dev/null)|$($S vault find --kind aadhaar "$W4" 2>/dev/null)" "0|1|(not found)|(not found)"
+OUT="$($S vault delete --kind aadhaar --purpose p --yes "$RW1" 2>&1)"; RC=$?
+assert_eq "…a key deleted twice is not there to delete" "$RC|$(grep -c "$RW1	(not found)" <<<"$OUT")" "1|1"
+assert_eq "POST /api/vault/delete: a purpose is needed, and owners are the orphans' own" \
+  "$(code "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$RW2\"]}" "$VA/delete")|$(code "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$RW2\"],\"purpose\":\"p\",\"owners\":[\"x\"]}" "$VA/delete")" "400|400"
+assert_eq "…an admin deletes with one" \
+  "$(as "$KEY" -H "$H" -X POST -d "{\"kind\":\"aadhaar\",\"refs\":[\"$RW2\"],\"purpose\":\"integration: by the API\"}" "$VA/delete" | hjson 'print(d["results"][0])')" "done"
+
+# What is kept of it: the calls and their purposes, never a number.
+LOG="$($S vault log --limit 300)"
+assert_eq "the vault's log: the rotations, the updates and deletes with their purposes" \
+  "$(( $(grep -c 'rotate .*index key.*done: ' <<<"$LOG") >= 2 ))|$(grep -c 'rotate .*data key.*done: ' <<<"$LOG")|$(grep -c 'update .*integration: corrected' <<<"$LOG")|$(grep -c 'delete .*integration: account closed' <<<"$LOG")" "1|1|3|1"
+AUD="$($S audit --limit 5000)"
+assert_eq "the security log: each change with the vault's head and its purpose" \
+  "$(grep 'vault.call' <<<"$AUD" | grep -c 'update, 1 reference key, purpose "integration: by the API": done 1; head ')|$(( $(grep 'vault.call' <<<"$AUD" | grep -c 'rotate, the index key: done: .*; head ') >= 2 ))|$(grep 'vault.refused' <<<"$AUD" | grep -c 'is for admins')" "1|1|3"
+assert_eq "…and no number in either log, nor in the vault database's dump" \
+  "$(grep -cE "$WNUMS" <<<"$LOG$AUD")|$(sudo docker exec fox-vault-db pg_dump -U postgres vault | grep -cE "$WNUMS")" "0|0"
+assert_eq "the vault's log holds, and agrees with the head the security log saw" \
+  "$($S vault status 2>&1 | grep -c 'the chain holds')|$($S vault status 2>&1 | grep -c 'is as the security log saw it')" "1|1"
+rm -f "$VNUMS" "$ROT_OUT"
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

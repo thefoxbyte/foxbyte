@@ -19,13 +19,16 @@ vi.mock('../api', async () => {
     vaultDetokenise: vi.fn(),
     getVaultOrphans: vi.fn(async () => []),
     deleteVaultOrphans: vi.fn(),
+    vaultRotate: vi.fn(),
+    vaultDelete: vi.fn(),
+    vaultUpdate: vi.fn(),
     getStatus: vi.fn(),
   }
 })
 
 import {
   deleteVaultOrphans, getStatus, getVault, getVaultGrants, getVaultKinds, getVaultLog, getVaultMine, getVaultOrphans, grantVault, revokeVaultGrant,
-  vaultDetokenise, vaultFind, vaultTokenise, type Status, type VaultGrant, type VaultKind, type VaultMine, type VaultState,
+  vaultDelete, vaultDetokenise, vaultFind, vaultRotate, vaultTokenise, vaultUpdate, type Status, type VaultGrant, type VaultKind, type VaultMine, type VaultState,
 } from '../api'
 import { ConfirmProvider } from '../confirm'
 import Vault, { masked } from './Vault'
@@ -74,7 +77,7 @@ function page() {
 
 describe('Vault page', () => {
   beforeEach(() => {
-    for (const f of [getVault, getVaultMine, getVaultGrants, getVaultLog, grantVault, revokeVaultGrant, vaultTokenise, vaultFind, vaultDetokenise]) vi.mocked(f).mockReset()
+    for (const f of [getVault, getVaultMine, getVaultGrants, getVaultLog, grantVault, revokeVaultGrant, vaultTokenise, vaultFind, vaultDetokenise, vaultRotate, vaultDelete, vaultUpdate]) vi.mocked(f).mockReset()
     vi.mocked(getVaultKinds).mockResolvedValue(KINDS)
     vi.mocked(getVaultMine).mockResolvedValue(mine())
     vi.mocked(getVaultGrants).mockResolvedValue([])
@@ -263,6 +266,66 @@ describe('Vault page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(deleteVaultOrphans).toHaveBeenCalledWith(4))
     expect((await screen.findByTestId('orphans-note')).textContent).toBe('2 key(s) deleted; 1 kept, because someone else was handed them.')
+  })
+
+  it('an admin rotates a kind’s index key after confirming, and the keys show when each was made and destroyed', async () => {
+    const rotated = structuredClone(setUp)
+    rotated.status!.kinds[0].keys = [
+      { ...key('vault-aadhaar-index-1', 'index', 0), current: false, destroyed: true, created: '2026-11-14T10:00:00Z', destroyed_at: '2026-11-22T10:00:00Z' },
+      { ...key('vault-aadhaar-index-2', 'index', 3), created: '2026-11-22T10:00:00Z' },
+    ]
+    vi.mocked(getVault).mockResolvedValueOnce(setUp).mockResolvedValue(rotated)
+    vi.mocked(vaultRotate).mockResolvedValue({ results: ['done: 3 records indexed under vault-aadhaar-index-2 in 40ms; destroyed vault-aadhaar-index-1'] })
+    page()
+    fireEvent.click(await screen.findByRole('button', { name: 'Rotate the aadhaar index key' }))
+    expect(vaultRotate).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Rotate' }))
+    await waitFor(() => expect(vaultRotate).toHaveBeenCalledWith('aadhaar', 'index'))
+    expect((await screen.findByTestId('vault-msg')).textContent).toMatch(/Rotated the aadhaar index key: done: 3 records indexed under vault-aadhaar-index-2/)
+    expect((await screen.findByTestId('vault-key-vault-aadhaar-index-1')).textContent).toMatch(/destroyed \d/)
+  })
+
+  it('an admin updates a value under its key, with a purpose, and is told when another key holds it', async () => {
+    vi.mocked(getVault).mockResolvedValue(setUp)
+    vi.mocked(vaultUpdate).mockResolvedValueOnce({ refs: [''], results: ['done'] }).mockResolvedValueOnce({ refs: ['AR' + '8'.repeat(26)], results: ['another key holds it'] })
+    page()
+    const panel = await screen.findByTestId('vault-change')
+    const update = within(panel).getByRole('button', { name: 'Update' }) as HTMLButtonElement
+    const value = within(panel).getByLabelText('New value') as HTMLInputElement
+    expect(value.type).toBe('password')
+    fireEvent.change(within(panel).getByLabelText('Reference key to change'), { target: { value: 'AR' + '7'.repeat(26) } })
+    fireEvent.change(value, { target: { value: '2341 2341 2346' } })
+    expect(update.disabled).toBe(true) // no purpose yet
+    fireEvent.change(within(panel).getByLabelText('Purpose of the change'), { target: { value: 'corrected by the customer' } })
+    fireEvent.click(update)
+    await waitFor(() => expect(vaultUpdate).toHaveBeenCalledWith('aadhaar', ['AR' + '7'.repeat(26)], ['2341 2341 2346'], 'corrected by the customer'))
+    expect((await screen.findByTestId('vault-change-note')).textContent).toMatch(/Updated: AR7+ now holds the new value/)
+    expect(value.value).toBe('')
+    fireEvent.change(value, { target: { value: '4567 8901 2341' } })
+    fireEvent.click(update)
+    await waitFor(() => expect((screen.getByTestId('vault-change-note')).textContent).toMatch(/another reference key, AR8+, holds that value/))
+  })
+
+  it('an admin deletes a value only after confirming, with a purpose', async () => {
+    vi.mocked(getVault).mockResolvedValue(setUp)
+    vi.mocked(vaultDelete).mockResolvedValue({ results: ['done'] })
+    page()
+    const panel = await screen.findByTestId('vault-change')
+    fireEvent.change(within(panel).getByLabelText('Reference key to change'), { target: { value: 'AR' + '7'.repeat(26) } })
+    fireEvent.change(within(panel).getByLabelText('Purpose of the change'), { target: { value: 'account closed' } })
+    fireEvent.click(within(panel).getByRole('button', { name: 'Delete…' }))
+    expect(vaultDelete).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(vaultDelete).toHaveBeenCalledWith('aadhaar', ['AR' + '7'.repeat(26)], 'account closed'))
+    expect((await screen.findByTestId('vault-change-note')).textContent).toBe('Deleted ' + 'AR' + '7'.repeat(26) + '.')
+  })
+
+  it('an account that is not an admin is offered no rotation, deletion or update', async () => {
+    vi.mocked(getVaultMine).mockResolvedValue(mine({ admin: false, grants: [grant(4, 'dev@example.com', 'aadhaar', 'use')] }))
+    page()
+    await screen.findByTestId('vault-tool')
+    expect(screen.queryByTestId('vault-change')).toBeNull()
+    expect(screen.queryByTestId('vault-rotate')).toBeNull()
   })
 
   it('says when there are no orphaned keys', async () => {

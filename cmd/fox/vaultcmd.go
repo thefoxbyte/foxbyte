@@ -35,6 +35,9 @@ import (
 //	fox vault migrate --branch b [--column s.t.c ...] [--format opaque|legacy] [--dry-run] [--yes] [--json]
 //	fox vault migrations [--branch b] [--json]
 //	fox vault orphans [--json] | orphans delete [--run id] [--yes]
+//	fox vault rotate --kind k [--key data|index] [--yes]
+//	fox vault delete --kind k --purpose "why" <reference key>... | - [--yes]
+//	fox vault update --kind k --purpose "why" <reference key>...  (new values on stdin)
 //
 // The CLI is the operator's, on the machine: it reaches the vault service
 // directly, and each call is in the security log with the vault's log head.
@@ -69,6 +72,12 @@ func vaultCmd(args []string) {
 		vaultMigrations(args)
 	case "orphans":
 		vaultOrphans(args)
+	case "rotate":
+		vaultRotate(args)
+	case "delete":
+		vaultDelete(args)
+	case "update":
+		vaultUpdate(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown vault command %q\n\n%s", sub, vaultUsage)
 		os.Exit(2)
@@ -89,6 +98,9 @@ const vaultUsage = `usage:
   fox vault migrate --branch BRANCH [--column SCHEMA.TABLE.COLUMN ...] [--format opaque|legacy] [--dry-run] [--yes] [--json]
   fox vault migrations [--branch BRANCH] [--json]
   fox vault orphans [--json] | orphans delete [--run ID] [--yes]
+  fox vault rotate --kind KIND [--key data|index] [--yes]
+  fox vault delete --kind KIND --purpose "WHY" REF... | - [--yes]
+  fox vault update --kind KIND --purpose "WHY" REF...   (new values on stdin, one a line, in order)
 `
 
 func vaultSetup(args []string) {

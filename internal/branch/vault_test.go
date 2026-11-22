@@ -3,6 +3,7 @@
 package branch
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -119,5 +120,53 @@ func TestVaultAnchor(t *testing.T) {
 	fakeVault(t, func(seq int64) (string, bool, error) { return "7:" + strings.Repeat("b", 64), true, nil })
 	if a := vaultCheckAnchor(st); a.Holds || !strings.Contains(a.Note, "not what the security log saw") {
 		t.Fatalf("an entry changed: %+v", a)
+	}
+}
+
+// What the engine refuses before the vault sees it, and what the security log
+// keeps of each call: never a value (13.4).
+func TestVaultCheckRequest(t *testing.T) {
+	ok := []struct {
+		path string
+		req  vaultRequest
+	}{
+		{"delete", vaultRequest{Kind: "aadhaar", Refs: []string{"r"}, Purpose: "closed account"}},
+		{"update", vaultRequest{Kind: "aadhaar", Refs: []string{"r"}, Values: []string{"v"}, Purpose: "corrected"}},
+		{"rotate", vaultRequest{Kind: "aadhaar"}},
+		{"rotate", vaultRequest{Kind: "aadhaar", Key: "index"}},
+		{"find", vaultRequest{Kind: "aadhaar", Values: []string{"v"}}},
+	}
+	for _, c := range ok {
+		if err := vaultCheckRequest(c.path, c.req); err != nil {
+			t.Errorf("%s %+v: %v", c.path, c.req, err)
+		}
+	}
+	bad := []struct {
+		path string
+		req  vaultRequest
+		why  string
+	}{
+		{"delete", vaultRequest{Kind: "aadhaar", Refs: []string{"r"}}, "needs a purpose"},
+		{"update", vaultRequest{Kind: "aadhaar", Refs: []string{"r"}, Values: []string{"v"}, Purpose: "  "}, "needs a purpose"},
+		{"delete", vaultRequest{Kind: "aadhaar", Refs: []string{"r"}, Purpose: "p", Owners: []string{"x"}}, "orphaned keys"},
+		{"update", vaultRequest{Kind: "aadhaar", Refs: []string{"r", "s"}, Values: []string{"v"}, Purpose: "p"}, "its new value"},
+		{"rotate", vaultRequest{Kind: "aadhaar", Key: "both"}, "data or index"},
+		{"entries", vaultRequest{Kind: "aadhaar"}, "no vault call"},
+	}
+	for _, c := range bad {
+		if err := vaultCheckRequest(c.path, c.req); !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), c.why) {
+			t.Errorf("%s %+v: %v", c.path, c.req, err)
+		}
+	}
+	upd := vaultRequest{Kind: "aadhaar", Refs: []string{"r1", "r2"}, Values: []string{"234567890124", "456789012341"}, Purpose: "corrected"}
+	d := vaultCallDetail("update", upd, vaultReply{Results: []string{"done", "another key holds it"}})
+	if d != `update, 2 reference keys, purpose "corrected": done 1, another key holds it 1` || strings.Contains(d, "2345") {
+		t.Errorf("update: %s", d)
+	}
+	if d := vaultCallDetail("rotate", vaultRequest{Kind: "aadhaar"}, vaultReply{Results: []string{"done: 3 records"}}); d != "rotate, the data key: done: 3 records 1" {
+		t.Errorf("rotate: %s", d)
+	}
+	if d := vaultCallDetail("rotate", vaultRequest{Kind: "aadhaar", Key: "index"}, vaultReply{Error: "a rotation of aadhaar is already running"}); d != "rotate, the index key: refused: a rotation of aadhaar is already running" {
+		t.Errorf("rotate refused: %s", d)
 	}
 }

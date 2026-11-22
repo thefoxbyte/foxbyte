@@ -32,6 +32,9 @@ type Request struct {
 	// Owners guards a delete (point 13.3): only records one of these actors
 	// made, and that no access-log entry by anyone else names, are deleted.
 	Owners []string `json:"owners,omitempty"`
+	// Key is the key a rotation makes anew: "data" (the default) or "index"
+	// (point 13.4).
+	Key string `json:"key,omitempty"`
 }
 
 // Response is every call's answer. Refs, Values and Results are in the order
@@ -57,6 +60,10 @@ const (
 	// read it back, so it is kept; or another actor made the record.
 	ResultInUse     = "in use"
 	ResultNotTheirs = "not made by them"
+	// An update's (point 13.4): the new value is the one the record holds
+	// already; or another reference key holds it, which the reply's Refs names.
+	ResultUnchanged = "unchanged"
+	ResultTaken     = "another key holds it"
 )
 
 // Status is GET /v1/status.
@@ -102,6 +109,11 @@ type KeyStatus struct {
 	AlwaysSensitive  bool   `json:"always_sensitive"`
 	NeverExtractable bool   `json:"never_extractable"`
 	Local            bool   `json:"local"`
+	// Gen counts the kind's keys of this role, from 1; Created and
+	// DestroyedAt are RFC 3339, DestroyedAt "" while the key exists (13.4).
+	Gen         int    `json:"gen"`
+	Created     string `json:"created"`
+	DestroyedAt string `json:"destroyed_at,omitempty"`
 }
 
 // Client calls the vault service.

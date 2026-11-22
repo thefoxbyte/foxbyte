@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   deleteVaultOrphans, getVault, getVaultGrants, getVaultKinds, getVaultLog, getVaultMine, getVaultOrphans, grantVault, revokeVaultGrant,
-  vaultDetokenise, vaultFind, vaultTokenise,
+  vaultDelete, vaultDetokenise, vaultFind, vaultRotate, vaultTokenise, vaultUpdate,
   type VaultGrant, type VaultKind, type VaultLogEntry, type VaultMine, type VaultOrphan, type VaultState,
 } from '../api'
 import { useConfirm } from '../confirm'
@@ -11,7 +11,8 @@ import { useFeatures, why } from '../features'
 // The vault (point 13): where it stands, its kinds and keys, its grants and
 // access log for admins (13.1, 13.2); putting a value in or finding its key
 // for admins and holders of a use grant; reading a value back for holders of a
-// detokenise grant, with a purpose, shown masked until revealed. Enterprise.
+// detokenise grant, with a purpose, shown masked until revealed; rotating a
+// kind's keys, and deleting or updating values, for admins (13.4). Enterprise.
 
 const WARN = 'color-mix(in srgb, var(--red) 78%, var(--text))'
 
@@ -35,6 +36,7 @@ export default function Vault() {
   const [err, setErr] = useState('')
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
+  const [rotating, setRotating] = useState('')
   const confirm = useConfirm()
 
   const load = useCallback(async () => {
@@ -96,6 +98,25 @@ export default function Vault() {
     if (!yes) return
     setErr(''); setMsg('')
     try { await revokeVaultGrant(g.id); setMsg(`Grant ${g.id} revoked.`); load() } catch (e) { setErr((e as Error).message) }
+  }
+
+  const rotate = async (kind: string, key: 'data' | 'index') => {
+    const yes = await confirm({
+      title: `Rotate the ${kind} ${key} key?`,
+      message: key === 'data'
+        ? `A new data key is made in the HSM, every ${kind} record is encrypted again under it while the vault keeps answering, and the old key is destroyed in the HSM. Values deleted or updated before now, still in the vault database's backups, can then never be read again.`
+        : `A new index key is made in the HSM, every ${kind} record is indexed again under it while the vault keeps answering (values are found under the old key or the new one meanwhile), and the old key is destroyed in the HSM. Reference keys do not change.`,
+      confirmText: 'Rotate',
+      danger: true,
+    })
+    if (!yes) return
+    setErr(''); setMsg(''); setRotating(`${kind}-${key}`)
+    try {
+      const r = await vaultRotate(kind, key)
+      setMsg(`Rotated the ${kind} ${key} key: ${r.results?.[0] ?? 'done'}.`)
+      load()
+    } catch (e) { setErr((e as Error).message) }
+    finally { setRotating('') }
   }
 
   return (
@@ -197,16 +218,17 @@ export default function Vault() {
           <p className="muted" style={{ marginTop: -4, fontSize: 13 }}>As the token reports them back. FoxByte never holds a key.</p>
           <div className="table-wrap">
             <table aria-label="Vault keys">
-              <thead><tr><th>Key</th><th>Role</th><th>Records</th><th>Uses</th><th>Protected</th></tr></thead>
+              <thead><tr><th>Key</th><th>Role</th><th>Made</th><th>Records</th><th>Uses</th><th>Protected</th></tr></thead>
               <tbody>
                 {s.kinds.flatMap(k => k.keys.map(key => (
-                  <tr key={key.label}>
+                  <tr key={key.label} data-testid={`vault-key-${key.label}`}>
                     <td><code>{key.label}</code></td>
                     <td>{key.role}{key.current ? ' (current)' : ''}</td>
+                    <td style={{ fontSize: 13 }}>{key.created ? new Date(key.created).toLocaleDateString() : ''}</td>
                     <td>{key.records}</td>
                     <td>{key.uses}</td>
                     <td>
-                      {key.destroyed ? 'destroyed'
+                      {key.destroyed ? <>destroyed{key.destroyed_at && <> {new Date(key.destroyed_at).toLocaleDateString()}</>}</>
                         : key.sensitive && !key.extractable && key.never_extractable && key.local ? 'made in the token, never extractable'
                           : <b style={{ color: WARN }}>not protected: it can leave the token</b>}
                     </td>
@@ -215,6 +237,13 @@ export default function Vault() {
               </tbody>
             </table>
           </div>
+          <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }} data-testid="vault-rotate">
+            {s.kinds.flatMap(k => (['data', 'index'] as const).map(key => (
+              <button key={`${k.name}-${key}`} className="ghost" disabled={rotating !== ''} onClick={() => rotate(k.name, key)}>
+                {rotating === `${k.name}-${key}` ? `Rotating the ${k.name} ${key} key…` : `Rotate the ${k.name} ${key} key`}
+              </button>
+            )))}
+          </div>
 
           <Grants kinds={kinds} grants={grants} onGrant={give} onRevoke={revoke} />
         </>
@@ -222,6 +251,7 @@ export default function Vault() {
 
       {mine?.set_up && useKinds.length > 0 && <PutIn kinds={kinds.filter(k => useKinds.includes(k.name))} onDone={load} onErr={setErr} />}
       {mine?.set_up && readKinds.length > 0 && <ReadBack kinds={readKinds} onDone={load} onErr={setErr} />}
+      {admin && st?.set_up && kinds.length > 0 && <Change kinds={kinds.map(k => k.name)} onDone={load} onErr={setErr} />}
 
       {admin && st?.set_up && (
         <>
@@ -442,6 +472,83 @@ function PutIn({ kinds, onDone, onErr }: { kinds: VaultKind[]; onDone: () => voi
         )}
         <p className="muted" style={{ margin: '10px 0 0', fontSize: 13 }}>
           The value is sent once and not kept on this page; the vault&rsquo;s log and the security log record the call, never the value.
+        </p>
+      </div>
+    </>
+  )
+}
+
+// Change (13.4): an admin deletes a value, or replaces it under the same
+// reference key, saying why. The new value is sent once and not kept.
+function Change({ kinds, onDone, onErr }: { kinds: string[]; onDone: () => void; onErr: (s: string) => void }) {
+  const [kind, setKind] = useState(kinds[0] ?? 'aadhaar')
+  const [ref, setRef] = useState('')
+  const [purpose, setPurpose] = useState('')
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState('')
+  const confirm = useConfirm()
+  const ready = ref.trim() !== '' && purpose.trim() !== ''
+  const del = async () => {
+    const yes = await confirm({
+      title: `Delete ${ref.trim()}?`,
+      message: `The ${kind} value under this reference key is deleted, and the key answers "not found" to everyone, wherever it is kept. Its ciphertext stays in the vault database's backups until the ${kind} data key is next rotated.`,
+      confirmText: 'Delete',
+      danger: true,
+    })
+    if (!yes) return
+    setBusy(true); onErr(''); setNote('')
+    try {
+      const r = await vaultDelete(kind, [ref.trim()], purpose.trim())
+      setNote(r.results?.[0] === 'done' ? `Deleted ${ref.trim()}.` : `Not deleted: ${r.results?.[0] ?? 'no answer'}.`)
+      onDone()
+    } catch (e) { onErr((e as Error).message) }
+    finally { setBusy(false) }
+  }
+  const update = async () => {
+    const v = value.trim()
+    if (!v) return
+    setBusy(true); onErr(''); setNote('')
+    try {
+      const r = await vaultUpdate(kind, [ref.trim()], [v], purpose.trim())
+      const res = r.results?.[0] ?? ''
+      if (res === 'done') setNote(`Updated: ${ref.trim()} now holds the new value.`)
+      else if (res === 'unchanged') setNote(`Unchanged: ${ref.trim()} holds that value already.`)
+      else if (res === 'another key holds it') setNote(`Not updated: another reference key, ${r.refs?.[0] ?? ''}, holds that value.`)
+      else if (res === 'refused') setNote(`Not updated: not a ${kind} value.`)
+      else setNote(`Not updated: ${res || 'no answer'}.`)
+      setValue('')
+      onDone()
+    } catch (e) { onErr((e as Error).message) }
+    finally { setBusy(false) }
+  }
+  return (
+    <>
+      <h2 style={{ marginTop: 18 }}>Delete or update a value</h2>
+      <div className="panel" data-testid="vault-change">
+        <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end' }}>
+          <label className="field">Kind
+            <select aria-label="Kind of the value to change" value={kind} onChange={e => setKind(e.target.value)}>
+              {kinds.map(k => <option key={k} value={k}>{k}</option>)}
+            </select>
+          </label>
+          <label className="field" style={{ minWidth: 240 }}>Reference key
+            <input aria-label="Reference key to change" value={ref} onChange={e => setRef(e.target.value)} />
+          </label>
+          <label className="field" style={{ flex: 1, minWidth: 200 }}>Purpose
+            <input aria-label="Purpose of the change" value={purpose} onChange={e => setPurpose(e.target.value)} placeholder="why, kept in the logs" />
+          </label>
+        </div>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', marginTop: 10 }}>
+          <label className="field" style={{ flex: 1, minWidth: 220 }}>New value
+            <input aria-label="New value" type="password" autoComplete="off" value={value} onChange={e => setValue(e.target.value)} />
+          </label>
+          <button className="primary" onClick={update} disabled={busy || !ready || !value.trim()}>Update</button>
+          <button className="ghost" style={{ color: WARN }} onClick={del} disabled={busy || !ready}>Delete…</button>
+        </div>
+        {note && <p style={{ margin: '10px 0 0' }} data-testid="vault-change-note">{note}</p>}
+        <p className="muted" style={{ margin: '10px 0 0', fontSize: 13 }}>
+          Admins only. The reference key stays the same on an update. The vault&rsquo;s log and the security log keep the call and its purpose, never a value.
         </p>
       </div>
     </>

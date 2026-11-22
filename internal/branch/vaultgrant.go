@@ -23,7 +23,9 @@ import (
 //     admin is not enough: an admin who needs a value grants it to themselves,
 //     which is itself recorded and reviewed. A masked account never reads
 //     values back, whatever it holds;
-//   - each grant within its limit an hour, counted in values.
+//   - each grant within its limit an hour, counted in values;
+//   - delete, update and rotate: admins only, whatever an account holds
+//     (13.4), each delete and update with a purpose.
 //
 // A refusal is in the security log as vault.refused, never as vault.call, so
 // the head check (vault.go) reads only calls the vault saw.
@@ -78,6 +80,13 @@ func vaultAuthorize(st *auth.Store, c VaultCaller, path, kind string, n int) (in
 	case "tokenise", "find":
 	case "detokenise":
 		perm = auth.VaultDetokenise
+	case "delete", "update", "rotate":
+		// Changing what the vault holds, or its keys, is for admins (point
+		// 13.4; decided 22 Nov 2026), whatever grants an account holds.
+		if !c.Admin {
+			return 0, fmt.Errorf("%w: %s in the vault is for admins", ErrVaultForbidden, vaultVerb(path))
+		}
+		return 0, nil
 	default:
 		return 0, fmt.Errorf("%w: no vault call %q", ErrInvalidRequest, path)
 	}
@@ -101,6 +110,16 @@ func vaultAuthorize(st *auth.Store, c VaultCaller, path, kind string, n int) (in
 		return 0, fmt.Errorf("%w: the grant allows %d %s an hour, and %d were used in the last hour", ErrVaultLimit, g.PerHour, vaultPlural(g.PerHour, "value", "values"), g.UsedLastHour)
 	}
 	return g.ID, nil
+}
+
+func vaultVerb(path string) string {
+	switch path {
+	case "delete":
+		return "deleting values"
+	case "update":
+		return "updating values"
+	}
+	return "rotating keys"
 }
 
 // VaultGrantOptions is a grant's terms.

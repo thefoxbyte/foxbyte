@@ -49,8 +49,9 @@ const (
 	// VaultImageRevision is the vault image this fox needs, as the image's
 	// dev.dbengine.image-revision label numbers it.
 	// 2 lists the access log (13.2); 3 deletes a migration's orphaned keys
-	// only when nobody else was handed them (13.3).
-	VaultImageRevision = 3
+	// only when nobody else was handed them (13.3); 4 updates values, rotates
+	// the index key, and dates each key (13.4).
+	VaultImageRevision = 4
 
 	// vaultSoftLib is FoxByte's own software token, inside the image.
 	vaultSoftLib = "/usr/lib/softhsm/libsofthsm2.so"
@@ -665,6 +666,8 @@ type vaultRequest struct {
 	Values  []string `json:"values"`
 	Refs    []string `json:"refs"`
 	Purpose string   `json:"purpose"`
+	Key     string   `json:"key"`
+	Owners  []string `json:"owners"`
 }
 
 type vaultReply struct {
@@ -691,14 +694,12 @@ func VaultCallActor(st *auth.Store, actor, vaultActor, ip, path string, body []b
 	if err := requireVault(); err != nil {
 		return nil, 0, err
 	}
-	switch path {
-	case "tokenise", "find", "detokenise":
-	default:
-		return nil, 0, fmt.Errorf("%w: no vault call %q", ErrInvalidRequest, path)
-	}
 	var req vaultRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, 0, fmt.Errorf("%w: the body is not a vault request", ErrInvalidRequest)
+	}
+	if err := vaultCheckRequest(path, req); err != nil {
+		return nil, 0, err
 	}
 	secret, err := vaultSecret()
 	if err != nil {
@@ -710,11 +711,7 @@ func VaultCallActor(st *auth.Store, actor, vaultActor, ip, path string, body []b
 	}
 	var r vaultReply
 	_ = json.Unmarshal(reply, &r)
-	n := len(req.Values) + len(req.Refs)
-	detail := fmt.Sprintf("%s, %d %s: %s", path, n, vaultPlural(n, "value", "values"), vaultSummary(r))
-	if path == "detokenise" {
-		detail = fmt.Sprintf("detokenise, %d reference %s, purpose %q: %s", n, vaultPlural(n, "key", "keys"), strings.TrimSpace(req.Purpose), vaultSummary(r))
-	}
+	detail := vaultCallDetail(path, req, r)
 	if vaultActor != actor {
 		detail += "; as " + vaultActor
 	}
@@ -723,6 +720,45 @@ func VaultCallActor(st *auth.Store, actor, vaultActor, ip, path string, body []b
 	}
 	st.Audit(auth.EvVaultCall, actor, req.Kind, ip, detail)
 	return reply, code, nil
+}
+
+// vaultCheckRequest refuses a call the engine does not pass on. Deleting and
+// updating values say why (point 13.4), as reading one back does; a guarded
+// delete is the orphans' own (DeleteVaultOrphans), never a caller's.
+func vaultCheckRequest(path string, req vaultRequest) error {
+	switch path {
+	case "tokenise", "find", "detokenise", "delete", "update", "rotate":
+	default:
+		return fmt.Errorf("%w: no vault call %q", ErrInvalidRequest, path)
+	}
+	switch {
+	case (path == "delete" || path == "update") && strings.TrimSpace(req.Purpose) == "":
+		return fmt.Errorf("%w: a %s needs a purpose", ErrInvalidRequest, path)
+	case path == "delete" && len(req.Owners) > 0:
+		return fmt.Errorf("%w: owners are for deleting a migration's orphaned keys", ErrInvalidRequest)
+	case path == "update" && len(req.Values) != len(req.Refs):
+		return fmt.Errorf("%w: an update gives each reference key its new value", ErrInvalidRequest)
+	case path == "rotate" && req.Key != "" && req.Key != "data" && req.Key != "index":
+		return fmt.Errorf("%w: no key %q to rotate: data or index", ErrInvalidRequest, req.Key)
+	}
+	return nil
+}
+
+// vaultCallDetail is a call's line in the security log: never a value.
+func vaultCallDetail(path string, req vaultRequest, r vaultReply) string {
+	switch path {
+	case "detokenise", "delete", "update":
+		n := len(req.Refs)
+		return fmt.Sprintf("%s, %d reference %s, purpose %q: %s", path, n, vaultPlural(n, "key", "keys"), strings.TrimSpace(req.Purpose), vaultSummary(r))
+	case "rotate":
+		key := req.Key
+		if key == "" {
+			key = "data"
+		}
+		return fmt.Sprintf("rotate, the %s key: %s", key, vaultSummary(r))
+	}
+	n := len(req.Values) + len(req.Refs)
+	return fmt.Sprintf("%s, %d %s: %s", path, n, vaultPlural(n, "value", "values"), vaultSummary(r))
 }
 
 func vaultPlural(n int, one, many string) string {

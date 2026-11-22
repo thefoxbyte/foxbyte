@@ -82,6 +82,11 @@ func registerVault(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/vault/tokenise", call("tokenise"))
 	mux.HandleFunc("POST /api/vault/find", call("find"))
 	mux.HandleFunc("POST /api/vault/detokenise", call("detokenise"))
+	// 13.4: admins only (branch.VaultCallAs), each delete and update with a
+	// purpose.
+	mux.HandleFunc("POST /api/vault/delete", call("delete"))
+	mux.HandleFunc("POST /api/vault/update", call("update"))
+	mux.HandleFunc("POST /api/vault/rotate", call("rotate"))
 
 	// What the caller may do: any signed-in account, so the console can show a
 	// grant holder their part of the vault.
