@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   deleteVaultOrphans, getVault, getVaultGrants, getVaultKinds, getVaultLog, getVaultMine, getVaultOrphans, grantVault, revokeVaultGrant,
   vaultDelete, vaultDetokenise, vaultFind, vaultRotate, vaultTokenise, vaultUpdate,
@@ -128,6 +129,7 @@ export default function Vault() {
       </p>
       <div className="row" style={{ gap: 10 }}>
         <button className="ghost" onClick={load} disabled={busy}>{busy ? 'Reading…' : 'Refresh'}</button>
+        {admin && st?.set_up && <Link className="btn ghost" to="/vault/evidence" data-testid="vault-evidence-link">Evidence for audits</Link>}
       </div>
       {err && <div className="err" style={{ marginTop: 12 }} data-testid="vault-err">{err}</div>}
       {msg && <p className="ok" style={{ marginTop: 12 }} data-testid="vault-msg">{msg}</p>}

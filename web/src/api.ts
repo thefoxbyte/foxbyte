@@ -762,6 +762,37 @@ export const vaultDelete = (kind: string, refs: string[], purpose: string) =>
   req('POST', `${API}/api/vault/delete`, { kind, refs, purpose }) as Promise<VaultReply>
 export const vaultUpdate = (kind: string, refs: string[], values: string[], purpose: string) =>
   req('POST', `${API}/api/vault/update`, { kind, refs, values, purpose }) as Promise<VaultReply>
+// 13.4b: the evidence, rule by rule, and the customer's declarations. Admins.
+export type VaultDeclaration = { id: number; kind: string; item: string; value: string; declared_by: string; declared_at: string }
+export type VaultDeclItem = { item: string; para: string; asks: string }
+export type VaultCheck = { what: string; ok: boolean; basis: 'checked' | 'built in'; detail: string }
+export type VaultRule = {
+  para: string; requirement: string; whose: string; verdict: 'met' | 'not met' | 'open' | 'not applicable'
+  checks: VaultCheck[]; items?: string[]; declared?: VaultDeclaration[]; note?: string
+}
+export type VaultBranchExposure = {
+  branch: string; state: string; run?: number; ran?: string; numbers: number; people: number
+  logs_ran?: string; log_numbers: number; flag?: string
+}
+export type VaultKindEvidence = {
+  kind: string; rules: string; hsm_required: boolean; records: number; keys: VaultKey[]
+  activity: { calls: Record<string, number>; values: Record<string, number>; refused: number; changed_since_data_key: number; data_key_made?: string }
+  grants: VaultGrant[]; rows: VaultRule[]; summary: Record<string, number>; branches?: VaultBranchExposure[]
+}
+export type VaultEvidence = {
+  format: string; generated: string; by: string; product: string; version: string; edition: string; since: string
+  token: { label: string; maker: string; model: string; serial: string; software: boolean }
+  log: { entries: number; broken_at: number; head: string; anchor: { recorded?: string; holds: boolean; note: string } }
+  kinds: VaultKindEvidence[]; limits: string[]
+}
+export const getVaultEvidence = (kind: string, since = '90d') =>
+  req('GET', `${API}/api/vault/evidence?kind=${encodeURIComponent(kind)}&since=${encodeURIComponent(since)}`) as Promise<VaultEvidence>
+export const vaultEvidenceUrl = (kind: string, since = '90d', entries = false) =>
+  `${API}/api/vault/evidence?kind=${encodeURIComponent(kind)}&since=${encodeURIComponent(since)}${entries ? '&entries=1' : ''}`
+export const getVaultDeclarations = (kind: string) =>
+  req('GET', `${API}/api/vault/declarations?kind=${encodeURIComponent(kind)}`) as Promise<{ items: VaultDeclItem[]; declarations: VaultDeclaration[] }>
+export const declareVault = (kind: string, item: string, value: string) =>
+  req('POST', `${API}/api/vault/declarations`, { kind, item, value }) as Promise<VaultDeclaration>
 // 13.3: a branch's Aadhaar numbers moved into the vault, keys left where they
 // stood; main only after a branch made from main has moved the same columns.
 export type VaultMigrateColumn = {

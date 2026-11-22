@@ -2753,6 +2753,58 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: Not an admin, or a licence without the vault }
         "409": { description: The vault is not set up, or a rotation of the kind is already running }
+  /api/vault/evidence:
+    get:
+      tags: [vault]
+      summary: The vault's evidence, rule by rule (admins; Enterprise).
+      description: >-
+        For each kind (or the one named): its rules (UIDAI Circular No. 14 of 2025 for Aadhaar), each with a verdict
+        (met, not met, open, not applicable), what FoxByte checked on the machine or builds in, and the customer's
+        declarations; the keys, the period's activity, the grants, and each branch's latest Aadhaar exposure report.
+        Runs no scan. Each read is in the security log as vault.evidence.
+      parameters:
+        - { name: kind, in: query, schema: { type: string } }
+        - { name: since, in: query, schema: { type: string }, description: "90d (the default), 2026-08-01, or RFC 3339" }
+        - { name: entries, in: query, schema: { type: string, enum: ["1"] }, description: The access log's entries in the period, without values }
+      responses:
+        "200": { description: 'The document, format "vault-evidence/1"', content: { application/json: { schema: { type: object } } } }
+        "400": { description: A since that is not a date or a number of days, or no such kind }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+        "409": { description: The vault is not set up }
+  /api/vault/declarations:
+    get:
+      tags: [vault]
+      summary: What a kind asks the customer to declare, and what is declared (admins; Enterprise).
+      parameters:
+        - { name: kind, in: query, schema: { type: string } }
+        - { name: all, in: query, schema: { type: string, enum: ["1"] }, description: Every statement ever made, withdrawals too, newest first }
+      responses:
+        "200": { description: '{"items": [{"item","para","asks"}], "declarations": [{"id","kind","item","value","declared_by","declared_at"}]}', content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
+    post:
+      tags: [vault]
+      summary: Declare an item, or withdraw it with an empty value (admins; Enterprise).
+      description: >-
+        Kept with who declared it and when, and in the security log as vault.declare. The evidence shows it as
+        declared, never as checked. A hosting declaration begins "on premises", "GCC" or "vault as a service".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, item]
+              properties:
+                kind: { type: string }
+                item: { type: string }
+                value: { type: string, maxLength: 2000 }
+      responses:
+        "201": { description: The statement kept, content: { application/json: { schema: { type: object } } } }
+        "400": { description: An item the kind does not ask for, or a statement that cannot be kept }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Not an admin, or a licence without the vault }
   /api/vault/mine:
     get:
       tags: [vault]

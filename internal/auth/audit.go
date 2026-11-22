@@ -219,6 +219,9 @@ const (
 	// previewed; and a migration's orphaned keys deleted.
 	EvVaultMigrate = "vault.migrate"
 	EvVaultOrphans = "vault.orphans"
+	// A declaration made or withdrawn, and the evidence read (13.4b).
+	EvVaultDeclare  = "vault.declare"
+	EvVaultEvidence = "vault.evidence"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

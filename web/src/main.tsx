@@ -26,6 +26,7 @@ import AuditLog from './pages/AuditLog'
 import Hardening from './pages/Hardening'
 import Masking from './pages/Masking'
 import Vault from './pages/Vault'
+import VaultEvidence from './pages/VaultEvidence'
 import Sessions from './pages/Sessions'
 import PipelineEditor from './pages/PipelineEditor'
 import { ConfirmProvider } from './confirm'
@@ -128,6 +129,7 @@ const router = createBrowserRouter([
       { path: 'hardening', element: <Hardening /> },
       { path: 'masking', element: <Masking /> },
       { path: 'vault', element: <Vault /> },
+      { path: 'vault/evidence', element: <VaultEvidence /> },
       { path: 'sessions', element: <Sessions /> },
       { path: 'pipelines/:id', element: <PipelineEditor /> },
       { path: 'console', element: <Console /> },

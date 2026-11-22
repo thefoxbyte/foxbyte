@@ -210,6 +210,10 @@ func initSchemaOnce(db *sql.DB) error {
 		_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		return err
 	}
+	if _, err := conn.ExecContext(ctx, vaultDeclSchema); err != nil {
+		_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		return err
+	}
 	if _, err := conn.ExecContext(ctx, savedSchema); err != nil {
 		_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		return err

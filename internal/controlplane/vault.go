@@ -5,6 +5,7 @@ package controlplane
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -174,6 +175,67 @@ func registerVault(mux *http.ServeMux) {
 		writeJSON(w, 200, g)
 	})
 
+	// 13.4b: the evidence, and the customer's declarations, for admins.
+	mux.HandleFunc("GET /api/vault/evidence", func(w http.ResponseWriter, r *http.Request) {
+		if !gate(w, r) {
+			return
+		}
+		q := r.URL.Query()
+		now := time.Now().UTC()
+		since, err := evidenceTime(q.Get("since"), now.AddDate(0, 0, -90), now)
+		if err != nil {
+			writeErr(w, 400, fmt.Errorf("since: %w", err))
+			return
+		}
+		u, _ := auth.UserFrom(r.Context())
+		ev, err := branch.VaultEvidenceFor(secLog, branch.VaultEvidenceOptions{
+			Kind: q.Get("kind"), Since: since, Entries: q.Get("entries") == "1", By: u.Email, IP: remoteIP(r)})
+		if err != nil {
+			vaultFail(w, err)
+			return
+		}
+		writeJSON(w, 200, ev)
+	})
+
+	mux.HandleFunc("GET /api/vault/declarations", func(w http.ResponseWriter, r *http.Request) {
+		if !gate(w, r) {
+			return
+		}
+		kind := r.URL.Query().Get("kind")
+		ds, err := secLog.VaultDeclarations(kind, r.URL.Query().Get("all") == "1")
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+		items := branch.VaultDeclItems(kind)
+		if items == nil {
+			items = []branch.VaultDeclItem{}
+		}
+		writeJSON(w, 200, map[string]any{"items": items, "declarations": ds})
+	})
+
+	mux.HandleFunc("POST /api/vault/declarations", func(w http.ResponseWriter, r *http.Request) {
+		if !gate(w, r) {
+			return
+		}
+		var b struct {
+			Kind  string `json:"kind"`
+			Item  string `json:"item"`
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&b); err != nil {
+			writeErr(w, 400, errors.New("the body must be JSON: kind, item, value (empty to withdraw)"))
+			return
+		}
+		u, _ := auth.UserFrom(r.Context())
+		d, err := branch.DeclareVault(secLog, b.Kind, b.Item, b.Value, u.Email, remoteIP(r))
+		if err != nil {
+			vaultFail(w, err)
+			return
+		}
+		writeJSON(w, 201, d)
+	})
+
 	mux.HandleFunc("GET /api/vault/log", func(w http.ResponseWriter, r *http.Request) {
 		if !gate(w, r) {
 			return
@@ -194,7 +256,7 @@ func vaultFail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, branch.ErrVaultNotSetUp):
 		writeErr(w, 409, err)
-	case errors.Is(err, branch.ErrInvalidRequest):
+	case errors.Is(err, branch.ErrInvalidRequest), errors.Is(err, branch.ErrVaultNoItem), errors.Is(err, auth.ErrVaultDeclaration):
 		writeErr(w, 400, err)
 	case errors.Is(err, branch.ErrNotLicensed), errors.Is(err, branch.ErrVaultForbidden):
 		writeErr(w, 403, err)
