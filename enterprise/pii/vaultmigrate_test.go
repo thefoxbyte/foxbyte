@@ -7,17 +7,18 @@ package pii
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/thefoxbyte/foxbyte/enterprise/vault"
 )
 
 // Synthetic numbers (aadA, aadB) and made-up keys: an opaque one and a legacy
-// one, each shaped as the vault makes them.
-const (
-	keyOpaque = "AR0123456789ABCDEFGHJKMNPQRS"
-	keyLegacy = "100000000042"
-)
+// one, each shaped as the vault makes them. The opaque one is plainly a
+// placeholder, so no secret scanner reads it as a credential.
+var keyOpaque = "AR" + strings.Repeat("7", 26)
+
+const keyLegacy = "100000000042"
 
 // keys answers every number with its key in refs, as a text column does.
 func keys(refs map[string]string) keyFor {
