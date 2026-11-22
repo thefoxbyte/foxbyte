@@ -30,6 +30,19 @@ test('signing in reaches the dashboard, which lists main', async ({ page }) => {
   await expect(page.getByRole('cell', { name: 'main', exact: true })).toBeVisible()
 })
 
+// There is no landing page: the console's address on its own is Log in for
+// someone signed out, and the dashboard for someone signed in.
+test('the console address opens Log in when signed out, and the dashboard when signed in', async ({ page }) => {
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await expect(page).toHaveURL(/\/login$/)
+  await expect(page.getByRole('button', { name: /log in/i })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Home' })).toHaveCount(0)
+  await signIn(page)
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await expect(page).toHaveURL(/\/dashboard$/)
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+})
+
 // Someone locked out is standing on this page, so this is where the way out has to
 // be. `fox user passwd` has always existed; until now it appeared only in `fox help`,
 // which is no use to anyone who cannot get in.

@@ -8,7 +8,6 @@ import AppLayout from './components/AppLayout'
 import { Mark, ThemeToggle, Wordmark } from './components/brand'
 import { BRAND } from './brand'
 
-import Landing from './pages/Landing'
 import Docs from './pages/Docs'
 import Guide from './pages/Guide'
 import Ledger from './pages/Ledger'
@@ -44,8 +43,9 @@ function Loading() {
   return <div className="container muted">Loading…</div>
 }
 
-// PublicLayout: the marketing pages (Home, Log in), and Guide/Docs for visitors
-// who aren't signed in. The app's own pages live in AppLayout's sidebar.
+// PublicLayout: Log in, and Guide/Docs for visitors who aren't signed in. The
+// app's own pages live in AppLayout's sidebar. There is no landing page: an
+// install's console is for the people who run it, so its front door is Log in.
 function PublicLayout() {
   const { user } = useAuth()
   return (
@@ -53,7 +53,6 @@ function PublicLayout() {
       <header className="nav">
         <Link to="/" className="brand"><Mark /> <Wordmark /></Link>
         <div className="links">
-          <NavLink to="/" end>Home</NavLink>
           <NavLink to="/guide">Guide</NavLink>
           <NavLink to="/docs">Docs</NavLink>
         </div>
@@ -77,6 +76,14 @@ function PublicLayout() {
   )
 }
 
+// The console's address on its own: the dashboard when signed in, otherwise
+// Log in.
+function Home() {
+  const { user, loading } = useAuth()
+  if (loading) return <Loading />
+  return <Navigate to={user ? '/dashboard' : '/login'} replace />
+}
+
 // The app's pages: signed in, inside the sidebar layout; otherwise to Log in.
 function SignedInLayout() {
   const { user, loading } = useAuth()
@@ -98,7 +105,7 @@ const router = createBrowserRouter([
     path: '/',
     element: <PublicLayout />,
     children: [
-      { index: true, element: <Landing /> },
+      { index: true, element: <Home /> },
       { path: 'login', element: <Login /> },
     ],
   },
