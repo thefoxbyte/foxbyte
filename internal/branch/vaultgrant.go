@@ -39,6 +39,9 @@ type VaultCaller struct {
 	Email string
 	Admin bool
 	IP    string
+	// Actor is who the vault knows the call by, when not Email: a migration
+	// run's own name (point 13.3).
+	Actor string
 }
 
 // VaultCallAs is a call over the API: decided by the caller's grants, passed
@@ -57,7 +60,7 @@ func VaultCallAs(st *auth.Store, c VaultCaller, path string, body []byte) ([]byt
 		st.Audit(auth.EvVaultRefused, c.Email, req.Kind, c.IP, fmt.Sprintf("%s, %d: %v", path, n, err))
 		return nil, 0, err
 	}
-	reply, code, err := VaultCall(st, c.Email, c.IP, path, body)
+	reply, code, err := VaultCallActor(st, c.Email, c.Actor, c.IP, path, body)
 	if err == nil && grant != 0 && code == 200 {
 		if uerr := st.RecordVaultUse(grant, n); uerr != nil {
 			return nil, 0, fmt.Errorf("counting the call against its grant: %w", uerr)

@@ -29,6 +29,9 @@ type Request struct {
 	Refs    []string `json:"refs,omitempty"`
 	Format  string   `json:"format,omitempty"`
 	Purpose string   `json:"purpose,omitempty"`
+	// Owners guards a delete (point 13.3): only records one of these actors
+	// made, and that no access-log entry by anyone else names, are deleted.
+	Owners []string `json:"owners,omitempty"`
 }
 
 // Response is every call's answer. Refs, Values and Results are in the order
@@ -50,6 +53,10 @@ const (
 	ResultNotFound    = "not found"
 	ResultRefused     = "refused"
 	ResultNotVerified = "did not verify"
+	// A guarded delete's (Request.Owners): someone else was handed the key or
+	// read it back, so it is kept; or another actor made the record.
+	ResultInUse     = "in use"
+	ResultNotTheirs = "not made by them"
 )
 
 // Status is GET /v1/status.

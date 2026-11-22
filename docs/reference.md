@@ -680,12 +680,21 @@ fox vault find --kind aadhaar <value>         # the key for a value you already 
 fox vault detokenise --kind aadhaar --purpose "grievance 4821" <key>…
 fox vault grant you@example.com --kind aadhaar --detokenise --per-hour 100 --expires 30d
 fox vault revoke <id>              # and: fox vault grants [--all], fox vault log
+fox vault migrate --branch rehearse --dry-run   # what would move: the exposure report's columns
+fox vault migrate --branch rehearse             # numbers into the vault, keys where they stood
+fox vault migrate --branch main --yes           # main, once a branch of main moved the same columns
+fox vault orphans [delete --yes]   # keys made on branches since deleted; and: fox vault migrations
 ```
 
 Values are encrypted inside an HSM and never leave it in the clear; a reference
 key stands in their place in your tables. Every call is in the access log with
 its purpose, and the log never holds a value. Reading values back needs a grant,
 which carries a limit an hour and may expire. `fox check` has a vault group.
+Moving numbers already in your tables is done on a branch first: each number is
+replaced where it stands (a whole value, or inside text or JSON), columns that
+only hold numbers get legacy keys (12 digits starting with 1, never a valid
+Aadhaar), and main is then moved with the same keys. Query history, the audit
+log, the Blackbox and backups taken before are not changed.
 Finding one person's data for an access or erasure request is
 [`fox subject find`](data-subject-requests.md).
 

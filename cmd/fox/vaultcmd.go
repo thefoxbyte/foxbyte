@@ -32,6 +32,9 @@ import (
 //	fox vault revoke <grant id>
 //	fox vault grants [--all] [--json]
 //	fox vault log [--limit n] [--before seq] [--json]
+//	fox vault migrate --branch b [--column s.t.c ...] [--format opaque|legacy] [--dry-run] [--yes] [--json]
+//	fox vault migrations [--branch b] [--json]
+//	fox vault orphans [--json] | orphans delete [--run id] [--yes]
 //
 // The CLI is the operator's, on the machine: it reaches the vault service
 // directly, and each call is in the security log with the vault's log head.
@@ -60,6 +63,12 @@ func vaultCmd(args []string) {
 		vaultGrants(args)
 	case "log":
 		vaultLog(args)
+	case "migrate":
+		vaultMigrate(args)
+	case "migrations":
+		vaultMigrations(args)
+	case "orphans":
+		vaultOrphans(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown vault command %q\n\n%s", sub, vaultUsage)
 		os.Exit(2)
@@ -77,6 +86,9 @@ const vaultUsage = `usage:
   fox vault revoke GRANT-ID
   fox vault grants [--all] [--json]
   fox vault log [--limit N] [--before SEQ] [--json]
+  fox vault migrate --branch BRANCH [--column SCHEMA.TABLE.COLUMN ...] [--format opaque|legacy] [--dry-run] [--yes] [--json]
+  fox vault migrations [--branch BRANCH] [--json]
+  fox vault orphans [--json] | orphans delete [--run ID] [--yes]
 `
 
 func vaultSetup(args []string) {

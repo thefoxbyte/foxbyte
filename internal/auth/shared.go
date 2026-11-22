@@ -57,6 +57,9 @@ import (
 //   - vault_grants, vault_grant_uses: deliberately not. The vault is one
 //     per install (point 13), so its grants are this install's, and an hour's
 //     use of one counts on the node that served it.
+//   - vault_migrations, vault_migration_refs: deliberately not, for the same
+//     reason: the runs that moved a branch's numbers into this install's
+//     vault, and the keys they made there (vaultmigrate.go).
 //   - branch_activity: deliberately not. When the console last used a branch
 //     is for this node's own idle reaper (branchuse.go).
 //   - security_events: deliberately not. It is a hash chain, and a chain is a

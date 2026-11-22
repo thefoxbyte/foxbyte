@@ -133,6 +133,10 @@ Stack:
                        Let an account put values in and find keys, or read values back, within a limit an hour (Enterprise)
   vault grants [--all] [--json] | log [--limit n] [--before seq] [--json]
                        Who may do what in the vault; its access log, never a value (Enterprise)
+  vault migrate --branch b [--column s.t.c] [--format opaque|legacy] [--dry-run] [--yes] [--json]
+                       Move a branch's Aadhaar numbers into the vault, keys left where they stood; main after a branch of it (Enterprise)
+  vault migrations [--branch b] | orphans [delete [--run id] --yes] [--json]
+                       Past migrations; keys made on branches now gone, deleted only if nobody else holds them (Enterprise)
   access review [--dormant 90] [--json] [--csv accounts|keys|branches|applications]
                        Who can reach what, with which keys, who may override the guardrails,
                        who has gone quiet, and the applications that assert their users (Enterprise)

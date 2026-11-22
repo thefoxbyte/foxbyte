@@ -5,6 +5,7 @@ import {
   type AadhaarColumn, type AadhaarLogFilter, type AadhaarLogPlace, type AadhaarLogs, type AadhaarPerson,
   type AadhaarPlace, type AadhaarPlaceFilter, type AadhaarReport, type Branch,
 } from '../api'
+import VaultMigrate from '../components/VaultMigrate'
 import { useFeatures, why } from '../features'
 import { useBranches } from '../useBranches'
 
@@ -203,6 +204,8 @@ export default function AadhaarExposure() {
               {showing.logFilter && <LogPlaces branch={branch} runId={logs?.run.id ?? 0} filter={showing.logFilter} />}
             </div>
           )}
+
+          <VaultMigrate branch={branch} admin={admin} licensed={can('vault')} />
 
           {(r.skipped?.length ?? 0) > 0 && (
             <div className="panel" style={{ marginTop: 14 }}>

@@ -215,6 +215,10 @@ const (
 	// are a kind of their own so the head check reads only vault.call.
 	EvVaultGrant   = "vault.grant"
 	EvVaultRefused = "vault.refused"
+	// A migration (13.3): a branch's Aadhaar numbers moved into the vault, or
+	// previewed; and a migration's orphaned keys deleted.
+	EvVaultMigrate = "vault.migrate"
+	EvVaultOrphans = "vault.orphans"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence
