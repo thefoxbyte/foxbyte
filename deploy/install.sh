@@ -5,7 +5,9 @@
 #
 #   macOS:  also installs Lima (the VM runner) if it is missing, then runs
 #           `fox setup`, which creates a local Linux VM and brings everything up
-#   Linux:  then run `sudo fox start` (provisions ZFS/Docker/image, brings everything up)
+#   Linux:  then run `sudo fox start` (makes the storage pool, pulls the image, brings
+#           everything up). ZFS and Docker must be installed first: start checks
+#           for them but does not install them.
 #
 # Usage:
 #   curl -fsSL https://get.thefoxbyte.com/install.sh | sh
@@ -584,10 +586,28 @@ $PRODUCT is running. Day-to-day:
   fox status · fox branch create qa · fox stop
 EOF
 else
+	# fox start checks for ZFS and Docker but does not install them: on a
+	# server, which packages and where they come from is the owner's choice.
+	# So say so here, and name what is missing on this machine.
+	missing=""
+	command -v zpool >/dev/null 2>&1 || missing="zfsutils-linux"
+	command -v docker >/dev/null 2>&1 || missing="${missing:+$missing }docker.io"
+	cat <<EOF
+
+$PRODUCT needs ZFS and Docker on this machine; \`sudo $CLI start\` checks for them
+but does not install them.
+EOF
+	if [ -n "$missing" ]; then
+		cat <<EOF
+Missing here: $missing. On Debian or Ubuntu:
+  sudo apt-get install -y $missing
+(elsewhere, install your distribution's ZFS and Docker packages)
+EOF
+	fi
 	cat <<EOF
 
 Next step:
-  sudo fox start   # provisions ZFS + Docker + image, then brings everything up
+  sudo $CLI start   # makes the storage pool, pulls the Postgres image, brings everything up
 
 Then day-to-day:
   fox status · fox branch create qa · fox stop
