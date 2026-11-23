@@ -4,6 +4,7 @@ package branch
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -264,7 +265,9 @@ func pendingCheckpointRows(name string) (int, error) {
 // background: once FOX_CHECKPOINT_INTERVAL (default 10m) has passed since
 // the branch's last checkpoint, or sooner when FOX_CHECKPOINT_ENTRIES
 // (default 500) entries are waiting. It only looks at branches that are already
-// running, so it never wakes a suspended one. FOX_CHECKPOINTS=off disables it.
+// running, and reads them without waking (withoutWaking), so it never wakes a
+// suspended one, even one the reaper stops mid-tick. FOX_CHECKPOINTS=off
+// disables it.
 // saidWhyNotAnchoring keeps the scheduler from repeating itself every tick.
 // The reason is worth saying once and worth saying clearly; saying it every two
 // minutes would bury the log it is written into.
@@ -334,23 +337,32 @@ func StartCheckpointer() {
 					return
 				}
 				for _, n := range names {
-					pending, err := pendingCheckpointRows(n)
-					if err != nil || pending <= 0 {
-						continue
-					}
-					if pending < threshold && time.Since(last[n]) < interval {
-						continue
-					}
-					last[n] = time.Now()
-					a, _, err := Checkpoint(n)
-					if err != nil {
-						log.Printf("ledger checkpoint %s: %v", n, err)
-						continue
-					}
-					if a != nil {
-						log.Printf("ledger checkpoint %s #%d: ids %d–%d (%d entries), root %s",
-							n, a.CheckpointID, a.FromID, a.ToID, a.EntryCount, a.MerkleRoot)
-					}
+					// Never wakes the branch: one the idle reaper stops between
+					// the list above and these reads is left suspended, and is
+					// checkpointed when it next runs.
+					withoutWaking(n, func() {
+						pending, err := pendingCheckpointRows(n)
+						if err != nil || pending <= 0 {
+							return
+						}
+						if pending < threshold && time.Since(last[n]) < interval {
+							return
+						}
+						last[n] = time.Now()
+						a, _, err := Checkpoint(n)
+						if errors.Is(err, errSuspendedMeanwhile) {
+							delete(last, n) // due again as soon as it runs
+							return
+						}
+						if err != nil {
+							log.Printf("ledger checkpoint %s: %v", n, err)
+							return
+						}
+						if a != nil {
+							log.Printf("ledger checkpoint %s #%d: ids %d–%d (%d entries), root %s",
+								n, a.CheckpointID, a.FromID, a.ToID, a.EntryCount, a.MerkleRoot)
+						}
+					})
 				}
 			})
 		}
