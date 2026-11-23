@@ -305,8 +305,6 @@ async function shot(name, { path, ready, full = true, act }) {
 
 console.log(`capturing from ${base}`)
 
-await shot('landing.png', { path: '/', ready: 'text=/branches like code/i' })
-
 await shot('dashboard.png', {
   path: '/dashboard',
   ready: 'text=/Live control plane/i',

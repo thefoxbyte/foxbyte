@@ -116,8 +116,8 @@ away `qa`'s changes and cloned again, instead of deleting it.
 The console is served by the engine at **https://localhost:8080**. More
 screenshots: [Blackbox](docs/screenshots/ledger.png),
 [SQL console](docs/screenshots/console.png),
-[realtime](docs/screenshots/realtime.png),
-[landing](docs/screenshots/landing.png).
+[realtime](docs/screenshots/realtime.png).
+Its address on its own opens the sign-in page; there is no landing page.
 
 ---
 
