@@ -39,15 +39,20 @@ of who changed the schema. The command is **`fox`**.
 ## Install
 
 One installer. On macOS it installs `fox`, installs [Lima](https://lima-vm.io)
-if it is missing, and runs `fox setup`. On Linux it installs `fox` and stops;
-the next line is `sudo fox start`.
+if it is missing, and runs `fox setup`, which also installs ZFS and Docker in the
+VM. On Linux it installs `fox` and stops: install ZFS and Docker yourself, then
+run `sudo fox start`.
 
 ```bash
 curl -fsSL https://get.thefoxbyte.com/install.sh | sh
 ```
 
 ```bash
-sudo fox start   # Linux only: ZFS, Docker, the Postgres image, then the stack
+sudo apt-get install -y zfsutils-linux docker.io   # Linux only (Debian/Ubuntu); fox start does not install them
+```
+
+```bash
+sudo fox start   # Linux only: the storage pool, the Postgres image, then the stack
 ```
 
 Windows, in PowerShell (not Command Prompt). Branches live on btrfs inside a

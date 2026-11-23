@@ -473,6 +473,28 @@ else
 	bad "an unknown FOX_LIMA is refused (exit $code)"
 fi
 
+# Linux: `fox start` checks for ZFS and Docker but does not install them, so the
+# installer says so, and names what is missing on this machine. (The docs used
+# to say start provisioned them.)
+if [ "$os" = linux ]; then
+	stubs="$tmp/stubs"; mkdir -p "$stubs"
+	printf '#!/bin/sh\nexit 0\n' > "$stubs/zpool"; cp "$stubs/zpool" "$stubs/docker"; chmod +x "$stubs/zpool" "$stubs/docker"
+	p="$tmp/p26"; out="$(run "$p" PATH="$stubs:$PATH")"; code=$?
+	if [ "$code" = 0 ] && grep -q "needs ZFS and Docker" <<<"$out" && ! grep -q "Missing here" <<<"$out"; then
+		ok "on Linux with ZFS and Docker present, the next step is just sudo fox start"
+	else
+		bad "on Linux with ZFS and Docker present (exit $code): $(tail -8 <<<"$out")"
+	fi
+	if ! command -v zpool >/dev/null 2>&1; then
+		p="$tmp/p27"; out="$(run "$p")"; code=$?
+		if [ "$code" = 0 ] && grep -q "Missing here: zfsutils-linux" <<<"$out" && grep -q "apt-get install -y zfsutils-linux" <<<"$out"; then
+			ok "on Linux without ZFS, the installer names the package to install"
+		else
+			bad "on Linux without ZFS (exit $code): $(tail -8 <<<"$out")"
+		fi
+	fi
+fi
+
 echo
 echo "install.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

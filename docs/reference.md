@@ -210,12 +210,22 @@ to you, and `FOX_NO_SETUP=1` stops after installing. Lima is installed on macOS
 
 ### Linux
 
-The engine runs directly (no VM). ZFS + Docker are provisioned on first start.
+The engine runs directly (no VM). ZFS and Docker must be installed first:
+`fox start` checks for them and stops with a message if either is missing, but
+does not install them, since on a server that is the owner's choice. On Debian
+or Ubuntu:
 
 ```bash
+sudo apt-get install -y zfsutils-linux docker.io
 curl -fsSL https://get.thefoxbyte.com/install.sh | sh
 sudo fox start
 ```
+
+The first start creates the storage pool (a 30G file at
+`/var/lib/dbpool-zpool.img`, or a disk of your own with
+`FOX_ZPOOL_DEVICE=/dev/…`, which it erases), pulls the Postgres image and brings
+the stack up. A disk of its own is the better choice on a server: a pool in a
+file shares the system disk, and a full system disk stops the pool.
 
 The services listen on `127.0.0.1` only. To reach them from other machines, set
 `FOX_LISTEN=0.0.0.0` — TLS is then required, so give it a real certificate with
