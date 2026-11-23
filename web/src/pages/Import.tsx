@@ -14,6 +14,7 @@ export default function Import() {
   const [source, setSource] = useState('')
   const [continuous, setContinuous] = useState(false)
   const [file, setFile] = useState<File | null>(null)
+  const [dragging, setDragging] = useState(false)
   const [target, setTarget] = useState('')
   const [busy, setBusy] = useState(false)
   const [lines, setLines] = useState<Line[]>([])
@@ -108,7 +109,18 @@ export default function Import() {
 
           <div className="panel" style={{ padding: 18, marginTop: 14 }}>
             <h3 style={{ margin: '0 0 10px' }}>From a file</h3>
-            <input type="file" accept=".sql,.csv,.json,.ndjson,.jsonl" disabled={busy} onChange={e => setFile(e.target.files?.[0] || null)} />
+            {/* The same drop box as the licence upload: the whole box opens the
+                chooser, and a file dropped on it is taken the same way. */}
+            <label className={'drop' + (dragging ? ' dragging' : '') + (file ? ' has-file' : '')} data-testid="import-file"
+              onDragOver={e => { e.preventDefault(); if (!busy) setDragging(true) }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files?.[0]; if (f && !busy) setFile(f) }}>
+              <input type="file" accept=".sql,.csv,.json,.ndjson,.jsonl" disabled={busy} aria-label="File to migrate"
+                onChange={e => setFile(e.target.files?.[0] || null)} />
+              {file
+                ? <span><b>{file.name}</b> <span className="muted">· {file.size} bytes · choose another</span></span>
+                : <span><b>Choose a file</b> <span className="muted">or drop it here</span></span>}
+            </label>
             <p className="hint" style={{ marginTop: 8 }}>
               A <code>.sql</code> dump, a <code>.csv</code>, or a <code>.json</code> export (documents → typed columns). Pick a file from anywhere.
             </p>
