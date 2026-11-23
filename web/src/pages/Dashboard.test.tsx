@@ -15,10 +15,11 @@ vi.mock('../api', async () => {
     listBackups: vi.fn().mockResolvedValue([]),
     getBranches: vi.fn(),
     createBranch: vi.fn(),
+    getDPDPInventory: vi.fn().mockRejectedValue(new Error('only the owner of "main" or an admin may do that')),
   }
 })
 
-import { createBranch, getBranches, type Branch } from '../api'
+import { createBranch, getBranches, getDPDPInventory, getStatus, type Branch, type DPDPInventory, type Status } from '../api'
 import { ConfirmProvider } from '../confirm'
 import Dashboard from './Dashboard'
 
@@ -66,5 +67,40 @@ describe('Dashboard: unmasked personal data', () => {
     await waitFor(() => expect(createBranch).toHaveBeenCalled())
     await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(2))
     expect(screen.queryByTestId('create-warning')).toBeNull()
+  })
+})
+
+// main's DPDP inventory gaps (point 11.1): reported and warned, never blocked.
+describe('Dashboard: DPDP inventory gaps', () => {
+  afterEach(() => { cleanup(); vi.clearAllMocks() })
+  const licensed = {
+    mainReady: true, branches: 1, agents: 0, edition: 'enterprise', features: ['dpdp'],
+    ha: { enabled: false }, storage: { used: '1 GiB' }, servers: { gateway: true, api: true },
+  } as unknown as Status
+
+  it("says how many of main's confirmed columns have no entry, and links to the inventory", async () => {
+    vi.mocked(getStatus).mockResolvedValue(licensed)
+    vi.mocked(getBranches).mockResolvedValue([b({ name: 'main', primary: true })])
+    vi.mocked(getDPDPInventory).mockResolvedValue({ gapColumns: 3, gapTables: 2 } as DPDPInventory)
+    page()
+    const w = await screen.findByTestId('dpdp-gaps')
+    expect(w.textContent).toContain('3 column(s) in 2 table(s) of main hold confirmed personal data with no DPDP inventory entry')
+    expect(screen.getByRole('link', { name: 'Open the DPDP inventory' }).getAttribute('href')).toBe('/dpdp-inventory')
+    expect(getDPDPInventory).toHaveBeenCalledWith('main')
+  })
+
+  it('says nothing when every column has an entry, or the caller may not read the inventory', async () => {
+    vi.mocked(getStatus).mockResolvedValue(licensed)
+    vi.mocked(getBranches).mockResolvedValue([b({ name: 'main', primary: true })])
+    vi.mocked(getDPDPInventory).mockResolvedValue({ gapColumns: 0, gapTables: 0 } as DPDPInventory)
+    page()
+    await waitFor(() => expect(getDPDPInventory).toHaveBeenCalled())
+    await screen.findAllByText('main')
+    expect(screen.queryByTestId('dpdp-gaps')).toBeNull()
+    cleanup()
+    vi.mocked(getDPDPInventory).mockRejectedValue(new Error('only the owner of "main" or an admin may do that'))
+    page()
+    await waitFor(() => expect(getDPDPInventory).toHaveBeenCalledTimes(2))
+    expect(screen.queryByTestId('dpdp-gaps')).toBeNull()
   })
 })

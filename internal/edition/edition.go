@@ -48,6 +48,10 @@ const (
 	// Vault is the vault for sensitive values, Aadhaar first (point 13):
 	// values kept encrypted in an HSM, reference keys in their place.
 	Vault Feature = "vault"
+	// DPDP is the DPDP compliance manager (point 11): first the inventory of
+	// personal data, why it is held, whose it is and for how long (11.1).
+	// Entries already recorded can be read in every edition.
+	DPDP Feature = "dpdp"
 )
 
 // descriptions are used in refusals, so each one says what the user is missing
@@ -65,6 +69,7 @@ var descriptions = map[Feature]string{
 	Hardening:    "hardening fixes and profiles",
 	Masking:      "masking personal data",
 	Vault:        "the vault for sensitive values",
+	DPDP:         "the DPDP compliance manager",
 }
 
 // Describe names a feature in a sentence. An unknown feature describes itself,

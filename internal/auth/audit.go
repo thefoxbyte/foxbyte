@@ -222,6 +222,11 @@ const (
 	// A declaration made or withdrawn, and the evidence read (13.4b).
 	EvVaultDeclare  = "vault.declare"
 	EvVaultEvidence = "vault.evidence"
+	// The DPDP inventory (point 11.1): an entry set or removed, where, and
+	// its basis and retention. Never the purpose or the note: they are the
+	// customer's free text.
+	EvDPDPSet     = "dpdp.set"
+	EvDPDPRemoved = "dpdp.removed"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

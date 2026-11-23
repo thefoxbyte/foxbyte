@@ -27,6 +27,7 @@ export type Feature =
   | 'hardening'
   | 'masking'
   | 'vault'
+  | 'dpdp'
 
 export type Status = {
   mainReady: boolean
@@ -1132,6 +1133,50 @@ export type AccessReview = {
 }
 export const getAccessReview = (dormant: number) =>
   req('GET', `${API}/api/access-review?dormant=${dormant}`) as Promise<AccessReview>
+// The DPDP personal-data inventory (point 11.1): for each table holding
+// personal data a reviewer confirmed, its basis under the DPDP Act, purpose,
+// whose data it is and how long it is kept. Reading is free; setting and
+// removing entries are Enterprise ('dpdp').
+export type DPDPChoice = { value: string; label: string }
+export type DPDPVocabulary = { bases: DPDPChoice[]; principals: DPDPChoice[]; units: DPDPChoice[]; from: DPDPChoice[]; reasons: DPDPChoice[] }
+export type DPDPKeep = { count: number; unit: string; from: string; reason: string; citation: string }
+export type DPDPEntry = {
+  schema: string
+  table: string
+  column: string // '' for the table's entry
+  basis: string
+  purpose: string
+  principals: string[]
+  keep: DPDPKeep
+  note: string
+  setBy?: string
+  setAt?: string
+}
+export type DPDPColumn = { column: string; categories: string[]; paths: string[]; by: 'column' | 'table' | ''; override: DPDPEntry | null }
+export type DPDPTable = { schema: string; table: string; entry: DPDPEntry | null; columns: DPDPColumn[]; gaps: number; notices: string[] }
+export type DPDPInventory = {
+  branch: string
+  tables: DPDPTable[]
+  gapColumns: number
+  gapTables: number
+  stale: DPDPEntry[]
+  undecided: number
+  scanned: string | null
+  limits: string[]
+  vocabulary: DPDPVocabulary
+}
+export type DPDPChange = { id: number; action: 'set' | 'removed'; entry: DPDPEntry; actor: string; at: string }
+const dpdpURL = (branch: string) => `${API}/api/branches/${encodeURIComponent(branch)}/dpdp`
+const placeQuery = (schema: string, table: string, column = '') =>
+  `schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}${column ? `&column=${encodeURIComponent(column)}` : ''}`
+export const getDPDPInventory = (branch: string) => req('GET', `${dpdpURL(branch)}/inventory`) as Promise<DPDPInventory>
+export const dpdpInventoryCsvUrl = (branch: string) => `${dpdpURL(branch)}/inventory?format=csv`
+export const setDPDPEntry = (branch: string, e: DPDPEntry) => req('PUT', `${dpdpURL(branch)}/entries`, e) as Promise<DPDPEntry>
+export const removeDPDPEntry = (branch: string, schema: string, table: string, column = '') =>
+  req('DELETE', `${dpdpURL(branch)}/entries?${placeQuery(schema, table, column)}`)
+export const getDPDPHistory = (branch: string, schema: string, table: string, column = '') =>
+  req('GET', `${dpdpURL(branch)}/history?${placeQuery(schema, table, column)}`) as Promise<DPDPChange[]>
+
 export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches' | 'applications' | 'vault') =>
   `${API}/api/access-review?dormant=${dormant}&format=csv&section=${section}`
 

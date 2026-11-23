@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   getStatus, getBranches, createBranch, deleteBranch, suspendBranch, resumeBranch,
-  listBackups, API, type Status, type Branch, type Backup,
+  listBackups, getDPDPInventory, API, type Status, type Branch, type Backup,
 } from '../api'
 import { useConfirm } from '../confirm'
 import { useFeatures } from '../features'
@@ -134,6 +135,19 @@ export default function Dashboard() {
   // holds unmasked, or that nobody has scanned it. Shown until the next create.
   const [warnings, setWarnings] = useState<string[]>([])
   const [offline, setOffline] = useState(false)
+  // main's DPDP inventory gaps (point 11.1): confirmed personal data with no
+  // entry. Only for whoever may manage main and with the licence to fix it;
+  // anyone else is refused the inventory and sees nothing here.
+  const [dpdpGaps, setDpdpGaps] = useState<{ columns: number; tables: number } | null>(null)
+  const dpdpOn = can('dpdp')
+  useEffect(() => {
+    if (!dpdpOn) { setDpdpGaps(null); return }
+    let live = true
+    getDPDPInventory('main')
+      .then(inv => { if (live) setDpdpGaps(inv.gapColumns > 0 ? { columns: inv.gapColumns, tables: inv.gapTables } : null) })
+      .catch(() => { if (live) setDpdpGaps(null) })
+    return () => { live = false }
+  }, [dpdpOn])
 
   // The newest refresh wins: a poll already on its way when the user suspends a
   // branch can come back after the refresh that follows, carrying the old list.
@@ -221,6 +235,12 @@ export default function Dashboard() {
       </div>
       {err && <div className="err">{err}</div>}
       {warnings.map((w, i) => <div className="pii-warning" role="status" data-testid="create-warning" key={i}>{w}</div>)}
+      {dpdpGaps && (
+        <div className="pii-warning" role="status" data-testid="dpdp-gaps">
+          {dpdpGaps.columns} column(s) in {dpdpGaps.tables} table(s) of main hold confirmed personal data with no DPDP inventory entry.{' '}
+          <Link to="/dpdp-inventory">Open the DPDP inventory</Link>
+        </div>
+      )}
 
       <div className="table-wrap">
         <table>

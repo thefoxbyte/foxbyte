@@ -722,6 +722,39 @@ runs no scan: each branch is read from its latest Aadhaar exposure report.
 Finding one person's data for an access or erasure request is
 [`fox subject find`](data-subject-requests.md).
 
+**The DPDP inventory** (setting it is Enterprise)
+
+```bash
+fox dpdp inventory                 # each table with confirmed personal data: basis, purpose, whose, how long
+fox dpdp inventory --gaps          # only the tables with a confirmed column no entry covers
+fox dpdp inventory --csv > register.csv   # one confirmed column a row, for the DPO's register
+fox dpdp set public.customers --basis consent --purpose "Delivering orders" \
+  --principals customer --keep 3y --from last-contact --reason purpose
+fox dpdp set public.customers.aadhaar_no --basis 7d --purpose "KYC" --principals customer \
+  --keep 8y --from account-closed --reason law --citation "Prevention of Money-laundering Act, 2002, s.12"
+fox dpdp unset public.customers.aadhaar_no   # the table's entry covers it again
+fox dpdp history public.customers            # every change: who, when, what
+```
+
+The inventory is built from the places `fox pii` review confirmed. Each table
+gets one entry: its basis under the DPDP Act, 2023 (`consent`, s.6, or a
+legitimate use of s.7, `7a` to `7i`), its purpose as the notice to people states
+it, whose data it is (`customer`, `employee`, `applicant`, `vendor`, `child`,
+`disability`, `other`) and how long it is kept: a period (`3y`, `18m`, `90d`, or
+`0`) after an event (`collection`, `last-contact`, `account-closed`,
+`contract-end`, `purpose-served`), for a reason (`law` or `contract`, which
+`--citation` names, or `purpose`). A column can have its own entry, which
+replaces the table's for that column. A confirmed column with neither is a gap:
+`fox check` and the console's dashboard warn about main's gaps, and nothing is
+blocked. A child's date of birth in a table whose entry does not list children
+is a notice (s.9(1)). An entry whose place no longer holds confirmed personal
+data is listed as stale, not deleted. The entries live in the branch, so a branch
+made from main carries main's; every change is kept, and set and remove are in
+the security log with the place and the basis, never the purpose or the note.
+Reading and exporting are free in every edition. The words are FoxByte's reading
+of the Act and the Rules, not legal advice; [dpdp-inventory.md](dpdp-inventory.md)
+gives the source of each.
+
 **Accounts & keys**
 
 ```bash
@@ -1036,6 +1069,7 @@ features need a licence — without one it behaves exactly like Standard.
 | ETL pipelines (`fox import` is free: migrating in is onboarding, not ETL) | — | yes |
 | Scanning for personal data (`fox pii scan`) and the Aadhaar exposure report (`fox pii aadhaar run`); reading what earlier scans found | — / yes | yes |
 | The access review report (`fox access review`) | — | yes |
+| The DPDP inventory (`fox dpdp set`, `unset`); reading and exporting it (`fox dpdp inventory`, `history`) | — / yes | yes |
 | Masking personal data (`fox mask`): rules, masked accounts, key domains, `unmask`, masked branches | — | yes |
 | The vault for sensitive values (`fox vault`), Aadhaar first, kept in an HSM | — | yes |
 | Making the hardening fixes (`fox hardening fix`, `profile`); reading the hardening report | — / yes | yes |

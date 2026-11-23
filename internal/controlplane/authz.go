@@ -130,6 +130,10 @@ func needFor(method, tail string) access.Level {
 	// sensitive, so reading the findings is the owner's, as scanning is.
 	case tail == "personal-data", strings.HasPrefix(tail, "personal-data/"):
 		return access.Manage
+	// The DPDP inventory (point 11.1) lists where personal data sits and why:
+	// sensitive as the findings are, so reading it is the owner's too.
+	case tail == "dpdp", strings.HasPrefix(tail, "dpdp/"):
+		return access.Manage
 	// Vacuuming and analysing (point 12.5) change how the branch runs: the
 	// owner's. Reading a table's upkeep, and one's own sessions, is Use; whose
 	// sessions are shown and may be signalled is decided in sessions.go.
