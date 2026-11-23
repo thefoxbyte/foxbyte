@@ -80,7 +80,7 @@ test('a gap until an entry is set from the page; a column of its own; kept, expo
   await row('phone').getByRole('button', { name: 'Own entry…' }).click()
   await expect(form).toContainText("it replaces the table's for this column")
   await expect(form.getByLabel('Purpose')).toHaveValue('Delivering orders and sending receipts')
-  await form.getByLabel('Basis (s.4)').selectOption('7d')
+  await form.getByLabel('Basis', { exact: true }).selectOption('7d')
   await form.getByLabel('Keep for').fill('8')
   await form.getByLabel('After').selectOption('account_closed')
   await form.getByLabel('Because').selectOption('law')

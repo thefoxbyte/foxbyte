@@ -624,7 +624,11 @@ func SetDPDPEntry(name string, e DPDPEntry, actor string) (DPDPEntry, error) {
 		return e, err
 	}
 	if !holdsConfirmed(inv, e.Schema, e.Table, e.Column) {
-		return e, fmt.Errorf("%w: %s holds no personal data a reviewer confirmed; confirm its findings first (fox pii mark)", ErrInvalidRequest, e.Where())
+		hint := ""
+		if e.Column == "" {
+			hint = " (a column is schema.table.column)"
+		}
+		return e, fmt.Errorf("%w: %s holds no personal data a reviewer confirmed%s; confirm its findings first (fox pii mark)", ErrInvalidRequest, e.Where(), hint)
 	}
 	if err := setDPDP(name, e, actor); err != nil {
 		return e, err
