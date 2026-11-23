@@ -39,20 +39,24 @@ test('a run from the page finds whose Aadhaar is where, by its last four digits,
   await page.getByLabel('Branch', { exact: true }).selectOption(branch)
   await page.getByRole('button', { name: 'Run the report' }).click()
 
-  const cols = page.getByRole('table', { name: 'Aadhaar by column' })
+  const cols = page.getByRole('table', { name: 'Aadhaar by column', exact: true })
   const col = (where: string) => cols.locator('tr', { has: page.getByText(where, { exact: true }) })
   await expect(col('public.pii_people.aadhaar_no')).toContainText('2', { timeout: 120_000 })
   await expect(col(`public.${notes}.note`)).toBeVisible()
   // A card's sixteen digits are not an Aadhaar.
   await expect(cols.getByText('public.pii_people.card_no', { exact: true })).toHaveCount(0)
 
-  // One number in two tables is one person, shown as UIDAI masks it.
-  const people = page.getByRole('table', { name: 'Aadhaar by person' })
+  // One number in two tables is one person, shown as UIDAI masks it. Exact
+  // names: a role name matches as a substring, and "Aadhaar by person in the
+  // logs" is on the page too whenever an earlier admin run on a branch of this
+  // name read the logs (they outlive the branch, so a rerun of this suite on
+  // the same install shows it), with the same 0124 in it.
+  const people = page.getByRole('table', { name: 'Aadhaar by person', exact: true })
   const person = people.locator('tr', { has: page.getByText('XXXX XXXX 0124', { exact: true }) })
   await expect(person).toContainText('public.pii_people.aadhaar_no')
   await expect(person).toContainText(`public.${notes}.note`)
   await person.getByRole('button', { name: /^Rows of person \d+$/ }).click()
-  const places = page.getByRole('table', { name: 'Aadhaar places' })
+  const places = page.getByRole('table', { name: 'Aadhaar places', exact: true })
   await expect(places.locator('tr', { has: page.getByText(`public.${notes}.note`, { exact: true }) })).toContainText('id=7')
   await expect(places.locator('tr', { has: page.getByText('public.pii_people.aadhaar_no', { exact: true }) })).toContainText('id=1')
   await expect(page.getByRole('heading', { name: 'What this cannot claim' })).toBeVisible()
@@ -74,7 +78,7 @@ test('a run from the page finds whose Aadhaar is where, by its last four digits,
   await page.getByRole('button', { name: 'Run the report' }).click()
   await expect(cols.getByText(`public.${notes}.note`, { exact: true })).toHaveCount(0, { timeout: 120_000 })
   await page.getByRole('button', { name: /^\d+ place\(s\) earlier runs found are no longer there$/ }).click()
-  const gone = page.getByRole('table', { name: 'Aadhaar places' })
+  const gone = page.getByRole('table', { name: 'Aadhaar places', exact: true })
   await expect(gone.locator('tr', { has: page.getByText(`public.${notes}.note`, { exact: true }) })).toContainText('XXXX XXXX 0124')
   await expect(gone).toContainText('Last seen')
   // No clean-up: a DROP here would be one of the branch's changes, which a
@@ -100,16 +104,16 @@ test("an admin's run reads the branch's logs too: a number someone typed is the 
   await page.getByLabel(/Read the logs too/).check()
   await page.getByRole('button', { name: 'Run the report' }).click()
 
-  const logs = page.getByRole('table', { name: 'Aadhaar in the logs' })
+  const logs = page.getByRole('table', { name: 'Aadhaar in the logs', exact: true })
   await expect(logs).toContainText('query history', { timeout: 120_000 })
   await expect(page.getByTestId('aadhaar-logs-summary')).toContainText('also in the tables')
-  const person = page.getByRole('table', { name: 'Aadhaar by person' })
+  const person = page.getByRole('table', { name: 'Aadhaar by person', exact: true })
     .locator('tr', { has: page.getByText('XXXX XXXX 2101', { exact: true }) })
   await expect(person).toContainText(`public.${t}.note`)
   await expect(person).toContainText('query history')
   await person.getByRole('button', { name: /^Rows of person \d+$/ }).click()
-  await expect(page.getByRole('table', { name: 'Aadhaar places' })).toContainText('id=3')
-  const entries = page.getByRole('table', { name: 'Aadhaar log entries' })
+  await expect(page.getByRole('table', { name: 'Aadhaar places', exact: true })).toContainText('id=3')
+  const entries = page.getByRole('table', { name: 'Aadhaar log entries', exact: true })
   await expect(entries).toContainText(email)
   await expect(entries).toContainText('(sql)')
   await expect(page.getByRole('heading', { name: 'What the logs part cannot claim' })).toBeVisible()
