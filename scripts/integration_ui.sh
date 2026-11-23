@@ -29,6 +29,10 @@ NEW_BRANCH="e2eui2"
 # interaction it measures failed for reasons that had nothing to do with the
 # console, and failed differently on each retry.
 TARGET_BRANCH="e2eui3"
+# vaultmigrate.spec.ts's branch: new each run (the orphaned-keys table names it),
+# made before the browser starts, so its container starting cannot abort a
+# request in flight; the spec deletes it.
+VMIG_BRANCH="vmig$(date +%s | tail -c 8)"
 TABLE="e2e_notes"
 
 echo "### setup: a running stack, an account, a clean branch"
@@ -69,7 +73,7 @@ printf '%s\n' "$PASSWORD" | "$S" user create "$EMAIL" >/dev/null 2>&1
 # The console and Blackbox tests need a branch of their own, and a branch made
 # here belongs to no account until it is handed over (audit v2 G02).
 for b in "$BRANCH" "$NEW_BRANCH" "$TARGET_BRANCH"; do "$S" branch delete "$b" >/dev/null 2>&1; done
-for b in "$BRANCH" "$TARGET_BRANCH"; do
+for b in "$BRANCH" "$TARGET_BRANCH" "$VMIG_BRANCH"; do
 	"$S" branch create "$b" >/dev/null 2>&1
 	"$S" branch owner "$b" "$EMAIL" >/dev/null 2>&1
 done
@@ -220,7 +224,7 @@ sudo docker events --filter type=container --filter event=start --filter event=d
 EVP=$!
 FOX_E2E_URL="$API" FOX_E2E_EMAIL="$EMAIL" FOX_E2E_PASSWORD="$PASSWORD" \
 	FOX_E2E_BRANCH="$BRANCH" FOX_E2E_NEW_BRANCH="$NEW_BRANCH" FOX_E2E_TABLE="$TABLE" \
-	FOX_E2E_TARGET_BRANCH="$TARGET_BRANCH" FOX_E2E_RT_BRANCH="$BRANCH" \
+	FOX_E2E_TARGET_BRANCH="$TARGET_BRANCH" FOX_E2E_RT_BRANCH="$BRANCH" FOX_E2E_VMIG_BRANCH="$VMIG_BRANCH" \
 	npx playwright test --grep-invert "licence file uploaded"
 rc=$?
 sudo kill "$EVP" 2>/dev/null
@@ -268,7 +272,7 @@ echo "### cleanup"
 "$S" mask account e2e-masked@foxbyte.dev --off --yes >/dev/null 2>&1
 "$S" user delete e2e-masked@foxbyte.dev >/dev/null 2>&1
 "$S" mask key drop e2e_tenant --yes >/dev/null 2>&1
-for b in "$BRANCH" "$NEW_BRANCH" e2eui3 e2emb e2emask; do "$S" branch delete "$b" >/dev/null 2>&1; done
+for b in "$BRANCH" "$NEW_BRANCH" e2eui3 e2emb e2emask "$VMIG_BRANCH"; do "$S" branch delete "$b" >/dev/null 2>&1; done
 cd "$ROOT" || exit 1
 # A failure leaves the screenshots and traces where CI can collect them.
 if [ "$rc" = 0 ]; then
