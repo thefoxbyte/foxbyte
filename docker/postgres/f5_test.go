@@ -21,7 +21,7 @@ func readLF(t *testing.T, path string) string {
 // section 3, E3): whichever way the extension arrives, at 0.2 or updated to
 // it, nobody is given EXECUTE on it but whoever the engine grants it to.
 func TestMaskHashIsNeverPublic(t *testing.T) {
-	for _, f := range []string{"bb_identity/bb_identity--0.2.sql", "bb_identity/bb_identity--0.1--0.2.sql"} {
+	for _, f := range []string{"bb_identity/bb_identity--0.2.sql", "bb_identity/bb_identity--0.3.sql", "bb_identity/bb_identity--0.1--0.2.sql"} {
 		s := readLF(t, f)
 		if !strings.Contains(s, "CREATE FUNCTION bbid_mask_hmac(domain text, value text)") {
 			t.Errorf("%s does not make bbid_mask_hmac", f)
@@ -30,11 +30,12 @@ func TestMaskHashIsNeverPublic(t *testing.T) {
 			t.Errorf("%s leaves bbid_mask_hmac executable by PUBLIC", f)
 		}
 	}
-	if c := readLF(t, "bb_identity/bb_identity.control"); !strings.Contains(c, "default_version = '0.2'") {
-		t.Error("bb_identity's default version should be 0.2")
+	// 0.3 added placeholders (F4, f4_test.go), and keeps the hash as it was.
+	if c := readLF(t, "bb_identity/bb_identity.control"); !strings.Contains(c, "default_version = '0.3'") {
+		t.Error("bb_identity's default version should be 0.3")
 	}
 	mk := readLF(t, "bb_identity/Makefile")
-	for _, f := range []string{"bb_identity--0.1.sql", "bb_identity--0.2.sql", "bb_identity--0.1--0.2.sql"} {
+	for _, f := range []string{"bb_identity--0.1.sql", "bb_identity--0.2.sql", "bb_identity--0.3.sql", "bb_identity--0.1--0.2.sql", "bb_identity--0.2--0.3.sql"} {
 		if !strings.Contains(mk, f) {
 			t.Errorf("the Makefile does not install %s", f)
 		}
