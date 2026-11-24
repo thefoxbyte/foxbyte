@@ -1,8 +1,8 @@
 # F4: erasure across every copy FoxByte manages — design
 
-**Status:** proposed (24 November 2026). Decisions 1 to 4 were taken by the
-user on 24 November 2026; decisions 5 to 12 are proposed with a
-recommendation (section 18). This answers point 11.2 of the review plan
+**Status:** agreed (24 November 2026, #268). Decisions 1 to 4 were taken by
+the user, and decisions 5 to 12 agreed as recommended, the same day
+(section 18). The Gate 0 prototype follows (section 19). This answers point 11.2 of the review plan
 (`docs/FOX_Expert_Review_Plan.md`, foundation F4 and point 11, phase 2):
 erasing one person's personal data from every copy FoxByte manages, saying
 what each copy still holds and when it clears, and never claiming more. It was
@@ -18,7 +18,7 @@ Claims that still need the prototype are marked **(prototype)**.
 for erasure; what counts as erased on a disk is a question for the privacy
 lawyer and the storage engineer the review plan names (section 20).
 
-**Decided on 24 November 2026** (section 18):
+**Decided on 24 November 2026** (section 18; 5 to 12 as recommended there):
 
 1. **What erasure does to a row** is set per table in the DPDP inventory:
    clear its personal columns (the default) or delete the row. FoxByte shows
@@ -552,20 +552,20 @@ deleted or restored, and the request must outlive both.
 
 ## 18. Decisions
 
-| # | Decision | Recommendation or answer |
+| # | Decision | Decided (1–4 asked; 5–12 agreed as recommended, 24 November 2026) |
 |---|---|---|
 | 1 | What erasure does to a row | **Decided:** per table in the inventory, `clear` by default or `delete`; previewed, then one transaction on `main` (section 5) |
 | 2 | Branches | **Decided:** erased on every branch; those made before it listed to remake or delete; "clears on" waits; a maximum age flags them (section 6) |
 | 3 | The Blackbox | **Decided:** placeholders for `UPDATE`/`DELETE` from now on; existing entries redacted with a seal; schema changes kept and flagged (section 9) |
 | 4 | Restores | **Decided:** refused while a request is open, unless an admin records a decision; then applied again before the copy opens (section 12) |
-| 5 | Referencing rows | Follow foreign keys to rows with confirmed personal columns of their own, transitively, each shown in the plan (section 4) |
-| 6 | Maximum branch age | A setting, off by default; flagged, never remade (section 6) |
-| 7 | The rewrite | `VACUUM FULL` for tables under 1 GB as part of applying; larger ones listed for an admin to run; the backups' date starts from it (section 7) |
-| 8 | Query history | Entries holding a value deleted for every actor; saved queries listed for their owners (section 9) |
-| 9 | What a request keeps | No values; the last four characters; row keys per branch and table (section 16) |
-| 10 | Who | Admins only; a two-person rule later, if asked (section 17) |
-| 11 | Edition | Requests Enterprise (`dpdp`), reading free; placeholders and the restore guard in every edition (section 17) |
-| 12 | Sign-off | The design and the build go ahead on the founders' agreement; the privacy lawyer's and the storage engineer's reviews recorded as open, as 11.1's lawyer's review is |
+| 5 | Referencing rows | **Agreed:** Follow foreign keys to rows with confirmed personal columns of their own, transitively, each shown in the plan (section 4) |
+| 6 | Maximum branch age | **Agreed:** A setting, off by default; flagged, never remade (section 6) |
+| 7 | The rewrite | **Agreed:** `VACUUM FULL` for tables under 1 GB as part of applying; larger ones listed for an admin to run; the backups' date starts from it (section 7) |
+| 8 | Query history | **Agreed:** Entries holding a value deleted for every actor; saved queries listed for their owners (section 9) |
+| 9 | What a request keeps | **Agreed:** No values; the last four characters; row keys per branch and table (section 16) |
+| 10 | Who | **Agreed:** Admins only; a two-person rule later, if asked (section 17) |
+| 11 | Edition | **Agreed:** Requests Enterprise (`dpdp`), reading free; placeholders and the restore guard in every edition (section 17) |
+| 12 | Sign-off | **Agreed:** The design and the build go ahead on the founders' agreement; the privacy lawyer's and the storage engineer's reviews recorded as open, as 11.1's lawyer's review is |
 
 ---
 
