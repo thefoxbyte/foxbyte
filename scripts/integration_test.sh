@@ -1116,6 +1116,32 @@ assert_eq "ledger is append-only (a plain DELETE is blocked)" \
   "$(sudo docker exec pg-main psql -U dbadmin -d appdb -tAc "DELETE FROM bb.schema_ledger WHERE id=(SELECT max(id) FROM bb.schema_ledger)" 2>&1 | grep -c 'append-only')" "1"
 assert_eq "hash chain verifies intact (0 broken rows)" \
   "$(pg pg-main "SELECT count(*) FROM (SELECT (row_hash <> bb._ledger_hash(s.*) OR prev_hash IS DISTINCT FROM coalesce(lag(row_hash) OVER (ORDER BY id),'')) AS broken FROM bb.schema_ledger s WHERE row_hash IS NOT NULL) x WHERE broken")" "0"
+
+echo "### 8a. a client drops its own temporary tables; every other DROP TABLE is still guarded"
+# A temporary table is the session's own scratch space and goes when it
+# disconnects. Its DROP TABLE used to be refused like any other, so code that
+# cleans up after itself failed. Each -c is a transaction of its own, so a
+# refused attempt is recorded (one in the same transaction as a recorded
+# CREATE is not, as before).
+gwt() { local k="$1"; shift; local a=(); for x in "$@"; do a+=(-c "$x"); done; PGPASSWORD="$k" psql "$GATEWAY/main?sslmode=require" -X -q -tA "${a[@]}" 2>&1 | grep -v '^NOTICE:  '; }
+TAK="$($S apikey create alice@foxbyte.dev tmpbot --agent 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+SCRATCH="CREATE TEMP TABLE scratch (id serial PRIMARY KEY, note text DEFAULT 'x', body text)"
+assert_eq "an ordinary account creates, fills and drops its own temporary table" \
+  "$(gwt "$KA" "$SCRATCH" "INSERT INTO scratch (body) SELECT repeat('z', 9000)" "DROP TABLE scratch" "SELECT to_regclass('pg_temp.scratch') IS NULL")" "t"
+assert_eq "…and an agent key, with IF EXISTS, a schema and a temporary view it takes with it" \
+  "$(gwt "$TAK" "$SCRATCH" "CREATE VIEW scratch_v AS SELECT id FROM scratch" "DROP TABLE IF EXISTS pg_temp.scratch CASCADE" "SELECT to_regclass('pg_temp.scratch') IS NULL AND to_regclass('pg_temp.scratch_v') IS NULL")" "t"
+B0="$(pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE status='BLOCKED' AND command_tag='DROP TABLE'")"
+assert_contains "a temporary and an ordinary table in one DROP TABLE: refused" \
+  "$(gwt "$KEY" "$SCRATCH" "DROP TABLE scratch, ledg")" "guardrail: DROP TABLE is blocked by policy"
+assert_contains "a temporary table named like an ordinary one does not let the ordinary one go" \
+  "$(gwt "$KEY" "CREATE TEMP TABLE ledg (x int)" "DROP TABLE public.ledg")" "guardrail: DROP TABLE is blocked by policy"
+assert_eq "…the ordinary table is still there, and both attempts are recorded" \
+  "$(pg pg-main "SELECT to_regclass('public.ledg') IS NOT NULL")|$(pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE status='BLOCKED' AND command_tag='DROP TABLE'")" "t|$((B0 + 2))"
+assert_contains "an ordinary table alone is refused as before" "$(gwt "$KEY" "DROP TABLE ledg")" "guardrail: DROP TABLE is blocked by policy"
+assert_eq "a temporary table's drop is not a destructive change in the Blackbox" \
+  "$(pg pg-main "SELECT count(*) FROM bb.schema_ledger WHERE command_tag='DROP TABLE' AND status<>'BLOCKED'")" "0"
+assert_eq "the chain still verifies" \
+  "$(pg pg-main "SELECT count(*) FROM (SELECT (row_hash <> bb._ledger_hash(s.*) OR prev_hash IS DISTINCT FROM coalesce(lag(row_hash) OVER (ORDER BY id),'')) AS broken FROM bb.schema_ledger s WHERE row_hash IS NOT NULL) x WHERE broken")" "0"
 pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS ledg" >/dev/null 2>&1
 
 echo "### 9. ETL pipeline (extract -> transform -> test)"

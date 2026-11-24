@@ -596,6 +596,17 @@ EXCEPTION WHEN OTHERS THEN
 END;
 $$;
 
+-- Does this text name one of this session's temporary tables? Only a hint, and
+-- a generous one (any table name the text contains, in any case): it decides
+-- nothing by itself. bb.log_ddl_drop checks what was actually dropped.
+CREATE OR REPLACE FUNCTION bb._names_own_temp_table(q text) RETURNS boolean
+LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
+  SELECT pg_my_temp_schema() <> 0 AND EXISTS (
+    SELECT 1 FROM pg_class c
+    WHERE c.relnamespace = pg_my_temp_schema() AND c.relkind IN ('r', 'p')
+      AND strpos(lower(coalesce(q, '')), lower(c.relname)) > 0);
+$$;
+
 -- ddl_command_start: enforce guardrails BEFORE the command runs.
 -- SECURITY DEFINER: the ledger's triggers record history with the owner's
 -- privileges, so a non-superuser client can trigger them (by running DDL) without
@@ -611,6 +622,14 @@ BEGIN
   allow := coalesce(nullif(current_setting('bb.allow_destructive', true), ''), 'off');
   IF allow IN ('on','true','1') AND bb._may_override() THEN
     RETURN; -- approved override (a superuser or a db_admin member)
+  END IF;
+  -- A session's own temporary table is its scratch space, gone when it
+  -- disconnects: dropping one loses nothing. Before the command runs only its
+  -- text can be seen, so a DROP TABLE naming one of this session's temporary
+  -- tables goes on to bb.log_ddl_drop, which sees exactly what was dropped and
+  -- refuses the statement if any of it is not temporary.
+  IF TG_TAG = 'DROP TABLE' AND bb._names_own_temp_table(current_query()) THEN
+    RETURN;
   END IF;
   SELECT * INTO c FROM bb._ctx();
   -- Record the blocked attempt durably via dblink (autonomous — survives the rollback),
@@ -736,6 +755,35 @@ DECLARE r record; c record; q text; st text := 'APPLIED';
 BEGIN
   SELECT * INTO c FROM bb._ctx();
   q := current_query();
+  -- The guardrail's second half, for a DROP TABLE that bb.guard_ddl_start let
+  -- through because it names a temporary table of this session. What the
+  -- statement named (original) and what it took with it by CASCADE (normal)
+  -- must all be temporary; their own parts (defaults, TOAST, row types) are
+  -- neither, and are left out. A rule (a view's _RETURN) has no schema of its
+  -- own and so is never is_temporary: it is temporary when its table is, which
+  -- address_names gives first, as pg_temp. `DROP TABLE scratch, customers` is refused here
+  -- as the guard would have refused it, with the same record and error. Every
+  -- other way through the guard (an override, the guard switched off, a policy
+  -- that does not block) passes here too.
+  IF EXISTS (SELECT 1 FROM bb.policy WHERE op = TG_TAG AND action = 'block')
+     AND coalesce((SELECT evtenabled <> 'D' FROM pg_event_trigger WHERE evtname = 'bb_guard_start'), true)
+     AND NOT (coalesce(nullif(current_setting('bb.allow_destructive', true), ''), 'off') IN ('on','true','1')
+              AND bb._may_override())
+     AND EXISTS (SELECT 1 FROM pg_event_trigger_dropped_objects()
+                 WHERE (original OR normal) AND NOT is_temporary
+                   AND NOT (schema_name IS NULL AND address_names[1] = 'pg_temp')) THEN
+    IF bb._holds_chain_lock() THEN
+      RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
+    ELSE
+      PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
+                (actor,actor_kind,tool,session,branch,command_tag,statement,status,risk)
+                VALUES (%L,%L,%L,%L,%L,%L,%L,'BLOCKED','policy')$f$,
+          c.actor, c.actor_kind, c.tool, c.session, c.branch, TG_TAG, q));
+    END IF;
+    RAISE EXCEPTION 'guardrail: % is blocked by policy (set bb.allow_destructive=on to override)', TG_TAG
+      USING ERRCODE = 'insufficient_privilege',
+            HINT = 'Only superusers and members of db_admin may override. Grant it with: fox admin grant <email>';
+  END IF;
   IF EXISTS (SELECT 1 FROM bb.policy WHERE op = TG_TAG AND action = 'flag') THEN
     st := 'FLAGGED';   -- the guardrail policy marks this command 'flag'
   END IF;

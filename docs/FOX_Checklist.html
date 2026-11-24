@@ -402,7 +402,7 @@
       <li class="ok">Tool and session are client-declared by design, and labelled so</li></ul></td><td class="tb">Unit; VM §8; v2 §1c</td></tr>
     <tr data-id="H4" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H4</td><td><b>Destructive-DDL guardrail</b><ul class="subs">
       <li class="ok">DROP TABLE / DROP SCHEMA refused, attempt recorded</li><li class="ok">Override only superusers / <code>db_admin</code>, use recorded</li>
-      <li class="ok">"flag" and "allow" actions; unknown actions refused</li><li class="ok">No hang when blocked after a write in the same transaction</li><li class="ok">TRUNCATE blocked by default, recorded</li></ul></td><td class="tb">VM §8; v2 §1b, §6b</td></tr>
+      <li class="ok">"flag" and "allow" actions; unknown actions refused</li><li class="ok">No hang when blocked after a write in the same transaction</li><li class="ok">TRUNCATE blocked by default, recorded</li><li class="ok">A session's own temporary tables may be dropped (and what they take with them by CASCADE, if temporary too); a DROP TABLE with anything else in it is refused and recorded, a temporary table named like an ordinary one included</li></ul></td><td class="tb">Unit; VM §8, §8a; v2 §1b, §6b</td></tr>
     <tr data-id="H5" data-st="done"><td class="c"><i class="ck done"></i></td><td class="id">H5</td><td><b>Risk flags</b><ul class="subs">
       <li class="ok">Type change, drop column flagged</li><li class="ok">Judged on the running statement (no comments or literals)</li>
       <li class="ok">Automated test</li></ul></td><td class="tb">Unit; v2 §6b</td></tr>
