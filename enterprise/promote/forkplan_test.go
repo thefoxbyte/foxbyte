@@ -18,7 +18,7 @@ import (
 // both held whole, split at their common prefix. The reference forkPlan must
 // agree with.
 func planAllAtOnce(src, tgt []ledger.Row, maskedFork int64, masked bool,
-	promoted map[int64]bool, fromUs map[string]bool) (int64, []ledger.Row, map[string]bool) {
+	promoted map[int64]branch.RequestEntry, fromUs map[string]bool) (int64, []ledger.Row, map[string]bool) {
 	n := branch.CommonPrefix(src, tgt)
 	var forkAfterID int64
 	if n > 0 {
@@ -87,7 +87,7 @@ func TestForkPlanMatchesTheWholeLedgerSplit(t *testing.T) {
 		"masked but shared":      {src, tgt, 2, true},
 		"target empty":           {src, nil, 0, false},
 	}
-	promoted := map[int64]bool{6: true}
+	promoted := map[int64]branch.RequestEntry{6: {ID: 6}}
 	fromUs := map[string]bool{"s1": true}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -65,7 +65,14 @@ func build(source, target string, history []auth.ChangeRequest, opts branch.Requ
 	if _, err := branch.EnsureRunning(target); err != nil {
 		return plan, err
 	}
-	promoted, fromUs := alreadyPromoted(source, target, history)
+	// Only the requests this target holds count as applied to it. A request is
+	// stored under its branches' names, and a branch deleted and made again
+	// under the same name is not the one the request was applied to.
+	recorded, err := branch.AppliedRequests(target)
+	if err != nil {
+		return plan, fmt.Errorf("reading which change requests %q already has: %w", target, err)
+	}
+	promoted, fromUs := alreadyPromoted(source, target, heldBy(history, recorded))
 	p := newForkPlan(promoted, fromUs)
 	p.maskedFork, p.masked = branch.MaskedBranchFork(source)
 	// Both ledgers are read side by side as they stream (branch.WalkLedgerFork):
@@ -189,8 +196,8 @@ func isDataChange(commandTag, risk string) bool {
 // target's Blackboxes: where they part, the source entries after that which
 // could be replayed, and the objects the target changed on its own since.
 type forkPlan struct {
-	promoted map[int64]bool  // source entries the target already has
-	fromUs   map[string]bool // target sessions this source's requests ran under
+	promoted map[int64]branch.RequestEntry // source entries the target already has, as they were carried
+	fromUs   map[string]bool               // target sessions this source's requests ran under
 
 	maskedFork int64
 	masked     bool
@@ -201,7 +208,7 @@ type forkPlan struct {
 	tgtTouched  map[string]bool
 }
 
-func newForkPlan(promoted map[int64]bool, fromUs map[string]bool) *forkPlan {
+func newForkPlan(promoted map[int64]branch.RequestEntry, fromUs map[string]bool) *forkPlan {
 	return &forkPlan{promoted: promoted, fromUs: fromUs, tgtTouched: map[string]bool{}}
 }
 
@@ -242,13 +249,13 @@ func (p *forkPlan) visitor() branch.LedgerFork {
 
 // replayable reports whether a source entry after the fork is one a request
 // carries.
-func replayable(r ledger.Row, promoted map[int64]bool) bool {
+func replayable(r ledger.Row, promoted map[int64]branch.RequestEntry) bool {
 	switch {
 	case r.Status == "BLOCKED":
 		return false // it never happened, so there is nothing to carry over
 	case ledger.IsScanStatus(r.Status):
 		return false // found by the catalog scan: no statement anyone ran, so nothing to replay
-	case promoted[r.ID]:
+	case carried(r, promoted):
 		return false // the target already has this one, from an earlier request
 	case strings.TrimSpace(r.Statement) == "":
 		return false // an entry with no statement recorded cannot be replayed
@@ -279,11 +286,58 @@ func runXids(source string, after int64) (map[int64]int64, error) {
 	return xids, nil
 }
 
+// carried reports whether an earlier request already gave the target this
+// source entry. An id is not enough: a branch deleted and made again under the
+// same name numbers its entries from where its parent was, so its entry 140 is
+// not the one an earlier request carried as 140. The entry must also have been
+// recorded at the same second, as the same command. A snapshot without a time
+// is known by its id alone, as it always was.
+func carried(r ledger.Row, promoted map[int64]branch.RequestEntry) bool {
+	e, ok := promoted[r.ID]
+	if !ok {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, e.At)
+	if e.At == "" || err != nil {
+		return true
+	}
+	if !r.At.UTC().Truncate(time.Second).Equal(at) {
+		return false
+	}
+	tag, was := strings.TrimSpace(r.CommandTag), strings.TrimSpace(e.CommandTag)
+	return tag == "" || was == "" || strings.EqualFold(tag, was)
+}
+
+// heldBy is the history without the requests the target's own record says it
+// does not hold (bb.applied_requests, written in the same transaction as the
+// changes). The store keeps a request under its branches' names, so a target
+// deleted and made again under the same name inherits the old one's requests;
+// a target restored to before a request was applied no longer has it either.
+// Either way the request's entries are not on this target, and must be offered
+// again rather than taken as carried.
+//
+// Only a request with a name (auth.ChangeRequest.UID) is checked: every engine
+// that names requests records each one it applies, by its name, before it runs
+// a statement (recordApplied). One from before has no such record to look for,
+// and counts as it always did.
+func heldBy(history []auth.ChangeRequest, recorded map[branch.AppliedKey]int) []auth.ChangeRequest {
+	out := make([]auth.ChangeRequest, 0, len(history))
+	for _, c := range history {
+		if c.UID != "" && c.Status == auth.RequestApproved && c.Applied > 0 {
+			if _, ok := recorded[branch.AppliedKeyOf(c)]; !ok {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // alreadyPromoted reads the approved requests from this source to this target: the
-// source entry ids the target already holds, and the Blackbox sessions those
-// statements were applied under.
-func alreadyPromoted(source, target string, history []auth.ChangeRequest) (ids map[int64]bool, sessions map[string]bool) {
-	ids, sessions = map[int64]bool{}, map[string]bool{}
+// source entries the target already holds, as each request carried them, and the
+// Blackbox sessions those statements were applied under.
+func alreadyPromoted(source, target string, history []auth.ChangeRequest) (ids map[int64]branch.RequestEntry, sessions map[string]bool) {
+	ids, sessions = map[int64]branch.RequestEntry{}, map[string]bool{}
 	for _, c := range history {
 		if c.Source != source || c.Target != target || c.Status != auth.RequestApproved || c.Applied == 0 {
 			continue
@@ -294,7 +348,7 @@ func alreadyPromoted(source, target string, history []auth.ChangeRequest) (ids m
 			continue
 		}
 		for _, e := range entries {
-			ids[e.ID] = true
+			ids[e.ID] = e
 		}
 	}
 	return ids, sessions
