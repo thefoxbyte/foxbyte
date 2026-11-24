@@ -23,6 +23,13 @@ SQLSTATE 42501 (insufficient_privilege)
 
 The gate runs after that guardrail (event trigger `bb_policy_start`, which sorts
 after `bb_guard_start`), so a statement the guardrail blocks never reaches it.
+One exception: a session may drop its own temporary tables, and a `DROP TABLE`
+that names one passes the guardrail's first check, since before it runs only its
+text is known. The gate sees it as any allowed statement, so a rule that blocks
+it refuses it first. Otherwise, if it drops anything that is not temporary
+(`DROP TABLE scratch, customers`), the guardrail refuses it with the error above
+once the objects are known (event trigger `bb_log_drop`), and a warning the gate
+recorded for it is rolled back with it.
 
 The guardrail is per command, in `bb.policy` (op → action):
 

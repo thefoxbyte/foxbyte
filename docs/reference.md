@@ -23,7 +23,8 @@ inherited by every branch, capture **every** schema change and attribute it:
   and the session;
 - **a guardrail** — destructive commands (`DROP TABLE`, `DROP SCHEMA`,
   `TRUNCATE`) are blocked by policy unless an admin overrides them, and blocked
-  attempts are recorded too;
+  attempts are recorded too. A session's own temporary tables are its own to
+  drop; a `DROP TABLE` with anything else in it is still blocked;
 - **data changes by agents** — every `UPDATE` and `DELETE` an agent runs is
   recorded with its table and statement (people's are not, to keep ordinary
   writes fast), and every `TRUNCATE` from anyone;
