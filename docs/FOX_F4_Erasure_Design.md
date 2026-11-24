@@ -1,6 +1,6 @@
 # F4: erasure across every copy FoxByte manages — design
 
-**Status:** agreed (24 November 2026, #268). Decisions 1 to 4 were taken by
+**Status:** agreed (24 November 2026, #268); prototype #269. Decisions 1 to 4 were taken by
 the user, and decisions 5 to 12 agreed as recommended, the same day
 (section 18). The Gate 0 prototype is built and its suite passes (99/99 on
 PostgreSQL 18 and 16); what it found is in section 21, and it changes sections
@@ -618,7 +618,7 @@ not been reviewed, as the inventory's mapping does (decision 12).
 
 ## 21. What the prototype found (Gate 0)
 
-`make integration-f4`: **99 passed, 0 failed**, on PostgreSQL 18.6 and 16.15,
+`make integration-f4` (#269): **99 passed, 0 failed**, on PostgreSQL 18.6 and 16.15,
 on throwaway containers and a ZFS pool of the suite's own. The prototype is
 bb_identity 0.3's `bbid_placeholders` (C) and `docs/f4/redact.sql` (the
 redaction, the seal and the verifier, on the real Blackbox SQL).
