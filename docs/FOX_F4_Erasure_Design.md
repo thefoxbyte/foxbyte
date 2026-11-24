@@ -2,7 +2,9 @@
 
 **Status:** agreed (24 November 2026, #268). Decisions 1 to 4 were taken by
 the user, and decisions 5 to 12 agreed as recommended, the same day
-(section 18). The Gate 0 prototype follows (section 19). This answers point 11.2 of the review plan
+(section 18). The Gate 0 prototype is built and its suite passes (99/99 on
+PostgreSQL 18 and 16); what it found is in section 21, and it changes sections
+7 and 9 where marked. This answers point 11.2 of the review plan
 (`docs/FOX_Expert_Review_Plan.md`, foundation F4 and point 11, phase 2):
 erasing one person's personal data from every copy FoxByte manages, saying
 what each copy still holds and when it clears, and never claiming more. It was
@@ -275,7 +277,11 @@ each affected table, on each branch (decision 7).
 - Statistics (`pg_statistic`) can hold a column's most common values.
   FoxByte runs `ANALYZE` on each affected table afterwards, so they are
   recomputed without the person (none held the values in E5, but a common
-  value would be).
+  value would be). **(From the prototype, section 21, and F5's.)** `ANALYZE`
+  writes new statistics rows and leaves the old ones in `pg_statistic`'s
+  file, so `pg_statistic` is rewritten too (`VACUUM FULL pg_statistic`), and
+  the WAL holding the old pages is switched out and recycled, as masked
+  branches already do.
 
 Because new branches and base backups copy whole files, the rewrite is what
 stops the old bytes reaching copies made after the erasure.
@@ -316,6 +322,11 @@ calling it, with its cost on the write path measured).
   replay it. A schema change whose text holds a value the request searches
   for (a `DEFAULT`, a `CHECK`, a comment) is flagged in the plan, never
   changed.
+- **Where.** **(From the prototype, section 21.)** `datachanges.sql` takes a
+  data change's text in six places: an agent's applied `UPDATE` and
+  `DELETE`, a blocked one (no `WHERE`, or over its limit), a flagged one, and
+  `TRUNCATE`, applied or blocked. All six get placeholders. The seventh use,
+  the refusal of a `bb_` trigger, is a schema change and keeps its text.
 - **Every edition.** Placeholders are a privacy fix for every Blackbox, not
   an Enterprise feature; they need no findings to work. What is lost is the
   literal values of an agent's `UPDATE`; the row itself is recovered, if
@@ -569,10 +580,11 @@ deleted or restored, and the request must outlive both.
 
 ---
 
-## 19. Gate 0: the prototype
+## 19. Gate 0: the prototype (built; section 21)
 
 The claims marked **(prototype)**, proven in a suite like F5's
-(`docker/postgres/f4_test.go`), on PostgreSQL 18 and 16, on ZFS:
+(`make integration-f4`, `scripts/integration_f4.sh`, with file checks in
+`docker/postgres/f4_test.go`), on PostgreSQL 18 and 16, on ZFS:
 
 - the placeholder function in C, with PostgreSQL's lexer, on a corpus of
   hard cases (quotes inside strings, `E''`, dollar quotes, comments holding
@@ -581,7 +593,8 @@ The claims marked **(prototype)**, proven in a suite like F5's
 - redaction with a seal on a chain with anchors already written, then
   verified, and a tampered seal failing;
 - a plan on a schema with `RESTRICT`, `CASCADE`, `NOT NULL` without default,
-  JSON paths and a table without a primary key;
+  and a table without a primary key (JSON paths moved to Gate 1 step 1,
+  where the plan is built: they match as `fox subject find` already does);
 - erasure on a branch made before it, then the remake, with the files
   searched as in section 3;
 - a restore to before the erasure, re-applied by row keys before it opens.
@@ -600,3 +613,77 @@ The claims marked **(prototype)**, proven in a suite like F5's
 engineer approve F4 together before erasure is built. Until they have, the
 docs, the console and every request say that FoxByte's reading of erasure has
 not been reviewed, as the inventory's mapping does (decision 12).
+
+---
+
+## 21. What the prototype found (Gate 0)
+
+`make integration-f4`: **99 passed, 0 failed**, on PostgreSQL 18.6 and 16.15,
+on throwaway containers and a ZFS pool of the suite's own. The prototype is
+bb_identity 0.3's `bbid_placeholders` (C) and `docs/f4/redact.sql` (the
+redaction, the seal and the verifier, on the real Blackbox SQL).
+
+1. **Placeholders read as the server reads.** Ten hard cases come out with
+   every literal replaced and nothing else changed: doubled quotes, `E''`
+   strings with escapes, dollar quotes with tags, comments holding quotes and
+   values, quoted identifiers with digits and quotes, numbers of every shape
+   (`1.5e3`, `.5`, `0x1F`, `-7`), `B''`, `X''`, `U&''`, typed literals,
+   arrays, strings joined across a newline, parameters already there (new
+   ones are numbered after them), several statements in one message. With
+   `standard_conforming_strings` off, a backslash-escaped quote is read
+   correctly. A comment becomes a space, so a value an agent writes in one
+   (`-- fix asha@…'s email`) goes with it. A text the lexer refuses raises the
+   server's own error. An install at 0.2 updates to 0.3.
+2. **The cost is negligible.** About 2.5 µs a call (100,000 calls in 250–290
+   ms). 2,000 recorded agent `UPDATE`s took 973 ms as today and 863 ms with
+   placeholders on PostgreSQL 18, and 2,654 and 2,792 ms on 16: within the
+   noise of the run.
+3. **Blocked attempts too.** The text is taken in six places in
+   `datachanges.sql`, blocked and flagged attempts among them (section 9). The
+   prototype puts placeholders in all six; an agent's `UPDATE` with no `WHERE`
+   is recorded as `BLOCKED: UPDATE public.people SET email = $1`.
+4. **Redaction with a seal holds.** Every data change holding the person's
+   values was redacted, the comment the agent wrote one in included; the
+   schema change holding one was kept and flagged; an entry holding no value
+   was untouched. Every `row_hash` and every `ledger_ext` hash is unchanged,
+   so the anchors' Merkle roots are too. The chain verifies, redacted entries
+   by their seals. A second request finds nothing left to redact.
+5. **Tampering after the redaction is caught**, each way: a redacted entry's
+   text changed (its seal fails); a seal removed (the entry fails its hash,
+   and the digest fails); the text changed and its seal rewritten (the
+   digest fails); the digest rewritten too (the redaction's own entry fails
+   its hash); a seal forged for another entry (no redaction wrote it). The
+   ledger stays append-only outside a redaction; inside one, only the
+   statement may change; `db_client` can neither unlock it nor run one.
+6. **Found: the Blackbox refuses `DROP TABLE` of a temporary table**, for
+   every role, a superuser's `SECURITY DEFINER` function included. The
+   redaction keeps its seals in arrays instead. That an ordinary client
+   cannot drop its own temporary table is an engine bug, raised apart.
+7. **The plan's catalog facts.** The catalog gives every table referring to
+   the person's, at each depth, with its `ON DELETE`; `RESTRICT` refuses the
+   delete before anything else runs; a `NOT NULL` column without a default
+   refuses clearing, and one with a default clears to it; the catalog says
+   which; a table with neither a primary key nor a replica identity is known
+   as one; a unique column clears on several rows; `CASCADE` reaches exactly
+   the rows the catalog listed.
+8. **The branch made before the erasure** (section 3's E8–E10 again, with the
+   plan's steps): after the `UPDATE` and `VACUUM (INDEX_CLEANUP ON)`, four
+   files under `base/` still held the values' bytes; after the rewrite,
+   `ANALYZE`, `pg_statistic` rewritten and the WAL recycled, main's whole
+   data directory held none. The branch erased the same way was clean, but
+   main's snapshot it was made from still held the person, kept 8.3 MB alive,
+   and could not be destroyed while the branch existed. The remade branch,
+   its snapshot included, held no value and every other row.
+9. **The restore to before the erasure.** A base backup and the WAL archive,
+   recovered to just before the erasure, brought the person back. Started
+   with no address to listen on, the copy refused every network connection
+   while the erasure was applied again **by the row key alone**, the request
+   having kept no value; then it opened, without the person, with another
+   person restored alongside still there, and its table's files clean. The
+   archive still held the person's WAL, as section 11 says, until backups
+   are pruned.
+
+**What changes for Gate 1:** the rewrite includes `pg_statistic` and the WAL
+(section 7); placeholders go in all six recording places (section 9); no
+Blackbox function the erasure runs may drop a table; a restored copy starts
+with `listen_addresses` empty until the erasure is applied again (section 12).
