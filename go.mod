@@ -7,7 +7,7 @@ toolchain go1.26.11
 require (
 	github.com/jackc/pglogrepl v0.0.0-20261003132456-662581bb6bb6
 	github.com/jackc/pgx/v5 v5.13.0
-	github.com/klauspost/compress v1.20.4
+	github.com/klauspost/compress v1.20.5
 	github.com/miekg/pkcs11 v1.1.2
 	golang.org/x/crypto v0.59.0
 	golang.org/x/oauth2 v0.38.0
