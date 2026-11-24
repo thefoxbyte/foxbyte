@@ -41,6 +41,11 @@
  *   bbid_random_bytes    Bytes from the server's strong random source, for the
  *                       install secret.
  *
+ *   bbid_placeholders    A statement with every literal replaced by $1, $2 and
+ *                       so on, read with PostgreSQL's own lexer, for the
+ *                       Blackbox's record of a data change (F4). Public: it
+ *                       holds no secret and returns less than it is given.
+ *
  * And, only when the library is preloaded (shared_preload_libraries), what
  * audit coverage needs (docs/FOX_F6_Audit_Design.md, sections 6 and 7):
  *
@@ -71,6 +76,7 @@
 #include "funcapi.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
+#include "parser/scanner.h"
 #include "port.h"
 #include "postmaster/postmaster.h"
 #include "storage/fd.h"
@@ -999,4 +1005,130 @@ bbid_mask_hmac(PG_FUNCTION_ARGS)
 	}
 	out[64] = '\0';
 	PG_RETURN_TEXT_P(cstring_to_text(out));
+}
+
+/* ---- placeholders (F4) ---------------------------------------------------- */
+
+/*
+ * bbid_placeholders(text): the text with every literal replaced by a
+ * placeholder, $1, $2 and so on, for the Blackbox's record of a data change
+ * (docs/FOX_F4_Erasure_Design.md, section 9). A recorded UPDATE then says what
+ * it did without the values it did it with.
+ *
+ * Tokens come from PostgreSQL's own lexer, so a quote inside a string, an E''
+ * string, a dollar quote, a comment holding a quote, or a quoted identifier
+ * with digits in it is read exactly as the server reads it, which no regular
+ * expression does. The lexer's token numbers are not in the installed headers,
+ * so a token is known for a constant by how it starts, which the lexer makes
+ * unambiguous: a quote, a prefix letter and a quote (E, B, X, N, U&), a dollar
+ * sign not followed by a digit (a dollar quote; $1 is a parameter), or a digit
+ * or a point before one (a number). Identifiers, keywords, operators and
+ * parameters are kept as written, and so is spacing; a comment becomes a
+ * space, since it can hold a value too. Parameters already there keep their
+ * numbers; new ones start after the highest.
+ *
+ * The flex scanner ends each token with a NUL in its own copy of the text
+ * while the token is current, which gives its length (as pg_stat_statements
+ * reads it); the copy has the same offsets as the original.
+ *
+ * A text the lexer refuses (an unterminated quote) raises its error, as the
+ * server would have on receiving it. Only statements the server already parsed
+ * reach the Blackbox, so a recorded one always lexes.
+ */
+static bool
+placeholder_const(const char *t)
+{
+	char		c = t[0];
+
+	if (c == '\'')
+		return true;
+	if ((c == 'e' || c == 'E' || c == 'b' || c == 'B' || c == 'x' || c == 'X' || c == 'n' || c == 'N') && t[1] == '\'')
+		return true;
+	if ((c == 'u' || c == 'U') && t[1] == '&' && t[2] == '\'')
+		return true;
+	if (c == '$')
+		return !(t[1] >= '0' && t[1] <= '9');
+	if (c >= '0' && c <= '9')
+		return true;
+	if (c == '.' && t[1] >= '0' && t[1] <= '9')
+		return true;
+	return false;
+}
+
+static bool
+placeholder_param(const char *t, int *n)
+{
+	if (t[0] != '$' || !(t[1] >= '0' && t[1] <= '9'))
+		return false;
+	*n = atoi(t + 1);
+	return true;
+}
+
+/*
+ * What lies between two tokens is only spacing and comments, since the lexer
+ * skips nothing else. Spacing is kept; a comment can hold a value as well as
+ * a literal can (an agent's "-- fix asha@...'s email"), so a gap holding one
+ * becomes a single space.
+ */
+static void
+placeholder_gap(StringInfo out, const char *gap, int len)
+{
+	for (int i = 0; i < len; i++)
+	{
+		if (gap[i] != ' ' && gap[i] != '\t' && gap[i] != '\n' && gap[i] != '\r' && gap[i] != '\f' && gap[i] != '\v')
+		{
+			appendStringInfoChar(out, ' ');
+			return;
+		}
+	}
+	appendBinaryStringInfo(out, gap, len);
+}
+
+PG_FUNCTION_INFO_V1(bbid_placeholders);
+Datum
+bbid_placeholders(PG_FUNCTION_ARGS)
+{
+	char	   *src = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	int			srclen = (int) strlen(src);
+	core_yyscan_t scanner;
+	core_yy_extra_type extra;
+	core_YYSTYPE val;
+	YYLTYPE		loc;
+	StringInfoData out;
+	int			next = 0;
+	int			last = 0;
+	int			p;
+
+	/* The highest parameter already there, so new ones never collide. */
+	scanner = scanner_init(src, &extra, &ScanKeywords, ScanKeywordTokens);
+	extra.escape_string_warning = false;
+	while (core_yylex(&val, &loc, scanner) != 0)
+	{
+		if (placeholder_param(extra.scanbuf + loc, &p) && p > next)
+			next = p;
+	}
+	scanner_finish(scanner);
+
+	initStringInfo(&out);
+	scanner = scanner_init(src, &extra, &ScanKeywords, ScanKeywordTokens);
+	extra.escape_string_warning = false;
+	while (core_yylex(&val, &loc, scanner) != 0)
+	{
+		const char *tok = extra.scanbuf + loc;
+		int			len = (int) strlen(tok);
+
+		if (loc < last || loc + len > srclen)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("bbid_placeholders: a token was not where the lexer said")));
+		placeholder_gap(&out, src + last, loc - last);
+		if (placeholder_const(tok))
+			appendStringInfo(&out, "$%d", ++next);
+		else
+			appendBinaryStringInfo(&out, src + loc, len);
+		last = loc + len;
+	}
+	scanner_finish(scanner);
+	placeholder_gap(&out, src + last, srclen - last);
+	PG_RETURN_TEXT_P(cstring_to_text_with_len(out.data, out.len));
 }
