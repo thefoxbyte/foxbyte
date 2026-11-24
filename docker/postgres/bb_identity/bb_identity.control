@@ -1,5 +1,5 @@
 # bb_identity: Ed25519 verification and the transaction identity F1's application identity needs
-comment = 'Ed25519 verification and transaction identity (F1), and the keyed hash masks are made with (F5)'
-default_version = '0.2'
+comment = 'Ed25519 verification and transaction identity (F1), the keyed hash masks are made with (F5), and placeholders for recorded statements (F4)'
+default_version = '0.3'
 module_pathname = '$libdir/bb_identity'
 relocatable = true
