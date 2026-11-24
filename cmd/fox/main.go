@@ -162,6 +162,13 @@ Stack:
                        The latest exposure report, by column and by person; or its places
   pii aadhaar places --logs [--source history|audit|blackbox] [--person n] [--gone]
                        The log entries holding a number: which, who made it and when
+  dpdp inventory [--branch b] [--gaps] [--json | --csv]
+                       The DPDP inventory: each table with confirmed personal data, its basis
+                       under the Act, purpose, whose data and how long it is kept; and the gaps
+  dpdp set <schema.table[.column]> --basis b --purpose "…" --principals p,q --keep 3y --from f --reason r
+                       Record a table's entry, or one column's (Enterprise); see fox dpdp help
+  dpdp unset <schema.table[.column]> | history <schema.table[.column]> [--json]
+                       Remove an entry (Enterprise; its history keeps it), or show every change
   app [list|show <name>] [--json]
                        The applications that may say which of their users a transaction
                        acts for, and the "aud" their tokens name
@@ -486,6 +493,8 @@ func main() {
 		piiCmd(os.Args[2:])
 	case "access":
 		accessCmd(os.Args[2:])
+	case "dpdp":
+		dpdpCmd(os.Args[2:])
 	case "hardening":
 		hardeningCmd(os.Args[2:])
 	case "mask":

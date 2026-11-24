@@ -4991,6 +4991,129 @@ assert_eq "the printed evidence: the counts, why a rule is not met, what to decl
   "$(grep -cE '^  [0-9]+ met, [0-9]+ not met, [0-9]+ open' <<<"$OUT")|$(grep -c '8: the token is an HSM' <<<"$OUT")|$(grep -c 'vault declare --kind aadhaar dr' <<<"$OUT")|$(grep -c 'What this cannot show' <<<"$OUT")" "1|1|1|1"
 for it in hsm-certificate hsm-access auth-apps; do $S vault declare --kind aadhaar "$it" --withdraw >/dev/null 2>&1; done
 
+echo "### 11ay. the DPDP inventory: each table's basis, purpose, whose data and retention, and the gaps (point 11.1)"
+# Synthetic values only, as 11r's. dp_people holds an email, a phone, an
+# Aadhaar (234567890124 passes Verhoeff) and a date of birth, one of them a
+# child's; dp_plain holds nothing personal. test@ (KEY) is an admin;
+# dpdp-viewer is made here, no admin and no owner of the branch.
+H='Content-Type: application/json'
+$S branch delete dpdpt2 >/dev/null 2>&1
+$S branch delete dpdpt >/dev/null 2>&1
+$S branch create dpdpt >/dev/null 2>&1
+pg pg-dpdpt "CREATE TABLE dp_people (id int PRIMARY KEY, email text, phone text, aadhaar_no text, dob date, notes text);
+  INSERT INTO dp_people VALUES
+    (1, 'a@example.com', '+91 98765 43210', '2345 6789 0124', '1990-05-17', 'x'),
+    (2, 'b@example.org', '9876543211', '456789012341', '2015-01-01', 'y');
+  CREATE TABLE dp_plain (id int PRIMARY KEY, colour text);
+  INSERT INTO dp_plain VALUES (1, 'blue');" >/dev/null
+$S pii scan --branch dpdpt >/dev/null 2>&1
+PJ="$($S pii --branch dpdpt --json)"
+for id in $(hjson "print(' '.join(str(f['id']) for f in d['findings'] if f['table']=='dp_people'))" <<<"$PJ"); do
+  $S pii mark "$id" confirm --branch dpdpt >/dev/null 2>&1
+done
+INV() { $S dpdp inventory --branch dpdpt --json; }
+dpt() { hjson "t=[t for t in d['tables'] if t['table']=='$1']; print(t[0]['$2'] if t else 'absent')"; }
+dpc() { hjson "t=[t for t in d['tables'] if t['table']=='$1'][0]; print([c['by'] for c in t['columns'] if c['column']=='$2'][0])"; }
+
+I0="$(INV)"
+assert_eq "the inventory lists a table with confirmed personal data, every confirmed column a gap; not a table with none" \
+  "$(hjson "t=[t for t in d['tables'] if t['table']=='dp_people'][0]; print(sorted(c['column'] for c in t['columns']), t['gaps'], t['entry'])" <<<"$I0")|$(dpt dp_plain gaps <<<"$I0")" \
+  "['aadhaar_no', 'dob', 'email', 'phone'] 4 None|absent"
+assert_eq "…counts the gaps, gives the Act's bases, and says what it cannot claim" \
+  "$(hjson "print(d['gapColumns'] >= 4, len(d['vocabulary']['bases']), d['vocabulary']['bases'][9]['value'])" <<<"$I0")|$(grep -c 'not legal advice' <<<"$($S dpdp inventory --branch dpdpt)")" "True 10 7i|1"
+assert_eq "…and the text form names the gap and the command that fills it" \
+  "$($S dpdp inventory --branch dpdpt --gaps | grep -c 'aadhaar_no .*NO ENTRY: fox dpdp set public.dp_people --basis')" "1"
+
+OUT="$($S dpdp set dp_people --basis 7j --purpose x --principals customer --keep 3y --from last-contact --reason purpose --branch dpdpt 2>&1)"; RC=$?
+assert_eq "set refuses a basis the Act does not have, naming the ones it has" "$RC|$(grep -c 'consent, 7a, 7b' <<<"$OUT")" "1|1"
+OUT="$($S dpdp set public.dp_people.aadhaar_no --basis 7d --purpose KYC --principals customer --keep 8y --from account-closed --reason law --branch dpdpt 2>&1)"; RC=$?
+assert_eq "…a law with no name" "$RC|$(grep -c 'name the law that sets the period' <<<"$OUT")" "1|1"
+OUT="$($S dpdp set dp_people --basis consent --purpose x --principals robots --keep 3y --from last-contact --reason purpose --branch dpdpt 2>&1)"; RC=$?
+assert_eq "…someone it does not know" "$RC|$(grep -c 'customer, employee, applicant' <<<"$OUT")" "1|1"
+OUT="$($S dpdp set dp_people --basis consent --purpose x --principals customer --keep 3w --from last-contact --reason purpose --branch dpdpt 2>&1)"; RC=$?
+assert_eq "…a period it cannot read" "$RC|$(grep -c "unit is d, m or y" <<<"$OUT")" "1|1"
+OUT="$($S dpdp set dp_plain --basis consent --purpose x --principals customer --keep 3y --from last-contact --reason purpose --branch dpdpt 2>&1)"; RC=$?
+assert_eq "…and a table with no confirmed personal data" "$RC|$(grep -c 'holds no personal data a reviewer confirmed' <<<"$OUT")" "1|1"
+OUT="$($S dpdp set dp_people.email --basis consent --purpose x --principals customer --keep 3y --from last-contact --reason purpose --branch dpdpt 2>&1)"; RC=$?
+assert_eq "…and two names are a schema and a table, which it says when there is nothing there: a column needs all three" \
+  "$RC|$(grep -c 'dp_people.email holds no personal data.*a column is schema.table.column' <<<"$OUT")" "1|1"
+
+SET_LOGGED="$($S audit --limit 5000 | grep -c 'dpdp.set')"
+OUT="$($S dpdp set dp_people --basis consent --purpose 'Delivering orders, secret-purpose-text' --principals customer \
+  --keep 3y --from last-contact --reason purpose --note '=HYPERLINK("http://x")' --branch dpdpt 2>&1)"; RC=$?
+assert_eq "set records the table's entry and reads it back" \
+  "$RC|$(grep -c '^public.dp_people on dpdpt: Consent (s.6)' <<<"$OUT")|$(grep -c "kept: 3 years after the person's last contact (s.8(8))" <<<"$OUT")" "0|1|1"
+OUT="$($S dpdp set public.dp_people.aadhaar_no --basis 7d --purpose 'KYC under the law' --principals customer \
+  --keep 8y --from account-closed --reason law --citation 'Prevention of Money-laundering Act, 2002, s.12' --branch dpdpt 2>&1)"; RC=$?
+assert_eq "…and a column's own, for the period a law sets" \
+  "$RC|$(grep -c 'kept: 8 years after the account is closed; a law requires it: Prevention of Money-laundering Act, 2002, s.12' <<<"$OUT")" "0|1"
+I1="$(INV)"
+assert_eq "the column's entry covers it, the table's the rest: no gap left" \
+  "$(dpc dp_people aadhaar_no <<<"$I1")|$(dpc dp_people email <<<"$I1")|$(dpt dp_people gaps <<<"$I1")" "column|table|0"
+assert_eq "…a child's date of birth in a table whose entry lists no children is a notice (s.9(1))" \
+  "$(hjson "t=[t for t in d['tables'] if t['table']=='dp_people'][0]; print(len(t['notices']), 's.9(1)' in t['notices'][0], 'dob' in t['notices'][0])" <<<"$I1")" "1 True True"
+$S dpdp set dp_people --basis consent --purpose 'Delivering orders, secret-purpose-text' --principals customer,child \
+  --keep 3y --from last-contact --reason purpose --note '=HYPERLINK("http://x")' --branch dpdpt >/dev/null 2>&1
+assert_eq "…and listing children clears it" "$(INV | hjson "print(len([t for t in d['tables'] if t['table']=='dp_people'][0]['notices']))")" "0"
+assert_eq "the entries are in the security log, with the basis and never the purpose or the note" \
+  "$($S audit --limit 5000 | grep -c 'dpdp.set')|$($S audit --limit 5000 | grep 'dpdp.set' | grep -c 'public.dp_people.aadhaar_no: basis 7d')|$($S audit --limit 5000 | grep -c 'secret-purpose-text\|HYPERLINK')" \
+  "$((SET_LOGGED+3))|1|0"
+
+CSV="$($S dpdp inventory --branch dpdpt --csv)"
+assert_eq "the CSV export: one confirmed column a row, with what covers it" \
+  "$(head -1 <<<"$CSV" | cut -d, -f1-5)|$(grep -c '^public,dp_people,' <<<"$CSV")|$(grep '^public,dp_people,aadhaar_no,' <<<"$CSV" | grep -c ',column,7d,')|$(grep '^public,dp_people,email,' <<<"$CSV" | grep -c ',table,consent,')" \
+  "schema,table,column,categories,covered_by|4|1|1"
+assert_eq "…and a note a spreadsheet would run is written as text" "$(grep '^public,dp_people,email,' <<<"$CSV" | grep -c "'=HYPERLINK")" "1"
+
+assert_eq "fox check warns about main's gaps, or says main's are covered or not in use" \
+  "$($S check 2>&1 | grep -cE '^(ok  |warn)  DPDP inventory ')" "1"
+
+# Kept in the branch, so a branch made from it carries it; and the history
+# keeps every change, append-only.
+$S branch create dpdpt2 --from dpdpt >/dev/null 2>&1
+assert_eq "a branch made from it carries its inventory" \
+  "$($S dpdp inventory --branch dpdpt2 --json | hjson "print(sorted(c['by'] for t in d['tables'] if t['table']=='dp_people' for c in t['columns']))")" \
+  "['column', 'table', 'table', 'table']"
+$S branch delete dpdpt2 >/dev/null 2>&1
+OUT="$($S dpdp unset public.dp_people.aadhaar_no --branch dpdpt 2>&1)"; RC=$?
+assert_eq "unset removes the column's entry, and the table's covers it again" \
+  "$RC|$(grep -c 'removed the entry for public.dp_people.aadhaar_no' <<<"$OUT")|$(INV | dpc dp_people aadhaar_no)" "0|1|table"
+assert_eq "…unset where there is none says so" "$($S dpdp unset public.dp_people.email --branch dpdpt 2>&1 | grep -c 'no DPDP inventory entry there')" "1"
+assert_eq "the history keeps every change: who, what, where" \
+  "$($S dpdp history dp_people --branch dpdpt --json | hjson "print([(c['action'], c['entry']['column'] or '-') for c in d])")" \
+  "[('set', '-'), ('set', 'aadhaar_no'), ('set', '-'), ('removed', 'aadhaar_no')]"
+assert_eq "…and cannot be rewritten, nor the entries read by a client role" \
+  "$(sudo docker exec -e PGPASSWORD=foxbyte pg-dpdpt psql -U dbadmin -d appdb -tAc "UPDATE bb.dpdp_history SET actor = 'x'" 2>&1 | grep -c 'append-only')|$(sudo docker exec -e PGPASSWORD=foxbyte pg-dpdpt psql -U dbadmin -d appdb -tAc "SET ROLE db_client; SELECT count(*) FROM bb.dpdp_entries" 2>&1 | grep -c 'permission denied')" "1|1"
+
+# A finding reopened takes its column out; an entry for it then is stale,
+# kept and listed rather than deleted.
+$S dpdp set public.dp_people.phone --basis consent --purpose 'Order updates' --principals customer --keep 1y --from collection --reason purpose --branch dpdpt >/dev/null 2>&1
+for id in $(hjson "print(' '.join(str(f['id']) for f in d['findings'] if f['table']=='dp_people' and f['column']=='phone'))" <<<"$PJ"); do
+  $S pii mark "$id" reopen --branch dpdpt >/dev/null 2>&1
+done
+I2="$(INV)"
+assert_eq "an entry whose column is no longer confirmed is stale, and listed" \
+  "$(hjson "print([e['schema']+'.'+e['table']+'.'+e['column'] for e in d['stale']])" <<<"$I2")|$(hjson "print(sorted(c['column'] for t in d['tables'] if t['table']=='dp_people' for c in t['columns']))" <<<"$I2")|$(hjson "print(d['undecided'] >= 1)" <<<"$I2")" \
+  "['public.dp_people.phone']|['aadhaar_no', 'dob', 'email']|True"
+
+# Over HTTP: the branch's owner or an admin; setting needs the licence.
+$S user delete dpdp-viewer@foxbyte.dev >/dev/null 2>&1; printf 'password123\n' | $S user create dpdp-viewer@foxbyte.dev >/dev/null 2>&1
+KV="$($S apikey create dpdp-viewer@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+DA="https://localhost:8080/api/branches/dpdpt/dpdp"
+BODY='{"schema":"public","table":"dp_people","column":"email","basis":"7a","purpose":"Receipts","principals":["customer"],"keep":{"count":90,"unit":"days","from":"purpose_served","reason":"purpose"}}'
+assert_eq "GET /api/branches/{b}/dpdp/inventory: an admin reads it; to an account that neither owns the branch nor is an admin, it is not there" \
+  "$(code "$KEY" "$DA/inventory")|$(code "$KV" "$DA/inventory")|$(code "$KV" -H "$H" -X PUT -d "$BODY" "$DA/entries")" "200|404|404"
+assert_eq "…?format=csv is the export" "$(as "$KEY" "$DA/inventory?format=csv" | head -1 | cut -d, -f1-3)" "schema,table,column"
+assert_eq "PUT /api/branches/{b}/dpdp/entries sets one, and refuses what cannot be right" \
+  "$(as "$KEY" -H "$H" -X PUT -d "$BODY" "$DA/entries" | hjson "print(d['column'], d['keep']['count'], d['setBy'])")|$(code "$KEY" -H "$H" -X PUT -d '{"schema":"public","table":"dp_people","basis":"consent"}' "$DA/entries")|$(code "$KEY" -H "$H" -X PUT -d 'nope' "$DA/entries")" \
+  "email 90 test@foxbyte.dev|400|400"
+assert_eq "DELETE removes it, then says there is none; history needs a table" \
+  "$(code "$KEY" -X DELETE "$DA/entries?schema=public&table=dp_people&column=email")|$(code "$KEY" -X DELETE "$DA/entries?schema=public&table=dp_people&column=email")|$(code "$KEY" "$DA/history")|$(code "$KEY" "$DA/history?schema=public&table=dp_people")" \
+  "204|404|400|200"
+assert_eq "…and an unknown format is refused" "$(code "$KEY" "$DA/inventory?format=xml")" "400"
+$S branch delete dpdpt >/dev/null 2>&1
+$S user delete dpdp-viewer@foxbyte.dev >/dev/null 2>&1
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

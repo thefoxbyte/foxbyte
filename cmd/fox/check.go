@@ -91,6 +91,7 @@ func checks() []check {
 		one("anchor target", checkAnchorTarget),
 		one("change feed", checkRealtime),
 		one("personal data", checkPersonalData),
+		one("DPDP inventory", checkDPDP),
 		group("audit log", checkAuditLogLines),
 		group("vault", checkVaultLines),
 		one("durability", checkDurability),

@@ -1338,3 +1338,12 @@ td button.sm { padding: 2px 10px; font-size: 12px; }
 .ddl-pick .n { color: var(--muted, #667); font-size: 11px; }
 .table-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
 @media (max-width: 560px) { .ddl-col { grid-template-columns: 1fr 1fr; } }
+
+/* The DPDP inventory (point 11.1): whose data, as a wrapping row of
+   checkboxes with no fieldset frame; a gap in the amber the personal-data
+   warnings use. */
+.dpdp-whose { border: 0; padding: 0; margin: 0; min-inline-size: 0; display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); }
+.dpdp-whose legend { padding: 0; margin-bottom: var(--s-1); width: 100%; }
+.dpdp-whose label { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-sm); cursor: pointer; }
+.dpdp-whose input { width: auto; margin: 0; }
+.dpdp-gap { color: color-mix(in srgb, var(--amber) 70%, var(--text)); }

@@ -1063,6 +1063,97 @@ paths:
         "403": { description: Not the branch's owner or an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/branches/{name}/dpdp/inventory:
+    get:
+      tags: [branches]
+      summary: The DPDP personal-data inventory (point 11.1; the branch's owner or an admin).
+      description: >-
+        Every table holding personal data a reviewer confirmed, with the entry
+        that says its basis under the DPDP Act, 2023 (consent, s.6, or a
+        legitimate use of s.7), its purpose, whose data it is and how long it
+        is kept; each confirmed column, and what covers it (its own entry, the
+        table's, or nothing: a gap); notices such as a child's data in a table
+        whose entry does not list children; and entries whose place no longer
+        holds confirmed personal data (stale). Free in every edition.
+        ?format=csv is one confirmed column a row, for a register.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: format, in: query, schema: { type: string, enum: [json, csv] } }
+      responses:
+        "200":
+          description: The inventory.
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/DPDPInventory" } }
+            text/csv: { schema: { type: string } }
+        "400": { description: An unknown format. }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/dpdp/entries:
+    put:
+      tags: [branches]
+      summary: Set a table's DPDP inventory entry, or one column's (Enterprise; the branch's owner or an admin).
+      description: >-
+        Replaces the entry at its place. The place must hold personal data a
+        reviewer confirmed. A column's entry replaces the table's for that
+        column. A retention for a law or a contract names it in
+        keep.citation. In the security log with the place, the basis and the
+        retention, never the purpose or the note.
+      parameters: [{ $ref: "#/components/parameters/BranchName" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/DPDPEntry" } } }
+      responses:
+        "200": { description: The entry as stored., content: { application/json: { schema: { $ref: "#/components/schemas/DPDPEntry" } } } }
+        "400": { description: An entry that cannot be right, or a place with no confirmed personal data. }
+        "403": { description: Not the branch's owner or an admin, or not licensed for the DPDP compliance manager. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [branches]
+      summary: Remove a DPDP inventory entry (Enterprise; the branch's owner or an admin). Its history keeps it.
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: schema, in: query, required: true, schema: { type: string } }
+        - { name: table, in: query, required: true, schema: { type: string } }
+        - { name: column, in: query, schema: { type: string }, description: "A column's entry; omit for the table's." }
+      responses:
+        "204": { description: Removed. }
+        "400": { description: No schema or table given. }
+        "403": { description: Not the branch's owner or an admin, or not licensed for the DPDP compliance manager. }
+        "404": { description: No such branch, or no entry there. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/branches/{name}/dpdp/history:
+    get:
+      tags: [branches]
+      summary: Every change to a table's DPDP inventory entries, or one column's (the branch's owner or an admin).
+      parameters:
+        - { $ref: "#/components/parameters/BranchName" }
+        - { name: schema, in: query, required: true, schema: { type: string } }
+        - { name: table, in: query, required: true, schema: { type: string } }
+        - { name: column, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: The changes, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    action: { type: string, enum: [set, removed] }
+                    entry: { $ref: "#/components/schemas/DPDPEntry" }
+                    actor: { type: string }
+                    at: { type: string, format: date-time }
+        "400": { description: No schema or table given. }
+        "403": { description: Not the branch's owner or an admin. }
+        "404": { description: No such branch. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches/{name}/personal-data/aadhaar:
     get:
       tags: [branches]
@@ -4102,6 +4193,58 @@ components:
         rowCreated: { type: string, format: date-time, nullable: true }
         since: { type: string, format: date-time }
         gone: { type: boolean }
+    DPDPEntry:
+      type: object
+      required: [schema, table, basis, purpose, principals, keep]
+      properties:
+        schema: { type: string }
+        table: { type: string }
+        column: { type: string, description: "A column's entry; empty for the table's." }
+        basis: { type: string, enum: [consent, 7a, 7b, 7c, 7d, 7e, 7f, 7g, 7h, 7i], description: "Consent (s.6), or the clause of s.7 (legitimate uses)." }
+        purpose: { type: string, maxLength: 1000 }
+        principals: { type: array, items: { type: string, enum: [customer, employee, applicant, vendor, child, disability, other] } }
+        keep:
+          type: object
+          properties:
+            count: { type: integer, minimum: 0 }
+            unit: { type: string, enum: [days, months, years] }
+            from: { type: string, enum: [collection, last_contact, account_closed, contract_end, purpose_served] }
+            reason: { type: string, enum: [law, contract, purpose] }
+            citation: { type: string, maxLength: 500, description: "The law or contract that sets the period; needed unless reason is purpose." }
+        note: { type: string, maxLength: 1000 }
+        setBy: { type: string, readOnly: true }
+        setAt: { type: string, format: date-time, readOnly: true }
+    DPDPInventory:
+      type: object
+      properties:
+        branch: { type: string }
+        tables:
+          type: array
+          items:
+            type: object
+            properties:
+              schema: { type: string }
+              table: { type: string }
+              entry: { allOf: [{ $ref: "#/components/schemas/DPDPEntry" }], nullable: true }
+              columns:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    column: { type: string }
+                    categories: { type: array, items: { type: string } }
+                    paths: { type: array, items: { type: string } }
+                    by: { type: string, enum: [column, table, ""], description: "What covers it; empty for a gap." }
+                    override: { allOf: [{ $ref: "#/components/schemas/DPDPEntry" }], nullable: true }
+              gaps: { type: integer }
+              notices: { type: array, items: { type: string } }
+        gapColumns: { type: integer }
+        gapTables: { type: integer }
+        stale: { type: array, items: { $ref: "#/components/schemas/DPDPEntry" } }
+        undecided: { type: integer }
+        scanned: { type: string, format: date-time, nullable: true }
+        limits: { type: array, items: { type: string } }
+        vocabulary: { type: object, description: "Every word an entry may use, with its label." }
     PersonalDataColumn:
       type: object
       properties:

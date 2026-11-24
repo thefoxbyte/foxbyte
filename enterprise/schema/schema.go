@@ -34,6 +34,8 @@ var (
 	schemaImpact string
 	//go:embed pii.sql
 	schemaPII string
+	//go:embed dpdp.sql
+	schemaDPDP string
 )
 
 func init() { branch.SetSchemaInstaller(install) }
@@ -57,6 +59,8 @@ func install(name string) error {
 		// Where personal data was found, never the data: bb.pii_scans and
 		// bb.pii_findings.
 		{edition.Has(edition.PersonalData), "personal-data discovery", schemaPII},
+		// The DPDP inventory (point 11.1): bb.dpdp_entries and its history.
+		{edition.Has(edition.DPDP), "the DPDP inventory", schemaDPDP},
 	} {
 		if !s.want {
 			continue
@@ -74,6 +78,15 @@ func install(name string) error {
 func EnsurePII(name string) error {
 	if err := branch.ExecScript(name, schemaPII); err != nil {
 		return fmt.Errorf("installing personal-data discovery on %q: %w", name, err)
+	}
+	return nil
+}
+
+// EnsureDPDP installs the DPDP inventory's tables on a branch, for an entry
+// set on a branch made before the licence covered it.
+func EnsureDPDP(name string) error {
+	if err := branch.ExecScript(name, schemaDPDP); err != nil {
+		return fmt.Errorf("installing the DPDP inventory on %q: %w", name, err)
 	}
 	return nil
 }
