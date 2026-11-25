@@ -77,7 +77,8 @@ export default function DpdpInventory() {
   const tables = (inv?.tables ?? []).filter(t => !onlyGaps || t.gaps > 0)
   const entryLine = (e: DPDPEntry) => (
     <>
-      <b>{label(v?.bases, e.basis)}</b>; whose: {e.principals.map(p => label(v?.principals, p)).join('; ')}; kept {keepText(v, e.keep)}.
+      <b>{label(v?.bases, e.basis)}</b>; whose: {e.principals.map(p => label(v?.principals, p)).join('; ')}; kept {keepText(v, e.keep)};
+      on erasure {e.onErasure === 'delete' ? 'deleted' : e.clearTo != null ? `cleared to “${e.clearTo}”` : 'cleared'}.
       <br /><span className="muted">Purpose:</span> {e.purpose}
       {e.note && <><br /><span className="muted">Note:</span> {e.note}</>}
     </>
@@ -247,6 +248,11 @@ function EntryForm({ vocab, editing, onSave, onRemove, onRemoveClick, onCancel }
   const [reason, setReason] = useState(start?.keep.reason ?? 'purpose')
   const [citation, setCitation] = useState(start?.keep.citation ?? '')
   const [note, setNote] = useState(start?.note ?? '')
+  // A column's form starts from the table's entry when it has none of its
+  // own; the erasure action is the table's, and what to clear to the column's.
+  const own = editing.entry && editing.entry.column === editing.column ? editing.entry : null
+  const [onErasure, setOnErasure] = useState(own?.onErasure || 'clear')
+  const [clearTo, setClearTo] = useState(own?.clearTo ?? '')
   const [busy, setBusy] = useState(false)
   const where = `${editing.table.schema}.${editing.table.table}${editing.column ? '.' + editing.column : ''}`
   const toggle = (p: string) => setPrincipals(ps => ps.includes(p) ? ps.filter(x => x !== p) : [...ps, p])
@@ -263,6 +269,8 @@ function EntryForm({ vocab, editing, onSave, onRemove, onRemoveClick, onCancel }
           schema: editing.table.schema, table: editing.table.table, column: editing.column,
           basis, purpose: purpose.trim(), principals,
           keep: { count: n, unit, from, reason, citation: reason === 'purpose' ? '' : citation.trim() }, note: note.trim(),
+          onErasure: editing.column ? 'clear' : onErasure,
+          clearTo: editing.column && clearTo !== '' ? clearTo : null,
         })
         setBusy(false)
       }}>
@@ -312,6 +320,18 @@ function EntryForm({ vocab, editing, onSave, onRemove, onRemoveClick, onCancel }
       <label className="field">Note (optional)
         <input aria-label="Note" maxLength={1000} value={note} onChange={e => setNote(e.target.value)} />
       </label>
+      {editing.column ? (
+        <label className="field">On erasure, if the column cannot be empty, clear it to (optional)
+          <input aria-label="Clear to" maxLength={200} value={clearTo} onChange={e => setClearTo(e.target.value)} placeholder="erased" />
+        </label>
+      ) : (
+        <label className="field">On erasure, the person's rows here are
+          <select aria-label="On erasure" value={onErasure} onChange={e => setOnErasure(e.target.value)}>
+            <option value="clear">cleared: their personal columns emptied, the row kept (the default)</option>
+            <option value="delete">deleted</option>
+          </select>
+        </label>
+      )}
       <div className="row" style={{ gap: 8 }}>
         <button className="primary" type="submit" disabled={!ready || busy}>{busy ? 'Saving…' : 'Save entry'}</button>
         <button type="button" onClick={onCancel}>Cancel</button>

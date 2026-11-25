@@ -21,6 +21,7 @@ import PersonalData from './pages/PersonalData'
 import AccessReview from './pages/AccessReview'
 import AadhaarExposure from './pages/AadhaarExposure'
 import DpdpInventory from './pages/DpdpInventory'
+import ErasureRequests from './pages/ErasureRequests'
 import Applications from './pages/Applications'
 import AuditLog from './pages/AuditLog'
 import Hardening from './pages/Hardening'
@@ -132,6 +133,7 @@ const router = createBrowserRouter([
       { path: 'personal-data', element: <PersonalData /> },
       { path: 'aadhaar-exposure', element: <AadhaarExposure /> },
       { path: 'dpdp-inventory', element: <DpdpInventory /> },
+      { path: 'erasure-requests', element: <ErasureRequests /> },
       { path: 'access-review', element: <AccessReview /> },
       { path: 'applications', element: <Applications /> },
       { path: 'audit-log', element: <AuditLog /> },

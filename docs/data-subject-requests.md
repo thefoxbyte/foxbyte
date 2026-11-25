@@ -133,16 +133,21 @@ warnings are a quick answer to "which copies hold this person's data"; masking
 
 ### Erasing them
 
-FoxByte does **not** erase a person across your databases for you. An erasure
-touches your application's data, its foreign keys and its business rules, and
-only you can decide what "deleted" means for each table — a row removed, a
-column blanked, a record kept because the law requires it. So:
+An erasure touches your application's data, its foreign keys and its
+business rules, and only you can decide what "deleted" means for each table —
+a row removed, a column blanked, a record kept because the law requires it.
+You record that decision once, per table, in the [DPDP inventory](dpdp-inventory.md#on-erasure)
+(`--on-erasure clear|delete`).
 
-- **On `main`:** delete or update the rows with ordinary SQL, through the
-  console, the Gateway or your application. The Blackbox ledger records the
+- **On `main`:** with an erasure request (Enterprise; [below](dpdp-inventory.md#erasure-requests)),
+  `fox dpdp erase new` finds the person's rows from the values they are known
+  by and the rows that refer to them, shows what it will do table by table, and
+  `fox dpdp erase apply` does it in one transaction, then vacuums and rewrites
+  the tables. Without it, delete or update the rows with ordinary SQL, through
+  the console, the Gateway or your application. The Blackbox ledger records the
   statements, as it records every change.
 - **On branches:** a branch is a copy of `main` at some moment, so it still has
-  the rows. Delete branches you no longer need (`fox branch delete <name>`), or reset
+  the rows; an erasure request does not reach them yet. Delete branches you no longer need (`fox branch delete <name>`), or reset
   them from `main` after the erasure (`fox branch reset <name>`). `fox subject find` again afterwards to
   confirm nothing is left.
 - **The ledger:** see [The Blackbox keeps statement text](#the-blackbox-keeps-statement-text)

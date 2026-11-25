@@ -1149,6 +1149,11 @@ export type DPDPEntry = {
   principals: string[]
   keep: DPDPKeep
   note: string
+  // What an erasure request does to the person's rows (F4): 'clear' their
+  // personal columns, the default, or 'delete' the row. A table's entry only.
+  onErasure?: string
+  // A column's entry: what a NOT NULL column with no default is cleared to.
+  clearTo?: string | null
   setBy?: string
   setAt?: string
 }
@@ -1176,6 +1181,89 @@ export const removeDPDPEntry = (branch: string, schema: string, table: string, c
   req('DELETE', `${dpdpURL(branch)}/entries?${placeQuery(schema, table, column)}`)
 export const getDPDPHistory = (branch: string, schema: string, table: string, column = '') =>
   req('GET', `${dpdpURL(branch)}/history?${placeQuery(schema, table, column)}`) as Promise<DPDPChange[]>
+
+// Erasure requests (point 11.2, F4, Gate 1 step 1): one person's rows on main,
+// found from the values given, planned, then applied in one transaction. A
+// request keeps no value, so planning again and applying ask for them again.
+// Admins only; making and applying are Enterprise ('dpdp'), reading is free.
+export type ErasureValue = { category: string; value: string }
+export type ErasureRef = { categories: string[]; last4: string }
+export type ErasureColumn = { column: string; path?: string; categories: string[]; to: string }
+export type ErasureException = { column: string; citation: string; keep: DPDPKeep; ends?: string; text: string }
+export type ErasureTable = {
+  schema: string
+  table: string
+  why: string
+  depth: number
+  rows: number
+  action: 'clear' | 'delete' | 'cascade' | 'set-null' | 'keep' | 'kept' | 'refers-to'
+  columns: ErasureColumn[]
+  entry: DPDPEntry | null
+  default: boolean
+  exceptions: ErasureException[]
+  problems: string[]
+  notes: string[]
+  keyed: boolean
+  size: number
+  rewrite: '' | 'apply' | 'later'
+  rewriteWhy?: string
+}
+export type ErasurePlan = {
+  branch: string
+  made: string
+  by: string
+  refs: ErasureRef[]
+  tables: ErasureTable[]
+  matched: number
+  rows: number
+  blocked: boolean
+  searched: number
+  limits: string[]
+  review: string
+}
+export type ErasureRewrite = { schema: string; table: string; size: number; state: 'done' | 'pending' | 'failed'; at?: string; why?: string; error?: string }
+export type ErasureResult = {
+  applied: string
+  by: string
+  tables: { schema: string; table: string; action: string; rows: number; keyColumns?: string[]; keys?: unknown[] }[]
+  rows: number
+  verified: boolean
+  vacuumed?: string
+  rewrites: ErasureRewrite[]
+  statistics?: string
+  notes: string[]
+}
+export type ErasureRequest = {
+  id: number
+  branch: string
+  state: 'planned' | 'applying' | 'applied' | 'withdrawn'
+  note: string
+  fingerprint: string
+  createdBy: string
+  created: string
+  plannedBy: string
+  planned: string
+  appliedBy?: string
+  appliedAt?: string
+  withdrawnBy?: string
+  withdrawnAt?: string
+  refs: ErasureRef[]
+  events: Record<string, string>
+  plan: ErasurePlan
+  result?: ErasureResult
+}
+const erasureURL = `${API}/api/dpdp/erasures`
+export const listErasures = () => req('GET', erasureURL) as Promise<ErasureRequest[]>
+export const getErasure = (id: number) => req('GET', `${erasureURL}/${id}`) as Promise<ErasureRequest>
+export const newErasure = (values: ErasureValue[], note: string, events: Record<string, string>) =>
+  req('POST', erasureURL, { values, note, events }) as Promise<ErasureRequest>
+export const replanErasure = (id: number, values: ErasureValue[]) =>
+  req('POST', `${erasureURL}/${id}/plan`, { values }) as Promise<ErasureRequest>
+export const applyErasure = (id: number, values: ErasureValue[]) =>
+  req('POST', `${erasureURL}/${id}/apply`, { values }) as Promise<ErasureRequest>
+export const rewriteErasure = (id: number, tables: string[] = []) =>
+  req('POST', `${erasureURL}/${id}/rewrite`, { tables }) as Promise<ErasureRequest>
+export const withdrawErasure = (id: number) => req('POST', `${erasureURL}/${id}/withdraw`) as Promise<ErasureRequest>
 
 export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches' | 'applications' | 'vault') =>
   `${API}/api/access-review?dormant=${dormant}&format=csv&section=${section}`

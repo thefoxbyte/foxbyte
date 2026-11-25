@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS bb.dpdp_entries (
   CHECK (keep_reason = 'purpose' OR keep_citation <> '')
 );
 
+-- What an erasure request does to the person's rows here (F4, decision 1):
+-- clear their personal columns (the default) or delete the row; and, on a
+-- column's entry, what a NOT NULL column with no default is cleared to.
+ALTER TABLE bb.dpdp_entries ADD COLUMN IF NOT EXISTS on_erasure text NOT NULL DEFAULT 'clear'
+  CHECK (on_erasure IN ('clear', 'delete'));
+ALTER TABLE bb.dpdp_entries ADD COLUMN IF NOT EXISTS clear_to text
+  CHECK (clear_to IS NULL OR length(clear_to) <= 200);
+
 -- Every change, append-only: the entry as it was set, or the one removed.
 CREATE TABLE IF NOT EXISTS bb.dpdp_history (
   id          bigserial   PRIMARY KEY,
@@ -71,6 +79,18 @@ CREATE OR REPLACE TRIGGER dpdp_history_append_only BEFORE UPDATE OR DELETE ON bb
   FOR EACH ROW EXECUTE FUNCTION bb.dpdp_append_only();
 CREATE OR REPLACE TRIGGER dpdp_history_no_truncate BEFORE TRUNCATE ON bb.dpdp_history
   FOR EACH STATEMENT EXECUTE FUNCTION bb.dpdp_append_only();
+
+-- The erasure requests applied to this branch (F4): written in the same
+-- transaction as the erasure, so the branch itself says whether a request's
+-- changes are in when the install's store could not record it. The request's
+-- name and counts only; what was erased is in the store, not here.
+CREATE TABLE IF NOT EXISTS bb.erasures_applied (
+  request_uid text        PRIMARY KEY,
+  request_id  bigint      NOT NULL,
+  rows        integer     NOT NULL,
+  applied_at  timestamptz NOT NULL DEFAULT now()
+);
+REVOKE ALL ON bb.erasures_applied FROM PUBLIC;
 
 REVOKE ALL ON bb.dpdp_entries, bb.dpdp_history FROM PUBLIC;
 REVOKE ALL ON SEQUENCE bb.dpdp_entries_id_seq, bb.dpdp_history_id_seq FROM PUBLIC;

@@ -26,7 +26,7 @@ const historyEntry = `jsonb_build_object(
 	'basis', basis, 'purpose', purpose, 'principals', to_jsonb(principals),
 	'keep', jsonb_build_object('count', keep_count, 'unit', keep_unit, 'from', keep_from,
 		'reason', keep_reason, 'citation', keep_citation),
-	'note', note, 'setBy', set_by, 'setAt', set_at)`
+	'note', note, 'onErasure', on_erasure, 'clearTo', clear_to, 'setBy', set_by, 'setAt', set_at)`
 
 // set records an entry, replacing the one at its place, and the change in
 // the history, in one transaction. The entry has been checked
@@ -52,18 +52,19 @@ func set(name string, e branch.DPDPEntry, actor string) error {
 	k := e.Keep
 	if _, err := tx.Exec(ctx, `WITH r AS (
 			INSERT INTO bb.dpdp_entries AS d (schema_name, table_name, column_name, basis, purpose, principals,
-				keep_count, keep_unit, keep_from, keep_reason, keep_citation, note, set_by, set_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
+				keep_count, keep_unit, keep_from, keep_reason, keep_citation, note, set_by, set_at, on_erasure, clear_to)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now(), $14, $15)
 			ON CONFLICT (schema_name, table_name, column_name) DO UPDATE SET
 				basis = EXCLUDED.basis, purpose = EXCLUDED.purpose, principals = EXCLUDED.principals,
 				keep_count = EXCLUDED.keep_count, keep_unit = EXCLUDED.keep_unit, keep_from = EXCLUDED.keep_from,
 				keep_reason = EXCLUDED.keep_reason, keep_citation = EXCLUDED.keep_citation, note = EXCLUDED.note,
-				set_by = EXCLUDED.set_by, set_at = EXCLUDED.set_at
+				set_by = EXCLUDED.set_by, set_at = EXCLUDED.set_at,
+				on_erasure = EXCLUDED.on_erasure, clear_to = EXCLUDED.clear_to
 			RETURNING *)
 		INSERT INTO bb.dpdp_history (schema_name, table_name, column_name, action, entry, actor)
 		SELECT schema_name, table_name, column_name, 'set', `+historyEntry+`, $13 FROM r`,
 		e.Schema, e.Table, e.Column, e.Basis, e.Purpose, e.Principals,
-		k.Count, k.Unit, k.From, k.Reason, k.Citation, e.Note, actor); err != nil {
+		k.Count, k.Unit, k.From, k.Reason, k.Citation, e.Note, actor, e.OnErasure, e.ClearTo); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

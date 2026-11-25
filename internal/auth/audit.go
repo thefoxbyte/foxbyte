@@ -227,6 +227,13 @@ const (
 	// customer's free text.
 	EvDPDPSet     = "dpdp.set"
 	EvDPDPRemoved = "dpdp.removed"
+	// Erasure requests (point 11.2, F4): made or planned again, applied, a
+	// table rewritten later, withdrawn. Counts and tables, never a value or
+	// a row key.
+	EvErasurePlanned   = "erasure.planned"
+	EvErasureApplied   = "erasure.applied"
+	EvErasureRewritten = "erasure.rewritten"
+	EvErasureWithdrawn = "erasure.withdrawn"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

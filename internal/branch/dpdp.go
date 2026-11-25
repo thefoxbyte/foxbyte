@@ -111,17 +111,31 @@ type DPDPKeep struct {
 
 // DPDPEntry is one table's entry, or one column's (Column set).
 type DPDPEntry struct {
-	Schema     string    `json:"schema"`
-	Table      string    `json:"table"`
-	Column     string    `json:"column"` // "" for the table's entry
-	Basis      string    `json:"basis"`
-	Purpose    string    `json:"purpose"`
-	Principals []string  `json:"principals"`
-	Keep       DPDPKeep  `json:"keep"`
-	Note       string    `json:"note"`
-	SetBy      string    `json:"setBy"`
-	SetAt      time.Time `json:"setAt"`
+	Schema     string   `json:"schema"`
+	Table      string   `json:"table"`
+	Column     string   `json:"column"` // "" for the table's entry
+	Basis      string   `json:"basis"`
+	Purpose    string   `json:"purpose"`
+	Principals []string `json:"principals"`
+	Keep       DPDPKeep `json:"keep"`
+	Note       string   `json:"note"`
+	// OnErasure is what an erasure request does to the person's rows here
+	// (F4, decision 1): "clear" their personal columns (the default) or
+	// "delete" the row. A table's entry only; a column's entry clears.
+	OnErasure string `json:"onErasure"`
+	// ClearTo is what a column's entry clears the column to, when it is NOT
+	// NULL with no default and so cannot be cleared to NULL: a placeholder
+	// such as 'erased'. A column's entry only; nil for none.
+	ClearTo *string   `json:"clearTo,omitempty"`
+	SetBy   string    `json:"setBy"`
+	SetAt   time.Time `json:"setAt"`
 }
+
+// The actions an erasure may take on a table's rows (F4, section 5).
+const (
+	EraseClear  = "clear"
+	EraseDelete = "delete"
+)
 
 // DPDPColumn is one confirmed column of a table, and what covers it.
 type DPDPColumn struct {
@@ -286,6 +300,25 @@ func CheckDPDPEntry(e DPDPEntry) (DPDPEntry, error) {
 	if n := len([]rune(k.Citation)); n > 500 {
 		return bad("the citation is at most 500 characters, not %d", n)
 	}
+	switch e.OnErasure = strings.TrimSpace(e.OnErasure); e.OnErasure {
+	case "":
+		e.OnErasure = EraseClear
+	case EraseClear:
+	case EraseDelete:
+		if e.Column != "" {
+			return bad("a row is deleted by its table's entry; a column's entry can only clear the column")
+		}
+	default:
+		return bad("on erasure, a row is %s (its personal columns, the default) or %s, not %q", EraseClear, EraseDelete, e.OnErasure)
+	}
+	if e.ClearTo != nil {
+		if e.Column == "" {
+			return bad("what a column is cleared to is set on the column's own entry (schema.table.column)")
+		}
+		if n := len([]rune(*e.ClearTo)); n > 200 {
+			return bad("what a column is cleared to is at most 200 characters, not %d", n)
+		}
+	}
 	return e, nil
 }
 
@@ -403,13 +436,18 @@ func haveDPDP(ctx context.Context, conn *pgx.Conn) (bool, error) {
 	return have, err
 }
 
+// dpdpEntryCols reads an entry from bb.dpdp_entries d. The erasure columns
+// are read through the row's JSON, so a branch whose table predates them
+// (one not started since, or read by a Standard build) reads as clearing.
 const dpdpEntryCols = `schema_name, table_name, column_name, basis, purpose, principals,
-	keep_count, keep_unit, keep_from, keep_reason, keep_citation, note, set_by, set_at`
+	keep_count, keep_unit, keep_from, keep_reason, keep_citation, note,
+	coalesce(to_jsonb(d)->>'on_erasure', 'clear'), to_jsonb(d)->>'clear_to', set_by, set_at`
 
 func scanDPDPEntry(row pgx.Row) (DPDPEntry, error) {
 	var e DPDPEntry
 	err := row.Scan(&e.Schema, &e.Table, &e.Column, &e.Basis, &e.Purpose, &e.Principals,
-		&e.Keep.Count, &e.Keep.Unit, &e.Keep.From, &e.Keep.Reason, &e.Keep.Citation, &e.Note, &e.SetBy, &e.SetAt)
+		&e.Keep.Count, &e.Keep.Unit, &e.Keep.From, &e.Keep.Reason, &e.Keep.Citation, &e.Note,
+		&e.OnErasure, &e.ClearTo, &e.SetBy, &e.SetAt)
 	return e, err
 }
 
@@ -418,7 +456,7 @@ func readDPDPEntries(ctx context.Context, conn *pgx.Conn) ([]DPDPEntry, error) {
 	if err != nil || !have {
 		return nil, err
 	}
-	rows, err := conn.Query(ctx, `SELECT `+dpdpEntryCols+` FROM bb.dpdp_entries ORDER BY schema_name, table_name, column_name`)
+	rows, err := conn.Query(ctx, `SELECT `+dpdpEntryCols+` FROM bb.dpdp_entries d ORDER BY schema_name, table_name, column_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -672,7 +710,7 @@ func readDPDPEntry(name, schema, table, column string) (DPDPEntry, error) {
 		return DPDPEntry{}, err
 	}
 	defer conn.Close(context.Background())
-	e, err := scanDPDPEntry(conn.QueryRow(ctx, `SELECT `+dpdpEntryCols+` FROM bb.dpdp_entries
+	e, err := scanDPDPEntry(conn.QueryRow(ctx, `SELECT `+dpdpEntryCols+` FROM bb.dpdp_entries d
 		WHERE schema_name = $1 AND table_name = $2 AND column_name = $3`, schema, table, column))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return e, ErrNoDPDPEntry
@@ -684,7 +722,7 @@ func readDPDPEntry(name, schema, table, column string) (DPDPEntry, error) {
 
 // DPDPCSVHeader is the export's first line.
 var DPDPCSVHeader = []string{"schema", "table", "column", "categories", "covered_by", "basis", "basis_label",
-	"purpose", "principals", "retention", "keep_reason", "keep_citation", "note", "set_by", "set_at"}
+	"purpose", "principals", "retention", "keep_reason", "keep_citation", "note", "set_by", "set_at", "on_erasure"}
 
 // WriteDPDPCSV writes the inventory one confirmed column a row, for a DPO's
 // register: each with the entry that covers it, or none.
@@ -702,10 +740,11 @@ func WriteDPDPCSV(w io.Writer, inv DPDPInventory) error {
 			row := []string{t.Schema, t.Table, c.Column, strings.Join(c.Categories, " "), c.By}
 			if e == nil {
 				row[4] = "none"
-				row = append(row, "", "", "", "", "", "", "", "", "", "")
+				row = append(row, "", "", "", "", "", "", "", "", "", "", "")
 			} else {
 				row = append(row, e.Basis, DPDPLabel(DPDPWords.Bases, e.Basis), e.Purpose, strings.Join(e.Principals, " "),
-					e.Keep.String(), e.Keep.Reason, e.Keep.Citation, e.Note, e.SetBy, e.SetAt.UTC().Format(time.RFC3339))
+					e.Keep.String(), e.Keep.Reason, e.Keep.Citation, e.Note, e.SetBy, e.SetAt.UTC().Format(time.RFC3339),
+					erasureCell(t.Entry, c.Override))
 			}
 			for i := range row {
 				row[i] = dpdpCell(row[i])
@@ -717,6 +756,19 @@ func WriteDPDPCSV(w io.Writer, inv DPDPInventory) error {
 	}
 	cw.Flush()
 	return cw.Error()
+}
+
+// erasureCell is what an erasure does to a column, for the export: the
+// table's action, and what the column's own entry clears it to.
+func erasureCell(table, column *DPDPEntry) string {
+	act := EraseClear
+	if table != nil && table.OnErasure != "" {
+		act = table.OnErasure
+	}
+	if act == EraseClear && column != nil && column.ClearTo != nil {
+		return act + " to " + *column.ClearTo
+	}
+	return act
 }
 
 // dpdpCell neutralises a value a spreadsheet would run as a formula: a

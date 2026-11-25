@@ -25,17 +25,23 @@ import (
 //	        --keep 3y --from f --reason r [--citation "…"] [--note "…"] [--branch b]   (Enterprise)
 //	fox dpdp unset <schema.table[.column]> [--branch b]                               (Enterprise)
 //	fox dpdp history <schema.table[.column]> [--branch b] [--json]
+//	fox dpdp erase new|plan|apply|rewrite|withdraw|list|show …                       (F4; see erasureCmd)
 //
 // The inventory lists every table holding personal data a reviewer confirmed
 // (fox pii mark), with its entry: the basis under the DPDP Act, the purpose,
 // whose data it is and how long it is kept. A confirmed column with no entry,
 // its own or its table's, is a gap. Reading is free in every edition.
 func dpdpCmd(args []string) {
+	if len(args) > 0 && args[0] == "erase" {
+		erasureCmd(args[1:])
+		return
+	}
 	b := optValue(args, "--branch")
 	if b == "" {
 		b = "main"
 	}
-	ps := positionals(args, "--branch", "--basis", "--purpose", "--principals", "--keep", "--from", "--reason", "--citation", "--note")
+	ps := positionals(args, "--branch", "--basis", "--purpose", "--principals", "--keep", "--from", "--reason", "--citation", "--note",
+		"--on-erasure", "--clear-to")
 	sub := "inventory"
 	if len(ps) > 0 {
 		sub = ps[0]
@@ -77,15 +83,20 @@ func dpdpCmd(args []string) {
 		must(err)
 		e := branch.DPDPEntry{
 			Schema: s, Table: t, Column: c,
-			Basis:   optValue(args, "--basis"),
-			Purpose: optValue(args, "--purpose"),
-			Note:    optValue(args, "--note"),
+			Basis:     optValue(args, "--basis"),
+			Purpose:   optValue(args, "--purpose"),
+			Note:      optValue(args, "--note"),
+			OnErasure: optValue(args, "--on-erasure"),
 			Keep: branch.DPDPKeep{
 				Count: count, Unit: unit,
 				From:     strings.ReplaceAll(optValue(args, "--from"), "-", "_"),
 				Reason:   optValue(args, "--reason"),
 				Citation: optValue(args, "--citation"),
 			},
+		}
+		if hasFlag(args, "--clear-to") {
+			to := optValue(args, "--clear-to")
+			e.ClearTo = &to
 		}
 		for _, p := range strings.Split(optValue(args, "--principals"), ",") {
 			if p = strings.TrimSpace(p); p != "" {
@@ -99,7 +110,7 @@ func dpdpCmd(args []string) {
 			st.Close()
 		}
 		fmt.Printf("%s on %s: %s\n", got.Where(), b, branch.DPDPLabel(branch.DPDPWords.Bases, got.Basis))
-		fmt.Printf("  purpose: %s\n  whose: %s\n  kept: %s\n", got.Purpose, principals(got.Principals), got.Keep)
+		fmt.Printf("  purpose: %s\n  whose: %s\n  kept: %s\n  on erasure: %s\n", got.Purpose, principals(got.Principals), got.Keep, erasureText(got))
 	case "unset":
 		requireFeature(edition.DPDP)
 		s, t, c := place()
@@ -134,9 +145,11 @@ func dpdpCmd(args []string) {
   %[1]s dpdp inventory [--branch b] [--gaps] [--json | --csv]
   %[1]s dpdp set <schema.table[.column]> --basis consent|7a…7i --purpose "…" --principals customer,child
         --keep 3y|18m|90d|0 --from collection|last-contact|account-closed|contract-end|purpose-served
-        --reason law|contract|purpose [--citation "the law or contract"] [--note "…"] [--branch b]
+        --reason law|contract|purpose [--citation "the law or contract"] [--note "…"]
+        [--on-erasure clear|delete] [--clear-to "placeholder"  (a column's entry)] [--branch b]
   %[1]s dpdp unset <schema.table[.column]> [--branch b]
   %[1]s dpdp history <schema.table[.column]> [--branch b] [--json]
+  %[1]s dpdp erase new|plan|apply|rewrite|withdraw|list|show …   (erasure requests; %[1]s dpdp erase for more)
 `, brand.CLI)
 		os.Exit(2)
 	}
@@ -194,7 +207,8 @@ func printDPDP(w io.Writer, inv branch.DPDPInventory) {
 	}
 	fmt.Fprintln(w)
 	entry := func(e *branch.DPDPEntry) string {
-		return fmt.Sprintf("%s; whose: %s; kept %s", branch.DPDPLabel(branch.DPDPWords.Bases, e.Basis), principals(e.Principals), e.Keep)
+		return fmt.Sprintf("%s; whose: %s; kept %s; on erasure: %s", branch.DPDPLabel(branch.DPDPWords.Bases, e.Basis),
+			principals(e.Principals), e.Keep, erasureText(*e))
 	}
 	for _, t := range inv.Tables {
 		fmt.Fprintf(w, "\n%s.%s\n", t.Schema, t.Table)
@@ -236,6 +250,18 @@ func printDPDP(w io.Writer, inv branch.DPDPInventory) {
 	for _, l := range inv.Limits {
 		fmt.Fprintf(w, "  - %s\n", l)
 	}
+}
+
+// erasureText is what an entry says an erasure does: "clear", "delete the
+// row", or "clear to 'erased'".
+func erasureText(e branch.DPDPEntry) string {
+	switch {
+	case e.OnErasure == branch.EraseDelete:
+		return "delete the row"
+	case e.ClearTo != nil:
+		return fmt.Sprintf("clear to %q", *e.ClearTo)
+	}
+	return "clear"
 }
 
 // checkDPDP is fox check's line for main's DPDP inventory: a confirmed
