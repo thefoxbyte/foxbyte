@@ -119,9 +119,30 @@ describe('DPDP inventory', () => {
       schema: 'public', table: 'staff', column: '', basis: 'consent', purpose: 'Payroll',
       principals: ['employee', 'child'],
       keep: { count: 8, unit: 'years', from: 'account_closed', reason: 'law', citation: 'Income-tax Act, 1961' }, note: '',
+      onErasure: 'clear', clearTo: null,
     }))
     await waitFor(() => expect(getDPDPInventory).toHaveBeenCalledTimes(2))
     expect(screen.queryByTestId('dpdp-form')).toBeNull()
+  })
+
+  it("sets what an erasure does: a table's rows deleted, a column's placeholder", async () => {
+    page()
+    const cust = await screen.findByTestId('dpdp-table-public.customers')
+    expect(cust.textContent).toContain('on erasure cleared')
+    fireEvent.click(within(cust).getByRole('button', { name: 'Edit entry…' }))
+    let form = screen.getByTestId('dpdp-form')
+    expect(within(form).queryByLabelText('Clear to')).toBeNull() // a table's entry has no placeholder
+    fireEvent.change(within(form).getByLabelText('On erasure'), { target: { value: 'delete' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Save entry' }))
+    await waitFor(() => expect(setDPDPEntry).toHaveBeenLastCalledWith('main', expect.objectContaining({ column: '', onErasure: 'delete', clearTo: null })))
+
+    const cust2 = await screen.findByTestId('dpdp-table-public.customers')
+    fireEvent.click(within(cust2).getAllByRole('button', { name: 'Edit its entry…' })[0])
+    form = screen.getByTestId('dpdp-form')
+    expect(within(form).queryByLabelText('On erasure')).toBeNull() // a column's entry only clears
+    fireEvent.change(within(form).getByLabelText('Clear to'), { target: { value: 'erased' } })
+    fireEvent.click(within(form).getByRole('button', { name: 'Save entry' }))
+    await waitFor(() => expect(setDPDPEntry).toHaveBeenLastCalledWith('main', expect.objectContaining({ column: 'aadhaar_no', onErasure: 'clear', clearTo: 'erased' })))
   })
 
   it("gives a column its own entry, starting from the table's", async () => {

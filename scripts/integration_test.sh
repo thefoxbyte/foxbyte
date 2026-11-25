@@ -5140,6 +5140,137 @@ assert_eq "…and an unknown format is refused" "$(code "$KEY" "$DA/inventory?fo
 $S branch delete dpdpt >/dev/null 2>&1
 $S user delete dpdp-viewer@foxbyte.dev >/dev/null 2>&1
 
+echo "### 11az. erasure requests: one person's rows on main, planned, applied in one transaction, rewritten (point 11.2, F4 Gate 1 step 1)"
+# Synthetic values only. The person (EE, EP) has a customer row with a JSON
+# profile, an address, two orders, a sign-up and a KYC row whose PAN a law
+# keeps; the other person (OE) has the same kinds of row, and must keep them.
+EE=er.person@example.in; EP=9811122233; OE=er.other@example.in
+ER() { pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS er_kyc, er_orders, er_addresses, er_signups, er_customers" >/dev/null; }
+ER
+pg pg-main "CREATE TABLE er_customers (id int PRIMARY KEY, email text UNIQUE, phone text NOT NULL, city text NOT NULL DEFAULT 'unknown', profile jsonb);
+  CREATE TABLE er_orders (id int PRIMARY KEY, customer_id int REFERENCES er_customers ON DELETE CASCADE, amount numeric);
+  CREATE TABLE er_addresses (id int PRIMARY KEY, customer_id int REFERENCES er_customers ON DELETE CASCADE, phone text);
+  CREATE TABLE er_kyc (id int PRIMARY KEY, customer_id int REFERENCES er_customers ON DELETE RESTRICT, pan text);
+  CREATE TABLE er_signups (email text, at date DEFAULT current_date);
+  INSERT INTO er_customers VALUES (1, '$EE', '+91 $EP', 'Pune', '{\"alt_email\": \"$EE\", \"lang\": \"mr\"}'),
+                                  (2, '$OE', '9822233344', 'Delhi', '{\"alt_email\": \"$OE\", \"lang\": \"hi\"}');
+  INSERT INTO er_orders VALUES (10, 1, 100), (11, 1, 50), (12, 2, 75);
+  INSERT INTO er_addresses VALUES (20, 1, '$EP'), (21, 2, '9822233344');
+  INSERT INTO er_kyc VALUES (30, 1, 'ABCDE1234F'), (31, 2, 'PQRSX6789K');
+  INSERT INTO er_signups (email) VALUES ('$EE'), ('$OE');" >/dev/null
+$S pii scan --branch main >/dev/null 2>&1
+for id in $($S pii --branch main --json | hjson "print(' '.join(str(f['id']) for f in d['findings'] if f['table'].startswith('er_') and f['state']=='suggested'))"); do
+  $S pii mark "$id" confirm --branch main >/dev/null 2>&1
+done
+DS() { $S dpdp set "$@" --branch main >/dev/null 2>&1; }
+DS er_customers --basis consent --purpose 'Orders' --principals customer --keep 3y --from last-contact --reason purpose
+DS er_signups --basis consent --purpose 'Newsletter' --principals customer --keep 1y --from collection --reason purpose --on-erasure delete
+DS er_kyc --basis 7d --purpose 'KYC' --principals customer --keep 5y --from account-closed --reason purpose
+DS public.er_kyc.pan --basis 7d --purpose 'KYC' --principals customer --keep 5y --from account-closed --reason law --citation 'PML Rules, Rule 10'
+assert_eq "the inventory carries each table's erasure action" \
+  "$($S dpdp inventory --branch main --json | hjson "print(sorted((t['table'], t['entry']['onErasure']) for t in d['tables'] if t['table'] in ('er_customers','er_signups') and t['entry']))")" \
+  "[('er_customers', 'clear'), ('er_signups', 'delete')]"
+OUT="$($S dpdp set public.er_customers.email --basis consent --purpose x --principals customer --keep 1y --from collection --reason purpose --on-erasure delete --branch main 2>&1)"; RC=$?
+assert_eq "…a column's entry cannot delete the row" "$RC|$(grep -c "a column's entry can only clear" <<<"$OUT")" "1|1"
+
+VALS() { printf 'email:%s\nmobile:%s\n' "$EE" "$EP"; }
+OUT="$(VALS | $S dpdp erase new --note 'DPO-42' --event account_closed=2025-03-31 2>&1)"; RC=$?
+RID="$(grep -o 'Erasure request #[0-9]*' <<<"$OUT" | head -1 | grep -o '[0-9]*')"
+assert_eq "a request is made and planned; a NOT NULL column with no default stops it, and says how to fix it" \
+  "$RC|$([ -n "$RID" ] && echo id)|$(grep -c 'PROBLEM: phone is NOT NULL with no default' <<<"$OUT")|$(grep -c 'cannot be applied until the problems' <<<"$OUT")" "0|id|1|1"
+assert_eq "…it shows the other tables: the address cleared, the orders left, the sign-up deleted, the PAN kept by law to its date" \
+  "$(grep -c 'public.er_addresses: CLEAR 1 row' <<<"$OUT")|$(grep -c 'public.er_orders: LEFT AS IS 2 row' <<<"$OUT")|$(grep -c 'public.er_signups: DELETE 1 row' <<<"$OUT")|$(grep -c 'pan is kept under PML Rules, Rule 10.*ends 31 March 2030' <<<"$OUT")" "1|1|1|1"
+assert_eq "…and the JSON path and the review notice" \
+  "$(grep -c 'profile at \$.alt_email (email) → null at the path' <<<"$OUT")|$(grep -c 'not yet been reviewed by a privacy lawyer' <<<"$OUT")" "1|1"
+assert_eq "…a blocked plan is not applied" "$(VALS | $S dpdp erase apply "$RID" --yes 2>&1 | grep -c 'cannot be applied as it stands')" "1"
+assert_eq "nothing has changed yet" "$(pg pg-main "SELECT count(*) FROM er_customers WHERE email = '$EE'")" "1"
+
+# A delete the KYC row's RESTRICT key refuses stops the plan; the orders would go with it.
+DS er_customers --basis consent --purpose 'Orders' --principals customer --keep 3y --from last-contact --reason purpose --on-erasure delete
+OUT="$(VALS | $S dpdp erase plan "$RID" 2>&1)"
+assert_eq "a delete a RESTRICT key refuses stops the plan, and the rows a CASCADE takes are listed" \
+  "$(grep -c 'PROBLEM: 1 row(s) of public.er_kyc refer to the rows this deletes through er_kyc_customer_id_fkey, which refuses a delete' <<<"$OUT")|$(grep -c 'public.er_orders: DELETED WITH IT 2 row' <<<"$OUT")" "1|1"
+DS er_customers --basis consent --purpose 'Orders' --principals customer --keep 3y --from last-contact --reason purpose
+DS public.er_customers.phone --basis consent --purpose 'Orders' --principals customer --keep 3y --from last-contact --reason purpose --clear-to 0000000000
+OUT="$(VALS | $S dpdp erase plan "$RID" 2>&1)"
+assert_eq "with a placeholder for the phone the plan can be applied" \
+  "$(grep -c 'PROBLEM' <<<"$OUT")|$(grep -c 'phone (mobile) → "0000000000"' <<<"$OUT")|$(grep -c "dpdp erase apply $RID" <<<"$OUT")" "0|1|1"
+assert_eq "planning again with other values is refused" \
+  "$(printf 'email:%s\n' "$OE" | $S dpdp erase plan "$RID" 2>&1 | grep -c 'not the request.s')" "1"
+
+# The plan changes between showing it and applying it: nothing is applied.
+pg pg-main "INSERT INTO er_signups (email) VALUES ('$EE')" >/dev/null
+OUT="$(VALS | $S dpdp erase apply "$RID" --yes 2>&1)"; RC=$?
+assert_eq "a plan that changed since it was shown applies nothing, and shows the new plan" \
+  "$RC|$(grep -c 'plan has changed since it was shown' <<<"$OUT")|$(grep -c 'public.er_signups: DELETE 2 row' <<<"$OUT")|$(pg pg-main "SELECT count(*) FROM er_customers WHERE email = '$EE'")" "1|1|1|1"
+assert_eq "…without --yes and with no terminal, apply asks rather than erases" \
+  "$(VALS | $S dpdp erase apply "$RID" 2>&1 | grep -c 'say --yes')" "1"
+FN0="$(pg pg-main "SELECT pg_relation_filenode('er_customers')")"
+OUT="$(VALS | $S dpdp erase apply "$RID" --yes 2>&1)"; RC=$?
+assert_eq "applied: in one transaction, a search afterwards finding none, vacuumed, rewritten, statistics and WAL switched" \
+  "$RC|$(grep -c 'a search afterwards found none' <<<"$OUT")|$(grep -c 'vacuumed .*removed from live queries' <<<"$OUT")|$(grep -c 'public.er_customers rewritten in the files' <<<"$OUT")|$(grep -c 'statistics rewritten and the WAL switched out' <<<"$OUT")" "0|1|1|1|1"
+[ "$RC" = 0 ] || { echo "--- apply said ---"; tail -20 <<<"$OUT"; }
+assert_eq "the person's row: email gone, phone the placeholder, city kept, the JSON path cleared and the rest of it kept" \
+  "$(pg pg-main "SELECT coalesce(email,'NULL') || '|' || phone || '|' || city || '|' || coalesce(profile->>'alt_email','NULL') || '|' || (profile->>'lang') FROM er_customers WHERE id = 1")" \
+  "NULL|0000000000|Pune|NULL|mr"
+assert_eq "…the address cleared, the sign-ups deleted, the orders and the KYC PAN kept" \
+  "$(pg pg-main "SELECT (SELECT coalesce(phone,'NULL') FROM er_addresses WHERE id = 20) || '|' || (SELECT count(*) FROM er_signups WHERE email = '$EE') || '|' || (SELECT count(*) FROM er_orders WHERE customer_id = 1) || '|' || (SELECT pan FROM er_kyc WHERE id = 30)")" \
+  "NULL|0|2|ABCDE1234F"
+assert_eq "…the other person is untouched" \
+  "$(pg pg-main "SELECT (SELECT email || phone || (profile->>'alt_email') FROM er_customers WHERE id = 2) || '|' || (SELECT phone FROM er_addresses WHERE id = 21) || '|' || (SELECT count(*) FROM er_signups WHERE email = '$OE')")" \
+  "${OE}9822233344${OE}|9822233344|1"
+assert_eq "…the table was rewritten into new files, and main records the request itself" \
+  "$([ "$FN0" != "$(pg pg-main "SELECT pg_relation_filenode('er_customers')")" ] && echo new)|$(pg pg-main "SELECT count(*) FROM bb.erasures_applied WHERE request_id = $RID")" "new|1"
+assert_eq "fox subject find finds the person nowhere on main now" \
+  "$($S subject find "$EE" --json 2>/dev/null | hjson "print(sum(p['rows'] for p in d['places'] if p['branch']=='main'))")" "0"
+assert_eq "the request is applied once: applying, planning or withdrawing it again is refused" \
+  "$(VALS | $S dpdp erase apply "$RID" --yes 2>&1 | grep -c 'is applied')|$(VALS | $S dpdp erase plan "$RID" 2>&1 | grep -c 'is applied')|$($S dpdp erase withdraw "$RID" 2>&1 | grep -c 'only a planned request')" "1|1|1"
+SJ="$($S dpdp erase show "$RID" --json)"
+assert_eq "it keeps the values' last four characters and the row keys, never a value" \
+  "$(hjson "print(sorted(r['last4'] for r in d['refs']), sorted(t['table'] for t in d['result']['tables']), [k for t in d['result']['tables'] if t['table']=='er_customers' for k in t['keys']])" <<<"$SJ")|$(grep -c "$EE\|$EP" <<<"$SJ")" \
+  "['2233', 'e.in'] ['er_addresses', 'er_customers', 'er_signups'] [['1']]|0"
+assert_eq "…the install's store holds none of the values" \
+  "$(cat "$HOME/$BRAND_STATE_DIR"/auth.db* 2>/dev/null | grep -ac "$EE\|$EP")" "0"
+AUD="$($S audit --limit 5000)"
+assert_eq "the security log: planned and applied, by counts, never a value" \
+  "$(( $(grep 'erasure.planned' <<<"$AUD" | grep -c "request #$RID") >= 3 ))|$(grep 'erasure.applied' <<<"$AUD" | grep -c "request #$RID applied")|$(grep 'erasure' <<<"$AUD" | grep -c "$EE\|$EP")" "1|1|0"
+
+# The other person, with the rewrite left for later: a table over the size
+# limit is listed, and rewritten when an admin runs it.
+OUT="$(printf '%s\n' "$OE" | FOX_ERASURE_REWRITE_MAX=1 $S dpdp erase new 2>&1)"
+OID="$(grep -o 'Erasure request #[0-9]*' <<<"$OUT" | head -1 | grep -o '[0-9]*')"
+assert_eq "a table over the rewrite limit is listed for later" "$(( $(grep -c 'rewritten later: larger than' <<<"$OUT") >= 1 ))" "1"
+OUT="$(printf '%s\n' "$OE" | FOX_ERASURE_REWRITE_MAX=1 $S dpdp erase apply "$OID" --yes 2>&1)"
+assert_eq "…applied, it is vacuumed but not yet rewritten" \
+  "$(( $(grep -c 'not rewritten yet' <<<"$OUT") >= 1 ))|$(grep -c 'statistics rewritten' <<<"$OUT")|$(pg pg-main "SELECT count(*) FROM er_customers WHERE email = '$OE'")" "1|0|0"
+OUT="$($S dpdp erase rewrite "$OID" 2>&1)"
+assert_eq "…and fox dpdp erase rewrite rewrites it, the statistics and the WAL after it" \
+  "$(grep -c 'not rewritten yet' <<<"$OUT")|$(grep -c 'statistics rewritten and the WAL switched out' <<<"$OUT")" "0|1"
+assert_eq "…a table it did not change is refused" "$($S dpdp erase rewrite "$OID" --table public.er_nothing 2>&1 | grep -c 'is not a table request')" "1"
+
+# Withdrawn: closed, nothing applied.
+WID="$(printf 'email:nobody.here@example.in\n' | $S dpdp erase new 2>&1 | grep -o 'Erasure request #[0-9]*' | head -1 | grep -o '[0-9]*')"
+assert_eq "a request that finds no row says so, and is withdrawn without applying anything" \
+  "$($S dpdp erase show "$WID" | grep -c 'No row holds any of the values')|$($S dpdp erase withdraw "$WID" 2>&1 | grep -c 'withdrawn; nothing was applied')|$(printf 'email:nobody.here@example.in\n' | $S dpdp erase apply "$WID" --yes 2>&1 | grep -c 'is withdrawn')" "1|1|1"
+assert_eq "fox dpdp erase list shows every request and its state" \
+  "$($S dpdp erase list | grep -cE "^($RID|$OID) +applied|^$WID +withdrawn")" "3"
+
+# Over HTTP: admins only; the values given again at apply.
+$S user delete er-viewer@foxbyte.dev >/dev/null 2>&1; printf 'password123\n' | $S user create er-viewer@foxbyte.dev >/dev/null 2>&1
+KV="$($S apikey create er-viewer@foxbyte.dev t 2>/dev/null | grep -o 'key_[A-Za-z0-9_-]*')"
+EA="https://localhost:8080/api/dpdp/erasures"
+assert_eq "GET /api/dpdp/erasures: an admin reads them; any other account is refused" \
+  "$(code "$KEY" "$EA")|$(code "$KEY" "$EA/$RID")|$(code "$KV" "$EA")|$(code "$KV" -H "$H" -X POST -d '{"values":[{"value":"x@y.in"}]}' "$EA")|$(code "$KEY" "$EA/99999")" "200|200|403|403|404"
+AJ="$(as "$KEY" -H "$H" -X POST -d "{\"values\":[{\"category\":\"email\",\"value\":\"nobody.else@example.in\"}],\"note\":\"api\"}" "$EA")"
+AID="$(hjson "print(d['id'])" <<<"$AJ")"
+assert_eq "POST makes one; apply with other values is refused; withdraw closes it" \
+  "$(hjson "print(d['state'], d['note'], d['plan']['rows'])" <<<"$AJ")|$(code "$KEY" -H "$H" -X POST -d '{"values":[{"value":"someone@example.org"}]}' "$EA/$AID/apply")|$(as "$KEY" -X POST "$EA/$AID/withdraw" | hjson "print(d['state'])")|$(code "$KEY" -H "$H" -X POST -d '{"values":[{"value":"nobody.else@example.in"}]}' "$EA/$AID/apply")" \
+  "planned api 0|400|withdrawn|409"
+assert_eq "…a value that is not one is refused" "$(code "$KEY" -H "$H" -X POST -d '{"values":[{"value":"hello there"}]}' "$EA")" "400"
+$S user delete er-viewer@foxbyte.dev >/dev/null 2>&1
+for p in er_customers public.er_customers.phone er_signups er_kyc public.er_kyc.pan; do $S dpdp unset "$p" --branch main >/dev/null 2>&1; done
+ER
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

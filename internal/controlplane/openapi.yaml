@@ -1154,6 +1154,142 @@ paths:
         "404": { description: No such branch. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/dpdp/erasures:
+    get:
+      tags: [branches]
+      summary: Every erasure request, newest first (admins). Free in every edition.
+      responses:
+        "200":
+          description: The requests.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/ErasureRequest" } }
+        "403": { description: Not an admin. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [branches]
+      summary: "Make an erasure request for one person on main, and its plan (admins; Enterprise, F4). Nothing is changed. The request keeps no value: each one's category and last four characters."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [values]
+              properties:
+                values: { $ref: "#/components/schemas/ErasureValues" }
+                note: { type: string, maxLength: 500, description: "The requester's own reference, such as a ticket number. Never the person's details." }
+                events:
+                  type: object
+                  description: "The dates a law exception's period runs from, by the inventory's words: {\"account_closed\": \"2025-03-31\"}."
+                  additionalProperties: { type: string, format: date }
+      responses:
+        "201":
+          description: The request and its plan.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErasureRequest" } } }
+        "400": { description: A value not recognised, an unknown category, or a bad event date. }
+        "403": { description: Not an admin, or the edition does not include the DPDP compliance manager. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/erasures/{id}:
+    get:
+      tags: [branches]
+      summary: One erasure request, with its latest plan and, once applied, what it changed and the row keys (admins).
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+      responses:
+        "200":
+          description: The request.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErasureRequest" } } }
+        "403": { description: Not an admin. }
+        "404": { description: No such request. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/erasures/{id}/plan:
+    post:
+      tags: [branches]
+      summary: Plan a planned request again, from its values given again (admins; Enterprise).
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [values], properties: { values: { $ref: "#/components/schemas/ErasureValues" } } }
+      responses:
+        "200":
+          description: The request and its new plan.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErasureRequest" } } }
+        "400": { description: The values are not the request's. }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "404": { description: No such request. }
+        "409": { description: The request is not planned. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/erasures/{id}/apply:
+    post:
+      tags: [branches]
+      summary: "Apply a planned request to main, in one transaction, then vacuum and rewrite (admins; Enterprise). The values are given again; the rows are found again; if the plan has changed nothing is applied."
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [values], properties: { values: { $ref: "#/components/schemas/ErasureValues" } } }
+      responses:
+        "200":
+          description: Applied; the request with what it changed, and its vacuum and rewrites.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErasureRequest" } } }
+        "400": { description: The values are not the request's. }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "404": { description: No such request. }
+        "409":
+          description: "Nothing was applied: the plan has changed (the body holds the new plan, to review and apply again), the plan has a problem, or the request is not planned."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  request: { $ref: "#/components/schemas/ErasureRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/erasures/{id}/rewrite:
+    post:
+      tags: [branches]
+      summary: Rewrite in the files the tables an applied request left for later, or the ones named (admins; Enterprise). Each holds an ACCESS EXCLUSIVE lock while it runs.
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { tables: { type: array, items: { type: string, description: schema.table } } } }
+      responses:
+        "200":
+          description: The request, its rewrites' states updated.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErasureRequest" } } }
+        "400": { description: A table the request did not change. }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "404": { description: No such request. }
+        "409": { description: The request is not applied. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/erasures/{id}/withdraw:
+    post:
+      tags: [branches]
+      summary: Close a planned request without applying it (admins; Enterprise).
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+      responses:
+        "200":
+          description: Withdrawn.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErasureRequest" } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "404": { description: No such request. }
+        "409": { description: The request is not planned. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/branches/{name}/personal-data/aadhaar:
     get:
       tags: [branches]
@@ -3681,6 +3817,12 @@ components:
       scheme: bearer
       description: An API key (`key_…`) minted with `fox apikey create`.
   parameters:
+    ErasureID:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+      description: The erasure request's number.
     BranchName:
       name: name
       in: path
@@ -4212,8 +4354,49 @@ components:
             reason: { type: string, enum: [law, contract, purpose] }
             citation: { type: string, maxLength: 500, description: "The law or contract that sets the period; needed unless reason is purpose." }
         note: { type: string, maxLength: 1000 }
+        onErasure: { type: string, enum: [clear, delete], description: "What an erasure request does to the person's rows: clear their personal columns (the default) or delete the row. A table's entry only." }
+        clearTo: { type: string, maxLength: 200, nullable: true, description: "A column's entry: what a NOT NULL column with no default is cleared to." }
         setBy: { type: string, readOnly: true }
         setAt: { type: string, format: date-time, readOnly: true }
+    ErasureValues:
+      type: array
+      maxItems: 50
+      description: "The values the person is known by. Never kept: give them again to plan and apply."
+      items:
+        type: object
+        required: [value]
+        properties:
+          category: { type: string, description: "email, mobile, pan, aadhaar, …; empty to recognise the value by its shape." }
+          value: { type: string }
+    ErasureRequest:
+      type: object
+      properties:
+        id: { type: integer }
+        branch: { type: string }
+        state: { type: string, enum: [planned, applying, applied, withdrawn] }
+        note: { type: string }
+        fingerprint: { type: string, description: The plan's fingerprint; an apply goes ahead only if the plan found again has it. }
+        createdBy: { type: string }
+        created: { type: string, format: date-time }
+        plannedBy: { type: string }
+        planned: { type: string, format: date-time }
+        appliedBy: { type: string }
+        appliedAt: { type: string, format: date-time }
+        withdrawnBy: { type: string }
+        withdrawnAt: { type: string, format: date-time }
+        refs:
+          type: array
+          items: { type: object, properties: { categories: { type: array, items: { type: string } }, last4: { type: string } } }
+        events: { type: object, additionalProperties: { type: string } }
+        plan:
+          type: object
+          description: "Table by table: why the rows are the person's, how many, the action (clear, delete, cascade, set-null, keep, kept), the columns cleared and to what, the inventory entry as it stood, law exceptions, problems that stop it, notes, and when the files are rewritten."
+          additionalProperties: true
+        result:
+          type: object
+          nullable: true
+          description: "Once applied: what changed in each table with the row keys, whether a search afterwards found none, when it was vacuumed, each table's rewrite, and when the statistics were rewritten and the WAL switched out."
+          additionalProperties: true
     DPDPInventory:
       type: object
       properties:

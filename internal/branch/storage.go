@@ -561,3 +561,17 @@ func humanBytes(n uint64) string {
 	}
 	return fmt.Sprintf("%.1f%c", float64(n)/float64(div), "KMGTP"[exp])
 }
+
+// DatasetAvailable is how many bytes a branch's dataset can still write: what
+// a rewrite of a table (a second copy of it, F4 section 7) is checked against.
+func DatasetAvailable(name string) (int64, error) {
+	out, err := capture("zfs", "get", "-Hp", "-o", "value", "available", dataset(ServingBranch(name)))
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	if _, err := fmt.Sscan(strings.TrimSpace(out), &n); err != nil {
+		return 0, fmt.Errorf("reading the dataset's free space: %q", strings.TrimSpace(out))
+	}
+	return n, nil
+}

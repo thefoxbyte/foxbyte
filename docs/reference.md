@@ -735,6 +735,11 @@ fox dpdp set public.customers.aadhaar_no --basis 7d --purpose "KYC" --principals
   --keep 8y --from account-closed --reason law --citation "Prevention of Money-laundering Act, 2002, s.12"
 fox dpdp unset public.customers.aadhaar_no   # the table's entry covers it again
 fox dpdp history public.customers            # every change: who, when, what
+fox dpdp set public.signups … --on-erasure delete        # what an erasure does to its rows (clear is the default)
+fox dpdp set public.customers.phone … --clear-to '0000000000'   # a NOT NULL column's placeholder
+fox dpdp erase new [--note "…"] [--event account_closed=YYYY-MM-DD]   # one person on main; the values on stdin
+fox dpdp erase apply <id> [--yes]      # the values again; applied only if the plan is unchanged
+fox dpdp erase plan|rewrite|withdraw|show <id>; fox dpdp erase list
 ```
 
 The inventory is built from the places `fox pii` review confirmed. Each table
@@ -1071,6 +1076,7 @@ features need a licence — without one it behaves exactly like Standard.
 | Scanning for personal data (`fox pii scan`) and the Aadhaar exposure report (`fox pii aadhaar run`); reading what earlier scans found | — / yes | yes |
 | The access review report (`fox access review`) | — | yes |
 | The DPDP inventory (`fox dpdp set`, `unset`); reading and exporting it (`fox dpdp inventory`, `history`) | — / yes | yes |
+| Erasure requests (`fox dpdp erase new`, `plan`, `apply`, `rewrite`, `withdraw`); reading them (`list`, `show`) | — / yes | yes |
 | Masking personal data (`fox mask`): rules, masked accounts, key domains, `unmask`, masked branches | — | yes |
 | The vault for sensitive values (`fox vault`), Aadhaar first, kept in an HSM | — | yes |
 | Making the hardening fixes (`fox hardening fix`, `profile`); reading the hardening report | — / yes | yes |

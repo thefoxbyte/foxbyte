@@ -117,6 +117,80 @@ is earlier, unless a law requires it to be kept.
 The inventory records your retention. It does not yet check it against the
 Third Schedule or against Rule 8(3)'s one-year minimum; that is point 11.3.
 
+## On erasure
+
+Each table's entry also says what an erasure request does to a person's rows
+there (point 11.2, F4):
+
+- `--on-erasure clear`, the default: the row stays, and its confirmed personal
+  columns are emptied: set to `NULL`, or to the column's default when it is
+  `NOT NULL` and has one. For rows other records depend on, such as customers
+  with orders.
+- `--on-erasure delete`: the row is deleted. For rows that are only the person,
+  such as a newsletter sign-up.
+
+A column's own entry can only clear. When the column is `NOT NULL` with no
+default, it cannot be emptied, and a request's plan stops there until you give
+it a placeholder on that entry (`fox dpdp set public.customers.phone … --clear-to
+'0000000000'`) or set the table to delete. A table or column whose retention's
+reason is `law` is not erased at all: the law requiring it kept overrides
+s.8(7), and the request records the citation and, when you give the event's
+date, when the period ends. A `contract` is not such a reason, and its places
+are erased. A table with no entry is cleared, and the plan says that is the
+default, not a decision.
+
+## Erasure requests
+
+One request erases one person on `main` (Enterprise; admins only). The values
+the person is known by are read one a line from the terminal or standard
+input, never the command line, so the shell's history and the process list do
+not keep them:
+
+```bash
+fox dpdp erase new --note "DPO ticket 1234" --event account_closed=2025-03-31
+#   > email:asha@example.com
+#   > mobile:98765 43210
+fox dpdp erase show 7              # the plan again, without the values
+fox dpdp erase apply 7             # asks for the values again, then for the number
+fox dpdp erase rewrite 7           # the tables left for a quiet time
+fox dpdp erase list
+```
+
+- **Found:** a row is the person's when a confirmed column (or JSON path) in
+  the value's category holds it, compared whole after normalising case and
+  separators, as `fox subject find` counts. From those rows the plan follows
+  foreign keys to the rows that refer to them, up to ten deep. A referring
+  table with confirmed personal columns takes its own entry's action; one with
+  none is left as it is, unless its key deletes it (`ON DELETE CASCADE`) or
+  clears its reference with a row the request deletes. A key that refuses the
+  delete (`RESTRICT`, `NO ACTION`) stops the plan, as a column that cannot be
+  cleared does. Rows of the same table that refer to the person's row are
+  someone else's, and are left.
+- **Shown first:** each table, why its rows are the person's, how many, what
+  happens to them and to which columns, the entry as it stood, the exceptions,
+  and anything that stops the plan. Nothing changes until it is applied.
+- **Applied:** the values are given again and checked against the request, the
+  rows are found again in one transaction, and the plan is applied only if it
+  is the one shown; otherwise the new plan is kept, to review and apply again.
+  A search afterwards in the same transaction must find none of the values
+  outside a law's exception, or nothing is applied.
+- **Vacuumed and rewritten:** `VACUUM (INDEX_CLEANUP ON)` removes the old
+  versions from live queries; `VACUUM FULL` rewrites each table into new
+  files, so a backup or branch made afterwards does not copy the old bytes left
+  in free space. It locks the table while it runs, so tables over
+  `FOX_ERASURE_REWRITE_MAX` (1 GB by default), or with too little free space
+  for a second copy, are listed for `fox dpdp erase rewrite` at a quiet time.
+  The statistics are rewritten and the WAL switched out after.
+- **Kept:** no value. The request keeps each value's category and last four
+  characters, the plan, and the row keys of what it changed.
+
+What a request does not reach yet: every other branch, the Blackbox's and
+query history's statement text, the vault, restores of an earlier copy, and
+backups. Those are the next steps of F4 (`docs/FOX_F4_Erasure_Design.md`,
+section 20); until they are built, the person can remain in them, and every
+plan says so. FoxByte's reading of erasure has not yet been reviewed by a
+privacy lawyer or a storage engineer.
+
 ## What the inventory cannot claim
 
 - It lists only places a reviewer confirmed as personal data (`fox pii mark`).
