@@ -37,7 +37,7 @@ func TestAlreadyPromoted(t *testing.T) {
 		{ID: 6, Source: "dev", Target: "staging", Status: auth.RequestApproved, Applied: 1, Entries: snapshot},
 	}
 	ids, sessions := alreadyPromoted("dev", "main", history)
-	if !ids[11] {
+	if _, ok := ids[11]; !ok {
 		t.Error("an entry applied by an earlier request is not remembered")
 	}
 	if !sessions["request-3"] {

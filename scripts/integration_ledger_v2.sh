@@ -1271,6 +1271,52 @@ $S branch delete v2promo2 >/dev/null 2>&1
 assert_eq "deleting a branch forgets its open requests" \
   "$($S request list --open | grep -c 'v2promo2')" "0"
 
+# A branch deleted and made again under the same name is not the old one. The
+# store keeps decided requests under their branches' names, and both branches
+# made again from the same parent number their entries as the first ones did:
+# the new source's CREATE TABLE had the id an applied request carried, and was
+# taken as already on the target. The function made after it was offered alone
+# and failed on the missing table (the console's change-request test, every
+# run after its first). main is not touched in between, so the ids do repeat.
+v2same() {
+  $S branch delete v2samea >/dev/null 2>&1; $S branch delete v2sameb >/dev/null 2>&1
+  $S branch create v2samea >/dev/null 2>&1; $S branch create v2sameb >/dev/null 2>&1
+  $S branch owner v2samea "$USER_EMAIL" >/dev/null 2>&1
+}
+v2same
+gw "$KEY" v2samea "CREATE TABLE ${PT}_same1(id int)" >/dev/null
+SAME1="$($S branch request v2samea --to v2sameb 2>&1)"
+SAMEID1="$(grep -o 'request approve [0-9]*' <<<"$SAME1" | grep -o '[0-9]*')"
+SAMEENT1="$(grep -E "^[0-9]+ .*CREATE TABLE public\.${PT}_same1" <<<"$SAME1" | awk '{print $1}')"
+$S request approve "$SAMEID1" >/dev/null 2>&1
+assert_eq "a first request is applied to the target" \
+  "$(pg pg-v2sameb "SELECT count(*) FROM information_schema.tables WHERE table_name='${PT}_same1'")" "1"
+v2same
+gw "$KEY" v2samea "CREATE TABLE ${PT}_same2(id int PRIMARY KEY)" >/dev/null
+gw "$KEY" v2samea "CREATE FUNCTION ${PT}_same2_add(i int) RETURNS void LANGUAGE sql AS \$\$ INSERT INTO ${PT}_same2 VALUES (i) \$\$" >/dev/null
+SAME2="$($S branch request v2samea --to v2sameb 2>&1)"
+SAMEID2="$(grep -o 'request approve [0-9]*' <<<"$SAME2" | grep -o '[0-9]*')"
+SAMEENT2="$(grep -E "^[0-9]+ .*CREATE TABLE public\.${PT}_same2" <<<"$SAME2" | awk '{print $1}')"
+assert_eq "both made again: the new table has the old one's entry number, and is offered with its function" \
+  "$([ -n "$SAMEENT1" ] && [ "$SAMEENT1" = "$SAMEENT2" ] && echo same)|$(grep -c "CREATE TABLE ${PT}_same2" <<<"$SAME2")|$(grep -c "CREATE FUNCTION ${PT}_same2_add" <<<"$SAME2")" "same|1|1"
+SAMEOUT="$($S request approve "$SAMEID2" 2>&1)"
+assert_eq "…and approved, both reach the target" \
+  "$(pg pg-v2sameb "SELECT count(*) FROM information_schema.tables WHERE table_name='${PT}_same2'")|$(pg pg-v2sameb "SELECT count(*) FROM pg_proc WHERE proname='${PT}_same2_add'")" "1|1"
+[ "$(pg pg-v2sameb "SELECT count(*) FROM pg_proc WHERE proname='${PT}_same2_add'")" = 1 ] || { echo "--- approve said ---"; echo "$SAMEOUT" | tail -5; }
+# The target alone made again: the source is the same, and the request it gave
+# the old target is not on the new one, so its changes are offered again.
+$S branch delete v2sameb >/dev/null 2>&1; $S branch create v2sameb >/dev/null 2>&1
+SAME3="$($S branch request v2samea --to v2sameb 2>&1)"
+assert_eq "the target made again: what the old one was given is offered again" \
+  "$(grep -c "CREATE TABLE ${PT}_same2" <<<"$SAME3")|$(grep -c "CREATE FUNCTION ${PT}_same2_add" <<<"$SAME3")" "1|1"
+$S request approve "$(grep -o 'request approve [0-9]*' <<<"$SAME3" | grep -o '[0-9]*')" >/dev/null 2>&1
+assert_eq "…and applied to it" \
+  "$(pg pg-v2sameb "SELECT count(*) FROM pg_proc WHERE proname='${PT}_same2_add'")" "1"
+# Neither made again: what the target holds is still not offered a second time.
+assert_eq "…and asked once more, nothing is left to offer" \
+  "$($S branch request v2samea --to v2sameb 2>&1 | grep -c 'no schema change')" "1"
+$S branch delete v2samea >/dev/null 2>&1; $S branch delete v2sameb >/dev/null 2>&1
+
 $S branch delete v2promo >/dev/null 2>&1
 pg pg-main "SET bb.allow_destructive=on; DROP VIEW IF EXISTS ${PT}_runv; DROP TABLE IF EXISTS $PT, ${PT}_cli, ${PT}_run, $PB" >/dev/null
 $S admin revoke "$USER_EMAIL" --branch main >/dev/null 2>&1   # back to the non-admin user this suite assumes
