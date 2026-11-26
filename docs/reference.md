@@ -739,7 +739,10 @@ fox dpdp set public.signups … --on-erasure delete        # what an erasure doe
 fox dpdp set public.customers.phone … --clear-to '0000000000'   # a NOT NULL column's placeholder
 fox dpdp erase new [--note "…"] [--event account_closed=YYYY-MM-DD]   # one person on main; the values on stdin
 fox dpdp erase apply <id> [--yes]      # the values again; applied only if the plan is unchanged
+fox dpdp erase apply <id> --branch <b>  # a branch the apply skipped (its plan changed, or had a problem)
+fox dpdp erase status <id> [--branch b]  # every branch, and the branches made before the erasure to remake or delete
 fox dpdp erase plan|rewrite|withdraw|show <id>; fox dpdp erase list
+FOX_BRANCH_MAX_AGE=90d fox check          # branches older than it are flagged (off by default), never acted on
 ```
 
 The inventory is built from the places `fox pii` review confirmed. Each table

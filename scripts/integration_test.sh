@@ -103,6 +103,19 @@ for _ in $(seq 1 30); do
   [ "$(pg pg-main "SELECT to_regclass('bb.applied_requests') IS NULL")" = t ] && break   # a main that never had one
   sleep 1
 done
+# A main another suite scanned for personal data hands its baseline to every
+# branch made from it here, and §11r needs a branch's first scan to be its
+# first. Emptied with the triggers off, as the record of decisions is
+# append-only.
+pg pg-main "SET session_replication_role = replica; DO \$\$ BEGIN
+  IF to_regclass('bb.pii_scans') IS NOT NULL THEN
+    DELETE FROM bb.pii_decisions; DELETE FROM bb.pii_column_reviews; DELETE FROM bb.pii_findings;
+    DELETE FROM bb.pii_columns; DELETE FROM bb.pii_scans;
+  END IF; END \$\$" >/dev/null
+# The store is new, so erasure requests are numbered from 1 again: main's
+# record of those applied to it (another suite's, or a run before) goes too.
+pg pg-main "SET session_replication_role = replica; DO \$\$ BEGIN
+  IF to_regclass('bb.erasures_applied') IS NOT NULL THEN DELETE FROM bb.erasures_applied; END IF; END \$\$" >/dev/null
 assert_eq "start prints no API key" "$(echo "$BANNER" | grep -c "$DB_KEY_PREFIX[A-Za-z0-9]")" "0"
 assert_eq "…and caches none on disk" "$([ -f "$HOME/$BRAND_STATE_DIR/config" ] && echo present || echo none)" "none"
 assert_eq "…and says how to make one" "$(echo "$BANNER" | grep -c 'apikey create')" "1"
@@ -5220,11 +5233,11 @@ assert_eq "…the other person is untouched" \
   "$(pg pg-main "SELECT (SELECT email || phone || (profile->>'alt_email') FROM er_customers WHERE id = 2) || '|' || (SELECT phone FROM er_addresses WHERE id = 21) || '|' || (SELECT count(*) FROM er_signups WHERE email = '$OE')")" \
   "${OE}9822233344${OE}|9822233344|1"
 assert_eq "…the table was rewritten into new files, and main records the request itself" \
-  "$([ "$FN0" != "$(pg pg-main "SELECT pg_relation_filenode('er_customers')")" ] && echo new)|$(pg pg-main "SELECT count(*) FROM bb.erasures_applied WHERE request_id = $RID")" "new|1"
+  "$([ "$FN0" != "$(pg pg-main "SELECT pg_relation_filenode('er_customers')")" ] && echo new)|$(pg pg-main "SELECT count(*) FROM bb.erasures_applied WHERE request_id = $RID AND applied_at > now() - interval '30 minutes'")" "new|1"
 assert_eq "fox subject find finds the person nowhere on main now" \
   "$($S subject find "$EE" --json 2>/dev/null | hjson "print(sum(p['rows'] for p in d['places'] if p['branch']=='main'))")" "0"
-assert_eq "the request is applied once: applying, planning or withdrawing it again is refused" \
-  "$(VALS | $S dpdp erase apply "$RID" --yes 2>&1 | grep -c 'is applied')|$(VALS | $S dpdp erase plan "$RID" 2>&1 | grep -c 'is applied')|$($S dpdp erase withdraw "$RID" 2>&1 | grep -c 'only a planned request')" "1|1|1"
+assert_eq "the request is applied once: applying or withdrawing it again is refused; planning it again plans only the branches" \
+  "$(VALS | $S dpdp erase apply "$RID" --yes 2>&1 | grep -c 'is applied')|$(VALS | $S dpdp erase plan "$RID" 2>&1 | grep -c "^Erasure request #$RID on main: applied")|$($S dpdp erase withdraw "$RID" 2>&1 | grep -c 'only a planned request')" "1|1|1"
 SJ="$($S dpdp erase show "$RID" --json)"
 assert_eq "it keeps the values' last four characters and the row keys, never a value" \
   "$(hjson "print(sorted(r['last4'] for r in d['refs']), sorted(t['table'] for t in d['result']['tables']), [k for t in d['result']['tables'] if t['table']=='er_customers' for k in t['keys']])" <<<"$SJ")|$(grep -c "$EE\|$EP" <<<"$SJ")" \
@@ -5270,6 +5283,94 @@ assert_eq "…a value that is not one is refused" "$(code "$KEY" -H "$H" -X POST
 $S user delete er-viewer@foxbyte.dev >/dev/null 2>&1
 for p in er_customers public.er_customers.phone er_signups er_kyc public.er_kyc.pan; do $S dpdp unset "$p" --branch main >/dev/null 2>&1; done
 ER
+
+echo "### 11ba. erasure on every branch: planned and applied with main, skipped and applied on its own, made before it (point 11.2, F4 Gate 1 step 2)"
+# Synthetic values only. era is a branch of main holding a row main does not;
+# erk a branch of era; ers a branch suspended before the request. A masked
+# branch, found by main's row keys, is covered by internal/branch's tests: a
+# masked branch of this suite's main would need a rule for every place earlier
+# sections confirmed.
+BE=br.person@example.in; BO=br.other@example.in
+BR() { for b in era erk ers ern; do $S branch delete "$b" >/dev/null 2>&1; done
+  pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS br_people" >/dev/null; }
+BR
+pg pg-main "CREATE TABLE br_people (id int PRIMARY KEY, email text, note text);
+  INSERT INTO br_people VALUES (1, '$BE', 'a'), (2, '$BO', 'b')" >/dev/null
+$S pii scan --branch main >/dev/null 2>&1
+for id in $($S pii --branch main --json | hjson "print(' '.join(str(f['id']) for f in d['findings'] if f['table']=='br_people' and f['state']=='suggested'))"); do
+  $S pii mark "$id" confirm --branch main >/dev/null 2>&1
+done
+$S dpdp set br_people --basis consent --purpose 'Accounts' --principals customer --keep 3y --from last-contact --reason purpose --branch main >/dev/null 2>&1
+$S branch create era >/dev/null 2>&1
+pg pg-era "INSERT INTO br_people VALUES (3, '$BE', 'only on era')" >/dev/null
+$S branch create erk --from era >/dev/null 2>&1
+$S branch create ers >/dev/null 2>&1
+$S branch suspend ers >/dev/null 2>&1
+assert_eq "three branches: one with a row main lacks, one made from it, one suspended" \
+  "$(pg pg-era "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(pg pg-erk "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(sudo docker inspect -f '{{.State.Running}}' pg-ers 2>&1)" "2|2|false"
+
+BVALS() { printf 'email:%s\n' "$BE"; }
+OUT="$(BVALS | $S dpdp erase new 2>&1)"; RC=$?
+BID="$(grep -o 'Erasure request #[0-9]*' <<<"$OUT" | head -1 | grep -o '[0-9]*')"
+assert_eq "a request is planned on main and every branch, the suspended one woken to be searched" \
+  "$RC|$(grep -cE '^  era +PLANNED +2 row\(s\) hold a value; 2 change' <<<"$OUT")|$(grep -cE '^  erk +PLANNED +2 row' <<<"$OUT")|$(grep -cE '^  ers +PLANNED +1 row' <<<"$OUT")|$(sudo docker inspect -f '{{.State.Running}}' pg-ers 2>&1)" \
+  "0|1|1|1|true"
+[ "$RC" = 0 ] || { echo "--- new said ---"; tail -20 <<<"$OUT"; }
+assert_eq "…each branch's own plan can be read" \
+  "$($S dpdp erase show "$BID" --branch era | grep -c 'public.br_people: CLEAR 2 row')" "1"
+
+# erk changes after the plan was shown: it is skipped, the rest are erased.
+pg pg-erk "INSERT INTO br_people VALUES (4, '$BE', 'after the plan')" >/dev/null
+OUT="$(BVALS | $S dpdp erase apply "$BID" --yes 2>&1)"; RC=$?
+assert_eq "applied to main and every branch; the one whose plan changed is skipped, and the request says one is left" \
+  "$RC|$(grep -cE '^  era +APPLIED +2 row\(s\) changed' <<<"$OUT")|$(grep -cE '^  ers +APPLIED +1 row' <<<"$OUT")|$(grep -cE '^  erk +SKIPPED +its plan changed since it was shown' <<<"$OUT")|$(grep -c 'applied on main, 1 branch(es) left' <<<"$OUT")" \
+  "0|1|1|1|1"
+[ "$RC" = 0 ] || { echo "--- apply said ---"; tail -25 <<<"$OUT"; }
+assert_eq "…the person is gone from main, era (its own row too) and ers; erk is untouched; the other person stays everywhere" \
+  "$(pg pg-main "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(pg pg-era "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(pg pg-ers "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(pg pg-erk "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(pg pg-era "SELECT count(*) FROM br_people WHERE email = '$BO'")" \
+  "0|0|0|3|1"
+assert_eq "…each erased branch records the request itself" \
+  "$(pg pg-era "SELECT count(*) FROM bb.erasures_applied WHERE request_id = $BID")|$(pg pg-ers "SELECT count(*) FROM bb.erasures_applied WHERE request_id = $BID")|$(pg pg-erk "SELECT count(*) FROM bb.erasures_applied WHERE request_id = $BID")" "1|1|0"
+OUT="$($S dpdp erase status "$BID" 2>&1)"
+assert_eq "every branch made before the erasure is listed to remake or delete, with the commands" \
+  "$(grep -cE '^  (era|erk|ers) \(from (main|era)' <<<"$OUT")|$(grep -c 'remake: fox branch reset erk --from era' <<<"$OUT")|$(grep -cE '^  (era|ers) \(from main.*before main.s erasure finished' <<<"$OUT")" "3|1|2"
+
+# A branch made from main after its erasure holds none of the person.
+$S branch create ern >/dev/null 2>&1
+assert_eq "a branch made from main after the erasure is clean, and not listed" \
+  "$(pg pg-ern "SELECT count(*) FROM br_people WHERE email = '$BE'")|$($S dpdp erase status "$BID" | grep -cE '^  ern ')" "0|0"
+
+# erk, on its own: its new plan was kept when it was skipped, to review; then
+# applied with the values again, its tables left for later, then rewritten.
+assert_eq "a skipped branch's new plan is kept, to review before applying it on its own" \
+  "$($S dpdp erase show "$BID" --branch erk | grep -c 'public.br_people: CLEAR 3 row')" "1"
+OUT="$(BVALS | FOX_ERASURE_REWRITE_MAX=1 $S dpdp erase apply "$BID" --branch erk --yes 2>&1)"; RC=$?
+assert_eq "…applied with its new plan, its rewrite left for later" \
+  "$RC|$(pg pg-erk "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(grep -cE '^  erk +APPLIED +3 row\(s\) changed; 1 table\(s\) still to rewrite' <<<"$OUT")" "0|0|1"
+assert_eq "…and rewritten when asked" \
+  "$($S dpdp erase rewrite "$BID" --branch erk 2>&1 | grep -cE '^  erk +APPLIED +3 row\(s\) changed$')" "1"
+assert_eq "…a branch already erased is not erased again" \
+  "$(BVALS | $S dpdp erase apply "$BID" --branch era --yes 2>&1 | grep -c 'era is applied')" "1"
+AUD="$($S audit --limit 5000)"
+assert_eq "the security log has each branch: applied, and the one skipped" \
+  "$(grep 'erasure.branch' <<<"$AUD" | grep -c "request #$BID on era: applied, 2 row")|$(grep 'erasure.branch' <<<"$AUD" | grep -c "request #$BID on erk: skipped")|$(grep 'erasure.branch' <<<"$AUD" | grep -c "request #$BID on erk: applied, 3 row")|$(grep erasure <<<"$AUD" | grep -c "$BE")" "1|1|1|0"
+
+# Remade and deleted from the request, over HTTP; the list follows.
+EB="https://localhost:8080/api/dpdp/erasures/$BID/branches"
+assert_eq "an admin remakes ers from main and deletes erk from the request; a branch it does not list is refused" \
+  "$(code "$KEY" -X POST "$EB/ers/remake")|$(code "$KEY" -X POST "$EB/erk/delete")|$(code "$KEY" -X POST "$EB/ern/remake")" "200|200|400"
+SJ="$(as "$KEY" "https://localhost:8080/api/dpdp/erasures/$BID")"
+assert_eq "…the request records both, and lists only era as made before the erasure now" \
+  "$(hjson "print(sorted((b['branch'], b.get('done','')) for b in d['branches'] if b.get('done')), [m['branch'] for m in d['madeBefore'] if m['branch'] in ('era', 'erk', 'ers', 'ern')])" <<<"$SJ")|$(pg pg-ers "SELECT count(*) FROM br_people")|$(sudo docker inspect pg-erk >/dev/null 2>&1 && echo there || echo gone)" \
+  "[('erk', 'deleted'), ('ers', 'remade')] ['era']|2|gone"
+
+# The maximum age: a warning in fox check, never an action.
+assert_eq "fox check warns about branches past FOX_BRANCH_MAX_AGE, and says nothing of them without it" \
+  "$(FOX_BRANCH_MAX_AGE=1s $S check 2>&1 | grep -i 'branch age' | grep -c 'era (0 days, with personal data)')|$($S check 2>&1 | grep -i 'branch age' | grep -c 'no maximum set')" "1|1"
+assert_eq "GET /api/dpdp/branch-ages: admins only" \
+  "$(code "$KEY" https://localhost:8080/api/dpdp/branch-ages)|$(as "$KEY" https://localhost:8080/api/dpdp/branch-ages | hjson "print(d['maxAgeHours'])")" "200|0"
+$S dpdp unset br_people --branch main >/dev/null 2>&1
+BR
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

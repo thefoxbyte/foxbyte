@@ -233,6 +233,7 @@ const (
 	EvErasurePlanned   = "erasure.planned"
 	EvErasureApplied   = "erasure.applied"
 	EvErasureRewritten = "erasure.rewritten"
+	EvErasureBranch    = "erasure.branch" // one branch applied or skipped, or remade or deleted from the request
 	EvErasureWithdrawn = "erasure.withdrawn"
 )
 

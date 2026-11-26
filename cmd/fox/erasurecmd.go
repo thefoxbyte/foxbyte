@@ -23,8 +23,9 @@ import (
 //
 //	fox dpdp erase new [--note "…"] [--event account_closed=2025-03-31]   (Enterprise)
 //	fox dpdp erase plan <id>                                            (Enterprise)
-//	fox dpdp erase apply <id> [--yes]                                   (Enterprise)
-//	fox dpdp erase rewrite <id> [--table schema.table]                  (Enterprise)
+//	fox dpdp erase apply <id> [--yes] [--branch b]                      (Enterprise)
+//	fox dpdp erase rewrite <id> [--branch b] [--table schema.table]     (Enterprise)
+//	fox dpdp erase status <id> [--json]
 //	fox dpdp erase withdraw <id>                                        (Enterprise)
 //	fox dpdp erase list [--json]
 //	fox dpdp erase show <id> [--json]
@@ -35,7 +36,11 @@ import (
 // history and the process list would keep them. A request keeps none of them:
 // applying asks for them again.
 func erasureCmd(args []string) {
-	ps := positionals(args, "--note", "--event", "--table")
+	ps := positionals(args, "--note", "--event", "--table", "--branch")
+	onBranch := optValue(args, "--branch")
+	if onBranch == "main" {
+		onBranch = ""
+	}
 	sub := ""
 	if len(ps) > 0 {
 		sub = ps[0]
@@ -89,20 +94,37 @@ func erasureCmd(args []string) {
 		defer s.Close()
 		cur, err := branch.GetErasure(s, n)
 		must(err)
+		where := cur.Branch + " and every branch"
+		if onBranch != "" {
+			where = onBranch
+		}
 		if !hasFlag(args, "--yes") {
 			if !isTerminal(os.Stdin) {
-				die(fmt.Errorf("applying erases %s's rows for good; say --yes to apply without being asked", cur.Branch))
+				die(fmt.Errorf("applying erases %s's rows for good; say --yes to apply without being asked", where))
 			}
 			printErasure(os.Stdout, cur)
 		}
 		values := readErasureValues(fmt.Sprintf("The values request #%d was made for, again", n))
 		if !hasFlag(args, "--yes") {
-			fmt.Printf("Apply request #%d to %s? It cannot be undone. Type the request's number to apply: ", n, cur.Branch)
+			fmt.Printf("Apply request #%d to %s? It cannot be undone. Type the request's number to apply: ", n, where)
 			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			if strings.TrimPrefix(strings.TrimSpace(line), "#") != strconv.FormatInt(n, 10) {
 				fmt.Println("Not applied.")
 				return
 			}
+		}
+		if onBranch != "" {
+			v, err := branch.ApplyErasureBranch(s, n, onBranch, values, cliActor())
+			if err == nil || errors.Is(err, branch.ErrErasurePlanChanged) {
+				auditBranches(s, v, onBranch) // what this apply did; a refusal did nothing
+			}
+			if errors.Is(err, branch.ErrErasurePlanChanged) {
+				printErasureBranch(os.Stdout, v, onBranch)
+				die(fmt.Errorf("nothing was applied to %s: %w. Review its plan above, then apply again", onBranch, err))
+			}
+			must(err)
+			printErasureOr(args, v)
+			return
 		}
 		v, err := branch.ApplyErasure(s, n, values, cliActor())
 		if errors.Is(err, branch.ErrErasurePlanChanged) {
@@ -112,6 +134,7 @@ func erasureCmd(args []string) {
 		}
 		must(err)
 		s.Audit(auth.EvErasureApplied, cliActor(), v.Branch, "", appliedSummary(v))
+		auditBranches(s, v, "")
 		printErasureOr(args, v)
 	case "rewrite":
 		requireFeature(edition.DPDP)
@@ -125,7 +148,7 @@ func erasureCmd(args []string) {
 			}
 			only = append(only, t)
 		}
-		v, err := branch.RewriteErasure(s, n, only, cliActor())
+		v, err := branch.RewriteErasureOn(s, n, onBranch, only, cliActor())
 		must(err)
 		s.Audit(auth.EvErasureRewritten, cliActor(), v.Branch, "", fmt.Sprintf("request #%d: %s", v.ID, rewriteSummary(v)))
 		printErasureOr(args, v)
@@ -162,18 +185,24 @@ func erasureCmd(args []string) {
 				v.Created.Local().Format("2006-01-02 15:04"), v.CreatedBy)
 		}
 		tw.Flush()
-	case "show":
+	case "show", "status":
 		s := openStore()
 		defer s.Close()
 		v, err := branch.GetErasure(s, id())
 		must(err)
+		if onBranch != "" && !hasFlag(args, "--json") {
+			printErasureBranch(os.Stdout, v, onBranch)
+			return
+		}
 		printErasureOr(args, v)
 	default:
 		fmt.Fprintf(os.Stderr, `usage:
   %[1]s dpdp erase new [--note "…"] [--event account_closed=YYYY-MM-DD]   make a request, and show its plan
   %[1]s dpdp erase plan <request>                                      plan it again
-  %[1]s dpdp erase apply <request> [--yes]                             apply it to main
-  %[1]s dpdp erase rewrite <request> [--table schema.table]            rewrite the tables left for later
+  %[1]s dpdp erase apply <request> [--yes]                             apply it to main and every branch
+  %[1]s dpdp erase apply <request> --branch <b> [--yes]                apply it to a branch it skipped
+  %[1]s dpdp erase rewrite <request> [--branch b] [--table schema.table]   rewrite the tables left for later
+  %[1]s dpdp erase status <request> [--branch b] [--json]              the branches, and those to remake or delete
   %[1]s dpdp erase withdraw <request>                                  close a request without applying it
   %[1]s dpdp erase list [--json]
   %[1]s dpdp erase show <request> [--json]
@@ -292,11 +321,147 @@ var erasureActText = map[string]string{
 	branch.ErasureActReferral: "REFERS TO IT",
 }
 
+// auditBranches records each branch's outcome in the security log: applied
+// with its count, or skipped and why. Only the one named, when one is.
+func auditBranches(s *auth.Store, v branch.ErasureView, only string) {
+	for _, b := range v.Branches {
+		if only != "" && b.Branch != only {
+			continue
+		}
+		switch b.State {
+		case branch.BranchApplied:
+			rows := 0
+			if b.Result != nil {
+				rows = b.Result.Rows
+			}
+			s.Audit(auth.EvErasureBranch, cliActor(), b.Branch, "", fmt.Sprintf("request #%d on %s: applied, %d row(s) changed", v.ID, b.Branch, rows))
+		case branch.BranchSkipped:
+			s.Audit(auth.EvErasureBranch, cliActor(), b.Branch, "", fmt.Sprintf("request #%d on %s: skipped", v.ID, b.Branch))
+		}
+	}
+}
+
+var branchStateText = map[string]string{
+	branch.BranchPlanned: "PLANNED",
+	branch.BranchApplied: "APPLIED",
+	branch.BranchSkipped: "SKIPPED",
+	branch.BranchListed:  "NOT ERASED",
+	branch.BranchGone:    "DELETED",
+}
+
+// printBranches is a request's branches: each one's state, the branches made
+// before the erasure to remake or delete, and those past the maximum age.
+func printBranches(w io.Writer, v branch.ErasureView) {
+	if len(v.Branches) > 0 {
+		fmt.Fprintf(w, "\nBranches (%d):\n", len(v.Branches))
+		tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+		for _, b := range v.Branches {
+			what := ""
+			switch {
+			case b.State == branch.BranchApplied && b.Result != nil:
+				what = fmt.Sprintf("%d row(s) changed", b.Result.Rows)
+				if n := b.Result.RewritesPending(); n > 0 {
+					what += fmt.Sprintf("; %d table(s) still to rewrite (%s dpdp erase rewrite %d --branch %s)", n, brand.CLI, v.ID, b.Branch)
+				}
+			case b.State == branch.BranchPlanned && b.Plan != nil:
+				what = fmt.Sprintf("%d row(s) hold a value; %d change", b.Plan.Matched, b.Plan.Rows)
+				if b.Plan.Blocked {
+					what += "; PROBLEM: " + firstPlanProblem(*b.Plan)
+				}
+			default:
+				what = b.Why
+			}
+			if b.Masked {
+				what = "masked; " + what
+			}
+			if b.Done != "" {
+				what += fmt.Sprintf(" (%s by %s)", b.Done, b.DoneBy)
+			}
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", b.Branch, branchStateText[b.State], what)
+		}
+		tw.Flush()
+		if v.State == auth.ErasureApplied {
+			for _, b := range v.Branches {
+				if b.State == branch.BranchSkipped && b.Done == "" {
+					fmt.Fprintf(w, "  apply to %s on its own: %s dpdp erase apply %d --branch %s\n", b.Branch, brand.CLI, v.ID, b.Branch)
+				}
+			}
+		}
+	}
+	if len(v.MadeBefore) > 0 {
+		fmt.Fprintf(w, "\nBranches made before the erasure (%d): the person remains in their files until each is remade or deleted:\n", len(v.MadeBefore))
+		for _, m := range v.MadeBefore {
+			owner := ""
+			if m.Owner != "" {
+				owner = ", owned by " + m.Owner
+			}
+			fmt.Fprintf(w, "  %s (from %s%s): %s\n    remake: %s branch reset %s --from %s   or delete: %s branch delete %s\n",
+				m.Branch, m.Parent, owner, m.Why, brand.CLI, m.Branch, m.Parent, brand.CLI, m.Branch)
+		}
+	} else if v.State == auth.ErasureApplied {
+		fmt.Fprintln(w, "\nNo branch made before the erasure is left.")
+	}
+	if len(v.Old) > 0 {
+		fmt.Fprintf(w, "\nBranches older than %s (%d): an erasure cannot finish while one holds the person:\n", brand.EnvName(branch.EnvBranchMaxAge), len(v.Old))
+		for _, o := range v.Old {
+			held := "not running: personal data not checked"
+			if o.Personal != nil {
+				held = "no confirmed personal data"
+				if *o.Personal {
+					held = "holds confirmed personal data"
+				}
+			}
+			fmt.Fprintf(w, "  %s: made %s, %d day(s) ago; %s\n", o.Branch, o.Made.Local().Format("2006-01-02"), o.Days, held)
+		}
+	}
+}
+
+func firstPlanProblem(p branch.ErasurePlan) string {
+	for _, t := range p.Tables {
+		if len(t.Problems) > 0 {
+			return t.Schema + "." + t.Table + ": " + t.Problems[0]
+		}
+	}
+	return "a table has a problem"
+}
+
+// printErasureBranch prints one branch's plan and result.
+func printErasureBranch(w io.Writer, v branch.ErasureView, name string) {
+	for _, b := range v.Branches {
+		if b.Branch != name {
+			continue
+		}
+		fmt.Fprintf(w, "Erasure request #%d on %s: %s", v.ID, name, branchStateText[b.State])
+		if b.Why != "" {
+			fmt.Fprintf(w, " (%s)", b.Why)
+		}
+		fmt.Fprintln(w)
+		if b.Plan != nil {
+			bv := v
+			bv.Branch, bv.Plan, bv.Result, bv.Branches, bv.MadeBefore, bv.Old = name, *b.Plan, b.Result, nil, nil, nil
+			printPlan(w, bv)
+		}
+		return
+	}
+	fmt.Fprintf(w, "request #%d has no part on %s\n", v.ID, name)
+}
+
 // printErasure prints a request: what it is for, its plan table by table,
 // and, once applied, what it did.
 func printErasure(w io.Writer, v branch.ErasureView) {
-	p := v.Plan
 	fmt.Fprintf(w, "Erasure request #%d on %s: %s\n", v.ID, v.Branch, v.State)
+	if v.State == auth.ErasureApplied {
+		if n := v.BranchesLeft(); n > 0 {
+			fmt.Fprintf(w, "  applied on main, %d branch(es) left\n", n)
+		}
+	}
+	printPlan(w, v)
+	printBranches(w, v)
+}
+
+// printPlan is a request's plan on one branch, and what applying did there.
+func printPlan(w io.Writer, v branch.ErasureView) {
+	p := v.Plan
 	fmt.Fprintf(w, "  for: %s\n", refText(v.Refs))
 	if v.Note != "" {
 		fmt.Fprintf(w, "  note: %s\n", v.Note)

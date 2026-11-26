@@ -5,6 +5,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thefoxbyte/foxbyte/internal/branch"
 )
@@ -60,5 +61,19 @@ func TestDPDPLine(t *testing.T) {
 	// Recorded under a licence since lapsed: still read, still warned.
 	if l := dpdpLine(gaps, false); l.state != 1 {
 		t.Errorf("lapsed licence with entries: %+v", l)
+	}
+}
+
+func TestBranchAgeLine(t *testing.T) {
+	if l := branchAgeLine(0, nil); l.state != 0 || !strings.Contains(l.detail, "no maximum set") {
+		t.Errorf("off: %+v", l)
+	}
+	if l := branchAgeLine(90*24*time.Hour, nil); l.state != 0 || !strings.Contains(l.detail, "older than 90 days") {
+		t.Errorf("none old: %+v", l)
+	}
+	yes := true
+	l := branchAgeLine(90*24*time.Hour, []branch.BranchAge{{Branch: "agent-x", Days: 120, Personal: &yes}, {Branch: "dev", Days: 95}})
+	if l.state != 1 || !strings.Contains(l.detail, "agent-x (120 days, with personal data), dev (95 days)") {
+		t.Errorf("old: %+v", l)
 	}
 }

@@ -20,9 +20,13 @@ import (
 //	GET  /api/dpdp/erasures/{id}            one, with its plan and what applying it did
 //	POST /api/dpdp/erasures                 make one (Enterprise): {"values": [{"category"?, "value"}], "note"?, "events"?: {"account_closed": "YYYY-MM-DD"}}
 //	POST /api/dpdp/erasures/{id}/plan       plan it again (Enterprise): {"values": [...]}
-//	POST /api/dpdp/erasures/{id}/apply      apply it to main (Enterprise): {"values": [...]}; 409 with the new plan when it has changed
-//	POST /api/dpdp/erasures/{id}/rewrite    rewrite the tables left for later, or {"tables": ["schema.table"]} (Enterprise)
+//	POST /api/dpdp/erasures/{id}/apply      apply it to main and every branch (Enterprise): {"values": [...]}; 409 with the new plan when main's has
+//	                                        changed; {"values", "branch": "b"} applies it to a branch it skipped
+//	POST /api/dpdp/erasures/{id}/rewrite    rewrite the tables left for later, or {"tables": ["schema.table"]}, on main or {"branch": "b"} (Enterprise)
 //	POST /api/dpdp/erasures/{id}/withdraw   close a planned request (Enterprise)
+//	POST /api/dpdp/erasures/{id}/branches/{name}/remake   remake a branch the request lists as made before the erasure, from its parent
+//	POST /api/dpdp/erasures/{id}/branches/{name}/delete   delete one
+//	GET  /api/dpdp/branch-ages              the branches older than FOX_BRANCH_MAX_AGE
 //
 // Admins only, reading included: a plan says where a person's data is
 // (decision 10). An agent key is refused by the control plane itself, and no
@@ -63,6 +67,7 @@ func registerErasure(mux *http.ServeMux, store *auth.Store) {
 		Note   string                `json:"note"`
 		Events map[string]string     `json:"events"`
 		Tables []string              `json:"tables"`
+		Branch string                `json:"branch"`
 	}
 	body := func(w http.ResponseWriter, r *http.Request) (valuesBody, bool) {
 		var b valuesBody
@@ -160,6 +165,22 @@ func registerErasure(mux *http.ServeMux, store *auth.Store) {
 			return
 		}
 		u, _ := auth.UserFrom(r.Context())
+		if b.Branch != "" && b.Branch != "main" {
+			v, err := branch.ApplyErasureBranch(store, n, b.Branch, b.Values, u.Email)
+			if err == nil || errors.Is(err, branch.ErrErasurePlanChanged) {
+				auditBranches(r, v, b.Branch, audit)
+			}
+			if errors.Is(err, branch.ErrErasurePlanChanged) {
+				writeJSON(w, 409, map[string]any{"error": "nothing was applied to " + b.Branch + ": " + err.Error() + "; review its plan, then apply again", "request": v})
+				return
+			}
+			if err != nil {
+				fail(w, err)
+				return
+			}
+			writeJSON(w, 200, v)
+			return
+		}
 		v, err := branch.ApplyErasure(store, n, b.Values, u.Email)
 		if errors.Is(err, branch.ErrErasurePlanChanged) {
 			audit(r, auth.EvErasurePlanned, v.Branch, fmt.Sprintf("request #%d planned again at apply: %s", v.ID, v.Plan.Summary()))
@@ -175,6 +196,7 @@ func registerErasure(mux *http.ServeMux, store *auth.Store) {
 			rows, tables = v.Result.Rows, len(v.Result.Tables)
 		}
 		audit(r, auth.EvErasureApplied, v.Branch, fmt.Sprintf("request #%d applied: %d row(s) changed in %d table(s)", v.ID, rows, tables))
+		auditBranches(r, v, "", audit)
 		writeJSON(w, 200, v)
 	})
 	mux.HandleFunc("POST /api/dpdp/erasures/{id}/rewrite", func(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +212,7 @@ func registerErasure(mux *http.ServeMux, store *auth.Store) {
 			return
 		}
 		u, _ := auth.UserFrom(r.Context())
-		v, err := branch.RewriteErasure(store, n, b.Tables, u.Email)
+		v, err := branch.RewriteErasureOn(store, n, b.Branch, b.Tables, u.Email)
 		if err != nil {
 			fail(w, err)
 			return
@@ -215,4 +237,53 @@ func registerErasure(mux *http.ServeMux, store *auth.Store) {
 		audit(r, auth.EvErasureWithdrawn, v.Branch, fmt.Sprintf("request #%d withdrawn", v.ID))
 		writeJSON(w, 200, v)
 	})
+	// Remaking and deleting a branch are free, as they are anywhere else; from
+	// here, only a branch the request lists, and recorded on it.
+	stale := func(what string, do func(*auth.Store, int64, string, string) (branch.ErasureView, error)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !admin(w, r) {
+				return
+			}
+			n, ok := id(w, r)
+			if !ok {
+				return
+			}
+			name := r.PathValue("name")
+			u, _ := auth.UserFrom(r.Context())
+			v, err := do(store, n, name, u.Email)
+			if err != nil {
+				fail(w, err)
+				return
+			}
+			audit(r, auth.EvErasureBranch, name, fmt.Sprintf("request #%d: %s %s, made before the erasure", n, name, what))
+			writeJSON(w, 200, v)
+		}
+	}
+	mux.HandleFunc("POST /api/dpdp/erasures/{id}/branches/{name}/remake", stale("remade", branch.RemakeErasureBranch))
+	mux.HandleFunc("POST /api/dpdp/erasures/{id}/branches/{name}/delete", stale("deleted", branch.DeleteErasureBranch))
+	mux.HandleFunc("GET /api/dpdp/branch-ages", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(w, r) {
+			return
+		}
+		writeJSON(w, 200, map[string]any{"maxAgeHours": int(branch.BranchMaxAge().Hours()), "branches": branch.OldBranches()})
+	})
+}
+
+// auditBranches records each branch's outcome, or only the one named.
+func auditBranches(r *http.Request, v branch.ErasureView, only string, audit func(*http.Request, string, string, string)) {
+	for _, b := range v.Branches {
+		if only != "" && b.Branch != only {
+			continue
+		}
+		switch b.State {
+		case branch.BranchApplied:
+			rows := 0
+			if b.Result != nil {
+				rows = b.Result.Rows
+			}
+			audit(r, auth.EvErasureBranch, b.Branch, fmt.Sprintf("request #%d on %s: applied, %d row(s) changed", v.ID, b.Branch, rows))
+		case branch.BranchSkipped:
+			audit(r, auth.EvErasureBranch, b.Branch, fmt.Sprintf("request #%d on %s: skipped", v.ID, b.Branch))
+		}
+	}
 }

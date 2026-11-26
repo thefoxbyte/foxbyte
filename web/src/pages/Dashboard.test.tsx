@@ -16,10 +16,11 @@ vi.mock('../api', async () => {
     getBranches: vi.fn(),
     createBranch: vi.fn(),
     getDPDPInventory: vi.fn().mockRejectedValue(new Error('only the owner of "main" or an admin may do that')),
+    getBranchAges: vi.fn().mockRejectedValue(new Error('erasure requests are for admins')),
   }
 })
 
-import { createBranch, getBranches, getDPDPInventory, getStatus, type Branch, type DPDPInventory, type Status } from '../api'
+import { createBranch, getBranchAges, getBranches, getDPDPInventory, getStatus, type Branch, type DPDPInventory, type Status } from '../api'
 import { ConfirmProvider } from '../confirm'
 import Dashboard from './Dashboard'
 
@@ -102,5 +103,35 @@ describe('Dashboard: DPDP inventory gaps', () => {
     page()
     await waitFor(() => expect(getDPDPInventory).toHaveBeenCalledTimes(2))
     expect(screen.queryByTestId('dpdp-gaps')).toBeNull()
+  })
+})
+
+// F4, decision 6: a branch past FOX_BRANCH_MAX_AGE is flagged for an admin,
+// never remade or deleted; anyone else is refused, and sees nothing.
+describe('Dashboard: branches past the maximum age', () => {
+  afterEach(() => { cleanup(); vi.clearAllMocks() })
+
+  it('names each old branch and its age, and links to the erasure requests', async () => {
+    vi.mocked(getBranches).mockResolvedValue([b({ name: 'main', primary: true }), b({ name: 'agent-x' })])
+    vi.mocked(getBranchAges).mockResolvedValue({ maxAgeHours: 2160, branches: [{ branch: 'agent-x', made: '2026-06-01T00:00:00Z', days: 178, personal: true }] })
+    page()
+    const w = await screen.findByTestId('old-branches')
+    expect(w.textContent).toContain('1 branch(es) are older than the maximum age: agent-x (178 days)')
+    expect(screen.getByRole('link', { name: 'Erasure requests' }).getAttribute('href')).toBe('/erasure-requests')
+  })
+
+  it('says nothing when none is old, or the caller is not an admin', async () => {
+    vi.mocked(getBranches).mockResolvedValue([b({ name: 'main', primary: true })])
+    vi.mocked(getBranchAges).mockResolvedValue({ maxAgeHours: 0, branches: [] })
+    page()
+    await waitFor(() => expect(getBranchAges).toHaveBeenCalled())
+    await screen.findAllByText('main')
+    expect(screen.queryByTestId('old-branches')).toBeNull()
+    cleanup()
+    vi.mocked(getBranchAges).mockRejectedValue(new Error('erasure requests are for admins'))
+    page()
+    await waitFor(() => expect(getBranchAges).toHaveBeenCalledTimes(2))
+    await screen.findAllByText('main')
+    expect(screen.queryByTestId('old-branches')).toBeNull()
   })
 })

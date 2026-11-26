@@ -25,6 +25,15 @@ type fakeErasure struct {
 	applied  []ErasureApply
 	settled  int
 	onBranch bool
+
+	// The branches besides main, and what each is.
+	branches  []BranchInfo
+	parents   map[string]string
+	made      map[string]time.Time
+	gone      map[string]bool
+	applyFPOn map[string]string // a branch's fingerprint at apply, when it differs
+	appliedOn []string
+	seeds     map[string]ErasureSeed // what each branch was planned or applied with
 }
 
 func (f *fakeErasure) install(t *testing.T) {
@@ -45,11 +54,36 @@ func (f *fakeErasure) install(t *testing.T) {
 			}
 			return out, nil
 		},
-		Plan: func(string, []ErasureValue, map[string]string, string) (ErasurePlan, string, error) {
-			return f.plan, f.fp, nil
+		Plan: func(b string, _ []ErasureValue, _ map[string]string, _ string, seed ErasureSeed) (ErasurePlan, string, ErasureSeed, error) {
+			if f.seeds == nil {
+				f.seeds = map[string]ErasureSeed{}
+			}
+			f.seeds["plan:"+b] = seed
+			p := f.plan
+			p.Branch = b
+			fp := f.fp
+			if b != "main" {
+				fp = f.fp + "@" + b
+			}
+			return p, fp, ErasureSeed{"public.people": {`["1"]`}}, nil
 		},
-		Apply: func(_ string, a ErasureApply) (ErasurePlan, string, ErasureResult, error) {
+		Apply: func(b string, a ErasureApply) (ErasurePlan, string, ErasureResult, error) {
 			f.applied = append(f.applied, a)
+			f.appliedOn = append(f.appliedOn, b)
+			if f.seeds == nil {
+				f.seeds = map[string]ErasureSeed{}
+			}
+			f.seeds["apply:"+b] = a.Seed
+			if now, ok := f.applyFPOn[b]; ok && now != a.Fingerprint {
+				p := f.plan
+				p.Branch = b
+				return p, now, ErasureResult{}, ErrErasurePlanChanged
+			}
+			if b != "main" {
+				return f.plan, a.Fingerprint, ErasureResult{Rows: 1, Verified: true, Applied: time.Now(),
+					Tables:   []ErasureDone{{Schema: "public", Table: "people", Action: ErasureActClear, Rows: 1, Keys: []json.RawMessage{json.RawMessage(`["1"]`)}}},
+					Rewrites: []ErasureRewrite{{Schema: "public", Table: "people", State: RewritePending}}}, nil
+			}
 			if f.applyFP != "" && f.applyFP != a.Fingerprint {
 				p := f.plan
 				p.Rows++
@@ -58,7 +92,8 @@ func (f *fakeErasure) install(t *testing.T) {
 			if f.applyErr != nil {
 				return f.plan, a.Fingerprint, ErasureResult{}, f.applyErr
 			}
-			return f.plan, a.Fingerprint, ErasureResult{Rows: f.plan.Rows, Verified: true,
+			return f.plan, a.Fingerprint, ErasureResult{Rows: f.plan.Rows, Verified: true, Applied: time.Now(),
+				Tables:   []ErasureDone{{Schema: "public", Table: "people", Action: ErasureActClear, Rows: 1, Keys: []json.RawMessage{json.RawMessage(`["1"]`)}}},
 				Rewrites: []ErasureRewrite{{Schema: "public", Table: "people", State: RewritePending}}}, nil
 		},
 		Settle: func(_ string, _ ErasurePlan, r ErasureResult, only []string) ErasureResult {
@@ -67,12 +102,35 @@ func (f *fakeErasure) install(t *testing.T) {
 				r.Rewrites[i].State = RewriteDone
 			}
 			now := time.Now()
-			r.Vacuumed = &now
+			r.Vacuumed, r.Statistics = &now, &now
 			return r
 		},
 		AppliedOn: func(string, string) (bool, error) { return f.onBranch, nil },
 	})
-	t.Cleanup(func() { erasure = old; edition.SetEntitlement(nil) })
+	oldNames, oldParent, oldMade, oldWake, oldExists := erasureBranchNames, branchParentOf, branchMadeOf, wakeForErase, branchExistsF
+	erasureBranchNames = func() ([]BranchInfo, error) {
+		var out []BranchInfo
+		for _, b := range f.branches {
+			if !f.gone[b.Name] {
+				out = append(out, b)
+			}
+		}
+		return out, nil
+	}
+	branchParentOf = func(n string) string {
+		if p, ok := f.parents[n]; ok {
+			return p
+		}
+		return "main"
+	}
+	branchMadeOf = func(n string) (time.Time, bool) { t, ok := f.made[n]; return t, ok }
+	wakeForErase = func(string) error { return nil }
+	branchExistsF = func(n string) bool { return !f.gone[n] }
+	t.Cleanup(func() {
+		erasure = old
+		edition.SetEntitlement(nil)
+		erasureBranchNames, branchParentOf, branchMadeOf, wakeForErase, branchExistsF = oldNames, oldParent, oldMade, oldWake, oldExists
+	})
 }
 
 func erasureStore(t *testing.T) *auth.Store {
@@ -126,8 +184,10 @@ func TestErasureRequestLifecycle(t *testing.T) {
 	if _, err := ApplyErasure(s, v.ID, asha, "admin@x"); !errors.Is(err, ErrErasureState) {
 		t.Errorf("applied twice: %v", err)
 	}
-	if _, err := ReplanErasure(s, v.ID, asha, "admin@x"); !errors.Is(err, ErrErasureState) {
-		t.Errorf("planned again once applied: %v", err)
+	// Planned again once applied, only the branches are: main's plan and its
+	// fingerprint stay as they were applied.
+	if again, err := ReplanErasure(s, v.ID, asha, "admin@x"); err != nil || again.State != auth.ErasureApplied || again.Fingerprint != "fp1" {
+		t.Errorf("planned again once applied: %v %+v", err, again.ErasureRequest)
 	}
 	if _, err := WithdrawErasure(s, v.ID, "admin@x"); err == nil {
 		t.Error("withdrew an applied request")
@@ -383,5 +443,210 @@ func TestErasureChangesNothingOnTheFreeSide(t *testing.T) {
 		if strings.Contains(string(src), w) {
 			t.Errorf("internal/branch/erasure.go runs %q", w)
 		}
+	}
+}
+
+// One apply erases main, then every branch, each matched again there; a
+// branch whose plan changed is skipped, and applied on its own afterwards.
+func TestErasureAppliesEveryBranch(t *testing.T) {
+	f := &fakeErasure{plan: ErasurePlan{Branch: "main", Rows: 1}, fp: "fp",
+		branches:  []BranchInfo{{Name: "dev", State: "running"}, {Name: "qa", State: "exited"}, {Name: "mask", Masked: MaskedOpen}, {Name: "mk", Masked: MaskedMaking}},
+		applyFPOn: map[string]string{"qa": "changed"}}
+	f.install(t)
+	s := erasureStore(t)
+	v, err := NewErasure(s, "main", asha, nil, "", "a@x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := func(v ErasureView) map[string]string {
+		out := map[string]string{}
+		for _, b := range v.Branches {
+			out[b.Branch] = b.State
+		}
+		return out
+	}
+	if got := states(v); got["dev"] != BranchPlanned || got["qa"] != BranchPlanned || got["mask"] != BranchPlanned || got["mk"] != BranchListed {
+		t.Fatalf("planned: %v", got)
+	}
+	// The masked branch is planned from main's rows by key; the others by value only.
+	if f.seeds["plan:mask"] == nil || f.seeds["plan:dev"] != nil {
+		t.Errorf("seeds: %v", f.seeds)
+	}
+	got, err := ApplyErasure(s, v.ID, asha, "a@x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := states(got)
+	if got.State != auth.ErasureApplied || st["dev"] != BranchApplied || st["mask"] != BranchApplied || st["qa"] != BranchSkipped || st["mk"] != BranchListed {
+		t.Fatalf("applied: %v", st)
+	}
+	if strings.Join(f.appliedOn, ",") != "main,dev,qa,mask" {
+		t.Errorf("applied in the order %v", f.appliedOn)
+	}
+	if seed := f.seeds["apply:mask"]; len(seed["public.people"]) != 1 {
+		t.Errorf("the masked branch was not applied by main's keys: %v", seed)
+	}
+	if got.BranchesLeft() != 2 {
+		t.Errorf("left = %d, want qa and mk", got.BranchesLeft())
+	}
+	// qa's new plan is kept; applied on its own with it.
+	f.applyFPOn = nil
+	if _, err := ApplyErasureBranch(s, v.ID, "dev", asha, "a@x"); !errors.Is(err, ErrErasureState) {
+		t.Errorf("applied to dev twice: %v", err)
+	}
+	if _, err := ApplyErasureBranch(s, v.ID, "nowhere", asha, "a@x"); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("applied to a branch not in the request: %v", err)
+	}
+	f.applyFPOn = map[string]string{"qa": "changed"}
+	got, err = ApplyErasureBranch(s, v.ID, "qa", asha, "a@x")
+	if err != nil || states(got)["qa"] != BranchApplied {
+		t.Fatalf("qa on its own: %v %v", err, states(got))
+	}
+}
+
+// Main first, and alone: a branch is never erased by a request main's apply
+// did not get through.
+func TestErasureBranchesWaitForMain(t *testing.T) {
+	f := &fakeErasure{plan: ErasurePlan{Branch: "main"}, fp: "fp", applyErr: errors.New("boom"),
+		branches: []BranchInfo{{Name: "dev"}}}
+	f.install(t)
+	s := erasureStore(t)
+	v, _ := NewErasure(s, "main", asha, nil, "", "a@x")
+	if _, err := ApplyErasure(s, v.ID, asha, "a@x"); err == nil {
+		t.Fatal("applied")
+	}
+	if strings.Join(f.appliedOn, ",") != "main" {
+		t.Errorf("a branch was reached after main failed: %v", f.appliedOn)
+	}
+	if _, err := ApplyErasureBranch(s, v.ID, "dev", asha, "a@x"); !errors.Is(err, ErrErasureState) {
+		t.Errorf("a branch applied before main: %v", err)
+	}
+}
+
+// A branch made before its parent's erasure finished keeps the person in its
+// origin snapshot, however it was erased; one made after it from main does not.
+func TestErasureListsBranchesMadeBefore(t *testing.T) {
+	long := time.Now().Add(-30 * 24 * time.Hour)
+	f := &fakeErasure{plan: ErasurePlan{Branch: "main", Rows: 1}, fp: "fp",
+		branches: []BranchInfo{{Name: "old"}, {Name: "kid"}},
+		parents:  map[string]string{"kid": "old"},
+		made:     map[string]time.Time{"old": long, "kid": long.Add(time.Hour)}}
+	f.install(t)
+	s := erasureStore(t)
+	v, _ := NewErasure(s, "main", asha, nil, "", "a@x")
+	if len(v.MadeBefore) != 0 {
+		t.Fatalf("a planned request lists branches: %+v", v.MadeBefore)
+	}
+	got, err := ApplyErasure(s, v.ID, asha, "a@x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{}
+	for _, m := range got.MadeBefore {
+		names = append(names, m.Branch+":"+m.Parent)
+	}
+	if strings.Join(names, ",") != "kid:old,old:main" {
+		t.Fatalf("made before: %v", got.MadeBefore)
+	}
+	// A branch made from main after it finished holds none of the person, and
+	// is not listed, nor taken for one made since the plan.
+	f.branches = append(f.branches, BranchInfo{Name: "fresh"})
+	f.made["fresh"] = time.Now().Add(time.Hour)
+	again, _ := GetErasure(s, v.ID)
+	for _, m := range again.MadeBefore {
+		if m.Branch == "fresh" {
+			t.Errorf("a branch made after the erasure is listed: %+v", m)
+		}
+	}
+	// Remade from the request: recorded, and no longer listed once made anew.
+	remade := false
+	oldReset := resetForErase
+	resetForErase = func(name, parent string) error {
+		remade = name == "old" && parent == "main"
+		f.made["old"] = time.Now().Add(2 * time.Hour) // made anew
+		return nil
+	}
+	t.Cleanup(func() { resetForErase = oldReset })
+	after, err := RemakeErasureBranch(s, v.ID, "old", "dpo@x")
+	if err != nil || !remade {
+		t.Fatalf("remake: %v %v", err, remade)
+	}
+	for _, m := range after.MadeBefore {
+		if m.Branch == "old" {
+			t.Errorf("old is still listed after it was remade: %+v", m)
+		}
+	}
+	for _, b := range after.Branches {
+		if b.Branch == "old" && (b.Done != "remade" || b.DoneBy != "dpo@x") {
+			t.Errorf("the remake was not recorded: %+v", b)
+		}
+	}
+	if _, err := RemakeErasureBranch(s, v.ID, "fresh", "dpo@x"); !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("remade a branch the request does not list: %v", err)
+	}
+}
+
+func TestBranchMaxAge(t *testing.T) {
+	for in, want := range map[string]time.Duration{"": 0, "off": 0, "0": 0, "90d": 90 * 24 * time.Hour, "2w": 14 * 24 * time.Hour,
+		"720h": 720 * time.Hour, "soon": 0, "-3d": 0} {
+		if got := parseAge(in); got != want {
+			t.Errorf("%q: %v, want %v", in, got, want)
+		}
+	}
+}
+
+// A copy waits for its parent's erasure; the erasing lock is not a branch's.
+func TestErasingLockIsNoBranchsLock(t *testing.T) {
+	if err := checkName(erasingLock("main")); err == nil {
+		t.Error("the erasing lock's name is a branch name, and could be one's lock")
+	}
+	held := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = withErasingLock("main", func() error { close(held); <-release; return nil })
+	}()
+	<-held
+	got := make(chan error, 1)
+	go func() {
+		unlock, err := lockBranch(erasingLock("main"), "copied")
+		if err == nil {
+			unlock()
+		}
+		got <- err
+	}()
+	select {
+	case <-got:
+		t.Fatal("a copy did not wait for the erasure")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-got; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A parent whose erasure changed nothing never held the person: the branches
+// made from it before then are not listed on its account.
+func TestErasureListsNothingFromAParentThatChangedNothing(t *testing.T) {
+	long := time.Now().Add(-30 * 24 * time.Hour)
+	f := &fakeErasure{plan: ErasurePlan{Branch: "main"}, fp: "fp",
+		branches: []BranchInfo{{Name: "old"}, {Name: "kid"}},
+		parents:  map[string]string{"kid": "old"},
+		made:     map[string]time.Time{"old": long, "kid": long.Add(time.Hour)}}
+	f.install(t)
+	s := erasureStore(t)
+	v, _ := NewErasure(s, "main", asha, nil, "", "a@x")
+	got, err := ApplyErasure(s, v.ID, asha, "a@x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// main changed nothing; old (a branch) changed a row, so kid, made from
+	// it before then, still holds the person; old itself does not.
+	names := []string{}
+	for _, m := range got.MadeBefore {
+		names = append(names, m.Branch)
+	}
+	if strings.Join(names, ",") != "kid" {
+		t.Fatalf("made before: %+v", got.MadeBefore)
 	}
 }

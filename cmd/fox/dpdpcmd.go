@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 	"unicode"
 
 	"github.com/thefoxbyte/foxbyte/internal/auth"
@@ -262,6 +263,40 @@ func erasureText(e branch.DPDPEntry) string {
 		return fmt.Sprintf("clear to %q", *e.ClearTo)
 	}
 	return "clear"
+}
+
+// checkBranchAge is fox check's line for FOX_BRANCH_MAX_AGE (F4, decision
+// 6): a branch older than it is warned about, never remade or deleted. It
+// turns an erasure's "clears on" into "never" while it holds the person.
+func checkBranchAge() checkLine {
+	return branchAgeLine(branch.BranchMaxAge(), branch.OldBranches())
+}
+
+func branchAgeLine(max time.Duration, old []branch.BranchAge) checkLine {
+	const name = "Branch age"
+	if max <= 0 {
+		return ok(name, "no maximum set ("+brand.EnvName(branch.EnvBranchMaxAge)+", such as 90d)")
+	}
+	if len(old) == 0 {
+		return ok(name, fmt.Sprintf("no branch is older than %s", ageText(max)))
+	}
+	names := make([]string, 0, len(old))
+	for _, o := range old {
+		held := ""
+		if o.Personal != nil && *o.Personal {
+			held = ", with personal data"
+		}
+		names = append(names, fmt.Sprintf("%s (%d days%s)", o.Branch, o.Days, held))
+	}
+	return warn(name, fmt.Sprintf("%d branch(es) older than %s: %s; an erasure cannot finish while one holds the person",
+		len(old), ageText(max), strings.Join(names, ", ")), brand.CLI+" branch delete <name>, or "+brand.CLI+" branch reset <name>")
+}
+
+func ageText(d time.Duration) string {
+	if d%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%d days", int(d/(24*time.Hour)))
+	}
+	return d.String()
 }
 
 // checkDPDP is fox check's line for main's DPDP inventory: a confirmed

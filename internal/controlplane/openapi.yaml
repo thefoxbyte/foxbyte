@@ -1236,10 +1236,15 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, required: [values], properties: { values: { $ref: "#/components/schemas/ErasureValues" } } }
+            schema:
+              type: object
+              required: [values]
+              properties:
+                values: { $ref: "#/components/schemas/ErasureValues" }
+                branch: { type: string, description: "A branch the applied request skipped, to apply it to on its own; empty for main and every branch." }
       responses:
         "200":
-          description: Applied; the request with what it changed, and its vacuum and rewrites.
+          description: Applied; the request with what it changed on main and each branch, and its vacuum and rewrites.
           content: { application/json: { schema: { $ref: "#/components/schemas/ErasureRequest" } } }
         "400": { description: The values are not the request's. }
         "403": { description: Not an admin, or the edition does not include it. }
@@ -1264,7 +1269,7 @@ paths:
       requestBody:
         content:
           application/json:
-            schema: { type: object, properties: { tables: { type: array, items: { type: string, description: schema.table } } } }
+            schema: { type: object, properties: { tables: { type: array, items: { type: string, description: schema.table } }, branch: { type: string, description: "A branch the request was applied to; empty for main." } } }
       responses:
         "200":
           description: The request, its rewrites' states updated.
@@ -1288,6 +1293,63 @@ paths:
         "403": { description: Not an admin, or the edition does not include it. }
         "404": { description: No such request. }
         "409": { description: The request is not planned. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/erasures/{id}/branches/{name}/remake:
+    post:
+      tags: [branches]
+      summary: Remake a branch an applied erasure request lists as made before the erasure, from its parent; its work is discarded (admins).
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+        - { $ref: "#/components/parameters/BranchName" }
+      responses:
+        "200":
+          description: Remade, and recorded on the request.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErasureRequest" } } }
+        "400": { description: The request does not list that branch. }
+        "403": { description: Not an admin. }
+        "404": { description: No such request. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/erasures/{id}/branches/{name}/delete:
+    post:
+      tags: [branches]
+      summary: Delete a branch an applied erasure request lists as made before the erasure (admins).
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+        - { $ref: "#/components/parameters/BranchName" }
+      responses:
+        "200":
+          description: Deleted, and recorded on the request.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErasureRequest" } } }
+        "400": { description: The request does not list that branch. }
+        "403": { description: Not an admin. }
+        "404": { description: No such request. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/branch-ages:
+    get:
+      tags: [branches]
+      summary: "The branches older than FOX_BRANCH_MAX_AGE, oldest first (admins). maxAgeHours is 0 when no maximum is set."
+      responses:
+        "200":
+          description: The branches.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  maxAgeHours: { type: integer }
+                  branches:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        branch: { type: string }
+                        made: { type: string, format: date-time }
+                        days: { type: integer }
+                        personal: { type: boolean, nullable: true, description: "Whether it holds confirmed personal data; absent when it was not running." }
+        "403": { description: Not an admin. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/branches/{name}/personal-data/aadhaar:
@@ -4397,6 +4459,25 @@ components:
           nullable: true
           description: "Once applied: what changed in each table with the row keys, whether a search afterwards found none, when it was vacuumed, each table's rewrite, and when the statistics were rewritten and the WAL switched out."
           additionalProperties: true
+        branches:
+          type: array
+          description: "Every branch but main: its state (planned, applied, skipped, listed, gone), why, its plan and fingerprint, what applying did there, and whether an admin remade or deleted it from the request."
+          items: { type: object, additionalProperties: true }
+        madeBefore:
+          type: array
+          description: "Once applied: the branches made before their parent's erasure finished, whose files still hold the person until each is remade or deleted."
+          items:
+            type: object
+            properties:
+              branch: { type: string }
+              parent: { type: string }
+              made: { type: string, format: date-time }
+              owner: { type: string }
+              why: { type: string }
+        old:
+          type: array
+          description: The branches older than FOX_BRANCH_MAX_AGE.
+          items: { type: object, additionalProperties: true }
     DPDPInventory:
       type: object
       properties:

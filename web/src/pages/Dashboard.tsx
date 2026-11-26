@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   getStatus, getBranches, createBranch, deleteBranch, suspendBranch, resumeBranch,
-  listBackups, getDPDPInventory, API, type Status, type Branch, type Backup,
+  listBackups, getDPDPInventory, getBranchAges, API, type Status, type Branch, type Backup,
 } from '../api'
 import { useConfirm } from '../confirm'
 import { useFeatures } from '../features'
@@ -139,6 +139,16 @@ export default function Dashboard() {
   // entry. Only for whoever may manage main and with the licence to fix it;
   // anyone else is refused the inventory and sees nothing here.
   const [dpdpGaps, setDpdpGaps] = useState<{ columns: number; tables: number } | null>(null)
+  // Branches past FOX_BRANCH_MAX_AGE (F4, decision 6), for an admin: a
+  // warning, never an action. Anyone else is refused, and sees nothing.
+  const [oldBranches, setOldBranches] = useState<{ branch: string; days: number }[]>([])
+  useEffect(() => {
+    let live = true
+    getBranchAges()
+      .then(a => { if (live) setOldBranches(a.branches) })
+      .catch(() => { if (live) setOldBranches([]) })
+    return () => { live = false }
+  }, [])
   const dpdpOn = can('dpdp')
   useEffect(() => {
     if (!dpdpOn) { setDpdpGaps(null); return }
@@ -235,6 +245,12 @@ export default function Dashboard() {
       </div>
       {err && <div className="err">{err}</div>}
       {warnings.map((w, i) => <div className="pii-warning" role="status" data-testid="create-warning" key={i}>{w}</div>)}
+      {oldBranches.length > 0 && (
+        <div className="pii-warning" role="status" data-testid="old-branches">
+          {oldBranches.length} branch(es) are older than the maximum age: {oldBranches.map(b => `${b.branch} (${b.days} days)`).join(', ')}.
+          An erasure cannot finish while one holds a person's data. <Link to="/erasure-requests">Erasure requests</Link>
+        </div>
+      )}
       {dpdpGaps && (
         <div className="pii-warning" role="status" data-testid="dpdp-gaps">
           {dpdpGaps.columns} column(s) in {dpdpGaps.tables} table(s) of main hold confirmed personal data with no DPDP inventory entry.{' '}

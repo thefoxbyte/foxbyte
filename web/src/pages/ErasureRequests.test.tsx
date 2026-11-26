@@ -14,12 +14,14 @@ vi.mock('../api', async () => {
     applyErasure: vi.fn(),
     rewriteErasure: vi.fn(),
     withdrawErasure: vi.fn(),
+    remakeErasureBranch: vi.fn(),
+    deleteErasureBranch: vi.fn(),
     getStatus: vi.fn(),
   }
 })
 
 import {
-  ApiError, applyErasure, getErasure, getStatus, listErasures, newErasure,
+  ApiError, applyErasure, getErasure, getStatus, listErasures, newErasure, remakeErasureBranch,
   type ErasureRequest, type ErasureTable, type Status,
 } from '../api'
 import { ConfirmProvider } from '../confirm'
@@ -130,7 +132,7 @@ describe('Erasure requests', () => {
     fireEvent.change(within(ask).getByLabelText('Values'), { target: { value: 'asha@example.in' } })
     fireEvent.change(within(ask).getByLabelText('Request number'), { target: { value: '7' } })
     fireEvent.click(within(ask).getByRole('button', { name: 'Apply' }))
-    expect((await screen.findByRole('alert')).textContent).toContain('the plan has changed since it was shown')
+    expect(await screen.findByText(/Nothing was applied: the plan has changed since it was shown/)).toBeTruthy()
     await waitFor(() => expect(getErasure).toHaveBeenCalledTimes(2)) // opened, then read again
   })
 
@@ -152,5 +154,48 @@ describe('Erasure requests', () => {
     page()
     await screen.findByRole('table', { name: 'Erasure requests' })
     await waitFor(() => expect((screen.getByRole('button', { name: 'New request…' }) as HTMLButtonElement).disabled).toBe(true))
+  })
+
+  it('shows every branch, applies a skipped one on its own, and remakes one made before the erasure', async () => {
+    const applied = request({
+      state: 'applied',
+      result: { applied: '2026-11-25T10:00:00Z', by: 'dpo@example.com', tables: [], rows: 1, verified: true, rewrites: [], notes: [] },
+      branches: [
+        { branch: 'dev', parent: 'main', masked: false, state: 'applied', plan: request().plan, result: { applied: '2026-11-25T10:00:00Z', by: 'dpo@example.com', tables: [], rows: 2, verified: true, rewrites: [], notes: [] } },
+        { branch: 'qa', parent: 'main', masked: false, state: 'skipped', why: 'its plan changed since it was shown', plan: request().plan },
+        { branch: 'demo', parent: 'main', masked: true, state: 'listed', why: 'a masked branch being made' },
+      ],
+      madeBefore: [{ branch: 'dev', parent: 'main', made: '2026-11-01T00:00:00Z', owner: 'dev@example.com', why: 'made 2026-11-01, before main\'s erasure finished' }],
+      old: [{ branch: 'dev', made: '2026-06-01T00:00:00Z', days: 178, personal: true }],
+    })
+    vi.mocked(getErasure).mockResolvedValue(applied)
+    vi.mocked(applyErasure).mockResolvedValue(applied)
+    vi.mocked(remakeErasureBranch).mockResolvedValue({ ...applied, madeBefore: [] })
+    page()
+    const list = await screen.findByRole('table', { name: 'Erasure requests' })
+    fireEvent.click(within(list).getByRole('button', { name: 'Open' }))
+    const branches = await screen.findByRole('table', { name: 'Branches' })
+    expect(within(branches).getByTestId('erasure-branch-dev').textContent).toContain('Erased')
+    expect(within(branches).getByTestId('erasure-branch-dev').textContent).toContain('2 row(s) changed')
+    expect(within(branches).getByTestId('erasure-branch-demo').textContent).toContain('a masked branch being made')
+    expect(screen.getByTestId('erasure-old').textContent).toContain('dev (178 days)')
+
+    // The skipped branch, on its own, with the values again.
+    fireEvent.click(within(branches).getByRole('button', { name: 'Apply to qa…' }))
+    const ask = screen.getByTestId('erasure-values')
+    expect(ask.textContent).toContain('on qa for good')
+    fireEvent.change(within(ask).getByLabelText('Values'), { target: { value: 'asha@example.in' } })
+    fireEvent.change(within(ask).getByLabelText('Request number'), { target: { value: '7' } })
+    fireEvent.click(within(ask).getByRole('button', { name: 'Apply' }))
+    await waitFor(() => expect(applyErasure).toHaveBeenCalledWith(7, [{ category: '', value: 'asha@example.in' }], 'qa'))
+
+    // Made before the erasure: remade, after saying what is lost.
+    const before = await screen.findByTestId('erasure-made-before')
+    expect(before.textContent).toContain('owned by dev@example.com')
+    fireEvent.click(within(before).getByRole('button', { name: 'Remake…' }))
+    expect((await screen.findByRole('dialog')).textContent).toContain('everything done on it is discarded')
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remake' }))
+    await waitFor(() => expect(remakeErasureBranch).toHaveBeenCalledWith(7, 'dev'))
+    expect((await screen.findByTestId('erasure-made-before')).textContent).toContain('No branch made before the erasure is left')
   })
 })
