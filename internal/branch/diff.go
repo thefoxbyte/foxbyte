@@ -60,7 +60,10 @@ func diffEntry(r ledger.Row) DiffEntry {
 // promotion (promote.go), which must agree about where the branches split.
 func commonPrefix(a, b []ledger.Row) int {
 	n := 0
-	for n < len(a) && n < len(b) && a[n].ID == b[n].ID && ledger.RowHash(a[n]) == ledger.RowHash(b[n]) {
+	// The effective hash: an entry an erasure redacted on one branch and not
+	// (yet) on the other is still the same entry, by the hash it was chained
+	// with (F4).
+	for n < len(a) && n < len(b) && a[n].ID == b[n].ID && ledger.EffectiveHash(a[n]) == ledger.EffectiveHash(b[n]) {
 		n++
 	}
 	return n

@@ -73,13 +73,15 @@ func TestClientCalledFunctionsAreOnTheList(t *testing.T) {
 	}
 }
 
-// The SECURITY DEFINER functions a client may call are bb.act_for and the two
-// that read statement text with a check of the caller of their own (PRIV-3).
+// The SECURITY DEFINER functions a client may call are bb.act_for, the two
+// that read statement text with a check of the caller of their own (PRIV-3),
+// and bb.ledger_seal, which reads a redacted entry's seal: hashes only, and
+// nothing written (F4).
 // The list must not grow, by accident, to include another that writes the
 // ledger.
 func TestOnlyReviewedDefinersAreClientCallable(t *testing.T) {
 	allowed := allowedCallable(t)
-	reviewed := map[string]bool{"act_for": true, "ledger_statement": true, "ledger_verify": true}
+	reviewed := map[string]bool{"act_for": true, "ledger_statement": true, "ledger_verify": true, "ledger_seal": true}
 	def := regexp.MustCompile(`(?is)FUNCTION bb\.([a-z0-9_]+)\([^)]*\)[^;$]*?SECURITY DEFINER`)
 	for _, sql := range []string{Schema, SchemaData, SchemaExt, SchemaTracking, SchemaIdentity} {
 		for _, m := range def.FindAllStringSubmatch(sql, -1) {

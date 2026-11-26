@@ -886,9 +886,66 @@ CREATE OR REPLACE TRIGGER bb_chain BEFORE INSERT ON bb.schema_ledger
 COMMIT;
 
 -- Append-only: the ledger records history, so history cannot be rewritten.
+-- ── Redaction with a seal (F4, erasure; design, section 9) ───────────────────
+-- An erasure request rewrites, in place, the entries holding a person's values:
+-- each statement's literals become placeholders ($1, $2…). Its row_hash is left
+-- as it was, so the chain's links and the anchors already signed still hold,
+-- and a seal is written for it: sha256(original row_hash | the hash of the
+-- entry as it now stands). An ERASURE REDACT entry, chained like any other,
+-- records a digest of every seal it wrote, so a seal cannot be added, changed
+-- or removed afterwards without breaking an entry the chain covers. A
+-- verifier checks an entry by its hash until it is redacted, and by its seal
+-- after (bb.ledger_verify, internal/ledger). The redaction itself is
+-- Enterprise (enterprise/schema/dpdp.sql); reading and checking seals is not.
+CREATE TABLE IF NOT EXISTS bb.ledger_seals (
+  id            bigint PRIMARY KEY,   -- the entry redacted
+  orig_row_hash text   NOT NULL,      -- its row_hash, which stays in the entry
+  seal          text   NOT NULL,      -- sha256(orig_row_hash | the entry's hash as it now stands)
+  by_entry      bigint NOT NULL       -- the ERASURE REDACT entry that wrote it
+);
+REVOKE ALL ON bb.ledger_seals FROM PUBLIC;
+
+-- Written and emptied inside a redaction's own transaction, by the superuser
+-- only, so nothing outside it ever sees the ledger unlocked.
+CREATE TABLE IF NOT EXISTS bb.ledger_unlock (request text PRIMARY KEY);
+REVOKE ALL ON bb.ledger_unlock FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION bb._ledger_unlocked() RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT EXISTS (SELECT 1 FROM bb.ledger_unlock)
+$$;
+
+CREATE OR REPLACE FUNCTION bb._seal(orig text, now_hash text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT encode(sha256(convert_to(orig || '|' || now_hash, 'UTF8')), 'hex')
+$$;
+
+-- The digest an ERASURE REDACT entry records: every seal it wrote, by id.
+CREATE OR REPLACE FUNCTION bb._seals_digest(entry bigint) RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT encode(sha256(convert_to(coalesce(string_agg(id || ':' || seal, ',' ORDER BY id), ''), 'UTF8')), 'hex')
+  FROM bb.ledger_seals WHERE by_entry = entry
+$$;
+
+-- An entry's seal, for a verifier reading the ledger as JSON (internal/ledger
+-- RowsQuery): NULL for an entry never redacted. Hashes only, so anyone who may
+-- read the ledger may read them.
+CREATE OR REPLACE FUNCTION bb.ledger_seal(entry_id bigint) RETURNS json
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT json_build_object('orig', orig_row_hash, 'seal', seal, 'by', by_entry) FROM bb.ledger_seals WHERE id = entry_id
+$$;
+GRANT EXECUTE ON FUNCTION bb.ledger_seal(bigint) TO PUBLIC;
+
+-- The append-only guard, with one way through: while a redaction runs, an
+-- UPDATE that changes an entry's statement and nothing else.
 CREATE OR REPLACE FUNCTION bb.deny_change() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'UPDATE' AND TG_TABLE_SCHEMA = 'bb' AND TG_TABLE_NAME = 'schema_ledger' THEN
+    IF bb._ledger_unlocked() AND (to_jsonb(NEW) - 'statement') = (to_jsonb(OLD) - 'statement') THEN
+      RETURN NEW;
+    END IF;
+  END IF;
   RAISE EXCEPTION 'bb.schema_ledger is append-only — its history cannot be modified';
 END;
 $$;
@@ -1012,13 +1069,18 @@ REVOKE ALL ON FUNCTION bb.ledger_statement(bigint) FROM PUBLIC;
 -- longer read. This does it as the owner and gives back only the outcome:
 -- entries before chaining, entries chained, entries that fail, and the first
 -- that fails. The same check as `fox ledger verify` (internal/branch).
+-- A redacted entry is checked by its seal: its row_hash stands for it when the
+-- seal matches what the entry is now (bb.ledger_seals, above).
 CREATE OR REPLACE FUNCTION bb.ledger_verify(
   OUT legacy bigint, OUT chained bigint, OUT broken bigint, OUT first_broken text
 ) LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
   WITH v AS (
-    SELECT id, prev_hash, row_hash, bb._ledger_hash(s.*) AS recomputed,
-           lag(row_hash) OVER (ORDER BY id) AS prev_link
-    FROM bb.schema_ledger s WHERE row_hash IS NOT NULL)
+    SELECT s.id, s.prev_hash, s.row_hash,
+           CASE WHEN z.id IS NOT NULL AND z.orig_row_hash = s.row_hash
+                     AND z.seal = bb._seal(z.orig_row_hash, bb._ledger_hash(s.*))
+                THEN s.row_hash ELSE bb._ledger_hash(s.*) END AS recomputed,
+           lag(s.row_hash) OVER (ORDER BY s.id) AS prev_link
+    FROM bb.schema_ledger s LEFT JOIN bb.ledger_seals z ON z.id = s.id WHERE s.row_hash IS NOT NULL)
   SELECT (SELECT count(*) FROM bb.schema_ledger WHERE row_hash IS NULL),
          count(*),
          count(*) FILTER (WHERE row_hash <> recomputed OR prev_hash IS DISTINCT FROM coalesce(prev_link,'')),
@@ -1052,6 +1114,7 @@ LANGUAGE sql IMMUTABLE AS $$
     'track_table', 'untrack_table', 'tracked_tables', 'track_row',   -- row tracking, by a table's owner
     'policy_check', 'blast_radius',                                  -- previews in the console and MCP
     'ledger_statement', 'ledger_verify',                             -- statement text, checked inside (PRIV-3)
+    'ledger_seal',                                                   -- a redacted entry's seal, hashes only (F4)
     'ledger_v2_version', 'blackbox_provenance_version',
     'blackbox_policy_version', 'blackbox_impact_version'
   ]::name[];

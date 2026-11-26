@@ -143,3 +143,19 @@ func TestReadErrDropsTheDetail(t *testing.T) {
 		t.Errorf("the value is in the error: %v", err)
 	}
 }
+
+// A statement's text is searched for each value as it was given and in its
+// normalised forms, once each, never for a string too short to mean anything.
+func TestTextForms(t *testing.T) {
+	values := []branch.ErasureValue{{Value: " Asha@Example.com "}, {Category: "mobile", Value: "+91 98765 43210"}, {Value: "ab1"}}
+	ms := matchSet{"email": {"asha@example.com"}, "mobile": {"9876543210"}}
+	got := strings.Join(textForms(values, ms), "|")
+	if got != "Asha@Example.com|+91 98765 43210|asha@example.com|9876543210" && got != "Asha@Example.com|+91 98765 43210|9876543210" {
+		t.Errorf("forms = %q", got)
+	}
+	for _, f := range textForms(values, ms) {
+		if f == "ab1" {
+			t.Error("a three-character string is searched for")
+		}
+	}
+}

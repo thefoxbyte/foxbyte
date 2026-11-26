@@ -76,6 +76,18 @@ DO $do$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'bb_identity') THEN
     CREATE EXTENSION IF NOT EXISTS bb_identity WITH SCHEMA bb_f1;
+    -- An install made with an older image keeps its older version until told:
+    -- 0.3 brought bbid_placeholders (F4), which the Blackbox's record of data
+    -- changes uses (datachanges.sql). A failed update is a warning, never a
+    -- stopped start: the record then keeps its text as it always did.
+    IF (SELECT extversion FROM pg_extension WHERE extname = 'bb_identity')
+       IS DISTINCT FROM (SELECT default_version FROM pg_available_extensions WHERE name = 'bb_identity') THEN
+      BEGIN
+        ALTER EXTENSION bb_identity UPDATE;
+      EXCEPTION WHEN others THEN
+        RAISE WARNING 'bb_identity could not be updated: %', SQLERRM;
+      END;
+    END IF;
     INSERT INTO bb_f1.secret VALUES (1, bb_f1.bbid_random_bytes(32)) ON CONFLICT DO NOTHING;
   END IF;
 END

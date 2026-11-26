@@ -1381,8 +1381,10 @@ apsql "UPDATE ad SET x = 0 WHERE x < 3" >/dev/null
 assert_eq "an agent's DELETE and UPDATE are recorded, as the agent" \
   "$(pg pg-agent-v2dc "SELECT string_agg(command_tag||'|'||object_identity||'|'||actor||'/'||actor_kind, ',' ORDER BY id) FROM bb.schema_ledger WHERE id > $A0")" \
   "DELETE|public.ad|agent-v2dc/agent,UPDATE|public.ad|agent-v2dc/agent"
-assert_eq "…with the statement that ran" \
-  "$(pg pg-agent-v2dc "SELECT count(*) FROM bb.schema_ledger WHERE id > $A0 AND statement LIKE 'DELETE FROM ad WHERE x > 7%'")" "1"
+# The chained text has placeholders for its literals (F4, decided 26 Nov); the
+# statement that ran is kept beside the chain, for a replay and nobody else.
+assert_eq "…with the statement that ran, its literals as placeholders, and the text itself kept beside the chain" \
+  "$(pg pg-agent-v2dc "SELECT count(*) FROM bb.schema_ledger WHERE id > $A0 AND statement LIKE 'DELETE FROM ad WHERE x > \$1%'")|$(pg pg-agent-v2dc "SELECT count(*) FROM bb.ledger_text t JOIN bb.schema_ledger l USING (id) WHERE l.id > $A0 AND t.statement LIKE 'DELETE FROM ad WHERE x > 7%'")" "1|1"
 A1="$(pg pg-agent-v2dc 'SELECT max(id) FROM bb.schema_ledger')"
 apsql "BEGIN; DELETE FROM ad WHERE x > 5; ROLLBACK" >/dev/null
 assert_eq "a change rolled back leaves no entry" "$(pg pg-agent-v2dc "SELECT count(*) FROM bb.schema_ledger WHERE id > $A1")" "0"
@@ -1594,6 +1596,86 @@ done
 assert_eq "the scheduler finds it on its own" "$N" "1"
 $S stop >/dev/null 2>&1; $S start >/dev/null 2>&1; main_ready
 $S branch delete v2scan >/dev/null 2>&1
+
+echo "### 12. the Blackbox's text and an erasure: placeholders, the originals beside the chain, sealed redaction (F4, Gate 1 step 3)"
+# Synthetic values only. An agent's data changes are recorded with
+# placeholders, their text kept beside the chain; a change request carrying
+# data changes replays that text. An erasure request then redacts, with a
+# seal, an entry that still holds the person's value (one written before
+# placeholders, made here by hand), deletes the originals holding it, keeps a
+# schema change holding it as it is, and the chain, its anchor and its seals
+# still verify; tampering after is caught.
+PV=ph.person@example.in
+hjson() { python3 -c 'import sys,json; d=json.load(sys.stdin); '"$1"; }
+for b in v2red v2tgt v2tgt2; do $S branch delete "$b" >/dev/null 2>&1; done
+curl -sk -o /dev/null -H "$AUTH" -X DELETE "$AGENTS/agents/v2ph/branch"
+PDSN="$(curl -sk -H "$AUTH" -X POST "$AGENTS/agents/v2ph/branch" | jget dsn)"
+ppsql() { psql "$PDSN" -tAc "$1" 2>&1; }
+$S branch create v2tgt >/dev/null 2>&1; $S branch create v2tgt2 >/dev/null 2>&1
+# One message: an agent's INSERT is not recorded on its own, and the entry of
+# the CREATE TABLE is what carries the rows to a target.
+ppsql "CREATE TABLE phx(id int PRIMARY KEY, email text, n int); INSERT INTO phx VALUES (1, 'someone@example.in', 0), (2, 'other@example.in', 0)" >/dev/null
+P0="$(pg pg-agent-v2ph 'SELECT max(id) FROM bb.schema_ledger')"
+ppsql "UPDATE phx SET email = '$PV', n = 5 WHERE id = 1" >/dev/null
+ppsql "UPDATE phx SET n = 9 WHERE id = 2" >/dev/null
+assert_eq "an agent's UPDATE is recorded with placeholders, and what ran is kept beside the chain" \
+  "$(pg pg-agent-v2ph "SELECT statement FROM bb.schema_ledger WHERE id > $P0 ORDER BY id LIMIT 1")|$(pg pg-agent-v2ph "SELECT count(*) FROM bb.ledger_text t WHERE t.id > $P0 AND t.statement LIKE '%$PV%'")|$(pg pg-agent-v2ph "SELECT count(*) FROM bb.schema_ledger WHERE id > $P0 AND statement LIKE '%$PV%'")" \
+  "UPDATE phx SET email = \$1, n = \$2 WHERE id = \$3|1|0"
+assert_eq "…a client cannot read the originals" \
+  "$(psql "$PDSN" -tAc "SELECT count(*) FROM bb.ledger_text" 2>&1 | grep -c 'permission denied')" "1"
+assert_eq "…and the chain verifies" "$($S ledger verify agent-v2ph 2>&1 | grep -c 'ledger intact')" "1"
+B0="$(pg pg-agent-v2ph 'SELECT max(id) FROM bb.schema_ledger')"
+ppsql "UPDATE phx SET n = 1" >/dev/null
+assert_eq "a blocked attempt is recorded with placeholders, and nothing of it is kept beside the chain" \
+  "$(pg pg-agent-v2ph "SELECT status FROM bb.schema_ledger WHERE id > $B0")|$(pg pg-agent-v2ph "SELECT count(*) FROM bb.ledger_text WHERE id > $B0")" "BLOCKED|0"
+
+# A change request carrying data changes replays what ran, not the placeholders.
+REQ="$($S branch request agent-v2ph --to v2tgt --include-data 2>&1)"
+RQ="$(grep -o 'request approve [0-9]*' <<<"$REQ" | grep -o '[0-9]*')"
+$S request approve "$RQ" >/dev/null 2>&1
+assert_eq "a request with its data changes replays the statements that ran" \
+  "$(pg pg-v2tgt "SELECT string_agg(id || ':' || email || ':' || n, ',' ORDER BY id) FROM phx")" "1:$PV:5,2:other@example.in:9"
+[ -n "$RQ" ] || { echo "--- request said ---"; tail -8 <<<"$REQ"; }
+
+# An entry from before placeholders, holding the value (written here by hand,
+# as the engine wrote them then), and a schema change holding it.
+$S branch create v2red >/dev/null 2>&1
+pg pg-v2red "CREATE TABLE redx(id int PRIMARY KEY, email text)" >/dev/null
+pg pg-v2red "INSERT INTO bb.schema_ledger (actor, actor_kind, command_tag, object_type, object_identity, statement, status)
+  VALUES ('agent-legacy', 'agent', 'UPDATE', 'table', 'public.redx', 'UPDATE redx SET email = ''$PV'' WHERE id = 1', 'APPLIED')" >/dev/null
+pg pg-v2red "ALTER TABLE redx ALTER COLUMN email SET DEFAULT '$PV'" >/dev/null
+LEG="$(pg pg-v2red "SELECT max(id) FROM bb.schema_ledger WHERE actor = 'agent-legacy'")"
+$S blackbox checkpoint v2red >/dev/null 2>&1
+assert_eq "before: the chain verifies, and the anchor holds" \
+  "$($S ledger verify v2red 2>&1 | grep -c 'ledger intact')|$($S blackbox integrity v2red 2>&1 | grep -c 'ledger integrity: INTACT')" "1|1"
+OUT="$(printf 'email:%s\n' "$PV" | $S dpdp erase new --json 2>&1)"
+EID="$(hjson "print(d['id'])" <<<"$OUT" 2>/dev/null)"
+assert_eq "the plan says what each branch's Blackbox holds: a data change to redact, a schema change kept, an original to delete" \
+  "$(hjson "b=[x for x in d['branches'] if x['branch']=='v2red'][0]['plan']['blackbox']; print(b['redact'], b['flagged'], b['originals'])" <<<"$OUT")|$(hjson "b=[x for x in d['branches'] if x['branch']=='agent-v2ph'][0]['plan']['blackbox']; print(b['redact'], b['originals'])" <<<"$OUT")" \
+  "1 1 0|0 1"
+[ -n "$EID" ] || { echo "--- new said ---"; tail -8 <<<"$OUT"; }
+OUT="$(printf 'email:%s\n' "$PV" | $S dpdp erase apply "$EID" --yes --json 2>&1)"
+assert_eq "applied: the entry redacted with a seal, the schema change kept and flagged, the original deleted" \
+  "$(hjson "r=[x for x in d['branches'] if x['branch']=='v2red'][0]['result']['blackbox']; print(r['redacted'], len(r['flagged']), r['entry'] > 0)" <<<"$OUT")|$(pg pg-v2red "SELECT statement FROM bb.schema_ledger WHERE id = $LEG")|$(pg pg-agent-v2ph "SELECT count(*) FROM bb.ledger_text WHERE statement LIKE '%$PV%'")" \
+  "1 1 True|UPDATE redx SET email = \$1 WHERE id = \$2|0"
+assert_eq "…the redaction is an entry of its own, its digest the seals'; the schema change still says what it said" \
+  "$(pg pg-v2red "SELECT count(*) FROM bb.schema_ledger l WHERE command_tag = 'ERASURE REDACT' AND statement LIKE '%seals sha256:' || bb._seals_digest(l.id)")|$(pg pg-v2red "SELECT count(*) FROM bb.schema_ledger WHERE command_tag = 'ALTER TABLE' AND statement LIKE '%$PV%'")" "1|1"
+assert_eq "after: the chain verifies by the seal, and the anchor still holds, saying so" \
+  "$($S ledger verify v2red 2>&1 | grep -c 'ledger intact')|$($S blackbox integrity v2red 2>&1 | grep -c 'ledger integrity: INTACT')|$($S blackbox integrity v2red 2>&1 | grep -c '1 entries were redacted by erasure requests')" "1|1|1"
+
+# A data change whose original the erasure deleted cannot be replayed again.
+assert_eq "a request carrying a data change whose values an erasure removed is refused, saying why" \
+  "$($S branch request agent-v2ph --to v2tgt2 --include-data 2>&1 | grep -c 'recorded without its values, which an erasure request removed')" "1"
+
+# Tampering after the redaction: the entry's text changed behind the seal.
+pg pg-v2red "SET session_replication_role = replica; UPDATE bb.schema_ledger SET statement = 'UPDATE redx SET email = \$1 WHERE id = 7' WHERE id = $LEG" >/dev/null
+assert_eq "a redacted entry changed afterwards is caught by its seal, by both checks" \
+  "$($S blackbox integrity v2red 2>&1 | grep -c "ledger id $LEG: it was redacted by an erasure request, and no longer matches its seal")|$($S ledger verify v2red 2>&1 | grep -c 'ledger intact')" "1|0"
+pg pg-v2red "SET session_replication_role = replica; DELETE FROM bb.ledger_seals WHERE id = $LEG; UPDATE bb.schema_ledger SET statement = 'UPDATE redx SET email = \$1 WHERE id = \$2' WHERE id = $LEG" >/dev/null
+assert_eq "…and a seal removed is caught too" \
+  "$($S blackbox integrity v2red 2>&1 | grep -c "ledger id $LEG: its contents no longer match its hash")" "1"
+for b in v2red v2tgt v2tgt2; do $S branch delete "$b" >/dev/null 2>&1; done
+curl -sk -o /dev/null -H "$AUTH" -X DELETE "$AGENTS/agents/v2ph/branch"
 
 echo
 echo "==== ${PASS} passed, ${FAIL} failed ===="

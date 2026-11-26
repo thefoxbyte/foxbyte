@@ -11,8 +11,11 @@ package promote
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,6 +85,14 @@ func build(source, target string, history []auth.ChangeRequest, opts branch.Requ
 		return plan, err
 	}
 	plan = p.plan(opts)
+	// A data change is recorded with placeholders (F4); the text it ran with
+	// is kept beside the chain, and is what a replay runs.
+	if err := withOriginals(source, plan.Entries); err != nil {
+		if errors.Is(err, branch.ErrNotReplayable) {
+			return branch.RequestPlan{}, err
+		}
+		return branch.RequestPlan{}, fmt.Errorf("reading %q's original statements: %w", source, err)
+	}
 	if err := p.conflicts(plan.Entries); err != nil {
 		return branch.RequestPlan{}, fmt.Errorf("%w. Look at both with `%s blackbox diff %s %s`, then either "+
 			"re-branch from %s and redo the change, or apply it by hand", err, brand.CLI, source, target, target)
@@ -113,6 +124,52 @@ func build(source, target string, history []auth.ChangeRequest, opts branch.Requ
 	}
 	return plan, nil
 }
+
+// withOriginals puts back, in each entry recorded with placeholders, the text
+// it ran with, kept beside the chain in bb.ledger_text. An entry whose original
+// an erasure deleted keeps its placeholders, and checkReplayable refuses it:
+// it cannot be replayed without the values it no longer has.
+func withOriginals(source string, entries []branch.RequestEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = strconv.FormatInt(e.ID, 10)
+	}
+	lines, err := branch.LedgerQuery(source, "SELECT CASE WHEN to_regclass('bb.ledger_text') IS NULL THEN '{}'::json "+
+		"ELSE (SELECT coalesce(json_object_agg(id, statement), '{}'::json) FROM bb.ledger_text WHERE id IN ("+strings.Join(ids, ",")+")) END")
+	if err != nil {
+		return err
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	var orig map[string]string
+	if err := json.Unmarshal([]byte(lines[0]), &orig); err != nil {
+		return err
+	}
+	var bad []string
+	for i := range entries {
+		if t, ok := orig[strconv.FormatInt(entries[i].ID, 10)]; ok {
+			entries[i].Statement = t
+			continue
+		}
+		// A data change still holding its placeholders: its values are gone.
+		if isDataChange(entries[i].CommandTag, entries[i].Risk) && placeholder.MatchString(entries[i].Statement) {
+			bad = append(bad, fmt.Sprintf("entry %d (%s %s): recorded without its values, which an erasure request removed",
+				entries[i].ID, entries[i].CommandTag, entries[i].Object))
+		}
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("%w:\n  %s\nLeave data changes out of the request, or make them again on the source", branch.ErrNotReplayable, strings.Join(bad, "\n  "))
+	}
+	return nil
+}
+
+// placeholder is a $1-style parameter, as bbid_placeholders writes them: not
+// part of a dollar quote ($$1$$) or a name.
+var placeholder = regexp.MustCompile(`(^|[^$\w])\$[0-9]+\b`)
 
 // plan turns the walk's candidates into a request's entries, leaving out the
 // data changes unless they were asked for.

@@ -148,7 +148,11 @@ func export(name string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	lines, err := branch.LedgerQuery(name, ledger.ExportQuery(withExt))
+	sealed, err := branch.LedgerQuery(name, "SELECT ("+ledger.SealsAvailable+")::text")
+	if err != nil {
+		return err
+	}
+	lines, err := branch.LedgerQuery(name, ledger.ExportQuerySealed(withExt, len(sealed) > 0 && sealed[0] == "true"))
 	if err != nil {
 		return err
 	}
