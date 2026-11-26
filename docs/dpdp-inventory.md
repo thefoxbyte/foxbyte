@@ -207,8 +207,17 @@ fox dpdp erase list
   for you: an old branch holding the person is why an erasure would never
   finish.
 
-What a request does not reach yet: the Blackbox's and query history's
-statement text, the vault, restores of an earlier copy, and backups. Those are the next steps of F4 (`docs/FOX_F4_Erasure_Design.md`,
+- **The Blackbox:** on each branch, the entries whose recorded text still
+  holds one of the values (data changes recorded before placeholders) are
+  redacted in place with a seal, in the same transaction, and the original
+  texts kept beside the chain that hold one are deleted. Schema changes
+  holding a value are kept as they are and listed. The chain and its anchors
+  still verify (`fox blackbox integrity`, `fox-verify`). A value is found as it
+  was given and in its normalised form, case-blind; written another way in a
+  statement, it is not.
+
+What a request does not reach yet: query history, the audit log's forensic
+text, change requests, the vault, restores of an earlier copy, and backups. Those are the next steps of F4 (`docs/FOX_F4_Erasure_Design.md`,
 section 20); until they are built, the person can remain in them, and every
 plan says so. FoxByte's reading of erasure has not yet been reviewed by a
 privacy lawyer or a storage engineer.

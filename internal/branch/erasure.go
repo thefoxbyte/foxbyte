@@ -131,6 +131,27 @@ type ErasurePlan struct {
 	Searched int      `json:"searched"`
 	Limits   []string `json:"limits"`
 	Review   string   `json:"review"` // the sign-off, said every time (decision 12)
+	// Blackbox is what the branch's Blackbox holds of the values (step 3);
+	// nil where the branch cannot say.
+	Blackbox *ErasureText `json:"blackbox,omitempty"`
+}
+
+// ErasureText is what a Blackbox holds of a person's values: data changes
+// whose recorded text holds one (redacted with a seal), schema changes that
+// do (kept as they are, and flagged: comparison and promotion replay them),
+// and original texts kept beside the chain that do (deleted).
+type ErasureText struct {
+	Redact    int `json:"redact"`
+	Flagged   int `json:"flagged"`
+	Originals int `json:"originals"`
+}
+
+// ErasureTextDone is what the redaction did.
+type ErasureTextDone struct {
+	Redacted  int     `json:"redacted"`
+	Flagged   []int64 `json:"flagged"`         // schema changes holding a value, kept
+	Entry     int64   `json:"entry,omitempty"` // the ERASURE REDACT entry; 0 when nothing was redacted
+	Originals int     `json:"originals"`
 }
 
 // Summary is the plan in a line, for the security log: counts, never a value
@@ -194,7 +215,9 @@ type ErasureResult struct {
 	// Statistics is when pg_statistic was rewritten and the WAL holding the
 	// old pages switched out, after the last rewrite.
 	Statistics *time.Time `json:"statistics,omitempty"`
-	Notes      []string   `json:"notes"`
+	// Blackbox is what the redaction did, in the same transaction.
+	Blackbox *ErasureTextDone `json:"blackbox,omitempty"`
+	Notes    []string         `json:"notes"`
 }
 
 // RewritesPending counts the tables still to be rewritten.

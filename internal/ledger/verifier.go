@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Verifier is Verify one row at a time, for a ledger read as a stream.
@@ -41,6 +42,13 @@ type Verifier struct {
 
 	lastID  int64
 	started bool
+
+	// Seals (F4): what each ERASURE REDACT entry wrote, as "id:seal", to check
+	// its digest when it arrives; and whether the stream began at the start
+	// of the chain, without which a digest cannot be checked.
+	seals     map[int64][]string
+	fromStart bool
+	sealed    int
 }
 
 // anchorCheck is what one anchor still needs to be checked against.
@@ -98,9 +106,32 @@ func (v *Verifier) Add(r Row) error {
 	if v.started && r.ID < v.lastID {
 		return fmt.Errorf("ledger rows out of order: id %d after %d", r.ID, v.lastID)
 	}
+	if !v.started {
+		v.fromStart = r.RowHash == "" || r.PrevHash == ""
+	}
 	v.started, v.lastID = true, r.ID
 	v.rows++
-	hash := RowHash(r)
+	hash := EffectiveHash(r)
+
+	// Seals: a redacted entry counts with its original hash when its seal
+	// holds; each ERASURE REDACT entry's digest covers the seals it wrote.
+	if r.Seal != "" {
+		v.sealed++
+		if v.seals == nil {
+			v.seals = map[int64][]string{}
+		}
+		v.seals[r.SealBy] = append(v.seals[r.SealBy], fmt.Sprintf("%d:%s", r.ID, r.Seal))
+	}
+	if r.CommandTag == RedactTag && v.fromStart {
+		want := SealsDigest(v.seals[r.ID])
+		if !strings.HasSuffix(r.Statement, "seals sha256:"+want) {
+			v.chainProblem(fmt.Sprintf("ledger id %d: the seals are not the ones this erasure's redaction recorded (a seal was added, changed or removed)", r.ID))
+			if v.firstBroken == 0 {
+				v.firstBroken = r.ID
+			}
+		}
+		delete(v.seals, r.ID)
+	}
 
 	// The hash chain, as chainCheck does it.
 	if r.RowHash == "" {
@@ -109,7 +140,7 @@ func (v *Verifier) Add(r Row) error {
 		v.chained++
 		broken := false
 		if hash != r.RowHash {
-			v.chainProblem(fmt.Sprintf("ledger id %d: its contents no longer match its hash (edited)", r.ID))
+			v.chainProblem(editedProblem(r))
 			broken = true
 		}
 		if r.PrevHash != v.prev {
@@ -195,6 +226,22 @@ func (v *Verifier) Report() Report {
 		}
 	}
 	rep.UnanchoredRows = v.unanchored
+	// A seal no redaction in the stream wrote: added afterwards. Only for
+	// writers the stream has reached; a later one may yet come.
+	var orphans []int64
+	for by := range v.seals {
+		if v.fromStart && by <= v.lastID {
+			orphans = append(orphans, by)
+		}
+	}
+	sort.Slice(orphans, func(i, j int) bool { return orphans[i] < orphans[j] })
+	for _, by := range orphans {
+		rep.problem("seals name entry %d as the redaction that wrote them, and it is not one (a seal was added afterwards)", by)
+	}
+	if v.sealed > 0 {
+		rep.Notes = append(rep.Notes, fmt.Sprintf("%d entries were redacted by erasure requests, and are checked by their seals", v.sealed))
+	}
+	rep.Sealed = v.sealed
 	rep.Intact = len(rep.Problems) == 0
 	return rep
 }

@@ -1220,6 +1220,7 @@ export type ErasurePlan = {
   searched: number
   limits: string[]
   review: string
+  blackbox?: { redact: number; flagged: number; originals: number }
 }
 export type ErasureRewrite = { schema: string; table: string; size: number; state: 'done' | 'pending' | 'failed'; at?: string; why?: string; error?: string }
 export type ErasureResult = {
@@ -1231,6 +1232,7 @@ export type ErasureResult = {
   vacuumed?: string
   rewrites: ErasureRewrite[]
   statistics?: string
+  blackbox?: { redacted: number; flagged: number[]; entry?: number; originals: number }
   notes: string[]
 }
 // Every branch but main (F4 step 2): planned with the request, applied with

@@ -1064,7 +1064,8 @@ func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []bran
 		fmt.Sprintf("Only places a reviewer confirmed as personal data were searched (%d here); a value in a column no scan found, in free text, or spelt differently is not found.", st.searched),
 		"Values are compared whole, after normalising case and separators.",
 		"In a JSON column, every value at a confirmed path in the person's rows is cleared.",
-		"The Blackbox and query history, the vault, restores and the backups are the next steps of F4: until they are built, the person can remain in them.",
+		"In the Blackbox, a value is found in a statement as it was given and in its normalised form, case-blind; written another way there, it is not found.",
+		"Query history, the audit log's text, change requests, the vault, restores and the backups are the next steps of F4: until they are built, the person can remain in them.",
 	)
 	if name == "main" {
 		plan.Limits = append(plan.Limits, "An HA standby, if there is one, follows main by replication, and is erased with it.")
@@ -1140,6 +1141,11 @@ func erasurePlan(name string, values []branch.ErasureValue, events map[string]st
 	if err != nil {
 		return branch.ErasurePlan{}, "", nil, err
 	}
+	// The redaction's preview, on a branch made before the licence covered
+	// the DPDP manager too.
+	if err := schema.EnsureDPDP(name); err != nil {
+		return branch.ErasurePlan{}, "", nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), eraseTimeout)
 	defer cancel()
 	conn, err := branch.OpenSuper(ctx, name)
@@ -1159,7 +1165,51 @@ func erasurePlan(name string, values []branch.ErasureValue, events map[string]st
 	if err != nil {
 		return plan, fp, nil, err
 	}
+	plan.Blackbox = previewText(ctx, tx, textForms(values, ms))
 	return plan, fp, changedKeys(st, ds), nil
+}
+
+// textForms are the strings a statement's text is searched for: each value
+// as it was given and in each normalised form, four characters or more.
+func textForms(values []branch.ErasureValue, ms matchSet) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if len([]rune(s)) >= 4 && !seen[strings.ToLower(s)] {
+			seen[strings.ToLower(s)] = true
+			out = append(out, s)
+		}
+	}
+	for _, v := range values {
+		add(v.Value)
+	}
+	cats := make([]string, 0, len(ms))
+	for c := range ms {
+		cats = append(cats, string(c))
+	}
+	sort.Strings(cats)
+	for _, c := range cats {
+		for _, v := range ms[pii.Category(c)] {
+			add(v)
+		}
+	}
+	return out
+}
+
+// previewText is what the branch's Blackbox holds of the values; nil where the
+// branch has no redaction to ask (the DPDP schema not installed there).
+func previewText(ctx context.Context, tx pgx.Tx, forms []string) *branch.ErasureText {
+	var have bool
+	if err := tx.QueryRow(ctx, "SELECT to_regprocedure('bb.erasure_redact_preview(text[])') IS NOT NULL").Scan(&have); err != nil || !have {
+		return nil
+	}
+	var t branch.ErasureText
+	if err := tx.QueryRow(ctx, "SELECT redact, flagged, originals FROM bb.erasure_redact_preview($1)", forms).
+		Scan(&t.Redact, &t.Flagged, &t.Originals); err != nil {
+		return nil
+	}
+	return &t
 }
 
 // changedKeys is the rows a plan changes, by key: what applying it would
@@ -1284,6 +1334,21 @@ func erasureApply(name string, a branch.ErasureApply) (branch.ErasurePlan, strin
 		return plan, fp, res, fmt.Errorf("after erasing, %d row(s) still hold a value in %s; nothing was applied", left, where)
 	}
 	res.Verified = true
+	// The Blackbox's text, in the same transaction: the data changes holding a
+	// value redacted with a seal, the originals beside the chain deleted.
+	var red branch.ErasureTextDone
+	var entry *int64
+	if err := tx.QueryRow(ctx, "SELECT redacted, flagged, entry, originals FROM bb.erasure_redact($1, $2)",
+		fmt.Sprintf("erasure request #%d", a.ID), textForms(a.Values, ms)).Scan(&red.Redacted, &red.Flagged, &entry, &red.Originals); err != nil {
+		return plan, fp, res, fmt.Errorf("redacting %s's Blackbox (nothing was applied): %w", name, readErr(err))
+	}
+	if entry != nil {
+		red.Entry = *entry
+	}
+	if red.Flagged == nil {
+		red.Flagged = []int64{}
+	}
+	res.Blackbox = &red
 	for _, t := range plan.Tables {
 		if t.Changes() {
 			res.Rows += t.Rows

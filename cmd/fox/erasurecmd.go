@@ -75,7 +75,9 @@ func erasureCmd(args []string) {
 		must(err)
 		s.Audit(auth.EvErasurePlanned, cliActor(), v.Branch, "", fmt.Sprintf("request #%d: %s", v.ID, v.Plan.Summary()))
 		printErasureOr(args, v)
-		next(v)
+		if !hasFlag(args, "--json") {
+			next(v)
+		}
 	case "plan":
 		requireFeature(edition.DPDP)
 		n := id()
@@ -86,7 +88,9 @@ func erasureCmd(args []string) {
 		must(err)
 		s.Audit(auth.EvErasurePlanned, cliActor(), v.Branch, "", fmt.Sprintf("request #%d planned again: %s", v.ID, v.Plan.Summary()))
 		printErasureOr(args, v)
-		next(v)
+		if !hasFlag(args, "--json") {
+			next(v)
+		}
 	case "apply":
 		requireFeature(edition.DPDP)
 		n := id()
@@ -469,6 +473,10 @@ func printPlan(w io.Writer, v branch.ErasureView) {
 	fmt.Fprintf(w, "  made by %s at %s; planned by %s at %s\n", v.CreatedBy, v.Created.Local().Format("2006-01-02 15:04"),
 		v.PlannedBy, v.Planned.Local().Format("2006-01-02 15:04"))
 	fmt.Fprintf(w, "\nPlan: %d row(s) hold a value; %d row(s) change. %d confirmed place(s) searched.\n", p.Matched, p.Rows, p.Searched)
+	if b := p.Blackbox; b != nil {
+		fmt.Fprintf(w, "  Blackbox: %d data change(s) hold a value, to be redacted with a seal; %d schema change(s) hold one, kept as they are and flagged; %d original text(s) beside the chain, to be deleted\n",
+			b.Redact, b.Flagged, b.Originals)
+	}
 	for _, t := range p.Tables {
 		fmt.Fprintf(w, "\n  %s.%s: %s %d row(s)  (%s)\n", t.Schema, t.Table, erasureActText[t.Action], t.Rows, t.Why)
 		switch {
@@ -527,6 +535,20 @@ func printPlan(w io.Writer, v branch.ErasureView) {
 		}
 		if r.Statistics != nil {
 			fmt.Fprintf(w, "  statistics rewritten and the WAL switched out at %s\n", r.Statistics.Local().Format("2006-01-02 15:04"))
+		}
+		if b := r.Blackbox; b != nil {
+			fmt.Fprintf(w, "  Blackbox: %d entr(ies) redacted with a seal", b.Redacted)
+			if b.Entry > 0 {
+				fmt.Fprintf(w, " (recorded as entry %d)", b.Entry)
+			}
+			fmt.Fprintf(w, "; %d original text(s) deleted\n", b.Originals)
+			if len(b.Flagged) > 0 {
+				ids := make([]string, len(b.Flagged))
+				for i, id := range b.Flagged {
+					ids[i] = strconv.FormatInt(id, 10)
+				}
+				fmt.Fprintf(w, "  Blackbox entries holding a value and kept, being schema changes (replayed as written): %s\n", strings.Join(ids, ", "))
+			}
 		}
 		for _, n := range r.Notes {
 			fmt.Fprintf(w, "  note: %s\n", n)

@@ -39,6 +39,55 @@ INSERT INTO bb.policy(op, action) VALUES ('TRUNCATE', 'block') ON CONFLICT (op) 
 -- legitimately rewrites every row.
 INSERT INTO bb.policy(op, action) VALUES ('UNQUALIFIED DML', 'block') ON CONFLICT (op) DO NOTHING;
 
+-- ── Placeholders (F4, erasure; design, section 9, decided 26 Nov) ───────────
+-- The text a data change is recorded with, hash-chained and append-only, has
+-- its literals replaced by placeholders: `UPDATE people SET email = $1 WHERE id
+-- = $2`. The original text of an entry that happened (APPLIED or FLAGGED; a
+-- blocked attempt never did, and is never replayed) is kept beside it, outside
+-- the chain, in bb.ledger_text: a change request carrying data changes replays
+-- it, and an erasure deletes what holds the person's values. Schema changes
+-- keep their exact text: branch comparison and promotion replay it.
+-- Nothing is granted on it: only the engine and the redaction read it.
+CREATE TABLE IF NOT EXISTS bb.ledger_text (
+  id        bigint PRIMARY KEY,   -- the entry it is the original of
+  statement text   NOT NULL
+);
+
+-- bb._placeholders is the statement with its literals replaced, read with
+-- PostgreSQL's own lexer (bb_identity 0.3's bbid_placeholders, in every image
+-- since). An image without it records the text as it always did. A text the
+-- lexer refuses could not have run; it is recorded as a note, never as itself.
+CREATE OR REPLACE FUNCTION bb._placeholders(q text) RETURNS text
+LANGUAGE plpgsql STABLE SET search_path = pg_catalog AS $$
+BEGIN
+  IF q IS NULL OR to_regprocedure('bb_f1.bbid_placeholders(text)') IS NULL THEN
+    RETURN q;
+  END IF;
+  RETURN bb_f1.bbid_placeholders(q);
+EXCEPTION WHEN others THEN
+  RETURN '[the statement could not be read for its placeholders, so its text is not recorded]';
+END;
+$$;
+
+-- Records a data change: the entry, with placeholders, and its original text
+-- beside it when the two differ. The id of the entry.
+-- SECURITY DEFINER, so the Blackbox seals it from clients as it is made
+-- (bb.seal_new_functions): only the triggers above, as its owner, call it.
+CREATE OR REPLACE FUNCTION bb._record_data(c record, tag text, obj text, q text, st text, rk text) RETURNS bigint
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, bb AS $$
+DECLARE ph text := bb._placeholders(q); e bigint;
+BEGIN
+  INSERT INTO bb.schema_ledger
+    (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
+  VALUES (c.actor,c.actor_kind,c.tool,c.session,c.branch,tag,'table',obj,ph,st,rk)
+  RETURNING id INTO e;
+  IF ph IS DISTINCT FROM q THEN
+    INSERT INTO bb.ledger_text VALUES (e, q);
+  END IF;
+  RETURN e;
+END;
+$$;
+
 -- Is the guardrail on? Imports and pipelines switch it off for their own load
 -- by disabling bb_guard_start; TRUNCATE follows the same switch.
 CREATE OR REPLACE FUNCTION bb._guard_on() RETURNS boolean
@@ -69,7 +118,7 @@ BEGIN
         PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
                   (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
                   VALUES (%L,%L,%L,%L,%L,'TRUNCATE','table',%L,%L,'BLOCKED','policy')$f$,
-            c.actor, c.actor_kind, c.tool, c.session, c.branch, obj, current_query()));
+            c.actor, c.actor_kind, c.tool, c.session, c.branch, obj, bb._placeholders(current_query())));
       END IF;
       RAISE EXCEPTION 'guardrail: TRUNCATE is blocked by policy (set bb.allow_destructive=on to override)'
         USING ERRCODE = 'insufficient_privilege',
@@ -79,9 +128,7 @@ BEGIN
   IF act = 'flag' THEN
     st := 'FLAGGED';
   END IF;
-  INSERT INTO bb.schema_ledger
-    (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
-  VALUES (c.actor,c.actor_kind,c.tool,c.session,c.branch,'TRUNCATE','table',obj,current_query(),st,'truncate');
+  PERFORM bb._record_data(c, 'TRUNCATE', obj, current_query(), st, 'truncate');
   RETURN NULL;
 END;
 $$;
@@ -126,7 +173,7 @@ BEGIN
     PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
               (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
               VALUES (%L,%L,%L,%L,%L,%L,'table',%L,%L,'BLOCKED','unqualified')$f$,
-        c.actor, c.actor_kind, c.tool, c.session, c.branch, TG_OP, obj, q));
+        c.actor, c.actor_kind, c.tool, c.session, c.branch, TG_OP, obj, bb._placeholders(q)));
   END IF;
   RAISE EXCEPTION 'guardrail: % with no WHERE is blocked for agents by policy (set bb.allow_destructive=on to override)', TG_OP
     USING ERRCODE = 'insufficient_privilege',
@@ -155,10 +202,7 @@ BEGIN
       DELETE FROM bb.dml_spent WHERE at < clock_timestamp() - interval '8 days';
     END IF;
   END IF;
-  INSERT INTO bb.schema_ledger
-    (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
-  VALUES (c.actor,c.actor_kind,c.tool,c.session,c.branch,TG_OP,'table',
-          bb._table_identity(TG_TABLE_SCHEMA, TG_TABLE_NAME),current_query(),'APPLIED',NULL);
+  PERFORM bb._record_data(c, TG_OP, bb._table_identity(TG_TABLE_SCHEMA, TG_TABLE_NAME), current_query(), 'APPLIED', NULL);
   RETURN NULL;
 END;
 $$;
@@ -353,16 +397,14 @@ CREATE OR REPLACE FUNCTION bb._record_impact(c record, op text, obj text, status
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, bb AS $$
 BEGIN
   IF status = 'FLAGGED' THEN
-    INSERT INTO bb.schema_ledger
-      (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
-    VALUES (c.actor,c.actor_kind,c.tool,c.session,c.branch,op,'table',obj,current_query(),'FLAGGED',risk);
+    PERFORM bb._record_data(c, op, obj, current_query(), 'FLAGGED', risk);
   ELSIF bb._holds_chain_lock() THEN
     RAISE WARNING 'guardrail: this blocked attempt is not recorded in Blackbox, because this transaction has already written to it';
   ELSE
     PERFORM bb._record_blocked(format($f$INSERT INTO bb.schema_ledger
               (actor,actor_kind,tool,session,branch,command_tag,object_type,object_identity,statement,status,risk)
               VALUES (%L,%L,%L,%L,%L,%L,'table',%L,%L,'BLOCKED',%L)$f$,
-        c.actor, c.actor_kind, c.tool, c.session, c.branch, op, obj, current_query(), risk));
+        c.actor, c.actor_kind, c.tool, c.session, c.branch, op, obj, bb._placeholders(current_query()), risk));
   END IF;
 END;
 $$;

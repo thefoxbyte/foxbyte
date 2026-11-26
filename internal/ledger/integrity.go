@@ -51,6 +51,44 @@ type Row struct {
 	PrevHash       string
 	RowHash        string // "" for legacy rows written before hash chaining
 	ExtHash        string // "" when the row has no 2.0 capture
+	// The entry's seal, when an erasure request redacted it (F4): its
+	// original row_hash, the seal, and the ERASURE REDACT entry that wrote it.
+	SealOrig string
+	Seal     string
+	SealBy   int64
+}
+
+// RedactTag is the command tag of the entry an erasure request's redaction
+// writes: its statement records a digest of every seal it wrote.
+const RedactTag = "ERASURE REDACT"
+
+// SealOf is a redacted entry's seal: sha256(original row_hash | the hash of
+// the entry as it now stands), as bb._seal computes it.
+func SealOf(orig, nowHash string) string {
+	sum := sha256.Sum256([]byte(orig + "|" + nowHash))
+	return hex.EncodeToString(sum[:])
+}
+
+// SealHolds reports whether a redacted entry is what its seal says.
+func SealHolds(r Row) bool {
+	return r.Seal != "" && r.SealOrig == r.RowHash && r.Seal == SealOf(r.SealOrig, RowHash(r))
+}
+
+// EffectiveHash is what an entry counts as in the chain and in an anchor: its
+// recomputed hash, or, for an entry redacted with a seal that holds, the
+// row_hash it had before, which the chain and the anchors were built on.
+func EffectiveHash(r Row) string {
+	if SealHolds(r) {
+		return r.RowHash
+	}
+	return RowHash(r)
+}
+
+// SealsDigest is the digest an ERASURE REDACT entry records over the seals it
+// wrote, each "id:seal", by id, as bb._seals_digest computes it.
+func SealsDigest(idSeals []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(idSeals, ",")))
+	return hex.EncodeToString(sum[:])
 }
 
 // RowHash recomputes a row's hash exactly as bb._ledger_hash does in SQL: sha256
@@ -123,7 +161,7 @@ func MerkleRoot(leaves [][32]byte) string {
 func rootOf(rows []Row) string {
 	leaves := make([][32]byte, len(rows))
 	for i, r := range rows {
-		leaves[i] = LeafHash(RowHash(r), r.ExtHash)
+		leaves[i] = LeafHash(EffectiveHash(r), r.ExtHash)
 	}
 	return MerkleRoot(leaves)
 }
@@ -169,7 +207,7 @@ func BuildAnchor(branch string, fromID int64, prevRoot string, rows []Row) (Anch
 		FromID:      fromID,
 		ToID:        last.ID,
 		EntryCount:  len(rows),
-		LastRowHash: RowHash(last),
+		LastRowHash: EffectiveHash(last),
 		MerkleRoot:  rootOf(rows),
 		PrevRoot:    prevRoot,
 		CreatedAt:   time.Now().UTC(),
@@ -248,6 +286,7 @@ type Report struct {
 	AnchoredRows   int      `json:"anchored_rows"`
 	UnanchoredRows int      `json:"unanchored_rows"`
 	FirstBrokenID  int64    `json:"first_broken_id,omitempty"`
+	Sealed         int      `json:"sealed,omitempty"` // entries redacted by an erasure request, checked by their seals
 	Problems       []string `json:"problems"`
 	Notes          []string `json:"notes"`
 }
@@ -278,8 +317,8 @@ func chainCheck(rows []Row, prev string) chainResult {
 		}
 		c.chained++
 		broken := false
-		if RowHash(r) != r.RowHash {
-			c.problems = append(c.problems, fmt.Sprintf("ledger id %d: its contents no longer match its hash (edited)", r.ID))
+		if EffectiveHash(r) != r.RowHash {
+			c.problems = append(c.problems, editedProblem(r))
 			broken = true
 		}
 		if r.PrevHash != prev {
@@ -371,6 +410,11 @@ type rowJSON struct {
 	PrevHash       *string `json:"prev_hash"`
 	RowHash        *string `json:"row_hash"`
 	ExtHash        *string `json:"ext_hash"`
+	Seal           *struct {
+		Orig string `json:"orig"`
+		Seal string `json:"seal"`
+		By   int64  `json:"by"`
+	} `json:"seal"`
 }
 
 func deref(s *string) string {
@@ -391,14 +435,27 @@ func DecodeRowJSON(b []byte) (Row, error) {
 	if err != nil {
 		return Row{}, fmt.Errorf("ledger id %d: bad timestamp %q: %w", j.ID, j.At, err)
 	}
-	return Row{
+	r := Row{
 		ID: j.ID, At: at,
 		Actor: deref(j.Actor), ActorKind: deref(j.ActorKind), Tool: deref(j.Tool),
 		Session: deref(j.Session), Branch: deref(j.Branch), CommandTag: deref(j.CommandTag),
 		ObjectType: deref(j.ObjectType), ObjectIdentity: deref(j.ObjectIdentity),
 		Statement: deref(j.Statement), Status: deref(j.Status), Risk: deref(j.Risk),
 		PrevHash: deref(j.PrevHash), RowHash: deref(j.RowHash), ExtHash: deref(j.ExtHash),
-	}, nil
+	}
+	if j.Seal != nil {
+		r.SealOrig, r.Seal, r.SealBy = j.Seal.Orig, j.Seal.Seal, j.Seal.By
+	}
+	return r, nil
+}
+
+// editedProblem says how an entry fails its hash: redacted and changed since,
+// or changed.
+func editedProblem(r Row) string {
+	if r.Seal != "" {
+		return fmt.Sprintf("ledger id %d: it was redacted by an erasure request, and no longer matches its seal (changed since)", r.ID)
+	}
+	return fmt.Sprintf("ledger id %d: its contents no longer match its hash (edited)", r.ID)
 }
 
 const rowColumns = "s.id, s.at, s.actor, s.actor_kind, s.tool, s.session, s.branch, s.command_tag, " +
@@ -407,11 +464,25 @@ const rowColumns = "s.id, s.at, s.actor, s.actor_kind, s.tool, s.session, s.bran
 // RowsQuery selects ledger rows as one JSON document per row, in id order, with
 // each row's capture hash when the 2.0 capture table exists. where may be empty.
 func RowsQuery(withExt bool, where string) string {
+	return RowsQuerySealed(withExt, false, where)
+}
+
+// SealsAvailable is the SQL that answers whether a branch has seals to read
+// (bb.ledger_seal, from F4): a Blackbox older than that has none.
+const SealsAvailable = "to_regprocedure('bb.ledger_seal(bigint)') IS NOT NULL"
+
+// RowsQuerySealed is RowsQuery with each row's seal, when the branch has
+// them (SealsAvailable).
+func RowsQuerySealed(withExt, withSeals bool, where string) string {
 	ext, join := "NULL::text AS ext_hash", ""
 	if withExt {
 		ext, join = "e.ext_hash", " LEFT JOIN bb.ledger_ext e ON e.ledger_id = s.id"
 	}
-	return "SELECT row_to_json(x)::text FROM (SELECT " + rowColumns + ", " + ext +
+	seal := ""
+	if withSeals {
+		seal = ", bb.ledger_seal(s.id) AS seal"
+	}
+	return "SELECT row_to_json(x)::text FROM (SELECT " + rowColumns + ", " + ext + seal +
 		" FROM bb.schema_ledger s" + join + " " + where + " ORDER BY s.id) x"
 }
 
@@ -421,16 +492,31 @@ func RowsQuery(withExt bool, where string) string {
 // members, and to anyone else only their own entries'. Ask bb._may_override()
 // first: for anyone else the chain cannot be recomputed.
 func ClientRowsQuery(withExt bool, where string) string {
-	return strings.Replace(RowsQuery(withExt, where), "s.statement,", "bb.ledger_statement(s.id) AS statement,", 1)
+	return ClientRowsQuerySealed(withExt, false, where)
+}
+
+// ClientRowsQuerySealed is ClientRowsQuery with each row's seal.
+func ClientRowsQuerySealed(withExt, withSeals bool, where string) string {
+	return strings.Replace(RowsQuerySealed(withExt, withSeals, where), "s.statement,", "bb.ledger_statement(s.id) AS statement,", 1)
 }
 
 // ExportQuery selects every ledger row with all of its capture columns, one JSON
 // document per row in id order — the `fox ledger export` format.
 func ExportQuery(withExt bool) string {
+	return ExportQuerySealed(withExt, false)
+}
+
+// ExportQuerySealed is ExportQuery with each row's seal, so an export of a
+// ledger an erasure redacted still verifies offline (fox-verify).
+func ExportQuerySealed(withExt, withSeals bool) string {
 	if !withExt {
-		return RowsQuery(false, "")
+		return RowsQuerySealed(false, withSeals, "")
+	}
+	seal := ""
+	if withSeals {
+		seal = ", bb.ledger_seal(s.id) AS seal"
 	}
 	return "SELECT row_to_json(x)::text FROM (SELECT " + rowColumns +
-		", e.ext_hash, e.xid, e.lsn, e.task_id, e.parent_session, e.call_hash, e.override_used" +
+		", e.ext_hash, e.xid, e.lsn, e.task_id, e.parent_session, e.call_hash, e.override_used" + seal +
 		" FROM bb.schema_ledger s LEFT JOIN bb.ledger_ext e ON e.ledger_id = s.id ORDER BY s.id) x"
 }

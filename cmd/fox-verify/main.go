@@ -190,13 +190,13 @@ func readDatabase(dsn string) ([]ledger.Row, error) {
 	}
 	defer conn.Close(ctx)
 
-	var withExt, direct, viaFunc bool
+	var withExt, direct, viaFunc, withSeals bool
 	if err := conn.QueryRow(ctx, `SELECT to_regclass('bb.ledger_ext') IS NOT NULL,
   has_column_privilege('bb.schema_ledger', 'statement', 'SELECT'),
-  to_regprocedure('bb.ledger_statement(bigint)') IS NOT NULL`).Scan(&withExt, &direct, &viaFunc); err != nil {
+  to_regprocedure('bb.ledger_statement(bigint)') IS NOT NULL, `+ledger.SealsAvailable).Scan(&withExt, &direct, &viaFunc, &withSeals); err != nil {
 		return nil, fmt.Errorf("reading the ledger: %w", err)
 	}
-	query := ledger.RowsQuery(withExt, "")
+	query := ledger.RowsQuerySealed(withExt, withSeals, "")
 	if !direct {
 		var admin bool
 		if viaFunc {
@@ -208,7 +208,7 @@ func readDatabase(dsn string) ([]ledger.Row, error) {
 			return nil, errors.New("this login cannot read the Blackbox's statement text, which every hash covers: " +
 				"connect as an admin (fox admin grant <email>) or verify an export (fox ledger export)")
 		}
-		query = ledger.ClientRowsQuery(withExt, "")
+		query = ledger.ClientRowsQuerySealed(withExt, withSeals, "")
 	}
 	rs, err := conn.Query(ctx, query)
 	if err != nil {

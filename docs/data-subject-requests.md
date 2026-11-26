@@ -169,11 +169,27 @@ say who ran which statement, not why.
 Each Blackbox entry holds the text of the statement it records, inside the hash
 chain that makes the ledger tamper-evident. That is deliberate: the record is
 only worth something if nobody, including whoever runs FoxByte, can change or
-remove an entry afterwards. The consequence is that **statement text cannot be
-erased**. A statement that wrote a person's values, for example
-`INSERT INTO customers (email) VALUES ('ada@example.com')`, keeps those values
-in the ledger for as long as the branch exists. (Audit finding PRIV-2; keeping
-the text in the chain was chosen over making it erasable.)
+remove an entry afterwards. (Audit finding PRIV-2.) Since F4 the values are
+handled apart from it:
+
+- **Data changes are recorded with placeholders.** An agent's `UPDATE` or
+  `DELETE`, a `TRUNCATE`, and every blocked or flagged attempt are recorded
+  with their literals replaced, as PostgreSQL's own lexer reads them:
+  `UPDATE customers SET email = $1 WHERE id = $2`. The text that ran is kept
+  beside the chain, outside it, for a change request carrying data changes to
+  replay; no client can read it, and a blocked attempt's is not kept at all.
+- **An erasure request removes the person from it** (Enterprise; see
+  [the DPDP inventory](dpdp-inventory.md#erasure-requests)). It deletes the
+  originals holding the person's values, and rewrites in place each chained
+  entry that still holds one (one recorded before placeholders) with its
+  placeholders and a **seal**: the entry keeps the hash it was chained with,
+  the seal ties that hash to what the entry now says, and an `ERASURE REDACT`
+  entry, chained like any other, records a digest of every seal it wrote. The
+  chain, the anchors already signed and `fox-verify` still check: a redacted
+  entry by its seal, and anything changed afterwards is caught.
+- **Schema changes keep their exact text**, because branch comparison and
+  change requests replay it. One holding a person's value (a `DEFAULT`, a
+  `COMMENT`) is kept as it is and listed by the erasure, for you to judge.
 
 What limits it:
 

@@ -80,8 +80,10 @@ var SupportedPGMajors = []string{"16", PGMajor}
 // built, when the engine starts (ensureImageRef). 2 added bb_identity, which
 // application identity (F1) needs; 3, pgAudit and bb_identity's audit hooks
 // (F6), which `fox audit-log setup` needs; 4, bb_identity 0.2's masking hash
-// (F5), which `fox mask setup` needs. An image without the label is revision 1.
-const PGImageRevision = 4
+// (F5), which `fox mask setup` needs; 5, bb_identity 0.3's placeholders (F4),
+// which the Blackbox records data changes with. An image without the label is
+// revision 1.
+const PGImageRevision = 5
 
 // imageRevisionLabel is the label that carries it.
 const imageRevisionLabel = "dev.dbengine.image-revision"

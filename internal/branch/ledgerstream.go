@@ -133,11 +133,19 @@ func (w *boundedBuffer) Write(p []byte) (int, error) {
 
 func (w *boundedBuffer) Bytes() []byte { return w.b.Bytes() }
 
+// ledgerSeals reports whether a branch's Blackbox has seals to read (an
+// erasure request's redaction, F4): one older than that has none, and a
+// query asking for them would fail. Not knowing reads as none.
+var ledgerSeals = func(name string) bool {
+	lines, err := ledgerLines(name, "SELECT ("+ledger.SealsAvailable+")::text")
+	return err == nil && len(lines) > 0 && lines[0] == "true"
+}
+
 // streamLedgerRows decodes ledger rows (ledger.RowsQuery) as psql prints them
 // and hands each to visit, in id order. Lines that are not a JSON document are
 // skipped, as loadLedgerRows always did.
 func streamLedgerRows(name string, withExt bool, where string, visit func(ledger.Row) error) error {
-	return ledgerStream(name, ledger.RowsQuery(withExt, where), func(l []byte) error {
+	return ledgerStream(name, ledger.RowsQuerySealed(withExt, ledgerSeals(name), where), func(l []byte) error {
 		if l[0] != '{' {
 			return nil
 		}
@@ -258,7 +266,7 @@ func walkFork(ca, cb <-chan ledger.Row, v LedgerFork) {
 	ra, oka := <-ca
 	rb, okb := <-cb
 	n, last := 0, ledger.Row{}
-	for oka && okb && ra.ID == rb.ID && ledger.RowHash(ra) == ledger.RowHash(rb) {
+	for oka && okb && ra.ID == rb.ID && ledger.EffectiveHash(ra) == ledger.EffectiveHash(rb) { // as commonPrefix: a redacted entry is still itself
 		n, last = n+1, ra
 		ra, oka = <-ca
 		rb, okb = <-cb

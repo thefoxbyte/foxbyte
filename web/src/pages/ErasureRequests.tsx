@@ -260,6 +260,12 @@ function Detail({ r, licensed, onDone, onError, reload }: {
         {p.matched} row(s) hold a value; {p.rows} row(s) change. {p.searched} confirmed place(s) searched.
         {p.blocked && <b className="dpdp-gap"> It cannot be applied until the problems below are dealt with.</b>}
       </p>
+      {p.blackbox && (
+        <p className="muted" data-testid="erasure-blackbox-plan">
+          Blackbox: {p.blackbox.redact} data change(s) hold a value, to be redacted with a seal; {p.blackbox.flagged} schema
+          change(s) hold one, kept as they are and flagged; {p.blackbox.originals} original text(s) beside the chain, to be deleted.
+        </p>
+      )}
       {p.tables.length === 0 && <p className="muted">No row holds any of the values in a confirmed place.</p>}
       {p.tables.map((t, i) => <PlanTable key={`${t.schema}.${t.table}.${t.action}.${i}`} t={t} />)}
 
@@ -282,6 +288,14 @@ function Detail({ r, licensed, onDone, onError, reload }: {
             {r.result.vacuumed && <> Vacuumed {when(r.result.vacuumed)}: removed from live queries.</>}
             {r.result.statistics && <> Statistics rewritten and the WAL switched out {when(r.result.statistics)}.</>}
           </p>
+          {r.result.blackbox && (
+            <p data-testid="erasure-blackbox-result">
+              Blackbox: {r.result.blackbox.redacted} entr(ies) redacted with a seal
+              {r.result.blackbox.entry ? ` (recorded as entry ${r.result.blackbox.entry})` : ''}; {r.result.blackbox.originals} original
+              text(s) deleted.
+              {r.result.blackbox.flagged.length > 0 && <> Kept, being schema changes: entries {r.result.blackbox.flagged.join(', ')}.</>}
+            </p>
+          )}
           <div className="table-wrap">
             <table aria-label="Rewrites">
               <thead><tr><th>Table</th><th>Size</th><th>Rewritten in the files</th></tr></thead>

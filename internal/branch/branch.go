@@ -845,6 +845,22 @@ SELECT (SELECT count(*) FROM bb.schema_ledger WHERE row_hash IS NULL) AS legacy,
        coalesce(min(id) FILTER (WHERE row_hash <> recomputed OR prev_hash IS DISTINCT FROM coalesce(prev_link,''))::text,'') AS first_broken
 FROM v`
 
+// ledgerVerifySealedSQL is ledgerVerifySQL on a Blackbox with seals (F4): an
+// entry an erasure redacted counts by the hash it was chained with when its
+// seal holds, as bb.ledger_verify does.
+const ledgerVerifySealedSQL = `WITH v AS (
+  SELECT s.id, s.prev_hash, s.row_hash,
+         CASE WHEN z.id IS NOT NULL AND z.orig_row_hash = s.row_hash
+                   AND z.seal = bb._seal(z.orig_row_hash, bb._ledger_hash(s.*))
+              THEN s.row_hash ELSE bb._ledger_hash(s.*) END AS recomputed,
+         lag(s.row_hash) OVER (ORDER BY s.id) AS prev_link
+  FROM bb.schema_ledger s LEFT JOIN bb.ledger_seals z ON z.id = s.id WHERE s.row_hash IS NOT NULL)
+SELECT (SELECT count(*) FROM bb.schema_ledger WHERE row_hash IS NULL) AS legacy,
+       count(*) AS chained,
+       count(*) FILTER (WHERE row_hash <> recomputed OR prev_hash IS DISTINCT FROM coalesce(prev_link,'')) AS broken,
+       coalesce(min(id) FILTER (WHERE row_hash <> recomputed OR prev_hash IS DISTINCT FROM coalesce(prev_link,''))::text,'') AS first_broken
+FROM v`
+
 // LedgerVerifySQL is the same check for a client session, such as the
 // console's, which runs as db_client: bb.ledger_verify does it as the
 // Blackbox's owner and returns the same four columns. A branch whose Blackbox
@@ -858,8 +874,12 @@ func LedgerVerify(name string) (string, error) {
 	if name == "" {
 		name = "main"
 	}
+	q := ledgerVerifySQL
+	if ledgerSeals(name) {
+		q = ledgerVerifySealedSQL
+	}
 	out, err := capture("docker", "exec", "--env-file", pgEnvFile(), container(name),
-		"psql", "-U", pgUser, "-d", pgDatabase, "-tA", "-F", "|", "-c", ledgerVerifySQL)
+		"psql", "-U", pgUser, "-d", pgDatabase, "-tA", "-F", "|", "-c", q)
 	if err != nil {
 		return "", fmt.Errorf("verify query: %w", err)
 	}

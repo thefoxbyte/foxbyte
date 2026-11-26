@@ -93,6 +93,89 @@ CREATE TABLE IF NOT EXISTS bb.erasures_applied (
 REVOKE ALL ON bb.erasures_applied FROM PUBLIC;
 
 REVOKE ALL ON bb.dpdp_entries, bb.dpdp_history FROM PUBLIC;
+
+-- ── The Blackbox's text, for an erasure (F4, Gate 1 step 3; design, section 9)
+-- What holds a value: an entry's statement, or an original text kept beside
+-- the chain (bb.ledger_text), compared case-blind.
+CREATE OR REPLACE FUNCTION bb._holds_any(t text, vals text[]) RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM unnest(vals) v WHERE length(v) >= 4 AND position(lower(v) IN lower(coalesce(t, ''))) > 0)
+$$;
+
+-- What a redaction would do, changing nothing: data changes to redact,
+-- schema changes holding a value (kept, flagged), and original texts to delete.
+CREATE OR REPLACE FUNCTION bb.erasure_redact_preview(vals text[], OUT redact int, OUT flagged int, OUT originals int)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, bb AS $$
+  SELECT
+    (SELECT count(*)::int FROM bb.schema_ledger l WHERE bb._holds_any(l.statement, vals)
+       AND l.command_tag IN ('UPDATE', 'DELETE', 'INSERT', 'TRUNCATE', 'MERGE')
+       AND NOT EXISTS (SELECT 1 FROM bb.ledger_seals z WHERE z.id = l.id)),
+    (SELECT count(*)::int FROM bb.schema_ledger l WHERE bb._holds_any(l.statement, vals)
+       AND l.command_tag NOT IN ('UPDATE', 'DELETE', 'INSERT', 'TRUNCATE', 'MERGE')),
+    (SELECT count(*)::int FROM bb.ledger_text t WHERE bb._holds_any(t.statement, vals))
+$$;
+
+-- Redacts the entries holding any of vals, with a seal each, and deletes the
+-- original texts holding one. Schema changes are never redacted (branch
+-- comparison and promotion replay their text): they come back as flagged, as
+-- does an entry whose placeholders still hold a value (one in an identifier).
+-- The ERASURE REDACT entry, chained like any other, records how many and a
+-- digest of the seals it wrote; none is written when nothing was redacted.
+-- Run as the superuser, inside the erasure's own transaction.
+CREATE OR REPLACE FUNCTION bb.erasure_redact(request text, vals text[])
+RETURNS TABLE (redacted int, flagged bigint[], entry bigint, originals int)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, bb AS $$
+DECLARE
+  r bb.schema_ledger;
+  now_row bb.schema_ledger;
+  fl bigint[] := '{}';
+  ids bigint[] := '{}';
+  origs text[] := '{}';
+  seals text[] := '{}';
+  e bigint;
+  gone int;
+  ph text;
+BEGIN
+  -- Arrays, not a temporary table: nothing here may need the guardrail's
+  -- override (the prototype's finding, design section 21).
+  PERFORM pg_advisory_xact_lock(hashtext('bb.schema_ledger'));
+  INSERT INTO bb.ledger_unlock VALUES (request);
+  FOR r IN SELECT * FROM bb.schema_ledger l WHERE bb._holds_any(l.statement, vals) ORDER BY id LOOP
+    IF r.command_tag NOT IN ('UPDATE', 'DELETE', 'INSERT', 'TRUNCATE', 'MERGE') THEN
+      fl := fl || r.id;
+      CONTINUE;
+    END IF;
+    IF EXISTS (SELECT 1 FROM bb.ledger_seals z WHERE z.id = r.id) THEN
+      CONTINUE;   -- redacted once already
+    END IF;
+    ph := bb._placeholders(r.statement);
+    IF ph IS NOT DISTINCT FROM r.statement OR bb._holds_any(ph, vals) THEN
+      fl := fl || r.id;   -- placeholders cannot take it out (an identifier, or no lexer here)
+      CONTINUE;
+    END IF;
+    UPDATE bb.schema_ledger SET statement = ph WHERE id = r.id RETURNING * INTO now_row;
+    ids := ids || r.id;
+    origs := origs || r.row_hash;
+    seals := seals || bb._seal(r.row_hash, bb._ledger_hash(now_row));
+  END LOOP;
+  DELETE FROM bb.ledger_unlock;
+  DELETE FROM bb.ledger_text t WHERE bb._holds_any(t.statement, vals);
+  GET DIAGNOSTICS gone = ROW_COUNT;
+  IF cardinality(ids) > 0 THEN
+    INSERT INTO bb.schema_ledger (actor, actor_kind, tool, command_tag, object_type, object_identity, statement, status)
+    VALUES (coalesce(nullif(current_setting('bb.actor', true), ''), session_user), 'human', 'fox dpdp erase',
+            'ERASURE REDACT', 'erasure', request,
+            format('redacted %s entries; seals sha256:%s', cardinality(ids),
+                   (SELECT encode(sha256(convert_to(coalesce(string_agg(i || ':' || z, ',' ORDER BY i), ''), 'UTF8')), 'hex')
+                    FROM unnest(ids, seals) AS t(i, z))),
+            'APPLIED')
+    RETURNING id INTO e;
+    INSERT INTO bb.ledger_seals SELECT i, o, z, e FROM unnest(ids, origs, seals) AS t(i, o, z);
+  END IF;
+  RETURN QUERY SELECT cardinality(ids), fl, e, gone;
+END;
+$$;
+REVOKE EXECUTE ON FUNCTION bb.erasure_redact(text, text[]), bb.erasure_redact_preview(text[]) FROM PUBLIC;
 REVOKE ALL ON SEQUENCE bb.dpdp_entries_id_seq, bb.dpdp_history_id_seq FROM PUBLIC;
 
 SET client_min_messages = DEFAULT;
