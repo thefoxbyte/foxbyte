@@ -954,7 +954,17 @@ func createBranch(name, parent string, keepKeys bool) error {
 }
 
 // createLocked is Create for a caller that holds the branch's lock.
+//
+// It also holds the parent's erasing lock while it copies: a branch is not
+// copied from one whose rows an erasure request is changing and whose files
+// it is rewriting, or the copy would keep what the erasure removes (F4,
+// section 6). The wait is the branch lock's, and ends in ErrBranchBusy.
 func createLocked(name, parent string, keepKeys bool) error {
+	unlockParent, err := lockBranch(erasingLock(parent), "copied")
+	if err != nil {
+		return err
+	}
+	defer unlockParent()
 	// Last, as well as at each docker command: the dataset is part of what the
 	// console lists.
 	defer noteStateChange()

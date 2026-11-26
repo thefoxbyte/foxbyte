@@ -422,6 +422,36 @@ func (s *state) match() error {
 	return nil
 }
 
+// matchKeys finds rows by key: main's rows, on a masked branch, whose masks
+// are not the person's values (section 6).
+func (s *state) matchKeys(seed branch.ErasureSeed) error {
+	names := make([]string, 0, len(seed))
+	for n := range seed {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		schemaName, table, ok := strings.Cut(n, ".")
+		if !ok || len(seed[n]) == 0 {
+			continue
+		}
+		t, err := s.table(tkey{schemaName, table})
+		if err != nil {
+			s.limits = append(s.limits, fmt.Sprintf("%s, where main's erasure changed rows, is not a table here: %v", n, err))
+			continue
+		}
+		if len(t.rel.keyCols) == 0 {
+			s.limits = append(s.limits, fmt.Sprintf("%s has no primary key here, so main's rows cannot be found in it by key", n))
+			continue
+		}
+		q := "SELECT x.tableoid, x.ctid::text, " + t.rel.keyExpr("x") + " FROM " + t.rel.rel + " x WHERE " + t.rel.keyExpr("x") + " = ANY($1::text[])"
+		if _, err := s.scanRows(t, true, nil, q+s.forUpdate("x"), seed[n]); err != nil {
+			return fmt.Errorf("finding main's rows in %s: %w", n, readErr(err))
+		}
+	}
+	return nil
+}
+
 func matchQuery(r *relInfo, f branch.PIIFinding, vals []string) (string, []any) {
 	col := "x." + branch.QuoteIdent(f.Column)
 	sel := "SELECT x.tableoid, x.ctid::text, " + r.keyExpr("x") + " FROM " + r.rel + " x WHERE "
@@ -907,7 +937,7 @@ func rewriteMax() int64 {
 // build runs the whole of finding and deciding, in tx: the plan, its
 // fingerprint, and the run's state for an apply.
 func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []branch.ErasureRef, events map[string]string,
-	actor string, lock bool) (branch.ErasurePlan, string, *state, map[tkey]*decided, error) {
+	actor string, lock bool, seed branch.ErasureSeed) (branch.ErasurePlan, string, *state, map[tkey]*decided, error) {
 	plan := branch.ErasurePlan{Branch: name, Made: time.Now().UTC(), By: actor, Refs: refs, Tables: []branch.ErasureTable{},
 		Review: branch.ErasureReview}
 	inv, err := branch.DPDPInventoryOf(name)
@@ -922,6 +952,11 @@ func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []bran
 		findings: rep.Findings, tables: map[tkey]*tableRows{}}
 	if err := st.match(); err != nil {
 		return plan, "", nil, nil, err
+	}
+	if seed != nil {
+		if err := st.matchKeys(seed); err != nil {
+			return plan, "", nil, nil, err
+		}
 	}
 	for _, k := range st.order {
 		st.tables[k].why = matchWhy(st, k)
@@ -1029,8 +1064,14 @@ func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []bran
 		fmt.Sprintf("Only places a reviewer confirmed as personal data were searched (%d here); a value in a column no scan found, in free text, or spelt differently is not found.", st.searched),
 		"Values are compared whole, after normalising case and separators.",
 		"In a JSON column, every value at a confirmed path in the person's rows is cleared.",
-		"This request erases "+name+". Every other branch, the Blackbox and query history, the vault, restores and the backups are the next steps of F4: until they are built, the person can remain in them.",
+		"The Blackbox and query history, the vault, restores and the backups are the next steps of F4: until they are built, the person can remain in them.",
 	)
+	if name == "main" {
+		plan.Limits = append(plan.Limits, "An HA standby, if there is one, follows main by replication, and is erased with it.")
+	}
+	if seed != nil {
+		plan.Limits = append(plan.Limits, "A masked branch: its rows are found by main's row keys as well as by value, because its masks are not the person's values.")
+	}
 	if st.maxDepth {
 		plan.Limits = append(plan.Limits, fmt.Sprintf("Foreign keys were followed %d deep and no further.", maxDepth))
 	}
@@ -1091,29 +1132,57 @@ func size(n int64) string {
 }
 
 // erasurePlan finds the person's rows and says what it would do, in a
-// read-only transaction that is rolled back.
-func erasurePlan(name string, values []branch.ErasureValue, events map[string]string, actor string) (branch.ErasurePlan, string, error) {
+// read-only transaction that is rolled back; with the keys of the rows it
+// would change, the seed a masked branch is planned from.
+func erasurePlan(name string, values []branch.ErasureValue, events map[string]string, actor string,
+	seed branch.ErasureSeed) (branch.ErasurePlan, string, branch.ErasureSeed, error) {
 	ms, refs, err := readValues(values)
 	if err != nil {
-		return branch.ErasurePlan{}, "", err
+		return branch.ErasurePlan{}, "", nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), eraseTimeout)
 	defer cancel()
 	conn, err := branch.OpenSuper(ctx, name)
 	if err != nil {
-		return branch.ErasurePlan{}, "", err
+		return branch.ErasurePlan{}, "", nil, err
 	}
 	defer conn.Close(context.Background())
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return branch.ErasurePlan{}, "", err
+		return branch.ErasurePlan{}, "", nil, err
 	}
 	defer tx.Rollback(context.Background())
 	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = '5min'"); err != nil {
-		return branch.ErasurePlan{}, "", err
+		return branch.ErasurePlan{}, "", nil, err
 	}
-	plan, fp, _, _, err := build(ctx, tx, name, ms, refs, events, actor, false)
-	return plan, fp, err
+	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, events, actor, false, seed)
+	if err != nil {
+		return plan, fp, nil, err
+	}
+	return plan, fp, changedKeys(st, ds), nil
+}
+
+// changedKeys is the rows a plan changes, by key: what applying it would
+// record, and so what a masked branch is found by.
+func changedKeys(st *state, ds map[tkey]*decided) branch.ErasureSeed {
+	out := branch.ErasureSeed{}
+	for _, k := range st.order {
+		t := st.tables[k]
+		if len(t.rel.keyCols) == 0 {
+			continue
+		}
+		for _, act := range []string{branch.ErasureActClear, branch.ErasureActDelete, branch.ErasureActCascade, branch.ErasureActSetNull} {
+			if act == branch.ErasureActClear && len(ds[k].sets) == 0 && len(ds[k].paths) == 0 {
+				continue
+			}
+			for _, r := range fatedRows(t, act) {
+				if r.key != "" {
+					out[k.String()] = append(out[k.String()], r.key)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // --- applying ------------------------------------------------------------------
@@ -1145,7 +1214,7 @@ func erasureApply(name string, a branch.ErasureApply) (branch.ErasurePlan, strin
 		"set_config('bb.actor', $1, true)", fmt.Sprintf("erasure request #%d", a.ID)); err != nil {
 		return branch.ErasurePlan{}, "", res, err
 	}
-	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, a.Events, a.Actor, true)
+	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, a.Events, a.Actor, true, a.Seed)
 	if err != nil {
 		return plan, fp, res, err
 	}

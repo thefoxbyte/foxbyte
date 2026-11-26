@@ -147,7 +147,9 @@ You record that decision once, per table, in the [DPDP inventory](dpdp-inventory
   the console, the Gateway or your application. The Blackbox ledger records the
   statements, as it records every change.
 - **On branches:** a branch is a copy of `main` at some moment, so it still has
-  the rows; an erasure request does not reach them yet. Delete branches you no longer need (`fox branch delete <name>`), or reset
+  the rows. An erasure request erases every branch with `main`, and lists the
+  branches made before the erasure: their files keep the person until each is
+  remade from its parent or deleted (`fox dpdp erase status`). Delete branches you no longer need (`fox branch delete <name>`), or reset
   them from `main` after the erasure (`fox branch reset <name>`). `fox subject find` again afterwards to
   confirm nothing is left.
 - **The ledger:** see [The Blackbox keeps statement text](#the-blackbox-keeps-statement-text)

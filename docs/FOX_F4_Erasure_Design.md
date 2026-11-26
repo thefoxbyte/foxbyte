@@ -604,7 +604,7 @@ The claims marked **(prototype)**, proven in a suite like F5's
 | Step | What | CLI | Console |
 |---|---|---|---|
 | 1 | The request, the plan and `main`: matched and referencing rows, actions from the inventory, exceptions, vacuum, rewrite (**built**, `feat/f4-erasure-main`) | `fox dpdp erase new`, `plan`, `apply`, `rewrite` (and `withdraw`, `list`, `show`) | Erasure requests: new, plan, apply |
-| 2 | Every branch; branches made before it; the maximum age | `fox dpdp erase status` | the branches list, remake and delete |
+| 2 | Every branch; branches made before it; the maximum age (**built**, `feat/f4-erasure-branches`) | `fox dpdp erase status`, `apply --branch` | the branches list, remake and delete |
 | 3 | Statement text: placeholders, the Blackbox's sealed redaction, history, forensic text, change requests, derived tables, the vault | | |
 | 4 | Restores refused and re-applied | `--after-erasure reapply` | |
 | 5 | The outcomes, "clears on", the copies outside reach, the evidence export; exports and tars recorded | `fox dpdp erase evidence` | evidence |
@@ -624,6 +624,27 @@ someone else's, so it is left and never followed; a column's entry clears,
 and only a table's may delete; and in a JSON column every value at a
 confirmed path in the person's rows is set to null, the rest of the document
 kept.
+
+**Step 2, as built (26 November 2026).** Decided that day: one apply erases
+`main`, then every branch, each in its own transaction and matched again
+there; a branch whose plan changed since it was shown, or that has a problem,
+is skipped and said so, and applied on its own afterwards (`fox dpdp erase
+apply <id> --branch <b>`), the request reading "applied on main, N branch(es)
+left" until all are done. Making or planning a request wakes a suspended
+branch so its rows are shown before anything is applied. A masked branch is
+found by the keys of the rows the plan changes on `main` as well as by value;
+one being made, or that failed, is listed and not erased. Each branch's
+erasure, and `main`'s, holds an erasing lock that a copy of that branch takes
+while it clones, so no branch is copied from one being erased. The branches
+made before the erasure are read with the request, not stored: a branch whose
+making time is before its parent's erasure finished (applied, every table
+rewritten), or whose parent still holds the person, is listed with its owner,
+to remake from its parent or delete; from the request (console, API) the
+remake or delete is recorded on it, and through any other door it is seen as
+it is. `FOX_BRANCH_MAX_AGE` (off by default; `90d`, `12w`, `720h`) flags the
+older branches in `fox check`, on the dashboard (admins) and in every request,
+never acting on them. The restore copy and an upgrade's stashed datasets are
+left to step 5's copies.
 
 **Sign-off.** The review plan asks that a privacy lawyer and a storage-engine
 engineer approve F4 together before erasure is built. Until they have, the

@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -39,9 +40,21 @@ CREATE TABLE IF NOT EXISTS erasure_requests (
   applied_at  INTEGER,
   result      TEXT NOT NULL DEFAULT '{}',
   withdrawn_by TEXT NOT NULL DEFAULT '',
-  withdrawn_at INTEGER
+  withdrawn_at INTEGER,
+  branches    TEXT NOT NULL DEFAULT '[]'
 );
 `
+
+// migrateErasure adds what a store made before Gate 1 step 2 lacks: each
+// request's branches, as the engine writes them (internal/branch).
+func migrateErasure(ctx context.Context, db *sql.Conn) error {
+	has, err := hasColumn(ctx, db, "erasure_requests", "branches")
+	if err != nil || has {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `ALTER TABLE erasure_requests ADD COLUMN branches TEXT NOT NULL DEFAULT '[]'`)
+	return err
+}
 
 // The states of an erasure request.
 const (
@@ -72,11 +85,16 @@ type ErasureRequest struct {
 	Result      string     `json:"-"`
 	WithdrawnBy string     `json:"withdrawnBy,omitempty"`
 	Withdrawn   *time.Time `json:"withdrawnAt,omitempty"`
+	// BranchesJSON is every branch but main: its plan, and what applying did
+	// there (F4, Gate 1 step 2).
+	BranchesJSON string `json:"-"`
 }
 
 // NewErasureRequest is what a new request is made from.
 type NewErasureRequest struct {
 	Branch, Refs, Events, Note, Plan, Fingerprint, Actor string
+	// Branches is every other branch's plan, as JSON; "" for none.
+	Branches string
 }
 
 // ErrNoErasure is a request id with no request.
@@ -87,7 +105,7 @@ var ErrNoErasure = errors.New("no such erasure request")
 var ErrErasureMoved = errors.New("the request changed meanwhile; read it again")
 
 const erasureCols = `id, uid, branch, state, refs, events, note, plan, fingerprint, created_by, created_at,
-	planned_by, planned_at, coalesce(claimed_at, 0), applied_by, applied_at, result, withdrawn_by, withdrawn_at`
+	planned_by, planned_at, coalesce(claimed_at, 0), applied_by, applied_at, result, withdrawn_by, withdrawn_at, branches`
 
 func scanErasure(row interface{ Scan(...any) error }) (ErasureRequest, error) {
 	var r ErasureRequest
@@ -95,7 +113,7 @@ func scanErasure(row interface{ Scan(...any) error }) (ErasureRequest, error) {
 	var applied, withdrawn sql.NullInt64
 	err := row.Scan(&r.ID, &r.UID, &r.Branch, &r.State, &r.Refs, &r.Events, &r.Note, &r.Plan, &r.Fingerprint,
 		&r.CreatedBy, &created, &r.PlannedBy, &planned, &claimed, &r.AppliedBy, &applied, &r.Result,
-		&r.WithdrawnBy, &withdrawn)
+		&r.WithdrawnBy, &withdrawn, &r.BranchesJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, ErrNoErasure
 	}
@@ -125,11 +143,14 @@ func (s *Store) CreateErasure(n NewErasureRequest) (ErasureRequest, error) {
 	}
 	uid := hex.EncodeToString(b)
 	now := time.Now().UnixMilli()
+	if n.Branches == "" {
+		n.Branches = "[]"
+	}
 	var id int64
 	err := retryBusy(func() error {
 		res, err := s.db.Exec(`INSERT INTO erasure_requests (uid, branch, state, refs, events, note, plan, fingerprint,
-			created_by, created_at, planned_by, planned_at) VALUES (?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			uid, n.Branch, n.Refs, n.Events, n.Note, n.Plan, n.Fingerprint, n.Actor, now, n.Actor, now)
+			created_by, created_at, planned_by, planned_at, branches) VALUES (?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			uid, n.Branch, n.Refs, n.Events, n.Note, n.Plan, n.Fingerprint, n.Actor, now, n.Actor, now, n.Branches)
 		if err != nil {
 			return err
 		}
@@ -195,6 +216,13 @@ func (s *Store) SaveErasurePlan(id int64, plan, fingerprint, actor string) (Eras
 	return s.erasureUpdate(id, `UPDATE erasure_requests SET plan = ?, fingerprint = ?, planned_by = ?, planned_at = ?,
 		state = 'planned', claimed_at = NULL WHERE id = ? AND state IN ('planned', 'applying')`,
 		plan, fingerprint, actor, time.Now().UnixMilli(), id)
+}
+
+// SaveErasureBranches keeps a request's branches as their plans and applies
+// go on. Any state but withdrawn: a planned request is planned again, an
+// applied one has its branches applied one by one.
+func (s *Store) SaveErasureBranches(id int64, branches string) (ErasureRequest, error) {
+	return s.erasureUpdate(id, `UPDATE erasure_requests SET branches = ? WHERE id = ? AND state <> 'withdrawn'`, branches, id)
 }
 
 // ClaimErasure marks a planned request as being applied, if its plan is

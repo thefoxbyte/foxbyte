@@ -296,6 +296,10 @@ func migrate(ctx context.Context, db *sql.Conn) error {
 	if err := migrateMainWrite(ctx, db); err != nil {
 		return err
 	}
+	// Erasure requests' branches (F4, Gate 1 step 2; erasure.go).
+	if err := migrateErasure(ctx, db); err != nil {
+		return err
+	}
 	// The security log's seals and its controlled prune (seclogprivacy.go).
 	return migrateSecurityLogPrivacy(ctx, db)
 }

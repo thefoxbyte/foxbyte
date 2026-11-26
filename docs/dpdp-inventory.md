@@ -141,7 +141,7 @@ default, not a decision.
 
 ## Erasure requests
 
-One request erases one person on `main` (Enterprise; admins only). The values
+One request erases one person on `main` and every branch (Enterprise; admins only). The values
 the person is known by are read one a line from the terminal or standard
 input, never the command line, so the shell's history and the process list do
 not keep them:
@@ -153,6 +153,8 @@ fox dpdp erase new --note "DPO ticket 1234" --event account_closed=2025-03-31
 fox dpdp erase show 7              # the plan again, without the values
 fox dpdp erase apply 7             # asks for the values again, then for the number
 fox dpdp erase rewrite 7           # the tables left for a quiet time
+fox dpdp erase status 7            # every branch, and those made before the erasure
+fox dpdp erase apply 7 --branch qa # a branch the apply skipped, on its own
 fox dpdp erase list
 ```
 
@@ -183,10 +185,30 @@ fox dpdp erase list
   The statistics are rewritten and the WAL switched out after.
 - **Kept:** no value. The request keeps each value's category and last four
   characters, the plan, and the row keys of what it changed.
+- **Every branch:** the plan covers every branch too, each matched on its own
+  rows (a branch can hold rows `main` no longer has); a suspended branch is
+  woken to be searched, and suspends again when idle. Applying erases `main`,
+  then each branch in its own transaction. A branch whose plan has changed
+  since it was shown, or that has a problem, is skipped and says why; apply it
+  on its own with `--branch` once you have looked. A masked branch is found by
+  `main`'s row keys as well as by value, since its masks are not the person's
+  values; one still being made, or that failed, is listed and not erased. No
+  branch is copied from one while it is being erased.
+- **Branches made before the erasure:** however a branch was erased, one made
+  before its parent's erasure finished keeps the person's old blocks in the
+  snapshot it was copied from. `fox dpdp erase status` lists each, with its
+  owner and the commands, for you to remake from its parent (`fox branch
+  reset <b> --from <parent>`, which discards its work) or delete; the console
+  does either from the request and records it there. The erasure is not done
+  in the files until none is left.
+- **The maximum age:** set `FOX_BRANCH_MAX_AGE` (off by default; `90d` is a
+  reasonable start) and `fox check`, the dashboard (for admins) and every
+  request flag the branches older than it. They are never remade or deleted
+  for you: an old branch holding the person is why an erasure would never
+  finish.
 
-What a request does not reach yet: every other branch, the Blackbox's and
-query history's statement text, the vault, restores of an earlier copy, and
-backups. Those are the next steps of F4 (`docs/FOX_F4_Erasure_Design.md`,
+What a request does not reach yet: the Blackbox's and query history's
+statement text, the vault, restores of an earlier copy, and backups. Those are the next steps of F4 (`docs/FOX_F4_Erasure_Design.md`,
 section 20); until they are built, the person can remain in them, and every
 plan says so. FoxByte's reading of erasure has not yet been reviewed by a
 privacy lawyer or a storage engineer.

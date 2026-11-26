@@ -71,7 +71,10 @@ func routeKind(r *http.Request) kind {
 	case r.Method == http.MethodPost && strings.HasPrefix(p, "/api/branches/") && strings.HasSuffix(p, "/export"),
 		r.Method == http.MethodGet && strings.HasPrefix(p, "/api/branches/") && strings.HasSuffix(p, "/ledger/export"),
 		r.Method == http.MethodGet && p == "/api/audit-log/evidence",
-		r.Method == http.MethodGet && p == "/api/access-review":
+		r.Method == http.MethodGet && p == "/api/access-review",
+		// An erasure request plans, erases and rewrites main and every branch
+		// in one call (F4): minutes each on a large install.
+		r.Method == http.MethodPost && strings.HasPrefix(p, "/api/dpdp/erasures"):
 		return kindExport
 	}
 	return kindNormal

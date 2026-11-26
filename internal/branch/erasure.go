@@ -221,7 +221,15 @@ type ErasureApply struct {
 	Events      map[string]string
 	Fingerprint string
 	Actor       string
+	// Seed is main's rows, by key, for a masked branch, whose masks are not
+	// the person's values but are still the person's rows (section 6).
+	Seed ErasureSeed
 }
+
+// ErasureSeed is rows found by their keys rather than by a value: for each
+// table (schema.table), the keys as the engine writes them (a JSON array of
+// the key's columns as text). Held for a run, never stored before an apply.
+type ErasureSeed map[string][]string
 
 // ErasureEngine is the paid half, supplied by enterprise/dpdp.
 type ErasureEngine struct {
@@ -229,8 +237,10 @@ type ErasureEngine struct {
 	// not recognised.
 	Refs func(values []ErasureValue) ([]ErasureRef, error)
 	// Plan finds the person's rows on a branch and says what it would do,
-	// changing nothing; with the plan's fingerprint.
-	Plan func(branch string, values []ErasureValue, events map[string]string, actor string) (ErasurePlan, string, error)
+	// changing nothing; with the plan's fingerprint, and the keys of the rows
+	// it would change (the seed a masked branch is planned from). seed, when
+	// not nil, finds rows by key as well as by value.
+	Plan func(branch string, values []ErasureValue, events map[string]string, actor string, seed ErasureSeed) (ErasurePlan, string, ErasureSeed, error)
 	// Apply finds the rows again in one transaction and, if the plan's
 	// fingerprint is the one given, applies it and commits. Otherwise it
 	// changes nothing and returns the plan as it is now, with
@@ -276,6 +286,14 @@ type ErasureView struct {
 	Events map[string]string `json:"events"`
 	Plan   ErasurePlan       `json:"plan"`
 	Result *ErasureResult    `json:"result,omitempty"`
+	// Branches is every other branch: its plan, and what applying did there.
+	Branches []ErasureBranch `json:"branches"`
+	// MadeBefore are the branches whose files still hold the person's old
+	// blocks however they were erased (section 6): to remake or delete. Read
+	// with the request (GetErasure), not stored.
+	MadeBefore []ErasureStale `json:"madeBefore"`
+	// Old are the branches past FOX_BRANCH_MAX_AGE (decision 6).
+	Old []BranchAge `json:"old"`
 }
 
 // ViewErasure decodes a request's record. Free in every edition.
@@ -298,6 +316,12 @@ func ViewErasure(r auth.ErasureRequest) (ErasureView, error) {
 			return v, fmt.Errorf("request %d's result: %w", r.ID, err)
 		}
 		v.Result = &res
+	}
+	v.Branches, v.MadeBefore, v.Old = []ErasureBranch{}, []ErasureStale{}, []BranchAge{}
+	if r.BranchesJSON != "" {
+		if err := json.Unmarshal([]byte(r.BranchesJSON), &v.Branches); err != nil {
+			return v, fmt.Errorf("request %d's branches: %w", r.ID, err)
+		}
 	}
 	return v, nil
 }
@@ -350,7 +374,7 @@ func NewErasure(s *auth.Store, branchName string, values []ErasureValue, events 
 		branchName = "main"
 	}
 	if branchName != "main" {
-		return ErasureView{}, fmt.Errorf("%w: a request erases main for now; every branch follows in the next step", ErrInvalidRequest)
+		return ErasureView{}, fmt.Errorf("%w: a request erases main and every branch made from it; it is made on main", ErrInvalidRequest)
 	}
 	if len(values) == 0 {
 		return ErasureView{}, fmt.Errorf("%w: give at least one value the person is known by", ErrInvalidRequest)
@@ -365,19 +389,21 @@ func NewErasure(s *auth.Store, branchName string, values []ErasureValue, events 
 	if err != nil {
 		return ErasureView{}, err
 	}
-	plan, fp, err := eng.Plan(branchName, values, events, actor)
+	plan, fp, seed, err := eng.Plan(branchName, values, events, actor, nil)
 	if err != nil {
 		return ErasureView{}, err
 	}
+	branches := planBranches(eng, nil, values, events, actor, seed)
 	rj, _ := json.Marshal(refs)
 	ej, _ := json.Marshal(events)
 	pj, _ := json.Marshal(plan)
+	bj, _ := json.Marshal(branches)
 	rec, err := s.CreateErasure(auth.NewErasureRequest{Branch: branchName, Refs: string(rj), Events: string(ej),
-		Note: strings.TrimSpace(note), Plan: string(pj), Fingerprint: fp, Actor: actor})
+		Note: strings.TrimSpace(note), Plan: string(pj), Fingerprint: fp, Actor: actor, Branches: string(bj)})
 	if err != nil {
 		return ErasureView{}, err
 	}
-	return ViewErasure(rec)
+	return GetErasure(s, rec.ID)
 }
 
 // checkEvents refuses an event date that is not one: they are the dates an
@@ -427,25 +453,40 @@ func refList(rs []ErasureRef) string {
 	return strings.Join(out, ", ")
 }
 
-// ReplanErasure makes a planned request's plan again, from the values.
+// ReplanErasure makes a planned request's plan again, from the values: main's
+// and every branch's. For an applied request it plans again the branches not
+// yet erased, and those made since, to be applied with ApplyErasureBranch.
 func ReplanErasure(s *auth.Store, id int64, values []ErasureValue, actor string) (ErasureView, error) {
 	eng, v, err := openErasure(s, id, values)
 	if err != nil {
 		return v, err
 	}
-	if v.State != auth.ErasurePlanned {
+	switch v.State {
+	case auth.ErasurePlanned:
+	case auth.ErasureApplied:
+		branches := planBranches(eng, v.Branches, values, v.Events, actor, resultSeed(v.Result))
+		bj, _ := json.Marshal(branches)
+		if _, err := s.SaveErasureBranches(id, string(bj)); err != nil {
+			return v, err
+		}
+		return GetErasure(s, id)
+	default:
 		return v, fmt.Errorf("%w: request %d is %s", ErrErasureState, id, v.State)
 	}
-	plan, fp, err := eng.Plan(v.Branch, values, v.Events, actor)
+	plan, fp, seed, err := eng.Plan(v.Branch, values, v.Events, actor, nil)
 	if err != nil {
 		return v, err
 	}
+	branches := planBranches(eng, nil, values, v.Events, actor, seed)
 	pj, _ := json.Marshal(plan)
-	rec, err := s.SaveErasurePlan(id, string(pj), fp, actor)
-	if err != nil {
+	if _, err := s.SaveErasurePlan(id, string(pj), fp, actor); err != nil {
 		return v, err
 	}
-	return ViewErasure(rec)
+	bj, _ := json.Marshal(branches)
+	if _, err := s.SaveErasureBranches(id, string(bj)); err != nil {
+		return v, err
+	}
+	return GetErasure(s, id)
 }
 
 // ApplyErasure applies a planned request on its branch: in one transaction,
@@ -467,8 +508,31 @@ func ApplyErasure(s *auth.Store, id int64, values []ErasureValue, actor string) 
 	if err := s.ClaimErasure(id, v.Fingerprint, actor); err != nil {
 		return v, err
 	}
-	plan, fp, res, err := eng.Apply(v.Branch, ErasureApply{ID: id, UID: v.UID, Values: values, Events: v.Events,
-		Fingerprint: v.Fingerprint, Actor: actor})
+	var (
+		plan ErasurePlan
+		fp   string
+		res  ErasureResult
+	)
+	// Under main's erasing lock: no branch is copied from main while its
+	// rows are changed and its files rewritten (section 6).
+	err = withErasingLock(v.Branch, func() error {
+		var aerr error
+		plan, fp, res, aerr = eng.Apply(v.Branch, ErasureApply{ID: id, UID: v.UID, Values: values, Events: v.Events,
+			Fingerprint: v.Fingerprint, Actor: actor})
+		if aerr != nil {
+			return aerr
+		}
+		rj, _ := json.Marshal(res)
+		if _, ferr := s.FinishErasure(id, string(rj), actor); ferr != nil {
+			return &recordErr{fmt.Errorf("the erasure was applied on %s, but recording it failed: %w", v.Branch, ferr)}
+		}
+		res = eng.Settle(v.Branch, plan, res, nil)
+		return nil
+	})
+	var rerr *recordErr
+	if errors.As(err, &rerr) {
+		return v, rerr.err
+	}
 	if errors.Is(err, ErrErasurePlanChanged) {
 		pj, _ := json.Marshal(plan)
 		rec, serr := s.SaveErasurePlan(id, string(pj), fp, actor)
@@ -485,17 +549,22 @@ func ApplyErasure(s *auth.Store, id int64, values []ErasureValue, actor string) 
 		return v, err
 	}
 	rj, _ := json.Marshal(res)
-	if _, err := s.FinishErasure(id, string(rj), actor); err != nil {
-		return v, fmt.Errorf("the erasure was applied on %s, but recording it failed: %w", v.Branch, err)
-	}
-	res = eng.Settle(v.Branch, plan, res, nil)
-	rj, _ = json.Marshal(res)
-	rec, err := s.SaveErasureResult(id, string(rj))
-	if err != nil {
+	if _, err := s.SaveErasureResult(id, string(rj)); err != nil {
 		return v, fmt.Errorf("the erasure was applied on %s, but recording its vacuum and rewrite failed: %w", v.Branch, err)
 	}
-	return ViewErasure(rec)
+	// Then every branch, each in its own transaction (decided 26 Nov): one
+	// whose plan changed, or that cannot be erased, is skipped and said so,
+	// for ApplyErasureBranch.
+	v.Result = &res
+	applyBranches(s, eng, v, values, actor, "")
+	return GetErasure(s, id)
 }
+
+// recordErr is a failure after the apply committed: the erasure is in, and
+// the request must not be released as if it were not.
+type recordErr struct{ err error }
+
+func (e *recordErr) Error() string { return e.err.Error() }
 
 func firstProblem(p ErasurePlan) string {
 	for _, t := range p.Tables {
@@ -506,9 +575,18 @@ func firstProblem(p ErasurePlan) string {
 	return "a table has a problem"
 }
 
-// RewriteErasure rewrites the tables an applied request left for later, or
-// the ones named (schema.table).
+// RewriteErasure rewrites the tables an applied request left for later on
+// main, or the ones named (schema.table).
 func RewriteErasure(s *auth.Store, id int64, tables []string, actor string) (ErasureView, error) {
+	return RewriteErasureOn(s, id, "main", tables, actor)
+}
+
+// RewriteErasureOn is RewriteErasure on one branch: main, or a branch the
+// request was applied to.
+func RewriteErasureOn(s *auth.Store, id int64, branchName string, tables []string, actor string) (ErasureView, error) {
+	if branchName != "" && branchName != "main" {
+		return rewriteBranch(s, id, branchName, tables, actor)
+	}
 	eng, err := erasureEngine()
 	if err != nil {
 		return ErasureView{}, err
@@ -542,10 +620,10 @@ func RewriteErasure(s *auth.Store, id int64, tables []string, actor string) (Era
 	}
 	res := eng.Settle(v.Branch, v.Plan, *v.Result, only)
 	rj, _ := json.Marshal(res)
-	if rec, err = s.SaveErasureResult(id, string(rj)); err != nil {
+	if _, err = s.SaveErasureResult(id, string(rj)); err != nil {
 		return v, err
 	}
-	return ViewErasure(rec)
+	return GetErasure(s, id)
 }
 
 func hasRewrite(r ErasureResult, t string) bool {
@@ -575,7 +653,15 @@ func GetErasure(s *auth.Store, id int64) (ErasureView, error) {
 	if err != nil {
 		return ErasureView{}, err
 	}
-	return ViewErasure(rec)
+	v, err := ViewErasure(rec)
+	if err != nil {
+		return v, err
+	}
+	// What the branches are now: read, not stored, so a branch remade or
+	// deleted by any door is seen as it is.
+	v.MadeBefore = madeBefore(s, v)
+	v.Old = OldBranches()
+	return v, nil
 }
 
 // ListErasures reads every request, newest first. Free.

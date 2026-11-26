@@ -1233,6 +1233,25 @@ export type ErasureResult = {
   statistics?: string
   notes: string[]
 }
+// Every branch but main (F4 step 2): planned with the request, applied with
+// it, a skipped one applied on its own; and those made before the erasure,
+// to remake or delete.
+export type ErasureBranch = {
+  branch: string
+  parent: string
+  made?: string
+  masked: boolean
+  state: 'planned' | 'applied' | 'skipped' | 'listed' | 'gone'
+  why?: string
+  plan?: ErasurePlan
+  fingerprint?: string
+  result?: ErasureResult
+  done?: string
+  doneBy?: string
+  doneAt?: string
+}
+export type ErasureStale = { branch: string; parent: string; made?: string; owner?: string; why: string }
+export type BranchAge = { branch: string; made: string; days: number; personal?: boolean | null }
 export type ErasureRequest = {
   id: number
   branch: string
@@ -1251,6 +1270,9 @@ export type ErasureRequest = {
   events: Record<string, string>
   plan: ErasurePlan
   result?: ErasureResult
+  branches?: ErasureBranch[]
+  madeBefore?: ErasureStale[]
+  old?: BranchAge[]
 }
 const erasureURL = `${API}/api/dpdp/erasures`
 export const listErasures = () => req('GET', erasureURL) as Promise<ErasureRequest[]>
@@ -1259,10 +1281,15 @@ export const newErasure = (values: ErasureValue[], note: string, events: Record<
   req('POST', erasureURL, { values, note, events }) as Promise<ErasureRequest>
 export const replanErasure = (id: number, values: ErasureValue[]) =>
   req('POST', `${erasureURL}/${id}/plan`, { values }) as Promise<ErasureRequest>
-export const applyErasure = (id: number, values: ErasureValue[]) =>
-  req('POST', `${erasureURL}/${id}/apply`, { values }) as Promise<ErasureRequest>
-export const rewriteErasure = (id: number, tables: string[] = []) =>
-  req('POST', `${erasureURL}/${id}/rewrite`, { tables }) as Promise<ErasureRequest>
+export const applyErasure = (id: number, values: ErasureValue[], branch = '') =>
+  req('POST', `${erasureURL}/${id}/apply`, branch ? { values, branch } : { values }) as Promise<ErasureRequest>
+export const rewriteErasure = (id: number, tables: string[] = [], branch = '') =>
+  req('POST', `${erasureURL}/${id}/rewrite`, branch ? { tables, branch } : { tables }) as Promise<ErasureRequest>
+export const remakeErasureBranch = (id: number, branch: string) =>
+  req('POST', `${erasureURL}/${id}/branches/${encodeURIComponent(branch)}/remake`) as Promise<ErasureRequest>
+export const deleteErasureBranch = (id: number, branch: string) =>
+  req('POST', `${erasureURL}/${id}/branches/${encodeURIComponent(branch)}/delete`) as Promise<ErasureRequest>
+export const getBranchAges = () => req('GET', `${API}/api/dpdp/branch-ages`) as Promise<{ maxAgeHours: number; branches: BranchAge[] }>
 export const withdrawErasure = (id: number) => req('POST', `${erasureURL}/${id}/withdraw`) as Promise<ErasureRequest>
 
 export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches' | 'applications' | 'vault') =>
