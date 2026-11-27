@@ -159,3 +159,25 @@ func TestTextForms(t *testing.T) {
 		}
 	}
 }
+
+// A row's key as the Aadhaar exposure report writes it, from the erasure's.
+func TestAadhaarRowKey(t *testing.T) {
+	for _, c := range []struct {
+		cols []string
+		key  string
+		want string
+		ok   bool
+	}{
+		{[]string{"id"}, `["42"]`, "id=42", true},
+		{[]string{"a", "b"}, `["1", "x"]`, "(a, b)=(1, x)", true},
+		{[]string{"a", "b"}, `["1", null]`, "(a, b)=(1, NULL)", true},
+		{nil, ``, "", false},
+		{[]string{"id"}, `[null]`, "", false},
+		{[]string{"id"}, `["1", "2"]`, "", false},
+	} {
+		got, ok := aadhaarRowKey(c.cols, c.key)
+		if got != c.want || ok != c.ok {
+			t.Errorf("%v %s: %q %v", c.cols, c.key, got, ok)
+		}
+	}
+}

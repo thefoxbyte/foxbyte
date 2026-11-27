@@ -83,6 +83,8 @@ test('a request made on main finds the person on a branch, erases them there onl
     await expect(plan).toContainText('Cleared, 1 row(s)')
     await expect(plan).toContainText('email (email) → NULL')
     await expect(detail.getByRole('button', { name: /^Apply to main and every branch/ })).toBeEnabled()
+    // Beside the branches: the INSERT above, in the query history, holds the person.
+    await expect(page.getByTestId('erasure-copies-plan')).toContainText(/[1-9]\d* query history entr\(ies\) to delete/)
     expect(String((await sql(`SELECT email FROM ${where} WHERE id = 1`)).rows?.[0]?.[0])).toBe(person)
 
     // Applied with the values again: erased on the branches, the other person kept.
@@ -93,6 +95,8 @@ test('a request made on main finds the person on a branch, erases them there onl
     const erased = detail.getByRole('table', { name: 'Branches' }).getByTestId(`erasure-branch-${copy}`)
     await expect(erased).toContainText('Erased')
     await expect(erased).toContainText('1 row(s) changed')
+    await expect(page.getByTestId('erasure-copies-result')).toContainText(/[1-9]\d* query history entr\(ies\) deleted/)
+    expect((await api('get', `/api/history?q=${encodeURIComponent(person)}`)).entries).toEqual([])
     const after = (await sql(`SELECT id, coalesce(email, 'NULL'), note FROM ${where} ORDER BY id`)).rows as unknown[][]
     expect(after.map(r => r.map(String))).toEqual([['1', 'NULL', 'keep me'], ['2', other, 'and me']])
 

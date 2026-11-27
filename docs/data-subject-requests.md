@@ -153,10 +153,23 @@ You record that decision once, per table, in the [DPDP inventory](dpdp-inventory
   them from `main` after the erasure (`fox branch reset <name>`). `fox subject find` again afterwards to
   confirm nothing is left.
 - **The ledger:** see [The Blackbox keeps statement text](#the-blackbox-keeps-statement-text)
-  below. The text of a statement that wrote the person's values stays in the
-  ledger. Note it in your response to the request if it applies.
-- **The databases' audit log (pgAudit):** `fox audit-log purge --user <login>` removes
-  the statement text a database login left; the records stay.
+  below. An erasure request redacts the entries still holding the person's
+  values, with a seal; schema changes holding one are kept and listed. Without
+  one, the text stays in the ledger: note it in your response to the request
+  if it applies.
+- **Query history, saved queries and change requests:** an erasure request
+  deletes every query history entry, anyone's, holding one of the values, and
+  replaces them with placeholders in decided change requests. Saved queries
+  and open change requests holding one are listed, for their owners and
+  approvers to delete or decide.
+- **The databases' audit log (pgAudit):** an erasure request removes the
+  forensic text holding one of the values, and lists the raw files not yet
+  collected with when they go. Without one, `fox audit-log purge --user <login>` removes
+  the statement text a database login left; the records stay. Text forwarded
+  to a SIEM is outside FoxByte.
+- **The vault:** an erasure request given an Aadhaar number deletes the
+  vault's record of it, unless a law keeps the number, and finds the rows
+  holding its reference key on every branch.
 - **Backups and snapshots:** they are not edited. They age out under their
   retention; restoring one brings the data back, so re-apply the erasure after a
   restore.

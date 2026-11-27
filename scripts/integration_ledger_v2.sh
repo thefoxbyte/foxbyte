@@ -1648,6 +1648,8 @@ LEG="$(pg pg-v2red "SELECT max(id) FROM bb.schema_ledger WHERE actor = 'agent-le
 $S blackbox checkpoint v2red >/dev/null 2>&1
 assert_eq "before: the chain verifies, and the anchor holds" \
   "$($S ledger verify v2red 2>&1 | grep -c 'ledger intact')|$($S blackbox integrity v2red 2>&1 | grep -c 'ledger integrity: INTACT')" "1|1"
+# Said only when the anchor does not hold, so a failure above shows why.
+$S blackbox integrity v2red 2>&1 | grep -q 'ledger integrity: INTACT' || { echo "--- integrity said ---"; $S blackbox integrity v2red 2>&1 | tail -12; }
 OUT="$(printf 'email:%s\n' "$PV" | $S dpdp erase new --json 2>&1)"
 EID="$(hjson "print(d['id'])" <<<"$OUT" 2>/dev/null)"
 assert_eq "the plan says what each branch's Blackbox holds: a data change to redact, a schema change kept, an original to delete" \

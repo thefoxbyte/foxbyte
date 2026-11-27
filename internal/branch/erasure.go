@@ -66,6 +66,9 @@ type ErasureException struct {
 	Keep     DPDPKeep   `json:"keep"`
 	Ends     *time.Time `json:"ends,omitempty"` // when the event's date was given
 	Text     string     `json:"text"`
+	// Categories are what the place kept holds: an Aadhaar number a law keeps
+	// keeps its vault record too (section 8).
+	Categories []string `json:"categories,omitempty"`
 }
 
 // The things a plan may do to a table's rows.
@@ -134,6 +137,9 @@ type ErasurePlan struct {
 	// Blackbox is what the branch's Blackbox holds of the values (step 3);
 	// nil where the branch cannot say.
 	Blackbox *ErasureText `json:"blackbox,omitempty"`
+	// Copies are what the install keeps of the person beside the branches
+	// (step 3b): on main's plan only.
+	Copies *ErasureCopies `json:"copies,omitempty"`
 }
 
 // ErasureText is what a Blackbox holds of a person's values: data changes
@@ -152,6 +158,7 @@ type ErasureTextDone struct {
 	Flagged   []int64 `json:"flagged"`         // schema changes holding a value, kept
 	Entry     int64   `json:"entry,omitempty"` // the ERASURE REDACT entry; 0 when nothing was redacted
 	Originals int     `json:"originals"`
+	IDs       []int64 `json:"ids,omitempty"` // the entries redacted
 }
 
 // Summary is the plan in a line, for the security log: counts, never a value
@@ -217,7 +224,12 @@ type ErasureResult struct {
 	Statistics *time.Time `json:"statistics,omitempty"`
 	// Blackbox is what the redaction did, in the same transaction.
 	Blackbox *ErasureTextDone `json:"blackbox,omitempty"`
-	Notes    []string         `json:"notes"`
+	// AadhaarPlaces is how many of the Aadhaar exposure report's places, in
+	// the rows erased, were removed with them.
+	AadhaarPlaces int `json:"aadhaarPlaces,omitempty"`
+	// Copies is what was removed beside the branches (main's result only).
+	Copies *ErasureCopiesDone `json:"copies,omitempty"`
+	Notes  []string           `json:"notes"`
 }
 
 // RewritesPending counts the tables still to be rewritten.
@@ -247,6 +259,9 @@ type ErasureApply struct {
 	// Seed is main's rows, by key, for a masked branch, whose masks are not
 	// the person's values but are still the person's rows (section 6).
 	Seed ErasureSeed
+	// VaultRefs are the vault's reference keys for the request's Aadhaar
+	// numbers: a column the vault migrated holds the key (section 4).
+	VaultRefs []string
 }
 
 // ErasureSeed is rows found by their keys rather than by a value: for each
@@ -263,7 +278,10 @@ type ErasureEngine struct {
 	// changing nothing; with the plan's fingerprint, and the keys of the rows
 	// it would change (the seed a masked branch is planned from). seed, when
 	// not nil, finds rows by key as well as by value.
-	Plan func(branch string, values []ErasureValue, events map[string]string, actor string, seed ErasureSeed) (ErasurePlan, string, ErasureSeed, error)
+	Plan func(branch string, values []ErasureValue, events map[string]string, actor string, seed ErasureSeed, vaultRefs []string) (ErasurePlan, string, ErasureSeed, error)
+	// Forms are the strings a text is searched for: each value as given and
+	// in its normalised forms (the Blackbox, history, the audit log).
+	Forms func(values []ErasureValue) []string
 	// Apply finds the rows again in one transaction and, if the plan's
 	// fingerprint is the one given, applies it and commits. Otherwise it
 	// changes nothing and returns the plan as it is now, with
@@ -412,11 +430,13 @@ func NewErasure(s *auth.Store, branchName string, values []ErasureValue, events 
 	if err != nil {
 		return ErasureView{}, err
 	}
-	plan, fp, seed, err := eng.Plan(branchName, values, events, actor, nil)
+	vrefs, vaultNote := erasureVaultRefs(s, eng, values, actor)
+	plan, fp, seed, err := eng.Plan(branchName, values, events, actor, nil, vrefs)
 	if err != nil {
 		return ErasureView{}, err
 	}
-	branches := planBranches(eng, nil, values, events, actor, seed)
+	plan.Copies = previewCopies(s, eng, values, vrefs, vaultNote)
+	branches := planBranches(eng, nil, values, events, actor, seed, vrefs)
 	rj, _ := json.Marshal(refs)
 	ej, _ := json.Marshal(events)
 	pj, _ := json.Marshal(plan)
@@ -487,7 +507,8 @@ func ReplanErasure(s *auth.Store, id int64, values []ErasureValue, actor string)
 	switch v.State {
 	case auth.ErasurePlanned:
 	case auth.ErasureApplied:
-		branches := planBranches(eng, v.Branches, values, v.Events, actor, resultSeed(v.Result))
+		refs, _ := erasureVaultRefs(s, eng, values, actor)
+		branches := planBranches(eng, v.Branches, values, v.Events, actor, resultSeed(v.Result), refs)
 		bj, _ := json.Marshal(branches)
 		if _, err := s.SaveErasureBranches(id, string(bj)); err != nil {
 			return v, err
@@ -496,11 +517,13 @@ func ReplanErasure(s *auth.Store, id int64, values []ErasureValue, actor string)
 	default:
 		return v, fmt.Errorf("%w: request %d is %s", ErrErasureState, id, v.State)
 	}
-	plan, fp, seed, err := eng.Plan(v.Branch, values, v.Events, actor, nil)
+	refs, vaultNote := erasureVaultRefs(s, eng, values, actor)
+	plan, fp, seed, err := eng.Plan(v.Branch, values, v.Events, actor, nil, refs)
 	if err != nil {
 		return v, err
 	}
-	branches := planBranches(eng, nil, values, v.Events, actor, seed)
+	plan.Copies = previewCopies(s, eng, values, refs, vaultNote)
+	branches := planBranches(eng, nil, values, v.Events, actor, seed, refs)
 	pj, _ := json.Marshal(plan)
 	if _, err := s.SaveErasurePlan(id, string(pj), fp, actor); err != nil {
 		return v, err
@@ -531,6 +554,7 @@ func ApplyErasure(s *auth.Store, id int64, values []ErasureValue, actor string) 
 	if err := s.ClaimErasure(id, v.Fingerprint, actor); err != nil {
 		return v, err
 	}
+	refs, _ := erasureVaultRefs(s, eng, values, actor)
 	var (
 		plan ErasurePlan
 		fp   string
@@ -541,7 +565,7 @@ func ApplyErasure(s *auth.Store, id int64, values []ErasureValue, actor string) 
 	err = withErasingLock(v.Branch, func() error {
 		var aerr error
 		plan, fp, res, aerr = eng.Apply(v.Branch, ErasureApply{ID: id, UID: v.UID, Values: values, Events: v.Events,
-			Fingerprint: v.Fingerprint, Actor: actor})
+			Fingerprint: v.Fingerprint, Actor: actor, VaultRefs: refs})
 		if aerr != nil {
 			return aerr
 		}
@@ -579,7 +603,18 @@ func ApplyErasure(s *auth.Store, id int64, values []ErasureValue, actor string) 
 	// whose plan changed, or that cannot be erased, is skipped and said so,
 	// for ApplyErasureBranch.
 	v.Result = &res
-	applyBranches(s, eng, v, values, actor, "")
+	_ = applyBranches(s, eng, v, values, actor, "", refs)
+	// Then what the install keeps beside the branches (step 3b), last: the
+	// vault's record goes once no branch is left to hold its key unerased.
+	nv, err := GetErasure(s, id)
+	if err != nil {
+		return nv, err
+	}
+	res.Copies = applyCopies(s, eng, nv, values, actor, refs)
+	rj, _ = json.Marshal(res)
+	if _, err := s.SaveErasureResult(id, string(rj)); err != nil {
+		return nv, fmt.Errorf("the erasure was applied, but recording what it removed beside the branches failed: %w", err)
+	}
 	return GetErasure(s, id)
 }
 

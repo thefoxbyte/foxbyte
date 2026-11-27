@@ -215,9 +215,20 @@ fox dpdp erase list
   still verify (`fox blackbox integrity`, `fox-verify`). A value is found as it
   was given and in its normalised form, case-blind; written another way in a
   statement, it is not.
+- **Beside the branches**, after main and every branch: every query history
+  entry, anyone's, whose statement or error holds a value is deleted (saved
+  queries holding one are listed for their owners, and kept); the audit log's
+  forensic texts holding one are removed from their files (the raw files not
+  yet collected are listed with when they go); decided change requests have
+  the values replaced by placeholders (open ones are listed, and left until
+  decided); the Aadhaar exposure reports' places in what was removed are
+  deleted; and the vault's record of an Aadhaar number given is deleted, its
+  reference key first matched on every branch, unless a law keeps an Aadhaar
+  column. The plan says what it found of each, in counts.
 
-What a request does not reach yet: query history, the audit log's forensic
-text, change requests, the vault, restores of an earlier copy, and backups. Those are the next steps of F4 (`docs/FOX_F4_Erasure_Design.md`,
+What a request does not reach: text the audit log forwarded to a SIEM, which is
+outside FoxByte, and the hash of each statement's text the audit log's chain keeps
+(someone who guesses a text can check it against that hash). Not yet: restores of an earlier copy, and backups. Those are the next steps of F4 (`docs/FOX_F4_Erasure_Design.md`,
 section 20); until they are built, the person can remain in them, and every
 plan says so. FoxByte's reading of erasure has not yet been reviewed by a
 privacy lawyer or a storage engineer.
