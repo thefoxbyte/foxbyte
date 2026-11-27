@@ -235,3 +235,31 @@ func TestReapplySets(t *testing.T) {
 		t.Fatal("a clear it cannot read was not refused")
 	}
 }
+
+// A row cleared is found holding the person again when a column it cleared
+// holds a value again (F4 step 5's search by key).
+func TestHoldsAgain(t *testing.T) {
+	s := func(v string) *string { return &v }
+	cases := []struct {
+		v     *string
+		null  bool
+		want  *string
+		paths []string
+		holds bool
+	}{
+		{nil, true, nil, nil, false},
+		{s("asha@example.com"), true, nil, nil, true},
+		{s("[erased]"), false, s("[erased]"), nil, false},
+		{s("asha@example.com"), false, s("[erased]"), nil, true},
+		{s(`{"contact":{"mobile":null},"plan":"gold"}`), false, nil, []string{"$.contact.mobile"}, false},
+		{s(`{"contact":{"mobile":"98765 43210"},"plan":"gold"}`), false, nil, []string{"$.contact.mobile"}, true},
+	}
+	for i, c := range cases {
+		if got := holdsAgain(c.v, c.null, c.want, c.paths); got != c.holds {
+			t.Errorf("case %d: holds %v, want %v", i, got, c.holds)
+		}
+	}
+	if !sameJSON(`{"a":1, "b":[1,2]}`, `{"b":[1,2],"a":1}`) || sameJSON(`{"a":1}`, `{"a":2}`) {
+		t.Error("sameJSON")
+	}
+}

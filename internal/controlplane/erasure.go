@@ -114,6 +114,65 @@ func registerErasure(mux *http.ServeMux, store *auth.Store) {
 		}
 		writeJSON(w, 200, v)
 	})
+	// The outcomes and "clears on", read now (F4 step 5). Free.
+	mux.HandleFunc("GET /api/dpdp/erasures/{id}/outcomes", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(w, r) {
+			return
+		}
+		n, ok := id(w, r)
+		if !ok {
+			return
+		}
+		v, err := branch.GetErasure(store, n)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, branch.ErasureOutcomesFor(store, v))
+	})
+	// The same, with every branch searched again by the request's row keys:
+	// the engine's (Enterprise).
+	mux.HandleFunc("POST /api/dpdp/erasures/{id}/check", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(w, r) {
+			return
+		}
+		n, ok := id(w, r)
+		if !ok {
+			return
+		}
+		v, err := branch.GetErasure(store, n)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		o, err := branch.RecheckErasure(store, v)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, o)
+	})
+	// The evidence, for an auditor: counts only, or with the row keys when
+	// asked (?keys=1), which the security log records. Free.
+	mux.HandleFunc("GET /api/dpdp/erasures/{id}/evidence", func(w http.ResponseWriter, r *http.Request) {
+		if !admin(w, r) {
+			return
+		}
+		n, ok := id(w, r)
+		if !ok {
+			return
+		}
+		u, _ := auth.UserFrom(r.Context())
+		ev, err := branch.ErasureEvidenceFor(store, n, branch.ErasureEvidenceOptions{Keys: r.URL.Query().Get("keys") == "1", By: u.Email})
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		if r.URL.Query().Get("download") == "1" {
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="erasure-%d-evidence.json"`, n))
+		}
+		writeJSON(w, 200, ev)
+	})
 	mux.HandleFunc("POST /api/dpdp/erasures", func(w http.ResponseWriter, r *http.Request) {
 		if !admin(w, r) || !requireFeature(w, edition.DPDP) {
 			return

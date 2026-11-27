@@ -160,6 +160,10 @@ func registerLedgerV2(mux *http.ServeMux) {
 		if err := branch.ExportLedger(name, w); err != nil {
 			// Headers may be out already; the truncated body plus the log is all we can do.
 			http.Error(w, err.Error(), 500)
+			return
 		}
+		// Recorded, as an erasure lists the Blackbox exports (F4 step 5).
+		u, _ := auth.UserFrom(r.Context())
+		branch.RecordLedgerExport(secLog, name, u.Email, remoteIP(r))
 	}))
 }

@@ -607,7 +607,7 @@ The claims marked **(prototype)**, proven in a suite like F5's
 | 2 | Every branch; branches made before it; the maximum age (**built**, `feat/f4-erasure-branches`) | `fox dpdp erase status`, `apply --branch` | the branches list, remake and delete |
 | 3 | Statement text: placeholders, the Blackbox's sealed redaction (**3a built**, `feat/f4-erasure-text`), history, forensic text, change requests, derived tables, the vault (**3b built**, `feat/f4-erasure-copies`) | | |
 | 4 | Restores refused and re-applied (**built**, `feat/f4-erasure-restores`) | `--after-erasure reapply --reason` | the Integrity page's branch-before; Restores on the request |
-| 5 | The outcomes, "clears on", the copies outside reach, the evidence export; exports and tars recorded | `fox dpdp erase evidence` | evidence |
+| 5 | The outcomes, "clears on", the copies outside reach, the evidence export; exports and tars recorded (**built**, `feat/f4-erasure-outcomes`) | `fox dpdp erase status`, `evidence [--keys]`; `fox backup target left`, `forget` | Outcomes on the request; Evidence (JSON) |
 
 **Step 1, as built (25 November 2026).** A request keeps no value, so
 `apply` asks for the values again (decided 25 November): they are checked
@@ -726,6 +726,37 @@ by id (`bb.erasure_redact_ids`; the originals' ids are recorded from now on),
 only where the copy is of that same branch; then every table it changed is
 rewritten. A failed re-apply keeps a branch closed, saying so, and removes a
 restore copy. Backups themselves are step 5. The suite found one gap, closed here on main as on the copy: a redaction left the statement's old version in `bb.schema_ledger`'s file and the deleted original's bytes in `bb.ledger_text`'s, so both are now rewritten with the request's tables (`VACUUM FULL`, never left for later) when a redaction changed them. A value sent in one string with a schema change stays, by design: a schema change's text is kept as written and only flagged (step 3a).
+
+**Step 5, as built (27 November 2026).** Decided that day: an install tar made
+before the erasure that is still in FoxByte's exports folder makes "clears on"
+read never while it is there, naming the file, as a branch made before it
+does; one written elsewhere with `--out` is listed outside FoxByte's reach.
+The evidence gives counts and the values' last four characters; `--keys` (the
+console's "With the row keys") adds the row keys, which identify the person,
+and the security log says which was taken (`erasure.evidence`). The outcomes
+are read when asked, never stored: `fox dpdp erase status`, `GET
+/api/dpdp/erasures/{id}/outcomes` and the request's Outcomes panel; `status`
+and `POST …/check` also search main and every branch the request erased
+again by its row keys (Enterprise), read-only, so a row written back or a
+branch restored shows as **lost**. The backups' date is reckoned from the
+interval and the number kept (the prune after the N-th backup since the last
+rewrite), raised to the bucket's Object Lock default where there is one, and
+met once the oldest backup kept started after the rewrite; it is never while
+backups are off, a rewrite is open, the target holds an archive kept from
+before an upgrade, or a target moved away from keeps its backups. None of
+those copies was recorded before, so each is recorded from now on: an install
+tar (`backup.export`: its path, branches and time; from a host, the host's
+path, and a host lists its exports folder with every `dpdp erase` command it
+forwards, as the VM cannot read it), a Blackbox export (`ledger.export`), and
+the target moved away from (`backup.target`; `fox backup target left` lists
+them, `fox backup target forget <target> --reason` records an admin's word
+that its backups are deleted). The audit log's default-mode records clear when
+their retention ends; a law's exception on its end date, or "not known" when
+the event's date was not given. The copies outside are every query result and
+Blackbox exported from an erased branch before the erasure, tars written
+elsewhere, realtime slots and keys, pipelines and continuous imports (a
+warning: their source brings the person back), the SIEM, backups of the state
+directory and freed disk blocks.
 
 **Sign-off.** The review plan asks that a privacy lawyer and a storage-engine
 engineer approve F4 together before erasure is built. Until they have, the

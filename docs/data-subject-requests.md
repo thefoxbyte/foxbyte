@@ -174,7 +174,17 @@ You record that decision once, per table, in the [DPDP inventory](dpdp-inventory
   retention. Restoring one to before an erasure request brings the data back,
   so FoxByte refuses it; an admin may go ahead with `--after-erasure reapply`,
   and the request is applied to the copy again before it opens. Without an
-  erasure request, re-apply the erasure yourself after a restore.
+  erasure request, re-apply the erasure yourself after a restore. The
+  request's **clears on** date says when the last backup holding the person
+  goes (`fox dpdp erase status`), or why it never will as things stand: an
+  install tar from before it, backups switched off, an archive or backup
+  target left behind.
+- **Copies outside FoxByte:** the request lists them and never claims them:
+  query results and Blackbox exports taken before the erasure, tars written
+  elsewhere, realtime subscribers, pipelines and imports (their source brings
+  the person back), a SIEM, backups of the state directory. Deal with each in
+  your own process. `fox dpdp erase evidence` is the record to hand an
+  auditor.
 
 Record what you did, and when, in your own register of requests: FoxByte's logs
 say who ran which statement, not why.

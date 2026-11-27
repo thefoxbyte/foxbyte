@@ -45,7 +45,8 @@ import (
 
 func init() {
 	branch.SetErasure(branch.ErasureEngine{Refs: erasureRefs, Plan: erasurePlan, Apply: erasureApply,
-		Settle: erasureSettle, AppliedOn: erasureAppliedOn, Forms: erasureForms, Reapply: erasureReapply})
+		Settle: erasureSettle, AppliedOn: erasureAppliedOn, Forms: erasureForms, Reapply: erasureReapply,
+		Recheck: erasureRecheck})
 }
 
 const (

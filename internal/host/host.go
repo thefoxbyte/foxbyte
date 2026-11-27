@@ -16,7 +16,10 @@ package host
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"github.com/thefoxbyte/foxbyte/internal/branch"
 	"github.com/thefoxbyte/foxbyte/internal/brand"
 	"io"
 	"net/http"
@@ -90,6 +93,12 @@ func Maybe(args []string) (handled bool, err error) {
 	}
 	if sub == "pg" && len(args) > 1 && args[1] == "upgrade" {
 		return true, hostPgUpgrade(args[2:])
+	}
+	if sub == "dpdp" && len(args) > 1 && args[1] == "erase" {
+		// The tars in this machine's exports folder, which the engine in
+		// the VM cannot read: an erasure counts the ones made before it
+		// (F4 step 5).
+		return true, hostForward(WithHostExports(args))
 	}
 	if sub == "start" {
 		// Look for a newer release while the stack starts; the notice (if any)
@@ -356,4 +365,15 @@ func isELF(path string) bool {
 		return false
 	}
 	return magic == [4]byte{0x7f, 'E', 'L', 'F'}
+}
+
+// WithHostExports adds this machine's exports folder, listed, to a `dpdp
+// erase` command forwarded into the VM.
+func WithHostExports(args []string) []string {
+	dir := branch.ExportsDir()
+	b, err := json.Marshal(branch.HostExports{Dir: dir, Checked: time.Now().UTC(), Tars: branch.ListTars(dir)})
+	if err != nil {
+		return args
+	}
+	return append(append([]string(nil), args...), "--host-exports", base64.StdEncoding.EncodeToString(b))
 }

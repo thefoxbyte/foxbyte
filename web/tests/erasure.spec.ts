@@ -119,6 +119,24 @@ test('a request made on main finds the person on a branch, erases them there onl
     await expect(detail.getByTestId(`erasure-branch-${kid}`)).toContainText('deleted by')
     await expect(page.getByTestId('erasure-made-before').locator('li', { hasText: kid })).toHaveCount(0)
     await expect(page.getByRole('table', { name: 'Erasure requests' })).toContainText('applied')
+
+    // The outcomes (step 5): with the branch made before it deleted, the
+    // dependent branches are cleared; the one date is given, or why not; the
+    // branches searched again by row key find no one; the evidence downloads.
+    const outcomes = page.getByTestId('erasure-outcomes')
+    await expect(outcomes.getByTestId('erasure-outcome-live')).toContainText('Met')
+    await expect(outcomes.getByTestId('erasure-outcome-branches')).toContainText('Met')
+    await expect(outcomes.getByTestId('erasure-clears-on')).toContainText('Clears on:')
+    await expect(outcomes.getByTestId('erasure-outside-disk')).toContainText('freed disk blocks')
+    await outcomes.getByTestId('erasure-check').click()
+    await expect(outcomes.getByTestId('erasure-rechecked')).toBeVisible({ timeout: 60_000 })
+    await expect(outcomes.getByTestId('erasure-outcome-live')).toContainText('none holds the person')
+    const ev = await page.request.get(await outcomes.getByTestId('erasure-evidence').getAttribute('href') ?? '')
+    expect(ev.ok()).toBeTruthy()
+    const doc = await ev.json()
+    expect(doc.format).toBe('erasure-evidence/1')
+    expect(doc.keys).toBe(false)
+    expect(JSON.stringify(doc)).not.toContain(person)
   } finally {
     await page.request.delete(`/api/branches/${kid}`)
     await page.request.delete(`/api/branches/${copy}`)

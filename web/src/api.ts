@@ -1323,6 +1323,26 @@ export const deleteErasureBranch = (id: number, branch: string) =>
 export const getBranchAges = () => req('GET', `${API}/api/dpdp/branch-ages`) as Promise<{ maxAgeHours: number; branches: BranchAge[] }>
 export const withdrawErasure = (id: number) => req('POST', `${erasureURL}/${id}/withdraw`) as Promise<ErasureRequest>
 
+// A request's outcomes and its one date (F4 step 5): read now, never stored.
+// check searches every branch again by the request's row keys (Enterprise).
+export type ErasureOutcome = {
+  key: string; name: string
+  state: 'met' | 'pending' | 'never' | 'lost' | 'kept' | 'not traced' | 'not applicable' | 'outside'
+  date?: string; estimated?: boolean; why?: string; evidence: string[]
+}
+export type ErasureCopyOut = { kind: string; what: string; at?: string; branch?: string; warn?: boolean }
+export type ErasureOutcomes = {
+  request: number; checked: string; outcomes: ErasureOutcome[]; clearsOn?: string
+  never: string[]; unknown: string[]; outside: ErasureCopyOut[]; notes: string[]
+  recheck?: { checked: string; branches: { branch: string; error?: string; tables: { schema: string; table: string; found: number }[] }[] }
+}
+export const getErasureOutcomes = (id: number) => req('GET', `${erasureURL}/${id}/outcomes`) as Promise<ErasureOutcomes>
+export const checkErasure = (id: number) => req('POST', `${erasureURL}/${id}/check`) as Promise<ErasureOutcomes>
+// The evidence for an auditor, as a JSON download: counts only, or with the
+// row keys, which identify the person (the security log records which).
+export const erasureEvidenceUrl = (id: number, keys = false) =>
+  `${erasureURL}/${id}/evidence?download=1${keys ? '&keys=1' : ''}`
+
 export const accessReviewCsvUrl = (dormant: number, section: 'accounts' | 'keys' | 'branches' | 'applications' | 'vault') =>
   `${API}/api/access-review?dormant=${dormant}&format=csv&section=${section}`
 
