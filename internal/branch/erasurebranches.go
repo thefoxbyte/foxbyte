@@ -160,7 +160,7 @@ var (
 // planBranches plans every branch. prior's applied branches are kept as they
 // are; seed is main's rows by key, for the masked branches.
 func planBranches(eng *ErasureEngine, prior []ErasureBranch, values []ErasureValue, events map[string]string,
-	actor string, seed ErasureSeed) []ErasureBranch {
+	actor string, seed ErasureSeed, refs []string) []ErasureBranch {
 	kept := map[string]ErasureBranch{}
 	for _, b := range prior {
 		if b.State == BranchApplied {
@@ -202,7 +202,7 @@ func planBranches(eng *ErasureEngine, prior []ErasureBranch, values []ErasureVal
 		if e.Masked {
 			s = seed
 		}
-		plan, fp, _, err := eng.Plan(info.Name, values, events, actor, s)
+		plan, fp, _, err := eng.Plan(info.Name, values, events, actor, s, refs)
 		if err != nil {
 			e.State, e.Why = BranchListed, "it could not be planned: "+firstLine(err.Error())
 			out = append(out, e)
@@ -252,7 +252,7 @@ func doneAt(r *ErasureResult) time.Time {
 
 // applyBranches applies the request to each planned branch, or to only the
 // one named (a planned or skipped one), saving the request after each.
-func applyBranches(s *auth.Store, eng *ErasureEngine, v ErasureView, values []ErasureValue, actor, only string) error {
+func applyBranches(s *auth.Store, eng *ErasureEngine, v ErasureView, values []ErasureValue, actor, only string, refs []string) error {
 	seed := resultSeed(v.Result)
 	save := func() error {
 		bj, _ := json.Marshal(v.Branches)
@@ -270,7 +270,11 @@ func applyBranches(s *auth.Store, eng *ErasureEngine, v ErasureView, values []Er
 		case only != "" && e.State != BranchPlanned && e.State != BranchSkipped:
 			return fmt.Errorf("%w: %s is %s in request %d", ErrErasureState, e.Branch, e.State, v.ID)
 		}
-		last = applyOneBranch(eng, v, e, values, actor, seed)
+		last = applyOneBranch(eng, v, e, values, actor, seed, refs)
+		// The Aadhaar log report's places in the Blackbox entries it redacted.
+		if e.State == BranchApplied && e.Result != nil && e.Result.Blackbox != nil {
+			_, _ = s.DeleteAadhaarLogPlaces("blackbox", e.Branch, e.Result.Blackbox.IDs)
+		}
 		if err := save(); err != nil {
 			return err
 		}
@@ -313,7 +317,7 @@ func applyBranches(s *auth.Store, eng *ErasureEngine, v ErasureView, values []Er
 
 // applyOneBranch applies the request to one branch and records how it went
 // in e. The error is why it was skipped.
-func applyOneBranch(eng *ErasureEngine, v ErasureView, e *ErasureBranch, values []ErasureValue, actor string, seed ErasureSeed) error {
+func applyOneBranch(eng *ErasureEngine, v ErasureView, e *ErasureBranch, values []ErasureValue, actor string, seed ErasureSeed, refs []string) error {
 	skip := func(why string, err error) error {
 		e.State, e.Why = BranchSkipped, why
 		return err
@@ -337,7 +341,7 @@ func applyOneBranch(eng *ErasureEngine, v ErasureView, e *ErasureBranch, values 
 	}
 	err := withErasingLock(e.Branch, func() error {
 		plan, fp, res, err := eng.Apply(e.Branch, ErasureApply{ID: v.ID, UID: v.UID, Values: values, Events: v.Events,
-			Fingerprint: e.Fingerprint, Actor: actor, Seed: s})
+			Fingerprint: e.Fingerprint, Actor: actor, Seed: s, VaultRefs: refs})
 		if errors.Is(err, ErrErasurePlanChanged) {
 			e.Plan, e.Fingerprint = &plan, fp
 			return err
@@ -376,7 +380,8 @@ func ApplyErasureBranch(s *auth.Store, id int64, name string, values []ErasureVa
 	if !found {
 		return v, fmt.Errorf("%w: %s is not in request %d; plan it again first (%s dpdp erase plan %d)", ErrInvalidRequest, name, id, brand.CLI, id)
 	}
-	aerr := applyBranches(s, eng, v, values, actor, name)
+	refs, _ := erasureVaultRefs(s, eng, values, actor)
+	aerr := applyBranches(s, eng, v, values, actor, name, refs)
 	nv, err := GetErasure(s, id)
 	if err != nil {
 		return nv, err

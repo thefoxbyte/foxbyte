@@ -1221,6 +1221,19 @@ export type ErasurePlan = {
   limits: string[]
   review: string
   blackbox?: { redact: number; flagged: number; originals: number }
+  copies?: ErasureCopies
+}
+// What the install keeps of the person beside the branches (F4 step 3b).
+export type ErasureCopies = {
+  history: number
+  saved: { id: number; owner: string; name: string }[]
+  forensic: number
+  rawAudit: number
+  rawUntil?: string
+  requests: number
+  openRequests: number[]
+  vault: number
+  notes: string[]
 }
 export type ErasureRewrite = { schema: string; table: string; size: number; state: 'done' | 'pending' | 'failed'; at?: string; why?: string; error?: string }
 export type ErasureResult = {
@@ -1233,6 +1246,8 @@ export type ErasureResult = {
   rewrites: ErasureRewrite[]
   statistics?: string
   blackbox?: { redacted: number; flagged: number[]; entry?: number; originals: number }
+  aadhaarPlaces?: number
+  copies?: { history: number; forensic: number; requests: number; vault: number; vaultKept: number; logPlaces: number; notes: string[] }
   notes: string[]
 }
 // Every branch but main (F4 step 2): planned with the request, applied with

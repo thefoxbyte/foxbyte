@@ -5325,7 +5325,7 @@ OUT="$(BVALS | $S dpdp erase apply "$BID" --yes 2>&1)"; RC=$?
 assert_eq "applied to main and every branch; the one whose plan changed is skipped, and the request says one is left" \
   "$RC|$(grep -cE '^  era +APPLIED +2 row\(s\) changed' <<<"$OUT")|$(grep -cE '^  ers +APPLIED +1 row' <<<"$OUT")|$(grep -cE '^  erk +SKIPPED +its plan changed since it was shown' <<<"$OUT")|$(grep -c 'applied on main, 1 branch(es) left' <<<"$OUT")" \
   "0|1|1|1|1"
-[ "$RC" = 0 ] || { echo "--- apply said ---"; tail -25 <<<"$OUT"; }
+{ [ "$RC" = 0 ] && grep -q 'applied on main, 1 branch(es) left' <<<"$OUT"; } || { echo "--- apply said ---"; tail -25 <<<"$OUT"; }
 assert_eq "…the person is gone from main, era (its own row too) and ers; erk is untouched; the other person stays everywhere" \
   "$(pg pg-main "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(pg pg-era "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(pg pg-ers "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(pg pg-erk "SELECT count(*) FROM br_people WHERE email = '$BE'")|$(pg pg-era "SELECT count(*) FROM br_people WHERE email = '$BO'")" \
   "0|0|0|3|1"
@@ -5371,6 +5371,75 @@ assert_eq "GET /api/dpdp/branch-ages: admins only" \
   "$(code "$KEY" https://localhost:8080/api/dpdp/branch-ages)|$(as "$KEY" https://localhost:8080/api/dpdp/branch-ages | hjson "print(d['maxAgeHours'])")" "200|0"
 $S dpdp unset br_people --branch main >/dev/null 2>&1
 BR
+
+echo "### 11bc. erasure beside the branches: history, saved queries, the audit log's text, change requests, the Aadhaar reports, the vault (point 11.2, F4 Gate 1 step 3b)"
+# Synthetic values only: CE an email, CA and CV Aadhaar numbers passing
+# Verhoeff and used nowhere else in the suite. CV goes into the vault, and
+# the branch keeps its reference key where the number stood. alice owns the
+# branch; test@ (KEY) is the admin.
+CE=cp.person@example.in; CA=732165490870; CV=841257369015
+CB() { for b in ecp ecq ecr ecs; do $S branch delete "$b" >/dev/null 2>&1; done; }
+CB
+$S audit-log setup --yes >/dev/null 2>&1; main_up
+$S branch create ecp >/dev/null 2>&1; $S branch owner ecp alice@foxbyte.dev >/dev/null 2>&1
+pg pg-ecp "CREATE TABLE cp_people (id int PRIMARY KEY, email text, aadhaar_no text, aadhaar_ref text)" >/dev/null
+pg pg-ecp "INSERT INTO cp_people VALUES (1, '$CE', '$CA', '$CV'), (2, 'cp.other@example.in', NULL, NULL)" >/dev/null
+pg pg-ecp "GRANT ALL ON cp_people TO db_client" >/dev/null
+$S pii scan --branch ecp >/dev/null 2>&1
+for id in $($S pii --branch ecp --json | hjson "print(' '.join(str(f['id']) for f in d['findings'] if f['table']=='cp_people' and f['state']=='suggested'))"); do
+  $S pii mark "$id" confirm --branch ecp >/dev/null 2>&1
+done
+CR="$($S vault tokenise --kind aadhaar "$CV" 2>&1 | awk '{print $1}')"
+pg pg-ecp "UPDATE cp_people SET aadhaar_ref = '$CR' WHERE id = 1" >/dev/null
+EQ=https://localhost:8080/api/branches/ecp
+as "$KA" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT id FROM cp_people WHERE email = '$CE'\"}" "$EQ/query" >/dev/null
+as "$KEY" -H 'Content-Type: application/json' -X POST -d "{\"sql\":\"SELECT ('7321' || '65490870')::int\"}" "$EQ/query" >/dev/null
+as "$KA" -H 'Content-Type: application/json' -X POST -d "{\"name\":\"cp find\",\"sql\":\"SELECT * FROM cp_people WHERE email = '$CE'\"}" "$SQ" >/dev/null
+code "$KEY" -X PUT -H 'Content-Type: application/json' -d '{}' "$EQ/audit/tables/public/cp_people" >/dev/null
+$S audit-log mode forensic --branch ecp --reason 'erasure test' --yes >/dev/null 2>&1
+PGPASSWORD="$KEY" psql "$GATEWAY/ecp?sslmode=require" -X -q -tA -c "UPDATE cp_people SET id = id WHERE email = '$CE' OR aadhaar_no = '$CA'" >/dev/null 2>&1
+for i in $(seq 1 30); do $S audit-log collect >/dev/null 2>&1; forensic_all | grep -q "$CE" && break; sleep 1; done
+$S pii aadhaar run --branch ecp --logs >/dev/null 2>&1
+assert_eq "(setup) the audit log kept the text, the Aadhaar report found the number in the table and in the logs" \
+  "$(forensic_all | grep -c "$CE" | awk '{print ($1 >= 1)}')|$(pg pg-ecp "SELECT count(*) FROM bb.aadhaar_places WHERE row_key = 'id=1' AND last4 = '0870'")|$($S pii aadhaar places --logs --branch ecp --json | hjson "print(len([p for p in d if p['last4'] == '0870']) >= 2)")" \
+  "1|1|True"
+# A change request decided, and one left open, each holding the email.
+$S branch create ecq >/dev/null 2>&1; $S branch create ecr >/dev/null 2>&1; $S branch create ecs >/dev/null 2>&1
+pg pg-ecq "CREATE TABLE cq_t (id int, e text DEFAULT '$CE')" >/dev/null
+pg pg-ecs "CREATE TABLE cs_t (id int, e text DEFAULT '$CE')" >/dev/null
+RQD="$($S branch request ecq --to ecr 2>&1 | grep -o 'request approve [0-9]*' | grep -o '[0-9]*')"
+$S request reject "$RQD" >/dev/null 2>&1
+RQO="$($S branch request ecs --to ecr 2>&1 | grep -o 'request approve [0-9]*' | grep -o '[0-9]*')"
+
+CVALS() { printf 'email:%s\naadhaar:%s\naadhaar:%s\n' "$CE" "$CA" "$CV"; }
+OUT="$(CVALS | $S dpdp erase new --json 2>&1)"
+CID="$(hjson "print(d['id'])" <<<"$OUT" 2>/dev/null)"
+assert_eq "the plan finds the copies: history of two people, alice's saved query, the audit log's text, the decided request, the open one, the vault's record" \
+  "$(hjson "c=d['plan']['copies']; print(c['history'] >= 2, [q['owner'] for q in c['saved']], c['forensic'] >= 1, c['requests'], c['openRequests'] == [$RQO], c['vault'])" <<<"$OUT")" \
+  "True ['alice@foxbyte.dev'] True 1 True 1"
+[ -n "$CID" ] || { echo "--- new said ---"; tail -10 <<<"$OUT"; }
+assert_eq "…and the branch's row is found by the vault's key as well as by its values" \
+  "$(hjson "b=[x for x in d['branches'] if x['branch']=='ecp'][0]['plan']; print(b['matched'])" <<<"$OUT")" "1"
+OUT="$(CVALS | $S dpdp erase apply "$CID" --yes --json 2>&1)"
+assert_eq "applied: history deleted, the audit log's text removed, the request rewritten, the vault's record deleted, the logs' places gone" \
+  "$(hjson "c=d['result']['copies']; print(c['history'] >= 2, c['forensic'] >= 1, c['requests'], c['vault'], c['logPlaces'] >= 2)" <<<"$OUT")" \
+  "True True 1 1 True"
+assert_eq "…the row cleared, its vault key with it, and the report's place in it gone" \
+  "$(pg pg-ecp "SELECT coalesce(email,'-') || coalesce(aadhaar_no,'-') || coalesce(aadhaar_ref,'-') FROM cp_people WHERE id = 1")|$(pg pg-ecp "SELECT count(*) FROM bb.aadhaar_places WHERE row_key = 'id=1'")|$(hjson "print([x for x in d['branches'] if x['branch']=='ecp'][0]['result']['aadhaarPlaces'] >= 1)" <<<"$OUT")" \
+  "---|0|True"
+assert_eq "no query history holds the values, for either person; alice's saved query is kept, for her to delete" \
+  "$(as "$KA" "$HU/history?q=$CE" | hjson 'print(len(d))')|$(as "$KEY" "$HU/history?q=7321" | hjson 'print(len(d))')|$(as "$KA" "$SQ" | grep -c 'cp find')" "0|0|1"
+assert_eq "the audit log keeps no text holding them, and its chain still verifies" \
+  "$(forensic_all | grep -c "$CE\|$CA")|$($S audit-log verify 2>&1 | grep -c '^audit log intact')" "0|1"
+assert_eq "the decided request holds none of them; the open one is left as it is, until decided" \
+  "$($S request show "$RQD" 2>&1 | grep -c "$CE")|$($S request show "$RQO" 2>&1 | grep -c "$CE")" "0|1"
+assert_eq "the vault no longer has the number" "$($S vault find --kind aadhaar "$CV" 2>&1 | head -1)" "(not found)"
+assert_eq "the Aadhaar log report keeps no place in the entries removed" \
+  "$($S pii aadhaar places --logs --branch ecp --json | hjson "print(len([p for p in d if p['last4'] == '0870' and p['source'] in ('history', 'audit')]))")" "0"
+assert_eq "the plan says what it cannot reach: the audit chain's hash of a text, and what went to a SIEM" \
+  "$(hjson "print(any('hash of each statement' in l for l in d['plan']['limits']))" <<<"$OUT")" "True"
+$S audit-log off --yes >/dev/null 2>&1; main_up
+CB
 
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes

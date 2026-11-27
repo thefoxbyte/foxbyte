@@ -260,6 +260,27 @@ function Detail({ r, licensed, onDone, onError, reload }: {
         {p.matched} row(s) hold a value; {p.rows} row(s) change. {p.searched} confirmed place(s) searched.
         {p.blocked && <b className="dpdp-gap"> It cannot be applied until the problems below are dealt with.</b>}
       </p>
+      {p.copies && (
+        <div className="muted" data-testid="erasure-copies-plan">
+          <p style={{ margin: '4px 0' }}>
+            Beside the branches: {p.copies.history} query history entr(ies) to delete, every actor's; {p.copies.forensic} audit
+            log text(s) to remove; {p.copies.requests} decided change request(s) to rewrite; {p.copies.vault} vault record(s) of the
+            Aadhaar number to delete.
+          </p>
+          {p.copies.saved.length > 0 && (
+            <p style={{ margin: '4px 0' }}>
+              Saved queries holding a value, kept for their owners to delete: {p.copies.saved.map(q => `“${q.name}” (${q.owner})`).join(', ')}.
+            </p>
+          )}
+          {p.copies.openRequests.length > 0 && (
+            <p style={{ margin: '4px 0' }}>Open change requests holding a value, left until decided: {p.copies.openRequests.map(i => `#${i}`).join(', ')}.</p>
+          )}
+          {p.copies.rawAudit > 0 && p.copies.rawUntil && (
+            <p style={{ margin: '4px 0' }}>{p.copies.rawAudit} raw audit file(s) not yet collected may hold one; they go by {when(p.copies.rawUntil)}.</p>
+          )}
+          {p.copies.notes.map((n, i) => <p key={i} style={{ margin: '4px 0' }}>{n}</p>)}
+        </div>
+      )}
       {p.blackbox && (
         <p className="muted" data-testid="erasure-blackbox-plan">
           Blackbox: {p.blackbox.redact} data change(s) hold a value, to be redacted with a seal; {p.blackbox.flagged} schema
@@ -288,6 +309,15 @@ function Detail({ r, licensed, onDone, onError, reload }: {
             {r.result.vacuumed && <> Vacuumed {when(r.result.vacuumed)}: removed from live queries.</>}
             {r.result.statistics && <> Statistics rewritten and the WAL switched out {when(r.result.statistics)}.</>}
           </p>
+          {r.result.copies && (
+            <p data-testid="erasure-copies-result">
+              Beside the branches: {r.result.copies.history} query history entr(ies) deleted; {r.result.copies.forensic} audit log
+              text(s) removed; {r.result.copies.requests} change request(s) rewritten; {r.result.copies.vault} vault record(s) deleted
+              {r.result.copies.vaultKept > 0 && <>, {r.result.copies.vaultKept} kept by law</>}; {r.result.copies.logPlaces} Aadhaar log report
+              place(s) removed.{r.result.aadhaarPlaces ? ` ${r.result.aadhaarPlaces} Aadhaar exposure report place(s) in the rows erased removed.` : ''}
+              {r.result.copies.notes.map((n, i) => <span key={i}> {n}</span>)}
+            </p>
+          )}
           {r.result.blackbox && (
             <p data-testid="erasure-blackbox-result">
               Blackbox: {r.result.blackbox.redacted} entr(ies) redacted with a seal

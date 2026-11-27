@@ -605,7 +605,7 @@ The claims marked **(prototype)**, proven in a suite like F5's
 |---|---|---|---|
 | 1 | The request, the plan and `main`: matched and referencing rows, actions from the inventory, exceptions, vacuum, rewrite (**built**, `feat/f4-erasure-main`) | `fox dpdp erase new`, `plan`, `apply`, `rewrite` (and `withdraw`, `list`, `show`) | Erasure requests: new, plan, apply |
 | 2 | Every branch; branches made before it; the maximum age (**built**, `feat/f4-erasure-branches`) | `fox dpdp erase status`, `apply --branch` | the branches list, remake and delete |
-| 3 | Statement text: placeholders, the Blackbox's sealed redaction (**3a built**, `feat/f4-erasure-text`), history, forensic text, change requests, derived tables, the vault (3b) | | |
+| 3 | Statement text: placeholders, the Blackbox's sealed redaction (**3a built**, `feat/f4-erasure-text`), history, forensic text, change requests, derived tables, the vault (**3b built**, `feat/f4-erasure-copies`) | | |
 | 4 | Restores refused and re-applied | `--after-erasure reapply` | |
 | 5 | The outcomes, "clears on", the copies outside reach, the evidence export; exports and tars recorded | `fox dpdp erase evidence` | evidence |
 
@@ -662,6 +662,41 @@ comparison), a sealed entry whose seal holds counts with the hash it was
 chained with. A change request carrying a data change whose original an
 erasure deleted is refused, saying why. Step 3b: query history, forensic
 text, change requests, the Aadhaar report's places, the vault.
+
+**Step 3b, as built (26 November 2026).** What the install keeps of the
+person beside the branches is found by value, as the Blackbox is (the values
+as given and normalised, case-blind, four characters or more), previewed in
+main's plan (`copies`) and removed after main and every branch are applied:
+
+- **Query history:** every actor's entry whose statement or error holds a
+  value is deleted (decision 8); saved queries holding one are listed with
+  their owners and kept, for them to delete.
+- **The audit log:** forensic texts holding a value are removed from their day
+  files, under the store's lock; the chain still verifies. It keeps each
+  text's hash (`text_sha`, unsalted), which the plan states as a limit: a
+  guessed text can be checked against it. Raw files not yet collected are
+  counted, with the time the last of them goes (48 hours after it was
+  written). Text forwarded to a SIEM is outside FoxByte.
+- **Change requests:** a decided request's statements holding a value are
+  given placeholders by main's own lexer (`bb._placeholders`), or the value
+  replaced by `[erased]` where that cannot be had; its note is scrubbed the
+  same way. An open request is listed by number and left as it is, since what
+  it shows is what its approver approves; once decided, a later request for
+  the person rewrites it.
+- **Derived tables:** the Aadhaar exposure report's places in the rows erased
+  (`bb.aadhaar_places`, by row key, on every branch applied) and the Aadhaar log
+  report's places in the history entries, audit records and Blackbox entries
+  removed (`aadhaar_log_places`) are deleted. The masking shadows follow their
+  base tables already.
+- **The vault:** the Aadhaar numbers given are looked up; the reference keys
+  found are matched as values on main and every branch (a row holding the key
+  where the number stood is the person's), and the vault's records are deleted
+  after the rows, unless a law exception keeps an Aadhaar column on a branch,
+  which the result says. A vault not set up, or not answering, is said, never
+  ignored.
+
+The request records counts, and the saved queries' owners and names and the
+open requests' numbers; never a value.
 
 **Sign-off.** The review plan asks that a privacy lawyer and a storage-engine
 engineer approve F4 together before erasure is built. Until they have, the

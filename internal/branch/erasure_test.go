@@ -34,6 +34,7 @@ type fakeErasure struct {
 	applyFPOn map[string]string // a branch's fingerprint at apply, when it differs
 	appliedOn []string
 	seeds     map[string]ErasureSeed // what each branch was planned or applied with
+	vaultRefs []string               // what the last plan was given
 }
 
 func (f *fakeErasure) install(t *testing.T) {
@@ -54,7 +55,15 @@ func (f *fakeErasure) install(t *testing.T) {
 			}
 			return out, nil
 		},
-		Plan: func(b string, _ []ErasureValue, _ map[string]string, _ string, seed ErasureSeed) (ErasurePlan, string, ErasureSeed, error) {
+		Forms: func(vs []ErasureValue) []string {
+			var out []string
+			for _, v := range vs {
+				out = append(out, v.Value)
+			}
+			return out
+		},
+		Plan: func(b string, _ []ErasureValue, _ map[string]string, _ string, seed ErasureSeed, vaultRefs []string) (ErasurePlan, string, ErasureSeed, error) {
+			f.vaultRefs = vaultRefs
 			if f.seeds == nil {
 				f.seeds = map[string]ErasureSeed{}
 			}

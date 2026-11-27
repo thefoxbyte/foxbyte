@@ -156,6 +156,42 @@ describe('Erasure requests', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: 'New request…' }) as HTMLButtonElement).disabled).toBe(true))
   })
 
+  it('says what it finds and removes beside the branches: history, the audit log, requests, the vault', async () => {
+    const copies = {
+      history: 3, saved: [{ id: 4, owner: 'alice@example.com', name: 'cp find' }], forensic: 2, rawAudit: 1,
+      rawUntil: '2026-11-27T09:00:00Z', requests: 1, openRequests: [12], vault: 1, notes: [],
+    }
+    const planned = request({ plan: { ...request().plan, copies } })
+    vi.mocked(getErasure).mockResolvedValue(planned)
+    page()
+    const list = await screen.findByRole('table', { name: 'Erasure requests' })
+    fireEvent.click(within(list).getByRole('button', { name: 'Open' }))
+    const plan = await screen.findByTestId('erasure-copies-plan')
+    expect(plan.textContent).toContain('3 query history entr(ies) to delete')
+    expect(plan.textContent).toContain('2 audit')
+    expect(plan.textContent).toContain('1 vault record(s)')
+    expect(plan.textContent).toContain('“cp find” (alice@example.com)')
+    expect(plan.textContent).toContain('#12')
+    expect(plan.textContent).toContain('1 raw audit file(s) not yet collected')
+
+    cleanup()
+    vi.mocked(getErasure).mockResolvedValue(request({
+      state: 'applied',
+      result: {
+        applied: '2026-11-25T10:00:00Z', by: 'dpo@example.com', tables: [], rows: 1, verified: true, rewrites: [], notes: [], aadhaarPlaces: 1,
+        copies: { history: 3, forensic: 2, requests: 1, vault: 0, vaultKept: 1, logPlaces: 2, notes: ['The vault\'s record of the Aadhaar number is kept: a law keeps the number.'] },
+      },
+    }))
+    page()
+    fireEvent.click(within(await screen.findByRole('table', { name: 'Erasure requests' })).getByRole('button', { name: 'Open' }))
+    const done = await screen.findByTestId('erasure-copies-result')
+    expect(done.textContent).toContain('3 query history entr(ies) deleted')
+    expect(done.textContent).toContain('1 kept by law')
+    expect(done.textContent).toContain('2 Aadhaar log report place(s) removed')
+    expect(done.textContent).toContain('1 Aadhaar exposure report place(s)')
+    expect(done.textContent).toContain('a law keeps the number')
+  })
+
   it('shows every branch, applies a skipped one on its own, and remakes one made before the erasure', async () => {
     const applied = request({
       state: 'applied',

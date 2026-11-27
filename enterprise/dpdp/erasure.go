@@ -45,7 +45,7 @@ import (
 
 func init() {
 	branch.SetErasure(branch.ErasureEngine{Refs: erasureRefs, Plan: erasurePlan, Apply: erasureApply,
-		Settle: erasureSettle, AppliedOn: erasureAppliedOn})
+		Settle: erasureSettle, AppliedOn: erasureAppliedOn, Forms: erasureForms})
 }
 
 const (
@@ -125,6 +125,16 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// erasureForms are the strings a text is searched for (textForms); none for
+// values that are not read as personal data.
+func erasureForms(values []branch.ErasureValue) []string {
+	ms, _, err := readValues(values)
+	if err != nil {
+		return nil
+	}
+	return textForms(values, ms)
 }
 
 func erasureRefs(values []branch.ErasureValue) ([]branch.ErasureRef, error) {
@@ -323,6 +333,10 @@ type state struct {
 	searched int
 	limits   []string
 	maxDepth bool
+	// vaultRefs are the vault's reference keys for the request's Aadhaar
+	// numbers (design, section 4): a column the vault migrated holds the key,
+	// not the number, and is searched for it.
+	vaultRefs []string
 }
 
 func (s *state) table(k tkey) (*tableRows, error) {
@@ -418,8 +432,26 @@ func (s *state) match() error {
 		if _, err := s.scanRows(t, true, nil, q+s.forUpdate("x"), args...); err != nil {
 			return fmt.Errorf("searching %s: %w", f.Where(), readErr(err))
 		}
+		if pii.Category(f.Category) == pii.Aadhaar && len(s.vaultRefs) > 0 {
+			q, args := refQuery(t.rel, f, s.vaultRefs)
+			if _, err := s.scanRows(t, true, nil, q+s.forUpdate("x"), args...); err != nil {
+				return fmt.Errorf("searching %s for the vault's reference keys: %w", f.Where(), readErr(err))
+			}
+		}
 	}
 	return nil
+}
+
+// refQuery finds the rows holding one of the vault's reference keys for the
+// person's Aadhaar number, compared exactly: a key is the vault's own text.
+func refQuery(r *relInfo, f branch.PIIFinding, refs []string) (string, []any) {
+	col := "x." + branch.QuoteIdent(f.Column)
+	sel := "SELECT x.tableoid, x.ctid::text, " + r.keyExpr("x") + " FROM " + r.rel + " x WHERE "
+	if f.Path == "" {
+		return sel + "btrim(" + col + "::text) = ANY($1::text[])", []any{refs}
+	}
+	return sel + `EXISTS (SELECT 1 FROM jsonb_path_query(` + col + `::jsonb, $2::jsonpath) AS v
+		WHERE jsonb_typeof(v) = 'string' AND btrim(v #>> '{}') = ANY($1::text[]))`, []any{refs, f.Path}
 }
 
 // matchKeys finds rows by key: main's rows, on a masked branch, whose masks
@@ -617,6 +649,25 @@ func (s *state) entriesOf(k tkey) entries {
 	return e
 }
 
+func categoriesOf(fs []branch.PIIFinding) []string {
+	out := make([]string, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, f.Category)
+	}
+	return out
+}
+
+func uniqueSorted(xs []string) []string {
+	sort.Strings(xs)
+	out := xs[:0]
+	for i, x := range xs {
+		if i == 0 || x != xs[i-1] {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 func exception(e *branch.DPDPEntry, column string, events map[string]string) branch.ErasureException {
 	x := branch.ErasureException{Column: column, Citation: e.Keep.Citation, Keep: e.Keep}
 	if d, ok := events[e.Keep.From]; ok {
@@ -682,7 +733,12 @@ func (s *state) decide(k tkey, events map[string]string) (*decided, error) {
 		switch e.table.Keep.Reason {
 		case "law":
 			d.act = branch.ErasureActKeptLaw
-			d.exceptions = append(d.exceptions, exception(e.table, "", events))
+			x := exception(e.table, "", events)
+			for c := range e.confirm {
+				x.Categories = append(x.Categories, categoriesOf(e.confirm[c])...)
+			}
+			x.Categories = uniqueSorted(x.Categories)
+			d.exceptions = append(d.exceptions, x)
 			return d, nil
 		case "contract":
 			d.notes = append(d.notes, "The entry keeps it under a contract ("+e.table.Keep.Citation+"); a contract does not override s.8(7), so it is erased.")
@@ -703,7 +759,9 @@ func (s *state) decide(k tkey, events map[string]string) (*decided, error) {
 	kept := 0
 	for _, c := range cols {
 		if ce := e.columns[c]; ce != nil && ce.Keep.Reason == "law" {
-			d.exceptions = append(d.exceptions, exception(ce, c, events))
+			x := exception(ce, c, events)
+			x.Categories = uniqueSorted(categoriesOf(e.confirm[c]))
+			d.exceptions = append(d.exceptions, x)
 			kept++
 			continue
 		}
@@ -937,7 +995,7 @@ func rewriteMax() int64 {
 // build runs the whole of finding and deciding, in tx: the plan, its
 // fingerprint, and the run's state for an apply.
 func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []branch.ErasureRef, events map[string]string,
-	actor string, lock bool, seed branch.ErasureSeed) (branch.ErasurePlan, string, *state, map[tkey]*decided, error) {
+	actor string, lock bool, seed branch.ErasureSeed, vaultRefs []string) (branch.ErasurePlan, string, *state, map[tkey]*decided, error) {
 	plan := branch.ErasurePlan{Branch: name, Made: time.Now().UTC(), By: actor, Refs: refs, Tables: []branch.ErasureTable{},
 		Review: branch.ErasureReview}
 	inv, err := branch.DPDPInventoryOf(name)
@@ -948,7 +1006,7 @@ func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []bran
 	if err != nil {
 		return plan, "", nil, nil, err
 	}
-	st := &state{cat: &catalog{ctx: ctx, tx: tx, rels: map[tkey]*relInfo{}}, lock: lock, ms: ms, inv: inv,
+	st := &state{cat: &catalog{ctx: ctx, tx: tx, rels: map[tkey]*relInfo{}}, lock: lock, ms: ms, inv: inv, vaultRefs: vaultRefs,
 		findings: rep.Findings, tables: map[tkey]*tableRows{}}
 	if err := st.match(); err != nil {
 		return plan, "", nil, nil, err
@@ -1065,7 +1123,8 @@ func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []bran
 		"Values are compared whole, after normalising case and separators.",
 		"In a JSON column, every value at a confirmed path in the person's rows is cleared.",
 		"In the Blackbox, a value is found in a statement as it was given and in its normalised form, case-blind; written another way there, it is not found.",
-		"Query history, the audit log's text, change requests, the vault, restores and the backups are the next steps of F4: until they are built, the person can remain in them.",
+		"Restores of an earlier copy and the backups are the next steps of F4: until they are built, the person can remain in them.",
+		"The audit log keeps, in its chain, a hash of each statement's text: someone who guesses a text can check it against that hash. Text it forwarded to a SIEM is outside FoxByte.",
 	)
 	if name == "main" {
 		plan.Limits = append(plan.Limits, "An HA standby, if there is one, follows main by replication, and is erased with it.")
@@ -1136,7 +1195,7 @@ func size(n int64) string {
 // read-only transaction that is rolled back; with the keys of the rows it
 // would change, the seed a masked branch is planned from.
 func erasurePlan(name string, values []branch.ErasureValue, events map[string]string, actor string,
-	seed branch.ErasureSeed) (branch.ErasurePlan, string, branch.ErasureSeed, error) {
+	seed branch.ErasureSeed, vaultRefs []string) (branch.ErasurePlan, string, branch.ErasureSeed, error) {
 	ms, refs, err := readValues(values)
 	if err != nil {
 		return branch.ErasurePlan{}, "", nil, err
@@ -1161,7 +1220,7 @@ func erasurePlan(name string, values []branch.ErasureValue, events map[string]st
 	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = '5min'"); err != nil {
 		return branch.ErasurePlan{}, "", nil, err
 	}
-	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, events, actor, false, seed)
+	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, events, actor, false, seed, vaultRefs)
 	if err != nil {
 		return plan, fp, nil, err
 	}
@@ -1264,7 +1323,7 @@ func erasureApply(name string, a branch.ErasureApply) (branch.ErasurePlan, strin
 		"set_config('bb.actor', $1, true)", fmt.Sprintf("erasure request #%d", a.ID)); err != nil {
 		return branch.ErasurePlan{}, "", res, err
 	}
-	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, a.Events, a.Actor, true, a.Seed)
+	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, a.Events, a.Actor, true, a.Seed, a.VaultRefs)
 	if err != nil {
 		return plan, fp, res, err
 	}
@@ -1348,7 +1407,22 @@ func erasureApply(name string, a branch.ErasureApply) (branch.ErasurePlan, strin
 	if red.Flagged == nil {
 		red.Flagged = []int64{}
 	}
+	if red.Entry > 0 {
+		// The entries it redacted, by their seals: the Aadhaar log report's
+		// places in them go too (the engine's caller removes those).
+		if err := tx.QueryRow(ctx, "SELECT coalesce(array_agg(id ORDER BY id), '{}') FROM bb.ledger_seals WHERE by_entry = $1", red.Entry).
+			Scan(&red.IDs); err != nil {
+			return plan, fp, res, fmt.Errorf("reading %s's seals (nothing was applied): %w", name, readErr(err))
+		}
+	}
 	res.Blackbox = &red
+	// The Aadhaar exposure report's places in the rows erased (design,
+	// section 9): a place names a row as the report keys it.
+	n, err := deleteAadhaarPlaces(ctx, tx, st, ds)
+	if err != nil {
+		return plan, fp, res, fmt.Errorf("removing %s's Aadhaar report places (nothing was applied): %w", name, readErr(err))
+	}
+	res.AadhaarPlaces = n
 	for _, t := range plan.Tables {
 		if t.Changes() {
 			res.Rows += t.Rows
@@ -1697,4 +1771,81 @@ func erasureAppliedOn(name, uid string) (bool, error) {
 	err = conn.QueryRow(ctx, `SELECT to_regclass('bb.erasures_applied') IS NOT NULL
 		AND EXISTS (SELECT 1 FROM bb.erasures_applied WHERE request_uid = $1)`, uid).Scan(&on)
 	return on, err
+}
+
+// aadhaarRowKey is a row's key as the Aadhaar exposure report writes it
+// (enterprise/pii rowKeySQL): id=42, or (a, b)=(1, x). ok is false for a row
+// with no key, which the report names by its position and is not matched.
+func aadhaarRowKey(cols []string, key string) (string, bool) {
+	if len(cols) == 0 || key == "" {
+		return "", false
+	}
+	var vals []*string
+	if err := json.Unmarshal([]byte(key), &vals); err != nil || len(vals) != len(cols) {
+		return "", false
+	}
+	if len(cols) == 1 {
+		if vals[0] == nil {
+			return "", false
+		}
+		return cols[0] + "=" + *vals[0], true
+	}
+	parts := make([]string, len(vals))
+	for i, v := range vals {
+		if v == nil {
+			parts[i] = "NULL"
+		} else {
+			parts[i] = *v
+		}
+	}
+	return "(" + strings.Join(cols, ", ") + ")=(" + strings.Join(parts, ", ") + ")", true
+}
+
+// deleteAadhaarPlaces removes the report's places in the rows this erasure
+// deleted, or whose column it cleared, where the branch keeps a report.
+func deleteAadhaarPlaces(ctx context.Context, tx pgx.Tx, st *state, ds map[tkey]*decided) (int, error) {
+	var have bool
+	if err := tx.QueryRow(ctx, "SELECT to_regclass('bb.aadhaar_places') IS NOT NULL").Scan(&have); err != nil || !have {
+		return 0, err
+	}
+	total := 0
+	for _, k := range st.order {
+		t := st.tables[k]
+		var gone, cleared []string
+		for _, id := range t.order {
+			r := t.rows[id]
+			rk, ok := aadhaarRowKey(t.rel.keyCols, r.key)
+			if !ok {
+				continue
+			}
+			switch r.fate {
+			case branch.ErasureActDelete, branch.ErasureActCascade:
+				gone = append(gone, rk)
+			case branch.ErasureActClear:
+				cleared = append(cleared, rk)
+			}
+		}
+		var cols []string
+		for _, c := range ds[k].columns {
+			cols = append(cols, c.Column)
+		}
+		for _, q := range []struct {
+			keys []string
+			sql  string
+			args []any
+		}{
+			{gone, "DELETE FROM bb.aadhaar_places WHERE schema_name = $1 AND table_name = $2 AND row_key = ANY($3)", nil},
+			{cleared, "DELETE FROM bb.aadhaar_places WHERE schema_name = $1 AND table_name = $2 AND row_key = ANY($3) AND column_name = ANY($4)", []any{cols}},
+		} {
+			if len(q.keys) == 0 || (q.args != nil && len(cols) == 0) {
+				continue
+			}
+			tag, err := tx.Exec(ctx, q.sql, append([]any{k.schema, k.table, q.keys}, q.args...)...)
+			if err != nil {
+				return total, err
+			}
+			total += int(tag.RowsAffected())
+		}
+	}
+	return total, nil
 }

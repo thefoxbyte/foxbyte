@@ -477,6 +477,26 @@ func printPlan(w io.Writer, v branch.ErasureView) {
 		fmt.Fprintf(w, "  Blackbox: %d data change(s) hold a value, to be redacted with a seal; %d schema change(s) hold one, kept as they are and flagged; %d original text(s) beside the chain, to be deleted\n",
 			b.Redact, b.Flagged, b.Originals)
 	}
+	if c := p.Copies; c != nil {
+		fmt.Fprintf(w, "  Beside the branches: %d query history entr(ies) to delete (every actor's); %d audit log text(s) to remove; %d decided change request(s) to rewrite; %d vault record(s) of the Aadhaar number to delete\n",
+			c.History, c.Forensic, c.Requests, c.Vault)
+		for _, q := range c.Saved {
+			fmt.Fprintf(w, "    saved query %q of %s holds a value: kept, for its owner to delete\n", q.Name, q.Owner)
+		}
+		if len(c.OpenRequests) > 0 {
+			ids := make([]string, len(c.OpenRequests))
+			for i, id := range c.OpenRequests {
+				ids[i] = "#" + strconv.FormatInt(id, 10)
+			}
+			fmt.Fprintf(w, "    open change request(s) holding a value, left as they are until decided: %s\n", strings.Join(ids, ", "))
+		}
+		if c.RawAudit > 0 && c.RawUntil != nil {
+			fmt.Fprintf(w, "    %d raw audit file(s) not yet collected may hold one; they go by %s\n", c.RawAudit, c.RawUntil.Local().Format("2006-01-02 15:04"))
+		}
+		for _, n := range c.Notes {
+			fmt.Fprintf(w, "    note: %s\n", n)
+		}
+	}
 	for _, t := range p.Tables {
 		fmt.Fprintf(w, "\n  %s.%s: %s %d row(s)  (%s)\n", t.Schema, t.Table, erasureActText[t.Action], t.Rows, t.Why)
 		switch {
@@ -542,12 +562,26 @@ func printPlan(w io.Writer, v branch.ErasureView) {
 				fmt.Fprintf(w, " (recorded as entry %d)", b.Entry)
 			}
 			fmt.Fprintf(w, "; %d original text(s) deleted\n", b.Originals)
+			if r.AadhaarPlaces > 0 {
+				fmt.Fprintf(w, "  %d Aadhaar exposure report place(s) in the rows erased removed\n", r.AadhaarPlaces)
+			}
 			if len(b.Flagged) > 0 {
 				ids := make([]string, len(b.Flagged))
 				for i, id := range b.Flagged {
 					ids[i] = strconv.FormatInt(id, 10)
 				}
 				fmt.Fprintf(w, "  Blackbox entries holding a value and kept, being schema changes (replayed as written): %s\n", strings.Join(ids, ", "))
+			}
+		}
+		if c := r.Copies; c != nil {
+			fmt.Fprintf(w, "  beside the branches: %d query history entr(ies) deleted; %d audit log text(s) removed; %d change request(s) rewritten; %d vault record(s) deleted",
+				c.History, c.Forensic, c.Requests, c.Vault)
+			if c.VaultKept > 0 {
+				fmt.Fprintf(w, ", %d kept by law", c.VaultKept)
+			}
+			fmt.Fprintf(w, "; %d Aadhaar log report place(s) removed\n", c.LogPlaces)
+			for _, n := range c.Notes {
+				fmt.Fprintf(w, "  note: %s\n", n)
 			}
 		}
 		for _, n := range r.Notes {

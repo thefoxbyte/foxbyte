@@ -445,3 +445,82 @@ func ScanForensicTexts(branchName string, keep func(text string) bool, fn func(F
 	}
 	return n, nil
 }
+
+// auditStoreExists reports whether this install keeps an audit store at all:
+// without one there is no forensic text to read or remove.
+func auditStoreExists() bool {
+	st, err := os.Stat(AuditStoreDir())
+	return err == nil && st.IsDir()
+}
+
+// ForensicHolding counts the forensic texts holding any of forms, case-blind
+// (an erasure request's plan, F4).
+func ForensicHolding(forms []string) (int, error) {
+	if !auditStoreExists() {
+		return 0, nil
+	}
+	n := 0
+	for _, day := range forensicDays() {
+		ts, err := readForensic(day)
+		if err != nil {
+			return n, err
+		}
+		for _, t := range ts {
+			if holds(t.Text, forms) {
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
+// PurgeForensicHolding removes the forensic texts holding any of forms from
+// their day files, under the store's lock, and returns their records' seqs.
+// The records stay: the chain holds only each text's hash.
+func PurgeForensicHolding(forms []string) ([]int64, error) {
+	if !auditStoreExists() {
+		return nil, nil
+	}
+	unlock, err := lockAuditStore()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	var seqs []int64
+	for _, day := range forensicDays() {
+		ts, err := readForensic(day)
+		if err != nil {
+			return seqs, err
+		}
+		var keep []forensicText
+		for _, t := range ts {
+			if holds(t.Text, forms) {
+				seqs = append(seqs, t.Seq)
+				continue
+			}
+			keep = append(keep, t)
+		}
+		if len(keep) == len(ts) {
+			continue
+		}
+		if err := rewriteForensic(day, keep); err != nil {
+			return seqs, err
+		}
+	}
+	return seqs, nil
+}
+
+// rawAuditPending is how many raw audit files wait to be collected, which may
+// hold a statement's text, and when the last of them goes: read to the end
+// and older than auditRawKeep. None where audit logging is not set up.
+var rawAuditPending = func() (int, *time.Time) {
+	if !auditStoreExists() {
+		return 0, nil
+	}
+	files, err := listRawFiles()
+	if err != nil || len(files) == 0 {
+		return 0, nil
+	}
+	until := files[len(files)-1].MTime.Add(auditRawKeep)
+	return len(files), &until
+}
