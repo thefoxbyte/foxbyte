@@ -5,6 +5,7 @@
 package dpdp
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -179,5 +180,22 @@ func TestAadhaarRowKey(t *testing.T) {
 		if got != c.want || ok != c.ok {
 			t.Errorf("%v %s: %q %v", c.cols, c.key, got, ok)
 		}
+	}
+}
+
+// A row is found by the key main's erasure kept however it was printed: the
+// store keeps keys compacted, PostgreSQL prints a composite key with spaces,
+// so the two are compared as JSON, never as text.
+func TestKeyMatchComparesAsJSON(t *testing.T) {
+	r := &relInfo{keyCols: []string{"tenant", "id"}}
+	if got := keyMatch(r, "x"); got != `jsonb_build_array(x."tenant"::text, x."id"::text) = ANY($1::jsonb[])` {
+		t.Fatalf("keyMatch: %s", got)
+	}
+	// The keys as main's result keeps them, once stored: compacted.
+	raw, _ := json.Marshal(struct {
+		Keys []json.RawMessage `json:"keys"`
+	}{[]json.RawMessage{json.RawMessage(`["7", "x"]`)}})
+	if !strings.Contains(string(raw), `["7","x"]`) {
+		t.Fatalf("the store's form of a key changed, so this test no longer shows why: %s", raw)
 	}
 }

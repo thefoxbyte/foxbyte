@@ -476,12 +476,20 @@ func (s *state) matchKeys(seed branch.ErasureSeed) error {
 			s.limits = append(s.limits, fmt.Sprintf("%s has no primary key here, so main's rows cannot be found in it by key", n))
 			continue
 		}
-		q := "SELECT x.tableoid, x.ctid::text, " + t.rel.keyExpr("x") + " FROM " + t.rel.rel + " x WHERE " + t.rel.keyExpr("x") + " = ANY($1::text[])"
+		q := "SELECT x.tableoid, x.ctid::text, " + t.rel.keyExpr("x") + " FROM " + t.rel.rel + " x WHERE " + keyMatch(t.rel, "x")
 		if _, err := s.scanRows(t, true, nil, q+s.forUpdate("x"), seed[n]); err != nil {
 			return fmt.Errorf("finding main's rows in %s: %w", n, readErr(err))
 		}
 	}
 	return nil
+}
+
+// keyMatch is true for a row whose key is one of $1, compared as JSON: the
+// keys come back from the store compacted (json.Marshal compacts a
+// RawMessage), and PostgreSQL prints a composite key with a space after each
+// comma, so ["1","x"] and ["1", "x"] are the same key but not the same text.
+func keyMatch(r *relInfo, a string) string {
+	return strings.TrimSuffix(r.keyExpr(a), "::text") + " = ANY($1::jsonb[])"
 }
 
 func matchQuery(r *relInfo, f branch.PIIFinding, vals []string) (string, []any) {
