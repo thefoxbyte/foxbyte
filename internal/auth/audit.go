@@ -235,6 +235,7 @@ const (
 	EvErasureRewritten = "erasure.rewritten"
 	EvErasureBranch    = "erasure.branch" // one branch applied or skipped, or remade or deleted from the request
 	EvErasureWithdrawn = "erasure.withdrawn"
+	EvErasureRestore   = "erasure.restore" // an admin restored past a request; the erasure is applied again
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence

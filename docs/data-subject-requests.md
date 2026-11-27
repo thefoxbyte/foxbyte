@@ -171,8 +171,10 @@ You record that decision once, per table, in the [DPDP inventory](dpdp-inventory
   vault's record of it, unless a law keeps the number, and finds the rows
   holding its reference key on every branch.
 - **Backups and snapshots:** they are not edited. They age out under their
-  retention; restoring one brings the data back, so re-apply the erasure after a
-  restore.
+  retention. Restoring one to before an erasure request brings the data back,
+  so FoxByte refuses it; an admin may go ahead with `--after-erasure reapply`,
+  and the request is applied to the copy again before it opens. Without an
+  erasure request, re-apply the erasure yourself after a restore.
 
 Record what you did, and when, in your own register of requests: FoxByte's logs
 say who ran which statement, not why.

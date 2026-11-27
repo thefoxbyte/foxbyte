@@ -7,6 +7,7 @@ package dpdp
 import (
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -197,5 +198,40 @@ func TestKeyMatchComparesAsJSON(t *testing.T) {
 	}{[]json.RawMessage{json.RawMessage(`["7", "x"]`)}})
 	if !strings.Contains(string(raw), `["7","x"]`) {
 		t.Fatalf("the store's form of a key changed, so this test no longer shows why: %s", raw)
+	}
+}
+
+// A clear applied again sets what the request's plan said, read back from
+// the columns as it kept them (F4 step 4).
+func TestReapplySets(t *testing.T) {
+	rel := &relInfo{cols: map[string]colInfo{
+		"email":  {typ: "text"},
+		"status": {typ: "text", notNull: true, hasDefault: true},
+		"code":   {typ: "character varying(8)", notNull: true},
+		"prefs":  {typ: "jsonb"},
+	}}
+	d, err := reapplySets(rel, []branch.ErasureColumn{
+		{Column: "email", To: "NULL"}, {Column: "status", To: "DEFAULT"}, {Column: "code", To: strconv.Quote("XXXX")},
+		{Column: "prefs", Path: "$.contact.mobile", To: "null at the path"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{}
+	for _, s := range d.sets {
+		a := ""
+		if s.arg != nil {
+			a = "=" + *s.arg
+		}
+		got = append(got, s.col+":"+s.expr+a)
+	}
+	if strings.Join(got, ",") != "email:NULL,status:DEFAULT,code:$character varying(8)=XXXX" || len(d.paths["prefs"]) != 1 || d.paths["prefs"][0] != "$.contact.mobile" {
+		t.Fatalf("sets %v, paths %v", got, d.paths)
+	}
+	if _, err := reapplySets(rel, []branch.ErasureColumn{{Column: "phone", To: "NULL"}}); err == nil {
+		t.Fatal("a column the copy does not have was not said")
+	}
+	if _, err := reapplySets(rel, []branch.ErasureColumn{{Column: "email", To: "something else"}}); err == nil {
+		t.Fatal("a clear it cannot read was not refused")
 	}
 }

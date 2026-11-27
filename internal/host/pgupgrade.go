@@ -129,14 +129,27 @@ func ParseExportArgs(args []string) (ExportArgs, error) {
 // RestoreArgs are `fox backup restore`'s arguments.
 type RestoreArgs struct {
 	File, Branch, As string
+	// AfterErasure and Reason are an admin's decision for an export from
+	// before an erasure (F4 step 4): reapply, and why.
+	AfterErasure, Reason string
 }
 
 // ParseRestoreArgs reads <file> [--branch <name>] --as <new branch>.
 func ParseRestoreArgs(args []string) (RestoreArgs, error) {
 	a := RestoreArgs{Branch: "main"}
-	usage := fmt.Errorf("usage: %s backup restore <export.tar> [--branch <name>] --as <new branch>", brand.CLI)
+	usage := fmt.Errorf("usage: %s backup restore <export.tar> [--branch <name>] --as <new branch> [--after-erasure reapply --reason \"…\"]", brand.CLI)
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--after-erasure", "--reason":
+			if i+1 >= len(args) {
+				return a, usage
+			}
+			if args[i] == "--reason" {
+				a.Reason = args[i+1]
+			} else {
+				a.AfterErasure = args[i+1]
+			}
+			i++
 		case "--branch", "--as":
 			if i+1 >= len(args) {
 				return a, usage
@@ -164,6 +177,20 @@ func ParseRestoreArgs(args []string) (RestoreArgs, error) {
 type PgUpgradeArgs struct {
 	UpgradeOptions
 	Rollback, Finalize bool
+	// AfterErasure and Reason: a rollback past an erasure (F4 step 4).
+	AfterErasure, Reason string
+}
+
+// AfterErasureArgs are the decision's flags, to pass on.
+func (a PgUpgradeArgs) AfterErasureArgs() []string {
+	var out []string
+	if a.AfterErasure != "" {
+		out = append(out, "--after-erasure", a.AfterErasure)
+	}
+	if a.Reason != "" {
+		out = append(out, "--reason", a.Reason)
+	}
+	return out
 }
 
 // ParsePgUpgradeArgs reads the upgrade's flags.
@@ -181,6 +208,16 @@ func ParsePgUpgradeArgs(args []string) (PgUpgradeArgs, error) {
 			a.Rollback = true
 		case "--finalize":
 			a.Finalize = true
+		case "--after-erasure", "--reason":
+			if i+1 >= len(args) {
+				return a, fmt.Errorf("%s needs a value", args[i])
+			}
+			if args[i] == "--reason" {
+				a.Reason = args[i+1]
+			} else {
+				a.AfterErasure = args[i+1]
+			}
+			i++
 		case "--export":
 			if i+1 >= len(args) {
 				return a, fmt.Errorf("--export needs a path")
@@ -188,7 +225,7 @@ func ParsePgUpgradeArgs(args []string) (PgUpgradeArgs, error) {
 			a.ExportTo = args[i+1]
 			i++
 		default:
-			return a, fmt.Errorf("unknown option %q\nusage: %s pg upgrade [--dry-run] [--yes] [--export <file> | --i-have-a-backup] | --rollback | --finalize", args[i], brand.CLI)
+			return a, fmt.Errorf("unknown option %q\nusage: %s pg upgrade [--dry-run] [--yes] [--export <file> | --i-have-a-backup] | --rollback [--after-erasure reapply --reason \"…\"] | --finalize", args[i], brand.CLI)
 		}
 	}
 	if a.Rollback && a.Finalize {
@@ -264,7 +301,14 @@ func hostRestore(args []string) error {
 		return fmt.Errorf("copying the export into the VM: %w", err)
 	}
 	defer removeInGuest(guest)
-	return forward([]string{"backup", "restore", guest, "--branch", a.Branch, "--as", a.As})
+	fwd := []string{"backup", "restore", guest, "--branch", a.Branch, "--as", a.As}
+	if a.AfterErasure != "" {
+		fwd = append(fwd, "--after-erasure", a.AfterErasure)
+	}
+	if a.Reason != "" {
+		fwd = append(fwd, "--reason", a.Reason)
+	}
+	return forward(fwd)
 }
 
 // hostPgUpgrade runs `fox pg upgrade` from a host: the plan and the work run in
@@ -276,8 +320,9 @@ func hostPgUpgrade(args []string) error {
 	}
 	switch {
 	case a.Rollback:
-		return confirmThen(a.UpgradeOptions, func() error { return forward([]string{"_pg-rollback-plan"}) },
-			func() error { return forward([]string{"_pg-rollback"}) })
+		ea := a.AfterErasureArgs()
+		return confirmThen(a.UpgradeOptions, func() error { return forward(append([]string{"_pg-rollback-plan"}, ea...)) },
+			func() error { return forward(append([]string{"_pg-rollback"}, ea...)) })
 	case a.Finalize:
 		return confirmThen(a.UpgradeOptions, func() error { return forward([]string{"_pg-finalize-plan"}) },
 			func() error { return forward([]string{"_pg-finalize"}) })

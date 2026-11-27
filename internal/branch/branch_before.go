@@ -61,6 +61,9 @@ type BeforeEntryResult struct {
 	BaseBackup   string `json:"base_backup"`
 	LastLedgerID int64  `json:"last_ledger_id"` // newest ledger entry present on the new branch
 	Seconds      int    `json:"seconds"`
+	// Reapplied are the erasure requests applied again to the new branch
+	// before it opened: it is a copy from before them (F4 step 4).
+	Reapplied []ReapplyDone `json:"reapplied,omitempty"`
 }
 
 // beforeEntry is the ledger entry being branched before.
@@ -487,6 +490,14 @@ func waitPromoted(name string, timeout time.Duration) error {
 // can be branched from, because only the primary archives WAL. logf, if not
 // nil, receives progress messages.
 func BranchBeforeEntry(src string, entryID int64, newName string, logf func(format string, a ...any)) (BeforeEntryResult, error) {
+	return BranchBeforeEntryAfter(src, entryID, newName, logf, AfterErasure{})
+}
+
+// BranchBeforeEntryAfter is BranchBeforeEntry with an admin's decision for a
+// copy from before an erasure (F4 step 4): refused without one; with
+// --after-erasure reapply, the new branch is closed until each request is
+// applied to it again.
+func BranchBeforeEntryAfter(src string, entryID int64, newName string, logf func(format string, a ...any), after AfterErasure) (BeforeEntryResult, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -552,6 +563,12 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 	if kind == "time" {
 		logf("entry %d has no captured transaction id (recorded before Blackbox 2.0 capture); using its time %s", entryID, target)
 	}
+	// A copy from before an erasure brings the person back (F4 step 4).
+	g, err := guardRestore("branch-before", src, e.At, fmt.Sprintf("just before entry %d", entryID), after)
+	if err != nil {
+		return BeforeEntryResult{}, err
+	}
+	defer g.close()
 
 	// 2. Make sure the change's commit is archived, then pick the base backup.
 	logf("archiving the primary's current WAL segment")
@@ -582,10 +599,24 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 	if err := ensureNetwork(); err != nil {
 		return BeforeEntryResult{}, err
 	}
+	if g != nil {
+		// Closed from the first moment: no way in finds it open until the
+		// erasure is applied to it again.
+		if err := g.open(newName, true); err != nil {
+			return BeforeEntryResult{}, err
+		}
+		logf("it is a copy from before erasure request(s) %s: closed until they are applied to it again", g.requests())
+	}
 	if err := store.createEmpty(newName); err != nil {
+		if g != nil {
+			g.abandon(err)
+		}
 		return BeforeEntryResult{}, fmt.Errorf("creating storage for %q: %w", newName, err)
 	}
 	fail := func(err error) (BeforeEntryResult, error) {
+		if g != nil {
+			g.abandon(err)
+		}
 		removeContainer(container(newName))
 		if derr := store.destroy(newName); derr != nil {
 			err = fmt.Errorf("%w (and removing the partial branch failed: %v)", err, derr)
@@ -641,10 +672,20 @@ func BranchBeforeEntry(src string, entryID int64, newName string, logf func(form
 	syncIdentityBestEffort(newName, true) // restored from main's past: its name and today's keys
 	reconcileGuard(newName)
 
-	return BeforeEntryResult{
+	res := BeforeEntryResult{
 		Branch: newName, Source: src, EntryID: entryID,
 		CommandTag: e.CommandTag, Object: e.ObjectIdentity, Statement: e.Statement,
 		TargetKind: kind, Target: target, BaseBackup: b.Name,
-		LastLedgerID: last, Seconds: int(time.Since(started).Seconds()),
-	}, nil
+		LastLedgerID: last,
+	}
+	if g != nil {
+		logf("applying erasure request(s) %s again to %q", g.requests(), newName)
+		done, err := g.reapply()
+		if err != nil {
+			return res, err
+		}
+		res.Reapplied = done
+	}
+	res.Seconds = int(time.Since(started).Seconds())
+	return res, nil
 }

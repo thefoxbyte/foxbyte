@@ -191,7 +191,8 @@ Durability / time-travel:
                        [--encrypt|--no-encrypt] [--allow-insecure-http]; local. A new remote archive is encrypted client-side
   backup key export    Print the backup encryption key, for disaster recovery: without it encrypted backups are lost
   backup key import [--replace]  Install that key (read from stdin) on a machine that is to restore them
-  restore --to <ts>    PITR into a disposable container on port 5433 (ts or 'latest')
+  restore --to <ts>    PITR into a disposable container on port 5433 (ts or 'latest');
+                       past an erasure: --after-erasure reapply --reason "…"
   backup export [--out <file>] [--branch <name>]...
                        Portable copy of every non-agent branch (pg_dump + roles + Blackbox),
                        verified, on this machine; it survives a PostgreSQL major change
@@ -558,7 +559,13 @@ func main() {
 		case "restore":
 			a, err := host.ParseRestoreArgs(os.Args[3:])
 			must(err)
-			must(branch.RestoreExport(a.File, a.Branch, a.As))
+			after, err := branch.ParseAfterErasure(a.AfterErasure, a.Reason, cliActor())
+			must(err)
+			done, err := branch.RestoreExportAfter(a.File, a.Branch, a.As, after)
+			must(err)
+			for _, d := range done {
+				fmt.Printf("  erasure request #%d applied again: %d row(s) changed\n", d.Request, d.Result.Rows)
+			}
 			fmt.Printf("Restored %s from %s into the new branch %q.\n", a.Branch, a.File, a.As)
 		default:
 			fmt.Printf("unknown backup subcommand: %s\n", os.Args[2])
@@ -573,9 +580,9 @@ func main() {
 	case "_pg-upgrade-apply":
 		must(branch.ApplyUpgrade())
 	case "_pg-rollback-plan":
-		must(showRollback())
+		must(showRollbackAfter(os.Args[2:]))
 	case "_pg-rollback":
-		must(branch.RollbackUpgrade())
+		must(rollbackAfter(os.Args[2:]))
 	case "_pg-finalize-plan":
 		must(branch.ShowFinalize(os.Stdout))
 	case "_pg-finalize":
@@ -583,10 +590,10 @@ func main() {
 	case "restore":
 		ts := restoreArg(os.Args[2:])
 		if ts == "" {
-			fmt.Println("usage: fox restore --to '<timestamp>'|latest")
+			fmt.Println("usage: fox restore --to '<timestamp>'|latest [--after-erasure reapply --reason \"…\"]")
 			os.Exit(2)
 		}
-		must(branch.Restore(ts))
+		must(branch.RestoreAfter(ts, afterErasureArgs(os.Args[2:])))
 	case "request":
 		requestCmd(os.Args[2:])
 	case "branch":
@@ -787,12 +794,12 @@ func ledgerCmd(args []string) {
 	if len(args) > 0 && args[0] == "revert" {
 		ts := restoreArg(args[1:])
 		if ts == "" {
-			fmt.Println("usage: fox ledger revert --to '<timestamp>'|latest")
+			fmt.Println("usage: fox ledger revert --to '<timestamp>'|latest [--after-erasure reapply --reason \"…\"]")
 			os.Exit(2)
 		}
 		fmt.Println("Restoring main to that moment in a disposable container on :5433 (the same as `fox restore`).")
 		fmt.Println("Nothing is reverted: main and every branch stay as they are.")
-		must(branch.Restore(ts))
+		must(branch.RestoreAfter(ts, afterErasureArgs(args[1:])))
 		fmt.Println("For a branch holding main as it was just before a specific change: fox blackbox branch-before <entry id>  (ids: fox blackbox entries)")
 		return
 	}
@@ -1834,6 +1841,36 @@ func showRollback() error {
 	return nil
 }
 
+// afterErasureArgs reads a restore door's --after-erasure and --reason, as the
+// operator at the machine decides them (F4 step 4).
+func afterErasureArgs(args []string) branch.AfterErasure {
+	after, err := branch.ParseAfterErasure(optValue(args, "--after-erasure"), optValue(args, "--reason"), cliActor())
+	must(err)
+	return after
+}
+
+// showRollbackAfter is the rollback's plan, and the erasures it would undo:
+// refused there, before anything is asked, unless the decision is given.
+func showRollbackAfter(args []string) error {
+	if err := showRollback(); err != nil {
+		return err
+	}
+	after := afterErasureArgs(args)
+	if !after.Reapply {
+		r, err := branch.PlanRollback()
+		if err != nil {
+			return err
+		}
+		return branch.RollbackErasures(r)
+	}
+	fmt.Println("  Erasure requests applied since the upgrade are applied again to each branch it returns, before it opens.")
+	return nil
+}
+
+func rollbackAfter(args []string) error {
+	return branch.RollbackUpgradeAfter(afterErasureArgs(args))
+}
+
 // pgCmd is `fox pg …` on Linux and inside the VM; on a host, `pg upgrade` is
 // run by host.Maybe, which forwards each step here.
 func pgCmd(args []string) {
@@ -1849,7 +1886,8 @@ func pgCmd(args []string) {
 		must(err)
 		switch {
 		case a.Rollback:
-			must(host.ConfirmThen(a.UpgradeOptions, showRollback, branch.RollbackUpgrade))
+			ea := a.AfterErasureArgs()
+			must(host.ConfirmThen(a.UpgradeOptions, func() error { return showRollbackAfter(ea) }, func() error { return rollbackAfter(ea) }))
 		case a.Finalize:
 			must(host.ConfirmThen(a.UpgradeOptions, func() error { return branch.ShowFinalize(os.Stdout) }, branch.FinalizeUpgrade))
 		default:

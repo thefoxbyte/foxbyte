@@ -17,6 +17,13 @@ set -euo pipefail
 
 : "${PGDATA:=/var/lib/postgresql/data/pgdata}"
 : "${BACKUP_NAME:=LATEST}"
+
+# A copy recovered already, kept closed while an erasure was applied to it
+# again (fox restore --after-erasure reapply), is started as it is.
+if [ -s "$PGDATA/PG_VERSION" ] && [ ! -e "$PGDATA/recovery.signal" ]; then
+	echo ">> a recovered copy is here already: starting it"
+	exec gosu postgres postgres -c listen_addresses='*'
+fi
 : "${RECOVERY_TARGET_TIME:?set RECOVERY_TARGET_TIME to a timestamp or the literal 'latest'}"
 
 mkdir -p "$PGDATA"

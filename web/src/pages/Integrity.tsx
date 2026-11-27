@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { branchBeforeEntry, createCheckpoint, exportLedgerUrl, getIntegrity, getLedgerEntries, type Branch, type BranchBeforeResult, type IntegrityReport, type LedgerEntry } from '../api'
+import { ApiError, branchBeforeEntry, createCheckpoint, exportLedgerUrl, getIntegrity, getLedgerEntries, type Branch, type BranchBeforeResult, type IntegrityReport, type LedgerEntry } from '../api'
 import { useFeatures, why } from '../features'
 import { useBranches } from '../useBranches'
 
@@ -16,6 +16,10 @@ export default function Integrity() {
   const [restoring, setRestoring] = useState(false)
   const [before, setBefore] = useState<BranchBeforeResult | null>(null)
   const [beforeErr, setBeforeErr] = useState('')
+  // Refused as a copy from before an erasure: an admin may go ahead, saying
+  // why, and the erasure is applied to the new branch before it opens.
+  const [pastErasure, setPastErasure] = useState(false)
+  const [reason, setReason] = useState('')
   const [entries, setEntries] = useState<LedgerEntry[]>([])
 
   const { branches, branchesError, reloadBranches } = useBranches()
@@ -52,16 +56,19 @@ export default function Integrity() {
     verify()
   }
 
-  const branchBefore = async () => {
+  const branchBefore = async (reapply = false) => {
     const id = Number(entryId)
     if (!Number.isInteger(id) || id <= 0) { setBeforeErr('Enter a Blackbox entry id.'); return }
+    if (reapply && !reason.trim()) { setBeforeErr('Say why, for the erasure requests’ record.'); return }
     setRestoring(true); setBefore(null); setBeforeErr('')
     try {
-      setBefore(await branchBeforeEntry('main', id, beforeName.trim() || undefined))
+      setBefore(await branchBeforeEntry('main', id, beforeName.trim() || undefined, reapply ? { reason: reason.trim() } : undefined))
+      setPastErasure(false); setReason('')
       void reloadBranches()
       loadEntries()
     } catch (e) {
       setBeforeErr((e as Error).message)
+      setPastErasure(e instanceof ApiError && e.status === 409 && /would undo an erasure/.test(e.message))
     } finally {
       setRestoring(false)
     }
@@ -132,17 +139,37 @@ export default function Integrity() {
             onChange={e => setEntryId(e.target.value.replace(/[^0-9]/g, ''))} style={{ width: 150 }} />
           <input placeholder={entryId ? `main-before-${entryId}` : 'New branch name (optional)'} value={beforeName}
             onChange={e => setBeforeName(e.target.value)} style={{ width: 220 }} />
-          <button className="primary" onClick={branchBefore} disabled={restoring || !entryId}>
+          <button className="primary" onClick={() => branchBefore()} disabled={restoring || !entryId}>
             {restoring ? 'Restoring… (a few minutes)' : 'Create branch'}
           </button>
         </div>
         {beforeErr && <div className="err">{beforeErr}</div>}
+        {pastErasure && (
+          <div className="pii-warning" role="status" data-testid="past-erasure" style={{ marginTop: 10 }}>
+            <p style={{ marginTop: 0 }}>
+              An admin may go ahead: the new branch stays closed while each erasure request is applied to it again, by the
+              rows it changed, and opens only then. The reason is recorded on each request.
+            </p>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
+              <input aria-label="Reason" placeholder="Why restore past the erasure" value={reason}
+                onChange={e => setReason(e.target.value)} style={{ width: 360 }} />
+              <button onClick={() => branchBefore(true)} disabled={restoring || !reason.trim()}>
+                Create it and apply the erasure again
+              </button>
+            </div>
+          </div>
+        )}
         {before && (
           <div className="muted" style={{ marginTop: 10 }}>
             Branch <b>{before.branch}</b> is ready: main as it was just before entry #{before.entry_id}
             {before.command_tag ? <> ({before.command_tag} {before.object_identity})</> : null}, recovered to{' '}
             {before.target_kind} {before.target} from {before.base_backup} in {before.seconds}s.
             {before.target_kind === 'time' && ' This entry predates transaction capture, so its timestamp was used.'}
+            {(before.reapplied ?? []).map(d => (
+              <div key={d.request} data-testid={`reapplied-${d.request}`}>
+                Erasure request #{d.request} was applied to it again before it opened: {d.result.rows} row(s) changed.
+              </div>
+            ))}
           </div>
         )}
         {entries.length > 0 && (

@@ -175,7 +175,55 @@ BEGIN
   RETURN QUERY SELECT cardinality(ids), fl, e, gone;
 END;
 $$;
+
+-- The same redaction on a copy restored from before an erasure (F4 step 4):
+-- the entries the erasure redacted, by id, as the request keeps no value;
+-- and the originals it deleted, by id. A schema change is never redacted, nor
+-- an entry sealed already, nor one whose placeholders change nothing.
+CREATE OR REPLACE FUNCTION bb.erasure_redact_ids(request text, want bigint[], gone_ids bigint[])
+RETURNS TABLE (redacted int, entry bigint, originals int)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, bb AS $$
+DECLARE
+  r bb.schema_ledger;
+  now_row bb.schema_ledger;
+  ids bigint[] := '{}';
+  origs text[] := '{}';
+  seals text[] := '{}';
+  e bigint;
+  gone int;
+  ph text;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext('bb.schema_ledger'));
+  INSERT INTO bb.ledger_unlock VALUES (request);
+  FOR r IN SELECT * FROM bb.schema_ledger l WHERE l.id = ANY(want) ORDER BY id LOOP
+    CONTINUE WHEN r.command_tag NOT IN ('UPDATE', 'DELETE', 'INSERT', 'TRUNCATE', 'MERGE');
+    CONTINUE WHEN EXISTS (SELECT 1 FROM bb.ledger_seals z WHERE z.id = r.id);
+    ph := bb._placeholders(r.statement);
+    CONTINUE WHEN ph IS NOT DISTINCT FROM r.statement;
+    UPDATE bb.schema_ledger SET statement = ph WHERE id = r.id RETURNING * INTO now_row;
+    ids := ids || r.id;
+    origs := origs || r.row_hash;
+    seals := seals || bb._seal(r.row_hash, bb._ledger_hash(now_row));
+  END LOOP;
+  DELETE FROM bb.ledger_unlock;
+  DELETE FROM bb.ledger_text t WHERE t.id = ANY(gone_ids);
+  GET DIAGNOSTICS gone = ROW_COUNT;
+  IF cardinality(ids) > 0 THEN
+    INSERT INTO bb.schema_ledger (actor, actor_kind, tool, command_tag, object_type, object_identity, statement, status)
+    VALUES (coalesce(nullif(current_setting('bb.actor', true), ''), session_user), 'human', 'fox dpdp erase',
+            'ERASURE REDACT', 'erasure', request,
+            format('redacted %s entries; seals sha256:%s', cardinality(ids),
+                   (SELECT encode(sha256(convert_to(coalesce(string_agg(i || ':' || z, ',' ORDER BY i), ''), 'UTF8')), 'hex')
+                    FROM unnest(ids, seals) AS t(i, z))),
+            'APPLIED')
+    RETURNING id INTO e;
+    INSERT INTO bb.ledger_seals SELECT i, o, z, e FROM unnest(ids, origs, seals) AS t(i, o, z);
+  END IF;
+  RETURN QUERY SELECT cardinality(ids), e, gone;
+END;
+$$;
 REVOKE EXECUTE ON FUNCTION bb.erasure_redact(text, text[]), bb.erasure_redact_preview(text[]) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION bb.erasure_redact_ids(text, bigint[], bigint[]) FROM PUBLIC;
 REVOKE ALL ON SEQUENCE bb.dpdp_entries_id_seq, bb.dpdp_history_id_seq FROM PUBLIC;
 
 SET client_min_messages = DEFAULT;
