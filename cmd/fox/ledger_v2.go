@@ -120,10 +120,10 @@ func ledgerV2Cmd(args []string) bool {
 
 // branchBeforeCmd: fox ledger branch-before <entry-id> [--branch main] [--as name]
 func branchBeforeCmd(args []string) {
-	id := firstPositional(args, "--branch", "--as")
+	id := firstPositional(args, "--branch", "--as", "--after-erasure", "--reason")
 	entryID, err := strconv.ParseInt(id, 10, 64)
 	if id == "" || err != nil || entryID <= 0 {
-		fmt.Println("usage: fox ledger branch-before <entry-id> [--branch main] [--as <new-branch>]")
+		fmt.Println("usage: fox ledger branch-before <entry-id> [--branch main] [--as <new-branch>] [--after-erasure reapply --reason \"…\"]")
 		os.Exit(2)
 	}
 	src := optValue(args, "--branch")
@@ -131,10 +131,13 @@ func branchBeforeCmd(args []string) {
 		src = "main"
 	}
 	fmt.Printf("Branching %s from just before ledger entry %d (base backup + WAL replay — this can take a few minutes)…\n", src, entryID)
-	res, err := branch.BranchBeforeEntry(src, entryID, optValue(args, "--as"), func(format string, a ...any) {
+	res, err := branch.BranchBeforeEntryAfter(src, entryID, optValue(args, "--as"), func(format string, a ...any) {
 		fmt.Printf("  "+format+"\n", a...)
-	})
+	}, afterErasureArgs(args))
 	must(err)
+	for _, d := range res.Reapplied {
+		fmt.Printf("  erasure request #%d applied again: %d row(s) changed\n", d.Request, d.Result.Rows)
+	}
 	fmt.Printf("branch %q is ready (%ds): %s as it was just before entry %d\n", res.Branch, res.Seconds, res.Source, res.EntryID)
 	fmt.Printf("  excluded   %s %s\n", res.CommandTag, res.Object)
 	fmt.Printf("  target     %s %s (base backup %s)\n", res.TargetKind, res.Target, res.BaseBackup)

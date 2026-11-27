@@ -192,6 +192,27 @@ describe('Erasure requests', () => {
     expect(done.textContent).toContain('a law keeps the number')
   })
 
+  it('lists the restores past a request: who decided, why, and the erasure applied again', async () => {
+    vi.mocked(getErasure).mockResolvedValue(request({
+      state: 'applied',
+      result: { applied: '2026-11-25T10:00:00Z', by: 'dpo@example.com', tables: [], rows: 1, verified: true, rewrites: [], notes: [] },
+      restores: [
+        { id: 1, request: 7, door: 'restore', source: 'main', target: 'restore', point: '2026-11-25 09:00', by: 'ops@example.com',
+          reason: 'incident 9', at: '2026-11-26T09:00:00Z', state: 'done',
+          detail: JSON.stringify({ request: 7, keys: 'main', result: { rows: 1, blackbox: { redacted: 2, originals: 1 } }, blackbox: true, notes: [] }) },
+        { id: 2, request: 7, door: 'backup restore', source: 'qa', target: 'qa-old', point: 'the export of 2026-11-20 08:00', by: 'ops@example.com',
+          reason: 'audit', at: '2026-11-26T10:00:00Z', state: 'failed', detail: '{}', error: 'public.people has no primary key in the copy' },
+      ],
+    }))
+    page()
+    fireEvent.click(within(await screen.findByRole('table', { name: 'Erasure requests' })).getByRole('button', { name: 'Open' }))
+    const rs = await screen.findByRole('table', { name: 'Restores' })
+    expect(within(rs).getByTestId('erasure-restore-1').textContent).toContain('restore of main from 2026-11-25 09:00, into restore')
+    expect(within(rs).getByTestId('erasure-restore-1').textContent).toContain('“incident 9”')
+    expect(within(rs).getByTestId('erasure-restore-1').textContent).toContain('1 row(s) changed; 2 Blackbox entr(ies) redacted')
+    expect(within(rs).getByTestId('erasure-restore-2').textContent).toContain('failed: public.people has no primary key in the copy. The copy stays closed.')
+  })
+
   it('shows every branch, applies a skipped one on its own, and remakes one made before the erasure', async () => {
     const applied = request({
       state: 'applied',

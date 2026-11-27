@@ -221,6 +221,10 @@ func MaskedBranchFork(name string) (int64, bool) {
 // to do: every way a client reaches a branch asks it (EnsureRunning, the
 // API's branch routes, the engine's agent sessions).
 func checkBranchOpen(name string) error {
+	// A branch restored past an erasure is closed until it is applied again.
+	if err := checkReapplied(name); err != nil {
+		return err
+	}
 	r, ok := MaskedBranchOf(name)
 	if !ok || r.State == MaskedOpen {
 		return nil

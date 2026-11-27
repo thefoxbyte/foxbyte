@@ -100,12 +100,26 @@ func registerLedgerV2(mux *http.ServeMux) {
 		}
 		var body struct {
 			Name string `json:"name"`
+			// An admin's decision for a copy from before an erasure (F4
+			// step 4): "reapply", with the reason recorded on each request.
+			AfterErasure string `json:"afterErasure"`
+			Reason       string `json:"reason"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if !allowCreate(w, r) {
 			return
 		}
-		res, err := branch.BranchBeforeEntry(r.PathValue("name"), id, body.Name, nil)
+		u, _ := auth.UserFrom(r.Context())
+		after, err := branch.ParseAfterErasure(body.AfterErasure, body.Reason, u.Email)
+		if err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		if after.Reapply && !isAdmin(r) {
+			writeErr(w, 403, fmt.Errorf("only an admin may restore past an erasure request"))
+			return
+		}
+		res, err := branch.BranchBeforeEntryAfter(r.PathValue("name"), id, body.Name, nil, after)
 		if err == nil {
 			err = own(r, res.Branch)
 		}
@@ -116,7 +130,7 @@ func registerLedgerV2(mux *http.ServeMux) {
 			writeErr(w, 400, err)
 		case errors.Is(err, branch.ErrEntryNotFound):
 			writeErr(w, 404, err)
-		case errors.Is(err, branch.ErrBranchExists):
+		case errors.Is(err, branch.ErrBranchExists), errors.Is(err, branch.ErrErasureRestore):
 			writeErr(w, 409, err)
 		case errors.Is(err, branch.ErrNoBaseBackup):
 			writeErr(w, 422, err)

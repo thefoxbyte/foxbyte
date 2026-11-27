@@ -5441,6 +5441,100 @@ assert_eq "the plan says what it cannot reach: the audit chain's hash of a text,
 $S audit-log off --yes >/dev/null 2>&1; main_up
 CB
 
+echo "### 11bd. restores past an erasure: refused, or the erasure applied again before the copy opens (point 11.2, F4 Gate 1 step 4)"
+# Synthetic values only. A person (RE) on main, then three copies from
+# before their erasure: the restore copy (fox restore --to), a branch from
+# just before a Blackbox entry (branch-before), and an export tar. Each is
+# refused until an admin decides, and then opens with the person erased.
+RE=rp.person@example.in; RO=rp.other@example.in; RT=/tmp/rp-export.tar
+RP() {
+  for b in rpbb rpx; do $S branch delete "$b" >/dev/null 2>&1; done
+  sudo docker rm -fv pg-restore >/dev/null 2>&1; sudo docker volume rm -f pg-restore-data >/dev/null 2>&1
+  pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS rp_people" >/dev/null; sudo rm -f "$RT"
+}
+RP
+$S backup create >/dev/null 2>&1                       # a base backup before the person
+# Each statement on its own: a schema change's text is kept as written
+# (step 3a), so a value sent in one with it would stay in the Blackbox.
+pg pg-main "CREATE TABLE rp_people (id int PRIMARY KEY, email text, note text)" >/dev/null
+pg pg-main "INSERT INTO rp_people VALUES (1, '$RE', 'keep'), (2, '$RO', 'and keep')" >/dev/null
+pg pg-main "GRANT ALL ON rp_people TO db_client" >/dev/null
+pg pg-main "ALTER TABLE rp_people ADD COLUMN seen date" >/dev/null
+TID="$(pg pg-main "SELECT max(id) FROM bb.schema_ledger WHERE object_identity = 'public.rp_people' AND command_tag = 'ALTER TABLE'")"
+# An agent's data change holding the value, as the Blackbox records one: the
+# erasure redacts it, and the old version goes with the Blackbox's rewrite.
+pg pg-main "INSERT INTO bb.schema_ledger (actor, actor_kind, command_tag, object_type, object_identity, statement, status)
+  VALUES ('agent-rp', 'agent', 'UPDATE', 'table', 'public.rp_people', 'UPDATE rp_people SET email = ''$RE'' WHERE id = 1', 'APPLIED')" >/dev/null
+$S pii scan --branch main >/dev/null 2>&1
+for id in $($S pii --branch main --json | hjson "print(' '.join(str(f['id']) for f in d['findings'] if f['table']=='rp_people' and f['state']=='suggested'))"); do
+  $S pii mark "$id" confirm --branch main >/dev/null 2>&1
+done
+$S dpdp set rp_people --basis consent --purpose 'Receipts' --principals customer --keep 1y --from collection --reason purpose --branch main >/dev/null 2>&1
+$S backup export --out "$RT" --branch main >/dev/null 2>&1
+TB="$(pg pg-main "SELECT now()")"
+pg pg-main "SELECT pg_switch_wal()" >/dev/null; sleep 2
+RVALS() { printf 'email:%s\n' "$RE"; }
+RQ="$(RVALS | $S dpdp erase new --json 2>/dev/null | hjson "print(d['id'])")"
+ROUT="$(RVALS | $S dpdp erase apply "$RQ" --yes 2>&1)"
+pg pg-main "SELECT pg_switch_wal()" >/dev/null; sleep 4
+RPEOPLE() { pg "$1" "SELECT string_agg(coalesce(email, '-') || ':' || note, ',' ORDER BY id) FROM rp_people"; }
+assert_eq "(setup) the person is erased on main, the other person kept; an export, a base backup and an entry from before it" \
+  "$(RPEOPLE pg-main)|$([ -s "$RT" ] && echo tar)|$([ -n "$TID" ] && echo entry)" "-:keep,$RO:and keep|tar|entry"
+# The Blackbox kept the person's INSERT in its text: the redaction's old
+# versions go with the rewrite of its tables, as the request's do.
+assert_eq "(setup) main's files hold the value no more: the agent's entry redacted, and the Blackbox's table rewritten" \
+  "$(grep -c 'Blackbox: 1 entr(ies) redacted with a seal' <<<"$ROUT")|$(grep -c 'bb.schema_ledger rewritten in the files' <<<"$ROUT")|$(sudo docker exec pg-main sh -c "grep -rlaF '$RE' \"\$PGDATA/base\" 2>/dev/null | wc -l" | tr -d ' ')" "1|1|0"
+
+# The restore copy.
+OUT="$($S restore --to "$TB" 2>&1)"; RC=$?
+assert_eq "a restore to before the erasure is refused, naming the request and how to go ahead; nothing is restored" \
+  "$([ "$RC" != 0 ] && echo refused)|$(grep -c 'would undo an erasure' <<<"$OUT")|$(grep -c "#$RQ" <<<"$OUT")|$(grep -c -- '--after-erasure reapply' <<<"$OUT")|$(sudo docker ps -aq --filter 'name=^pg-restore$' | wc -l | tr -d ' ')" \
+  "refused|1|1|1|0"
+assert_eq "…the decision needs a reason" \
+  "$($S restore --to "$TB" --after-erasure reapply 2>&1 | grep -c 'say why with --reason')|$($S restore --to "$TB" --after-erasure ignore 2>&1 | grep -c 'never comes back by a restore')" "1|1"
+OUT="$($S restore --to "$TB" --after-erasure reapply --reason 'incident 9: a row deleted by mistake' 2>&1)"; RC=$?
+assert_eq "with an admin's decision: restored closed, the erasure applied again by its row keys, then opened on port 5433" \
+  "$RC|$(grep -c "erasure request #$RQ applied again: 1 row(s) changed" <<<"$OUT")|$(RPEOPLE pg-restore)|$(sudo docker port pg-restore 5432 2>/dev/null | grep -c ':5433')" \
+  "0|1|-:keep,$RO:and keep|1"
+[ "$RC" = 0 ] || { echo "--- restore said ---"; tail -15 <<<"$OUT"; }
+assert_eq "…the agent's entry redacted again in the copy, by its id" \
+  "$(grep -c "erasure request #$RQ applied again: 1 row(s) changed; 1 Blackbox entr(ies) redacted" <<<"$OUT")|$(pg pg-restore "SELECT count(*) FROM bb.schema_ledger WHERE actor = 'agent-rp' AND statement LIKE '%$RE%'")" "1|0"
+assert_eq "…and its table's files hold the value no more" \
+  "$(sudo docker exec pg-restore sh -c "grep -rlaF '$RE' /var/lib/postgresql/data/pgdata/base 2>/dev/null | wc -l" | tr -d ' ')" "0"
+sudo docker rm -fv pg-restore >/dev/null 2>&1; sudo docker volume rm -f pg-restore-data >/dev/null 2>&1
+$S restore --to latest >/dev/null 2>&1; sleep 1
+assert_eq "a restore to the end of the archive is not asked: the erasure is in it" "$(RPEOPLE pg-restore)" "-:keep,$RO:and keep"
+sudo docker rm -fv pg-restore >/dev/null 2>&1
+
+# A branch from just before an entry made before the erasure.
+OUT="$($S ledger branch-before "$TID" --as rpbb 2>&1)"; RC=$?
+assert_eq "branch-before to before the erasure is refused, and no branch is made" \
+  "$([ "$RC" != 0 ] && echo refused)|$(grep -c 'would undo an erasure' <<<"$OUT")|$($S branch list 2>/dev/null | grep -cw rpbb)" "refused|1|0"
+assert_eq "…the API refuses it too (409), and only an admin may decide (403)" \
+  "$(code "$KEY" -X POST -H 'Content-Type: application/json' -d '{"name":"rpbb"}' "https://localhost:8080/api/branches/main/ledger/$TID/branch")|$(code "$KA" -X POST -H 'Content-Type: application/json' -d '{"name":"rpbb","afterErasure":"reapply","reason":"r"}' "https://localhost:8080/api/branches/main/ledger/$TID/branch")" \
+  "409|403"
+OUT="$($S ledger branch-before "$TID" --as rpbb --after-erasure reapply --reason 'compare the schema before the column' 2>&1)"; RC=$?
+assert_eq "with an admin's decision: the branch opens with the erasure applied again" \
+  "$RC|$(grep -c "erasure request #$RQ applied again: 1 row(s) changed" <<<"$OUT")|$(RPEOPLE pg-rpbb)" "0|1|-:keep,$RO:and keep"
+[ "$RC" = 0 ] || { echo "--- branch-before said ---"; tail -15 <<<"$OUT"; }
+
+# An export tar made before the erasure.
+OUT="$($S backup restore "$RT" --branch main --as rpx 2>&1)"; RC=$?
+assert_eq "an export from before the erasure is refused, and no branch is made" \
+  "$([ "$RC" != 0 ] && echo refused)|$(grep -c 'would undo an erasure' <<<"$OUT")|$($S branch list 2>/dev/null | grep -cw rpx)" "refused|1|0"
+OUT="$($S backup restore "$RT" --branch main --as rpx --after-erasure reapply --reason 'audit of the old export' 2>&1)"; RC=$?
+assert_eq "with an admin's decision: restored into a branch closed until the erasure is applied again" \
+  "$RC|$(grep -c "erasure request #$RQ applied again: 1 row(s) changed" <<<"$OUT")|$(RPEOPLE pg-rpx)" "0|1|-:keep,$RO:and keep"
+[ "$RC" = 0 ] || { echo "--- backup restore said ---"; tail -15 <<<"$OUT"; }
+
+SHOW="$($S dpdp erase show "$RQ" 2>&1)"
+assert_eq "the request lists each restore past it: the door, who decided and why, and that it was applied again" \
+  "$(grep -c 'Restores past it (3)' <<<"$SHOW")|$(grep -c 'applied again: 1 row(s) changed' <<<"$SHOW")|$(grep -c 'incident 9: a row deleted by mistake' <<<"$SHOW")|$(grep -c 'branch-before of main from just before entry' <<<"$SHOW")" \
+  "1|3|1|1"
+assert_eq "…and the security log has each decision, without a value" \
+  "$($S audit --limit 200 2>/dev/null | grep -c 'erasure.restore')|$($S audit --limit 200 2>/dev/null | grep 'erasure.restore' | grep -c "$RE")" "3|0"
+RP
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

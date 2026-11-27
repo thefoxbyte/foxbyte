@@ -2,7 +2,7 @@
 //
 // The line the anchors gating draws, asserted in the console: creating a
 // checkpoint is Enterprise, and everything else on this page is not.
-import { render, screen, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { IntegrityReport, Status } from '../api'
@@ -20,11 +20,12 @@ vi.mock('../api', async () => {
     getIntegrity: vi.fn(async () => REPORT),
     getLedgerEntries: vi.fn(async () => []),
     getBranches: vi.fn(async () => [{ name: 'main', primary: true, agent: false, state: 'running', used: '1G', refer: '1G', connections: 0, port: '5432' }]),
+    branchBeforeEntry: vi.fn(),
   }
 })
 
 import Integrity from './Integrity'
-import { getStatus } from '../api'
+import { ApiError, branchBeforeEntry, getStatus } from '../api'
 
 const mockStatus = vi.mocked(getStatus)
 
@@ -78,4 +79,29 @@ it('assumes the control works when the engine cannot be asked', async () => {
   show()
   const btn = await screen.findByRole('button', { name: /^Create checkpoint$/ })
   expect((btn as HTMLButtonElement).disabled).toBe(false)
+})
+
+// A copy from before an erasure is refused (F4 step 4); an admin may go ahead,
+// saying why, and the erasure is applied to the new branch before it opens.
+it('offers to apply the erasure again when branch-before would undo one', async () => {
+  const before = vi.mocked(branchBeforeEntry)
+  before.mockReset()
+  before.mockRejectedValueOnce(new ApiError(409, 'it would undo an erasure: a copy of main from just before entry 40 would bring back the person of erasure request #3 (applied 2026-11-27 10:00). Nothing was restored.'))
+  before.mockResolvedValueOnce({
+    branch: 'main-before-40', source: 'main', entry_id: 40, command_tag: 'ALTER TABLE', object_identity: 'public.people', statement: '',
+    target_kind: 'xid', target: '900', base_backup: 'base_1', last_ledger_id: 39, seconds: 12,
+    reapplied: [{ request: 3, keys: 'main', result: { rows: 1 }, blackbox: true, notes: [] }],
+  })
+  show()
+  fireEvent.change(await screen.findByPlaceholderText('Entry id'), { target: { value: '40' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Create branch' }))
+  const offer = await screen.findByTestId('past-erasure')
+  expect(screen.getByText(/would bring back the person of erasure request #3/)).toBeTruthy()
+  const go = screen.getByRole('button', { name: 'Create it and apply the erasure again' }) as HTMLButtonElement
+  expect(go.disabled).toBe(true) // a reason first
+  fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'incident 9' } })
+  fireEvent.click(go)
+  await waitFor(() => expect(before).toHaveBeenLastCalledWith('main', 40, undefined, { reason: 'incident 9' }))
+  expect((await screen.findByTestId('reapplied-3')).textContent).toContain('applied to it again before it opened: 1 row(s) changed')
+  expect(offer.isConnected).toBe(false)
 })

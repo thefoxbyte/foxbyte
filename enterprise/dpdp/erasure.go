@@ -45,7 +45,7 @@ import (
 
 func init() {
 	branch.SetErasure(branch.ErasureEngine{Refs: erasureRefs, Plan: erasurePlan, Apply: erasureApply,
-		Settle: erasureSettle, AppliedOn: erasureAppliedOn, Forms: erasureForms})
+		Settle: erasureSettle, AppliedOn: erasureAppliedOn, Forms: erasureForms, Reapply: erasureReapply})
 }
 
 const (
@@ -1131,7 +1131,8 @@ func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []bran
 		"Values are compared whole, after normalising case and separators.",
 		"In a JSON column, every value at a confirmed path in the person's rows is cleared.",
 		"In the Blackbox, a value is found in a statement as it was given and in its normalised form, case-blind; written another way there, it is not found.",
-		"Restores of an earlier copy and the backups are the next steps of F4: until they are built, the person can remain in them.",
+		"Backups are not edited: they hold the person until they are pruned, the next step of F4. A restore to a time before this erasure "+
+			"is refused, or, with an admin's decision, the erasure is applied again to the copy before it opens.",
 		"The audit log keeps, in its chain, a hash of each statement's text: someone who guesses a text can check it against that hash. Text it forwarded to a SIEM is outside FoxByte.",
 	)
 	if name == "main" {
@@ -1405,6 +1406,12 @@ func erasureApply(name string, a branch.ErasureApply) (branch.ErasurePlan, strin
 	// value redacted with a seal, the originals beside the chain deleted.
 	var red branch.ErasureTextDone
 	var entry *int64
+	// The originals it deletes, by entry: a copy restored from before the
+	// erasure is cleared of them by id (step 4).
+	if err := tx.QueryRow(ctx, "SELECT coalesce(array_agg(id ORDER BY id), '{}') FROM bb.ledger_text t WHERE bb._holds_any(t.statement, $1)",
+		textForms(a.Values, ms)).Scan(&red.OriginalIDs); err != nil {
+		return plan, fp, res, fmt.Errorf("reading %s's originals (nothing was applied): %w", name, readErr(err))
+	}
 	if err := tx.QueryRow(ctx, "SELECT redacted, flagged, entry, originals FROM bb.erasure_redact($1, $2)",
 		fmt.Sprintf("erasure request #%d", a.ID), textForms(a.Values, ms)).Scan(&red.Redacted, &red.Flagged, &entry, &red.Originals); err != nil {
 		return plan, fp, res, fmt.Errorf("redacting %s's Blackbox (nothing was applied): %w", name, readErr(err))
@@ -1424,6 +1431,10 @@ func erasureApply(name string, a branch.ErasureApply) (branch.ErasurePlan, strin
 		}
 	}
 	res.Blackbox = &red
+	bbRewrites, err := blackboxRewrites(ctx, tx, &red)
+	if err != nil {
+		return plan, fp, res, fmt.Errorf("sizing %s's Blackbox tables (nothing was applied): %w", name, readErr(err))
+	}
 	// The Aadhaar exposure report's places in the rows erased (design,
 	// section 9): a place names a row as the report keys it.
 	n, err := deleteAadhaarPlaces(ctx, tx, st, ds)
@@ -1472,7 +1483,30 @@ func erasureApply(name string, a branch.ErasureApply) (branch.ErasurePlan, strin
 		}
 		res.Rewrites = append(res.Rewrites, w)
 	}
+	res.Rewrites = append(res.Rewrites, bbRewrites...)
 	return plan, fp, res, nil
+}
+
+// blackboxRewrites is the Blackbox's tables a redaction changed, to rewrite
+// with the request's tables: a statement redacted keeps its old version, and
+// an original deleted its bytes, in the table's file until it is rewritten
+// (design, section 7). Never left for later: the Blackbox is the install's.
+func blackboxRewrites(ctx context.Context, tx pgx.Tx, red *branch.ErasureTextDone) ([]branch.ErasureRewrite, error) {
+	var out []branch.ErasureRewrite
+	for _, t := range []struct {
+		table string
+		did   bool
+	}{{"schema_ledger", red.Redacted > 0}, {"ledger_text", red.Originals > 0}} {
+		if !t.did {
+			continue
+		}
+		var size int64
+		if err := tx.QueryRow(ctx, "SELECT pg_total_relation_size(to_regclass($1))", "bb."+t.table).Scan(&size); err != nil {
+			return nil, err
+		}
+		out = append(out, branch.ErasureRewrite{Schema: "bb", Table: t.table, Size: size, State: branch.RewritePending})
+	}
+	return out, nil
 }
 
 func fated(t *tableRows, fate string) []rowID {

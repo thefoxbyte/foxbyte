@@ -228,9 +228,21 @@ fox dpdp erase list
 
 What a request does not reach: text the audit log forwarded to a SIEM, which is
 outside FoxByte, and the hash of each statement's text the audit log's chain keeps
-(someone who guesses a text can check it against that hash). Not yet: restores of an earlier copy, and backups. Those are the next steps of F4 (`docs/FOX_F4_Erasure_Design.md`,
-section 20); until they are built, the person can remain in them, and every
-plan says so. FoxByte's reading of erasure has not yet been reviewed by a
+(someone who guesses a text can check it against that hash).
+
+**Restores after an erasure.** A copy from before an applied erasure would
+bring the person back, so `fox restore --to`, `fox ledger revert --to`,
+`fox blackbox branch-before`, `fox backup restore` of an export and
+`fox pg upgrade --rollback` refuse one, naming the requests. An admin may go
+ahead with `--after-erasure reapply --reason "…"` (or the console's Integrity
+page, for branch-before): the copy stays closed while each request is applied
+to it again by the rows it changed, and opens only then; the request lists
+the restore, who decided and why. Without FoxByte Enterprise, such a restore
+is refused; a restore to a time after the erasure needs nothing.
+
+Not yet: backups, which are not edited and hold the person until they are
+pruned. That is the next step of F4 (`docs/FOX_F4_Erasure_Design.md`,
+section 20); until it is built, every plan says so. FoxByte's reading of erasure has not yet been reviewed by a
 privacy lawyer or a storage engineer.
 
 ## What the inventory cannot claim

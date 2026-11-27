@@ -606,7 +606,7 @@ The claims marked **(prototype)**, proven in a suite like F5's
 | 1 | The request, the plan and `main`: matched and referencing rows, actions from the inventory, exceptions, vacuum, rewrite (**built**, `feat/f4-erasure-main`) | `fox dpdp erase new`, `plan`, `apply`, `rewrite` (and `withdraw`, `list`, `show`) | Erasure requests: new, plan, apply |
 | 2 | Every branch; branches made before it; the maximum age (**built**, `feat/f4-erasure-branches`) | `fox dpdp erase status`, `apply --branch` | the branches list, remake and delete |
 | 3 | Statement text: placeholders, the Blackbox's sealed redaction (**3a built**, `feat/f4-erasure-text`), history, forensic text, change requests, derived tables, the vault (**3b built**, `feat/f4-erasure-copies`) | | |
-| 4 | Restores refused and re-applied | `--after-erasure reapply` | |
+| 4 | Restores refused and re-applied (**built**, `feat/f4-erasure-restores`) | `--after-erasure reapply --reason` | the Integrity page's branch-before; Restores on the request |
 | 5 | The outcomes, "clears on", the copies outside reach, the evidence export; exports and tars recorded | `fox dpdp erase evidence` | evidence |
 
 **Step 1, as built (25 November 2026).** A request keeps no value, so
@@ -697,6 +697,35 @@ main's plan (`copies`) and removed after main and every branch are applied:
 
 The request records counts, and the saved queries' owners and names and the
 open requests' numbers; never a value.
+
+**Step 4, as built (27 November 2026).** Decided that day: without the
+Enterprise licence (a subscription ended), a restore past an applied erasure is
+refused, saying why; there is no free re-apply and no "restore anyway". A copy
+of a branch the request has no record of (an export of a branch deleted before
+the erasure) is applied main's row keys, and the request says so. Every door
+asks the guard (`internal/branch/erasurerestore.go`, in every edition) before
+it makes the copy: `fox restore --to` and `fox ledger revert --to` (the
+restore copy), `fox blackbox branch-before` (CLI and API; MCP is refused
+outright), `fox backup restore` of an export tar, and `fox pg upgrade
+--rollback`. A request undone is one applied on that branch (its own record,
+else main's) after the copy's moment: the time asked, the entry's time, the
+export's `created`, or the upgrade's (recorded from now on; a lot kept before
+reads as before every erasure). A request that changed nothing there is not
+undone; one being applied refuses the restore until it is done; `latest` is
+never asked. Refused without `--after-erasure reapply --reason "…"`; with it,
+the decision is a row per request (`erasure_restores` in the store, shown by
+`fox dpdp erase show` and the console) and an `erasure.restore` security log
+entry. The copy is closed until done: the restore copy starts with no port
+and its data on a volume of its own, then starts again on 5433; a branch is
+marked closed (`checkBranchOpen`, which every way in asks, and the idle reaper
+leaves it running). The engine's `Reapply` finds the rows by the keys the
+request kept, compared as JSON, and clears or deletes them as the plan said,
+in one transaction, with the Aadhaar report's places in them; it redacts the
+Blackbox entries the request redacted and deletes the originals it deleted,
+by id (`bb.erasure_redact_ids`; the originals' ids are recorded from now on),
+only where the copy is of that same branch; then every table it changed is
+rewritten. A failed re-apply keeps a branch closed, saying so, and removes a
+restore copy. Backups themselves are step 5. The suite found one gap, closed here on main as on the copy: a redaction left the statement's old version in `bb.schema_ledger`'s file and the deleted original's bytes in `bb.ledger_text`'s, so both are now rewritten with the request's tables (`VACUUM FULL`, never left for later) when a redaction changed them. A value sent in one string with a schema change stays, by design: a schema change's text is kept as written and only flagged (step 3a).
 
 **Sign-off.** The review plan asks that a privacy lawyer and a storage-engine
 engineer approve F4 together before erasure is built. Until they have, the

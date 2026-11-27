@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   ApiError, applyErasure, deleteErasureBranch, getErasure, listErasures, newErasure, remakeErasureBranch, replanErasure,
   rewriteErasure, withdrawErasure,
-  type ErasureBranch, type ErasureRequest, type ErasureTable, type ErasureValue,
+  type ErasureBranch, type ErasureRequest, type ErasureRestore, type ErasureTable, type ErasureValue, type ReapplyDone,
 } from '../api'
 import { useConfirm } from '../confirm'
 import { useFeatures, why } from '../features'
@@ -293,6 +293,7 @@ function Detail({ r, licensed, onDone, onError, reload }: {
       {(r.branches ?? []).length > 0 && <Branches r={r} licensed={licensed}
         onApply={b => { setAsking('apply'); setOnBranch(b); setValues(''); setTyped(''); window.scrollTo?.(0, 0) }} />}
       {r.state === 'applied' && <MadeBefore r={r} onDone={onDone} onError={onError} />}
+      {(r.restores ?? []).length > 0 && <Restores r={r} />}
       {(r.old ?? []).length > 0 && (
         <div className="pii-warning" role="status" data-testid="erasure-old" style={{ marginTop: 12 }}>
           {(r.old ?? []).length} branch(es) are older than the maximum age: {(r.old ?? []).map(o => `${o.branch} (${o.days} days)`).join(', ')}.
@@ -397,6 +398,43 @@ function Branches({ r, licensed, onApply }: { r: ErasureRequest; licensed: boole
           {b.plan!.tables.map((t, i) => <PlanTable key={`${t.schema}.${t.table}.${t.action}.${i}`} t={t} />)}
         </div>
       ))}
+    </>
+  )
+}
+
+// The restores past the request an admin decided (F4 step 4): each copy was
+// closed until the erasure was applied to it again.
+function Restores({ r }: { r: ErasureRequest }) {
+  const what = (x: ErasureRestore) => {
+    if (x.state === 'failed') return <>Applying it again failed: {x.error}. The copy stays closed.</>
+    if (x.state === 'reapplying') return <>Being applied again.</>
+    let d: ReapplyDone | null = null
+    try { d = JSON.parse(x.detail) as ReapplyDone } catch { d = null }
+    if (!d) return <>Applied again.</>
+    return (
+      <>
+        Applied again, by {d.keys}&rsquo;s row keys: {d.result.rows} row(s) changed
+        {d.result.blackbox ? <>; {d.result.blackbox.redacted} Blackbox entr(ies) redacted</> : null}.
+        {d.notes.map((n, i) => <span key={i}> {n}</span>)}
+      </>
+    )
+  }
+  return (
+    <>
+      <h3>Restores past it</h3>
+      <table aria-label="Restores" data-testid="erasure-restores">
+        <thead><tr><th>When</th><th>What</th><th>Who, and why</th><th>The erasure on it</th></tr></thead>
+        <tbody>
+          {(r.restores ?? []).map(x => (
+            <tr key={x.id} data-testid={`erasure-restore-${x.id}`}>
+              <td>{when(x.at)}</td>
+              <td>{x.door} of {x.source} from {x.point}, into {x.target}</td>
+              <td>{x.by}: &ldquo;{x.reason}&rdquo;</td>
+              <td>{what(x)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </>
   )
 }

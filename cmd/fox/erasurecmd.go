@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -461,6 +462,36 @@ func printErasure(w io.Writer, v branch.ErasureView) {
 	}
 	printPlan(w, v)
 	printBranches(w, v)
+	printRestores(w, v)
+}
+
+// printRestores lists the restores past the request an admin decided, and
+// how applying it again to each copy went (F4 step 4).
+func printRestores(w io.Writer, v branch.ErasureView) {
+	if len(v.Restores) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nRestores past it (%d), each applied the erasure again before it opened:\n", len(v.Restores))
+	for _, r := range v.Restores {
+		fmt.Fprintf(w, "  %s  %s of %s from %s into %s, by %s: %q\n", r.At.Local().Format("2006-01-02 15:04"), r.Door, r.Source, r.Point, r.Target, r.By, r.Reason)
+		switch r.State {
+		case auth.RestoreDone:
+			var d branch.ReapplyDone
+			_ = json.Unmarshal([]byte(r.Detail), &d)
+			fmt.Fprintf(w, "    applied again: %d row(s) changed, by %s's row keys", d.Result.Rows, d.Keys)
+			if d.Result.Blackbox != nil {
+				fmt.Fprintf(w, "; %d Blackbox entr(ies) redacted, %d original(s) deleted", d.Result.Blackbox.Redacted, d.Result.Blackbox.Originals)
+			}
+			fmt.Fprintln(w)
+			for _, n := range d.Notes {
+				fmt.Fprintf(w, "    note: %s\n", n)
+			}
+		case auth.RestoreFailed:
+			fmt.Fprintf(w, "    FAILED: %s\n", r.Error)
+		default:
+			fmt.Fprintln(w, "    being applied again")
+		}
+	}
 }
 
 // printPlan is a request's plan on one branch, and what applying did there.

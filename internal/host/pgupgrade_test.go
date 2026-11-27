@@ -124,3 +124,21 @@ func TestParseExportAndRestoreArgs(t *testing.T) {
 		}
 	}
 }
+
+// A restore door's decision past an erasure (F4 step 4) is read and passed on.
+func TestRestoreDoorsReadTheErasureDecision(t *testing.T) {
+	r, err := ParseRestoreArgs([]string{"e.tar", "--as", "copy", "--after-erasure", "reapply", "--reason", "incident 9"})
+	if err != nil || r.AfterErasure != "reapply" || r.Reason != "incident 9" || r.File != "e.tar" || r.As != "copy" {
+		t.Fatalf("backup restore: %+v %v", r, err)
+	}
+	if _, err := ParseRestoreArgs([]string{"e.tar", "--as", "copy", "--reason"}); err == nil {
+		t.Fatal("--reason with no value was accepted")
+	}
+	a, err := ParsePgUpgradeArgs([]string{"--rollback", "--after-erasure", "reapply", "--reason", "back out"})
+	if err != nil || !a.Rollback || strings.Join(a.AfterErasureArgs(), " ") != "--after-erasure reapply --reason back out" {
+		t.Fatalf("rollback: %+v %v", a, err)
+	}
+	if got := (PgUpgradeArgs{}).AfterErasureArgs(); len(got) != 0 {
+		t.Fatalf("no decision passes nothing on: %v", got)
+	}
+}

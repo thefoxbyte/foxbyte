@@ -312,6 +312,9 @@ func ApplyUpgrade() error {
 		}
 		moved = append(moved, b)
 	}
+	// When the kept databases were last written: a rollback to them undoes
+	// every erasure applied after (F4 step 4).
+	recordUpgradeLot(lot)
 
 	// 3. Reload each carried branch into a new dataset on the new major, main
 	// first: it decides which image every later start uses.

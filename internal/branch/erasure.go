@@ -159,6 +159,10 @@ type ErasureTextDone struct {
 	Entry     int64   `json:"entry,omitempty"` // the ERASURE REDACT entry; 0 when nothing was redacted
 	Originals int     `json:"originals"`
 	IDs       []int64 `json:"ids,omitempty"` // the entries redacted
+	// OriginalIDs are the entries whose originals beside the chain were
+	// deleted: a copy restored from before the erasure is cleared of them by
+	// id (step 4).
+	OriginalIDs []int64 `json:"originalIds,omitempty"`
 }
 
 // Summary is the plan in a line, for the security log: counts, never a value
@@ -294,6 +298,28 @@ type ErasureEngine struct {
 	// apply's transaction writes it, so it is the truth when the store's
 	// record of the outcome was lost.
 	AppliedOn func(branch, uid string) (bool, error)
+	// Reapply applies a request again to a copy restored from before it
+	// (step 4): the rows the request changed, found by the keys it kept, as
+	// its plan said, in one transaction; the Blackbox entries it redacted,
+	// by id; the Aadhaar report's places in those rows. target is a branch,
+	// or the restore copy ("restore"). Settle rewrites the tables after.
+	Reapply func(target string, a ErasureReapply) (ErasureResult, error)
+}
+
+// ErasureReapply is what applying a request again takes: no value, only
+// what the request kept.
+type ErasureReapply struct {
+	ID    int64
+	UID   string
+	Actor string // what the tracking columns name as the change's maker
+	// Plan and Done are the request's plan and what it did, on the branch
+	// the copy is of (or main's, for a branch it has no record of).
+	Plan ErasurePlan
+	Done []ErasureDone
+	// Redact and Originals are the Blackbox entries to redact and the
+	// originals to delete, by id; empty where the copy's entries are not
+	// the ones the request redacted.
+	Redact, Originals []int64
 }
 
 var erasure *ErasureEngine
@@ -335,6 +361,9 @@ type ErasureView struct {
 	MadeBefore []ErasureStale `json:"madeBefore"`
 	// Old are the branches past FOX_BRANCH_MAX_AGE (decision 6).
 	Old []BranchAge `json:"old"`
+	// Restores are the restores past the request an admin decided, and how
+	// applying it again to each copy went (step 4). Read with the request.
+	Restores []auth.ErasureRestore `json:"restores"`
 }
 
 // ViewErasure decodes a request's record. Free in every edition.
@@ -719,6 +748,9 @@ func GetErasure(s *auth.Store, id int64) (ErasureView, error) {
 	// deleted by any door is seen as it is.
 	v.MadeBefore = madeBefore(s, v)
 	v.Old = OldBranches()
+	if v.Restores, err = s.ErasureRestores(v.ID); err != nil {
+		return v, err
+	}
 	return v, nil
 }
 

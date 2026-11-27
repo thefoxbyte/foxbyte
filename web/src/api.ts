@@ -910,9 +910,14 @@ export type BranchBeforeResult = {
   branch: string; source: string; entry_id: number; command_tag: string; object_identity: string
   statement: string; target_kind: 'xid' | 'time'; target: string; base_backup: string
   last_ledger_id: number; seconds: number
+  reapplied?: ReapplyDone[] // erasure requests applied again before it opened (F4 step 4)
 }
-export const branchBeforeEntry = (source: string, entryId: number, name?: string) =>
-  req('POST', `${API}/api/branches/${source}/ledger/${entryId}/branch`, name ? { name } : {}) as Promise<BranchBeforeResult>
+// after is an admin's decision for a copy from before an erasure: the
+// request is applied to the new branch again, by its row keys, before it opens.
+export const branchBeforeEntry = (source: string, entryId: number, name?: string, after?: { reason: string }) =>
+  req('POST', `${API}/api/branches/${source}/ledger/${entryId}/branch`, {
+    ...(name ? { name } : {}), ...(after ? { afterErasure: 'reapply', reason: after.reason } : {}),
+  }) as Promise<BranchBeforeResult>
 
 // --- Change requests: a branch's schema changes, offered for review ---
 export type RequestEntry = {
@@ -1290,7 +1295,16 @@ export type ErasureRequest = {
   branches?: ErasureBranch[]
   madeBefore?: ErasureStale[]
   old?: BranchAge[]
+  restores?: ErasureRestore[]
 }
+// A restore past a request an admin decided (F4 step 4): the copy was
+// closed until the erasure was applied to it again. detail is the engine's
+// JSON of what that did (ReapplyDone).
+export type ErasureRestore = {
+  id: number; request: number; door: string; source: string; target: string; point: string
+  by: string; reason: string; at: string; state: 'reapplying' | 'done' | 'failed'; detail: string; error?: string; done?: string
+}
+export type ReapplyDone = { request: number; keys: string; result: { rows: number; blackbox?: { redacted: number; originals: number } }; blackbox: boolean; notes: string[] }
 const erasureURL = `${API}/api/dpdp/erasures`
 export const listErasures = () => req('GET', erasureURL) as Promise<ErasureRequest[]>
 export const getErasure = (id: number) => req('GET', `${erasureURL}/${id}`) as Promise<ErasureRequest>

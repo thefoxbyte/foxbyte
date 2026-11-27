@@ -1095,6 +1095,8 @@ func deleteLocked(name string, keepKeys bool) error {
 		return err
 	}
 	forgetMaskedBranch(name)
+	// A branch closed until an erasure was applied to it again is gone with it.
+	_ = unmarkReapplying(name)
 	return nil
 }
 
@@ -1982,6 +1984,10 @@ func SuspendIdle(name string) error {
 	}
 	if err := checkSuspendable(name); err != nil {
 		return err
+	}
+	// Restored past an erasure, and having it applied again (F4 step 4).
+	if reapplyingNow(name) {
+		return fmt.Errorf("%w: %q is having an erasure applied to it again", ErrBranchInUse, name)
 	}
 	unlock, err := lockBranch(name, "suspended")
 	if err != nil {
