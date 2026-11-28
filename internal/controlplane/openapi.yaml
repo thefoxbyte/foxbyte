@@ -1295,6 +1295,50 @@ paths:
         "409": { description: The request is not planned. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/dpdp/erasures/{id}/outcomes:
+    get:
+      tags: [branches]
+      summary: "A request's outcomes, each with its date and evidence, its one \"clears on\" date (or why it is never), and the copies outside FoxByte's reach, read now (admins; free)."
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+      responses:
+        "200":
+          description: The outcomes.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin. }
+        "404": { description: No such request. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/erasures/{id}/check:
+    post:
+      tags: [branches]
+      summary: The outcomes, with main and every branch the request erased searched again by its row keys; a row found again loses the outcome (admins; Enterprise).
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+      responses:
+        "200":
+          description: The outcomes, with what the search found.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "404": { description: No such request. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/erasures/{id}/evidence:
+    get:
+      tags: [branches]
+      summary: "The request's evidence for an auditor (erasure-evidence/1): what was erased where, the outcomes, \"clears on\" and the limits. Counts only; keys=1 adds the row keys, which identify the person, and the security log records it (admins; free)."
+      parameters:
+        - { $ref: "#/components/parameters/ErasureID" }
+        - { name: keys, in: query, schema: { type: string, enum: ["1"] }, description: Include the row keys. }
+        - { name: download, in: query, schema: { type: string, enum: ["1"] }, description: Send it as a file. }
+      responses:
+        "200":
+          description: The evidence.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin. }
+        "404": { description: No such request. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/dpdp/erasures/{id}/branches/{name}/remake:
     post:
       tags: [branches]

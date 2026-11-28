@@ -153,7 +153,8 @@ fox dpdp erase new --note "DPO ticket 1234" --event account_closed=2025-03-31
 fox dpdp erase show 7              # the plan again, without the values
 fox dpdp erase apply 7             # asks for the values again, then for the number
 fox dpdp erase rewrite 7           # the tables left for a quiet time
-fox dpdp erase status 7            # every branch, and those made before the erasure
+fox dpdp erase status 7            # every branch, the outcomes and "clears on", searched again
+fox dpdp erase evidence 7          # the evidence for an auditor (--keys adds the row keys; --json)
 fox dpdp erase apply 7 --branch qa # a branch the apply skipped, on its own
 fox dpdp erase list
 ```
@@ -240,9 +241,23 @@ to it again by the rows it changed, and opens only then; the request lists
 the restore, who decided and why. Without FoxByte Enterprise, such a restore
 is refused; a restore to a time after the erasure needs nothing.
 
-Not yet: backups, which are not edited and hold the person until they are
-pruned. That is the next step of F4 (`docs/FOX_F4_Erasure_Design.md`,
-section 20); until it is built, every plan says so. FoxByte's reading of erasure has not yet been reviewed by a
+**Outcomes and the one date.** Once applied, a request shows each outcome
+(removed from live queries, rewritten in the files, logs and records cleared,
+the vault's record, branches made before it, backup and WAL expiry, audit
+records aged out, a law's exceptions) with its date and what it rests on, and
+one **clears on** date: the latest of them, or *never* while something FoxByte
+keeps will not go by itself (a branch made before the erasure, an install tar
+from before it in the exports folder, backups switched off, an archive kept
+from before an upgrade, a backup target moved away from), saying which.
+Backups are not edited: they hold the person until the prune after the N-th
+backup since the last rewrite, later if the bucket's Object Lock says so.
+`fox dpdp erase status` reads them now and searches every branch again by the
+request's row keys; a row written back shows as lost. It also lists what
+FoxByte cannot reach: query results and Blackbox exports taken before the
+erasure, tars written elsewhere, realtime subscribers, pipelines and imports
+whose source will bring the person back, a SIEM, backups of the state
+directory. `fox dpdp erase evidence` gives an auditor all of it, with counts;
+`--keys` adds the row keys, and the security log records that. FoxByte's reading of erasure has not yet been reviewed by a
 privacy lawyer or a storage engineer.
 
 ## What the inventory cannot claim

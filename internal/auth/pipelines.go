@@ -150,3 +150,30 @@ func (s *Store) PipelineMayReplace(pipelineID string, userID int64, branch strin
 	owner, ok := s.BranchOwner(branch)
 	return ok && owner == userID && s.PipelineOwnsTarget(pipelineID, branch)
 }
+
+// PipelineTarget is a branch a pipeline loads into, with the pipeline's name.
+// Never its source: the connection string can hold a password.
+type PipelineTarget struct {
+	Branch   string `json:"branch"`
+	Pipeline string `json:"pipeline"`
+}
+
+// PipelineTargets lists every branch a pipeline loads into, for an erasure
+// to warn that the pipeline's source will bring the person back (F4 step 5).
+func (s *Store) PipelineTargets() ([]PipelineTarget, error) {
+	rows, err := s.db.Query(`SELECT t.branch, coalesce(p.name, t.pipeline_id) FROM pipeline_targets t
+		LEFT JOIN pipelines p ON p.id = t.pipeline_id ORDER BY t.branch`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PipelineTarget{}
+	for rows.Next() {
+		var t PipelineTarget
+		if err := rows.Scan(&t.Branch, &t.Pipeline); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}

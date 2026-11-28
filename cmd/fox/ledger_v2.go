@@ -82,6 +82,11 @@ func ledgerV2Cmd(args []string) bool {
 			must(fmt.Errorf("unsupported export format %q (supported: jsonl)", f))
 		}
 		must(branch.ExportLedger(name, os.Stdout))
+		// Recorded, as an erasure lists the Blackbox exports (F4 step 5).
+		if s := openStore(); s != nil {
+			branch.RecordLedgerExport(s, name, cliActor(), "")
+			s.Close()
+		}
 	case "entries":
 		limit := 50
 		if v := optValue(args, "--limit"); v != "" {

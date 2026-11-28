@@ -1480,8 +1480,32 @@ func backupTargetCmd(args []string) {
 		must(branch.SetBackupTarget(t, opts))
 	case "local":
 		must(branch.SetBackupTarget(branch.Target{Kind: "local"}, branch.TargetOptions{}))
+	case "left":
+		// The targets moved away from, whose backups stay there (F4 step 5).
+		ts := branch.TargetsLeft()
+		if hasFlag(args, "--json") {
+			printJSON(ts)
+			return
+		}
+		if len(ts) == 0 {
+			fmt.Println("no backup target left behind")
+		}
+		for _, t := range ts {
+			state := "keeps its backups"
+			if t.Gone != nil {
+				state = fmt.Sprintf("said deleted by %s on %s: %s", t.GoneBy, t.Gone.Local().Format("2006-01-02"), t.Reason)
+			}
+			fmt.Printf("%s  until %s  %s\n", t.Root, t.Until.Local().Format("2006-01-02 15:04"), state)
+		}
+	case "forget":
+		if len(args) < 2 {
+			fmt.Printf("usage: %s backup target forget <s3://…|local> --reason \"…\"\n", brand.CLI)
+			os.Exit(2)
+		}
+		must(branch.ForgetTargetLeft(args[1], cliActor(), optValue(args, "--reason")))
+		fmt.Printf("%s is recorded as holding none of the install's backups now.\n", args[1])
 	default:
-		fmt.Printf("usage: %[1]s backup target [show] | %[1]s backup target set s3://… | %[1]s backup target local\n", brand.CLI)
+		fmt.Printf("usage: %[1]s backup target [show] | %[1]s backup target set s3://… | %[1]s backup target local | %[1]s backup target left | %[1]s backup target forget <target> --reason \"…\"\n", brand.CLI)
 		os.Exit(2)
 	}
 }
@@ -1807,6 +1831,20 @@ func exportCmd(args []string, announce bool) error {
 	}
 	if _, err := branch.ReadExport(out, ""); err != nil {
 		return fmt.Errorf("the export was written but does not verify: %w", err)
+	}
+	// Recorded, as an erasure lists every tar made before it (F4 step 5).
+	rec := branch.TarRecord{Path: out, Place: branch.TarOnServer, Created: m.Created, By: cliActor()}
+	if abs, err := filepath.Abs(out); err == nil {
+		rec.Path = abs
+	}
+	if a.As != "" {
+		rec.Path, rec.Place = a.As, branch.TarOnHost
+	}
+	for _, b := range m.Branches {
+		rec.Branches = append(rec.Branches, b.Name)
+	}
+	if err := branch.RecordTar(rec); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: the export is written, but recording it in the security log failed: %v\n", err)
 	}
 	if announce {
 		fmt.Printf("Export written to %s — %d branch(es), verified.\n", out, len(m.Branches))

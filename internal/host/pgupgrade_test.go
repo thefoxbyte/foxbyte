@@ -4,6 +4,7 @@ package host
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -140,5 +141,27 @@ func TestRestoreDoorsReadTheErasureDecision(t *testing.T) {
 	}
 	if got := (PgUpgradeArgs{}).AfterErasureArgs(); len(got) != 0 {
 		t.Fatalf("no decision passes nothing on: %v", got)
+	}
+}
+
+// The VM's half of a host's export is told the host's path, so the security
+// log names the file the person has (F4 step 5).
+func TestExportArgsCarryTheHostsPath(t *testing.T) {
+	e, err := ParseExportArgs([]string{"--out", "/tmp/g.tar", "--as", "/Users/a/.fox/exports/x.tar"})
+	if err != nil || e.Out != "/tmp/g.tar" || e.As != "/Users/a/.fox/exports/x.tar" {
+		t.Fatalf("got %+v, %v", e, err)
+	}
+}
+
+// A `dpdp erase` command forwarded from a host carries the host's exports
+// folder, listed, as one base64 argument.
+func TestEraseCommandsCarryTheHostsExports(t *testing.T) {
+	args := WithHostExports([]string{"dpdp", "erase", "status", "3"})
+	if len(args) != 6 || args[4] != "--host-exports" {
+		t.Fatalf("args: %q", args)
+	}
+	raw, err := base64.StdEncoding.DecodeString(args[5])
+	if err != nil || !strings.Contains(string(raw), `"dir"`) || !strings.Contains(string(raw), `"tars"`) {
+		t.Fatalf("listing: %v %s", err, raw)
 	}
 }

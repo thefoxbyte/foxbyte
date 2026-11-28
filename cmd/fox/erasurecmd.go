@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,7 +38,10 @@ import (
 // history and the process list would keep them. A request keeps none of them:
 // applying asks for them again.
 func erasureCmd(args []string) {
-	ps := positionals(args, "--note", "--event", "--table", "--branch")
+	// The host's exports folder, as a host listed it for the VM (F4 step 5):
+	// kept for every request to read, and taken out of the arguments.
+	args = takeHostExports(args)
+	ps := positionals(args, "--note", "--event", "--table", "--branch", "--reason")
 	onBranch := optValue(args, "--branch")
 	if onBranch == "main" {
 		onBranch = ""
@@ -199,7 +203,36 @@ func erasureCmd(args []string) {
 			printErasureBranch(os.Stdout, v, onBranch)
 			return
 		}
-		printErasureOr(args, v)
+		if sub == "show" || v.Result == nil {
+			printErasureOr(args, v)
+			return
+		}
+		// status reads the outcomes now, and searches the branches again
+		// where this edition can (F4 step 5).
+		o, rerr := branch.RecheckErasure(s, v)
+		if rerr != nil {
+			o = branch.ErasureOutcomesFor(s, v)
+			o.Notes = append(o.Notes, "The branches were not searched again: "+rerr.Error())
+		}
+		if hasFlag(args, "--json") {
+			printJSON(struct {
+				branch.ErasureView
+				Outcomes branch.ErasureOutcomes `json:"outcomes"`
+			}{v, o})
+			return
+		}
+		printErasure(os.Stdout, v)
+		printOutcomes(os.Stdout, o)
+	case "evidence":
+		s := openStore()
+		defer s.Close()
+		ev, err := branch.ErasureEvidenceFor(s, id(), branch.ErasureEvidenceOptions{Keys: hasFlag(args, "--keys"), By: cliActor()})
+		must(err)
+		if hasFlag(args, "--json") {
+			printJSON(ev)
+			return
+		}
+		printEvidence(os.Stdout, ev)
 	default:
 		fmt.Fprintf(os.Stderr, `usage:
   %[1]s dpdp erase new [--note "…"] [--event account_closed=YYYY-MM-DD]   make a request, and show its plan
@@ -207,7 +240,8 @@ func erasureCmd(args []string) {
   %[1]s dpdp erase apply <request> [--yes]                             apply it to main and every branch
   %[1]s dpdp erase apply <request> --branch <b> [--yes]                apply it to a branch it skipped
   %[1]s dpdp erase rewrite <request> [--branch b] [--table schema.table]   rewrite the tables left for later
-  %[1]s dpdp erase status <request> [--branch b] [--json]              the branches, and those to remake or delete
+  %[1]s dpdp erase status <request> [--branch b] [--json]              the branches, the outcomes and "clears on", searched again
+  %[1]s dpdp erase evidence <request> [--keys] [--json]                the evidence for an auditor (--keys adds the row keys)
   %[1]s dpdp erase withdraw <request>                                  close a request without applying it
   %[1]s dpdp erase list [--json]
   %[1]s dpdp erase show <request> [--json]
@@ -635,4 +669,125 @@ func humanSize(n int64) string {
 		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
 	}
 	return fmt.Sprintf("%d kB", n/1024)
+}
+
+// takeHostExports keeps the listing a host passed with --host-exports (base64
+// JSON, which no forwarder's quoting changes) and returns the arguments
+// without it.
+func takeHostExports(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--host-exports" && i+1 < len(args) {
+			if raw, err := base64.StdEncoding.DecodeString(args[i+1]); err == nil {
+				if err := branch.SaveHostExports(string(raw)); err != nil {
+					fmt.Fprintln(os.Stderr, "warning:", err)
+				}
+			}
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
+}
+
+// printOutcomes is a request's outcomes, its one date, and what FoxByte
+// cannot reach (F4 step 5).
+func printOutcomes(w io.Writer, o branch.ErasureOutcomes) {
+	fmt.Fprintf(w, "\nOutcomes, read at %s:\n", o.Checked.Local().Format("2006-01-02 15:04"))
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, x := range o.Outcomes {
+		if x.Key == branch.OutcomeOutside {
+			continue
+		}
+		when := ""
+		if x.Date != nil {
+			when = x.Date.Local().Format("2006-01-02 15:04")
+			if x.Estimated {
+				when = "about " + x.Date.Local().Format("2006-01-02")
+			}
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", x.Name, strings.ToUpper(x.State), when)
+	}
+	tw.Flush()
+	for _, x := range o.Outcomes {
+		if x.Why != "" && x.State != branch.StateMet {
+			fmt.Fprintf(w, "  %s: %s\n", x.Name, x.Why)
+		}
+	}
+	switch {
+	case o.ClearsOn != nil:
+		fmt.Fprintf(w, "\nClears on: %s\n", o.ClearsOn.Local().Format("2006-01-02"))
+	case len(o.Never) > 0:
+		fmt.Fprintf(w, "\nClears on: never, while:\n")
+		for _, n := range o.Never {
+			fmt.Fprintf(w, "  - %s\n", n)
+		}
+	default:
+		fmt.Fprintf(w, "\nClears on: not known yet:\n")
+		for _, n := range o.Unknown {
+			fmt.Fprintf(w, "  - %s\n", n)
+		}
+	}
+	if len(o.Outside) > 0 {
+		fmt.Fprintf(w, "\nOutside FoxByte's reach (%d), listed, never reached:\n", len(o.Outside))
+		for _, c := range o.Outside {
+			mark := "-"
+			if c.Warn {
+				mark = "!"
+			}
+			when := ""
+			if c.At != nil {
+				when = c.At.Local().Format("2006-01-02 15:04") + "  "
+			}
+			fmt.Fprintf(w, "  %s %s%s\n", mark, when, c.What)
+		}
+	}
+	for _, n := range o.Notes {
+		fmt.Fprintf(w, "note: %s\n", n)
+	}
+}
+
+// printEvidence is the evidence as a person reads it.
+func printEvidence(w io.Writer, ev *branch.ErasureEvidence) {
+	fmt.Fprintf(w, "Erasure evidence (%s), request #%d on %s, %s\n", ev.Format, ev.Request.ID, ev.Request.Branch, ev.Request.State)
+	fmt.Fprintf(w, "  made %s by %s; generated %s by %s; %s %s, %s edition\n",
+		ev.Request.Created.Local().Format("2006-01-02 15:04"), ev.Request.CreatedBy, ev.Generated, ev.By, ev.Product, ev.Version, ev.Edition)
+	fmt.Fprintf(w, "  for: %s\n", refText(ev.Request.Values))
+	if ev.Request.Note != "" {
+		fmt.Fprintf(w, "  note: %s\n", ev.Request.Note)
+	}
+	fmt.Fprintln(w, "\nBranches:")
+	for _, b := range ev.Branches {
+		when := ""
+		if b.Applied != nil {
+			when = " at " + b.Applied.Local().Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(w, "  %s: %s%s, %d row(s)\n", b.Branch, b.State, when, b.Rows)
+		for _, t := range b.Tables {
+			keys := ""
+			if len(t.Keys) > 0 {
+				ks := make([]string, len(t.Keys))
+				for i, k := range t.Keys {
+					ks[i] = string(k)
+				}
+				keys = "; keys " + strings.Join(ks, " ")
+			}
+			fmt.Fprintf(w, "    %s.%s: %s %d row(s)%s\n", t.Schema, t.Table, t.Action, t.Rows, keys)
+		}
+		if b.Why != "" {
+			fmt.Fprintf(w, "    %s\n", b.Why)
+		}
+	}
+	printOutcomes(w, ev.Outcomes)
+	if len(ev.Restores) > 0 {
+		fmt.Fprintf(w, "\nRestores past it: %d (each applied the erasure again before it opened)\n", len(ev.Restores))
+	}
+	if !ev.Keys {
+		fmt.Fprintf(w, "\nRow keys are not in this evidence; an admin adds them with --keys.\n")
+	}
+	fmt.Fprintln(w, "\nLimits:")
+	for _, l := range ev.Limits {
+		fmt.Fprintf(w, "  - %s\n", l)
+	}
 }

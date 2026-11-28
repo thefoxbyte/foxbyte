@@ -102,6 +102,10 @@ func DefaultExportPath() string {
 type ExportArgs struct {
 	Out      string
 	Branches []string
+	// As is where the tar ends up when that is not Out: the host's path,
+	// for the VM's half of an export from a host, so the security log names
+	// the file the person has (F4 step 5).
+	As string
 }
 
 // ParseExportArgs reads [--out <path>] [--branch <name>]...
@@ -109,13 +113,16 @@ func ParseExportArgs(args []string) (ExportArgs, error) {
 	var a ExportArgs
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--out", "--branch":
+		case "--out", "--branch", "--as":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
 				return a, fmt.Errorf("%s needs a value", args[i])
 			}
-			if args[i] == "--out" {
+			switch args[i] {
+			case "--out":
 				a.Out = args[i+1]
-			} else {
+			case "--as":
+				a.As = args[i+1]
+			default:
 				a.Branches = append(a.Branches, args[i+1])
 			}
 			i++
@@ -256,7 +263,7 @@ func hostExport(args []string) error {
 		return err
 	}
 	guest := guestTemp(out)
-	fwd := []string{"_export-guest", "--out", guest}
+	fwd := []string{"_export-guest", "--out", guest, "--as", out}
 	for _, b := range a.Branches {
 		fwd = append(fwd, "--branch", b)
 	}

@@ -304,6 +304,10 @@ type ErasureEngine struct {
 	// by id; the Aadhaar report's places in those rows. target is a branch,
 	// or the restore copy ("restore"). Settle rewrites the tables after.
 	Reapply func(target string, a ErasureReapply) (ErasureResult, error)
+	// Recheck searches a branch again by the row keys a request kept (step
+	// 5): a row it deleted found again, or one it cleared holding a value
+	// again, is counted.
+	Recheck func(branch string, plan ErasurePlan, done []ErasureDone) ([]RecheckTable, error)
 }
 
 // ErasureReapply is what applying a request again takes: no value, only

@@ -5535,6 +5535,100 @@ assert_eq "…and the security log has each decision, without a value" \
   "$($S audit --limit 200 2>/dev/null | grep -c 'erasure.restore')|$($S audit --limit 200 2>/dev/null | grep 'erasure.restore' | grep -c "$RE")" "3|0"
 RP
 
+echo "### 11be. the outcomes, \"clears on\", the copies outside, the evidence (point 11.2, F4 Gate 1 step 5)"
+# Synthetic values only. A person (OE) on main, with copies made of them
+# before the erasure: an install tar in the exports folder, one written
+# elsewhere, a query result exported and the Blackbox exported. The request
+# then says what each outcome is, its one date or why it is never, and what
+# FoxByte cannot reach; status searches again by the row keys, and the
+# evidence goes to an auditor with counts, or with the keys when asked.
+OE=op.person@example.in; OO=op.other@example.in
+EXD="$HOME/$BRAND_STATE_DIR/exports"; OT=/tmp/op-out.tar
+OP() {
+  pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS op_people" >/dev/null
+  sudo rm -f "$OT" "$EXD"/*op-*.tar 2>/dev/null; rm -f /tmp/op-*.json
+}
+OP
+pg pg-main "CREATE TABLE op_people (id int PRIMARY KEY, email text, note text)" >/dev/null
+pg pg-main "INSERT INTO op_people VALUES (1, '$OE', 'keep'), (2, '$OO', 'and keep')" >/dev/null
+pg pg-main "GRANT ALL ON op_people TO db_client" >/dev/null
+$S pii scan --branch main >/dev/null 2>&1
+for id in $($S pii --branch main --json | hjson "print(' '.join(str(f['id']) for f in d['findings'] if f['table']=='op_people' and f['state']=='suggested'))"); do
+  $S pii mark "$id" confirm --branch main >/dev/null 2>&1
+done
+$S dpdp set op_people --basis consent --purpose 'Receipts' --principals customer --keep 1y --from collection --reason purpose --branch main >/dev/null 2>&1
+# The copies, made before the erasure.
+OTA="$EXD/op-a.tar"
+$S backup export --out "$OTA" --branch main >/dev/null 2>&1
+$S backup export --out "$OT" --branch main >/dev/null 2>&1
+$S export "SELECT id, email FROM op_people ORDER BY id" > /tmp/op-x.csv 2>/dev/null
+$S blackbox export main > /tmp/op-bb.jsonl 2>/dev/null
+assert_eq "(setup) each copy is recorded in the security log: both tars with their paths, the Blackbox export" \
+  "$($S audit --limit 300 2>/dev/null | grep 'backup.export' | grep -c "$OTA")|$($S audit --limit 300 2>/dev/null | grep 'backup.export' | grep -c "$OT")|$(( $($S audit --limit 300 2>/dev/null | grep -c 'ledger.export') >= 1 ))" "1|1|1"
+OVALS() { printf 'email:%s\n' "$OE"; }
+OQ="$(OVALS | $S dpdp erase new --json 2>/dev/null | hjson "print(d['id'])")"
+OVALS | $S dpdp erase apply "$OQ" --yes >/dev/null 2>&1
+# A query exported after the erasure holds no one: it is not listed.
+$S export "SELECT id FROM op_people" > /dev/null 2>&1
+
+OUT="$($S dpdp erase status "$OQ" 2>&1)"
+$S dpdp erase status "$OQ" --json > /tmp/op-st.json 2>/dev/null
+assert_eq "status shows the outcomes: removed from live queries and rewritten in the files met, searched again by row key with none found" \
+  "$(hjson "o=d['outcomes']; x={y['key']:y for y in o['outcomes']}; print(x['live']['state'], x['files']['state'], x['derived']['state'], o['recheck']['branches'][0]['branch'], sum(t['found'] for b in o['recheck']['branches'] for t in b['tables']))" < /tmp/op-st.json)|$(grep -c '^Outcomes, read at' <<<"$OUT")" \
+  "met met not traced main 0|1"
+assert_eq "…and status --json keeps the request's own fields beside them" \
+  "$(hjson "print(d['id'] == $OQ, d['state'], 'plan' in d)" < /tmp/op-st.json)" "True applied True"
+assert_eq "\"clears on\" is never while the tar in the exports folder from before the erasure is there, naming it" \
+  "$(hjson "o=d['outcomes']; print(o.get('clearsOn') is None, any('$OTA' in n for n in o['never']))" < /tmp/op-st.json)|$(grep -c '^Clears on: never, while:' <<<"$OUT")" "True True|1"
+assert_eq "the copies outside FoxByte's reach are listed: the tar written elsewhere, the query export and the Blackbox export from before it, the state directory, freed blocks" \
+  "$(hjson "o=d['outcomes']['outside']; k=[c['kind'] for c in o]; print(any('$OT' in c['what'] for c in o if c['kind']=='tar'), k.count('export') >= 1, k.count('blackbox') >= 1, 'state' in k, 'disk' in k)" < /tmp/op-st.json)" \
+  "True True True True True"
+assert_eq "…and a query exported after the erasure is not one of them" \
+  "$(hjson "import datetime as D, re; t=lambda s: D.datetime.fromisoformat(re.sub(r'(\\.\\d{6})\\d+', r'\\1', s).replace('Z', '+00:00')); o=d['outcomes']['outside']; a=t(d['result']['applied']); print(all(t(c['at']) < a for c in o if c['kind']=='export'))" < /tmp/op-st.json)" "True"
+sudo rm -f "$OTA"
+assert_eq "the tar deleted, it no longer holds the date back" \
+  "$($S dpdp erase status "$OQ" --json 2>/dev/null | hjson "print(any('$OTA' in n for n in d['outcomes']['never']))")" "False"
+
+# Written back: the search by row key finds the person, and the outcome is lost.
+pg pg-main "UPDATE op_people SET email = '$OE' WHERE id = 1" >/dev/null
+OUT="$($S dpdp erase status "$OQ" 2>&1)"
+assert_eq "a row written back is found by the request's row keys: removed from live queries is lost, and \"clears on\" says so" \
+  "$(grep -cE 'Removed from live queries +LOST' <<<"$OUT")|$(grep -c '1 row(s) of public.op_people on main hold the person again' <<<"$OUT")" "1|2"
+pg pg-main "UPDATE op_people SET email = NULL WHERE id = 1" >/dev/null
+
+# A host's exports folder, as a host passes it into the VM.
+HB() { python3 -c 'import base64,json,sys; print(base64.b64encode(json.dumps({"dir":"/Users/op/.fox/exports","checked":sys.argv[1],"tars":json.loads(sys.argv[2])}).encode()).decode())' "$@"; }
+HT='[{"path":"/Users/op/.fox/exports/h.tar","modified":"2000-01-01T00:00:00Z"}]'
+assert_eq "a tar the host lists from before the erasure holds the date back, said to be on the host; listed gone, it no longer does" \
+  "$($S dpdp erase status "$OQ" --json --host-exports "$(HB "$(date -u +%FT%TZ)" "$HT")" 2>/dev/null | hjson "print(any('h.tar' in n and 'on the host' in n for n in d['outcomes']['never']))")|$($S dpdp erase status "$OQ" --json --host-exports "$(HB "$(date -u +%FT%TZ)" '[]')" 2>/dev/null | hjson "print(any('h.tar' in n for n in d['outcomes']['never']))")" \
+  "True|False"
+
+# The evidence.
+$S dpdp erase evidence "$OQ" --json > /tmp/op-ev.json 2>/dev/null
+$S dpdp erase evidence "$OQ" --keys --json > /tmp/op-evk.json 2>/dev/null
+assert_eq "the evidence: its format, counts only and no value; with --keys the row keys too" \
+  "$(hjson "b=d['branches'][0]; t=[x for x in b['tables'] if x['table']=='op_people'][0]; print(d['format'], d['keys'], 'keys' in t, t['rows'])" < /tmp/op-ev.json)|$(hjson "b=d['branches'][0]; t=[x for x in b['tables'] if x['table']=='op_people'][0]; print(d['keys'], t['keys'])" < /tmp/op-evk.json)|$(grep -c "$OE" /tmp/op-ev.json /tmp/op-evk.json | awk -F: '{s+=$2} END {print s}')" \
+  "erasure-evidence/1 False False 1|True [['1']]|0"
+assert_eq "…the security log says which evidence was taken, keys or counts" \
+  "$($S audit --limit 300 2>/dev/null | grep 'erasure.evidence' | grep -c "request #$OQ's evidence produced, with the row keys")|$($S audit --limit 300 2>/dev/null | grep 'erasure.evidence' | grep -c "request #$OQ's evidence produced, counts only")" "1|1"
+assert_eq "the human-readable evidence says the keys are left out, and lists the limits" \
+  "$($S dpdp erase evidence "$OQ" 2>/dev/null | grep -cE 'Row keys are not in this evidence|^Limits:')" "2"
+
+# Over HTTP: admins only.
+assert_eq "GET …/outcomes and POST …/check for admins (403 otherwise); …/evidence?keys=1 carries the keys" \
+  "$(code "$KEY" "https://localhost:8080/api/dpdp/erasures/$OQ/outcomes")|$(code "$KA" "https://localhost:8080/api/dpdp/erasures/$OQ/outcomes")|$(code "$KEY" -X POST "https://localhost:8080/api/dpdp/erasures/$OQ/check")|$(curl -sk -H "Authorization: Bearer $KEY" "https://localhost:8080/api/dpdp/erasures/$OQ/evidence?keys=1" | hjson "print(d['keys'])")" \
+  "200|403|200|True"
+assert_eq "a Blackbox exported over HTTP is recorded, with who and from where" \
+  "$(curl -sk -o /dev/null -H "Authorization: Bearer $KEY" "https://localhost:8080/api/branches/main/ledger/export"; $S audit --limit 50 2>/dev/null | grep 'ledger.export' | grep -c 'test@foxbyte.dev')" "1"
+
+# A backup target left behind: listed, and said deleted only with a reason.
+# §11c's move to s3://itremote/fox and back left that target behind.
+assert_eq "fox backup target left lists the target §11c moved away from; forget refuses one not listed, and one with no reason" \
+  "$($S backup target left 2>&1 | grep -c '^s3://itremote/fox .*keeps its backups')|$($S backup target forget s3://op-nope --reason x 2>&1 | grep -c 'not a backup target left behind')|$($S backup target forget s3://itremote/fox 2>&1 | grep -c 'say why with --reason')" "1|1|1"
+assert_eq "…and it holds every request's \"clears on\" back until an admin says its backups are deleted" \
+  "$($S dpdp erase status "$OQ" --json 2>/dev/null | hjson "print(any('s3://itremote/fox' in n for n in d['outcomes']['never']))")|$($S backup target forget s3://itremote/fox --reason 'the test bucket is emptied' >/dev/null 2>&1; $S dpdp erase status "$OQ" --json 2>/dev/null | hjson "print(any('s3://itremote/fox' in n for n in d['outcomes']['never']))")" "True|False"
+OP
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

@@ -16,13 +16,15 @@ vi.mock('../api', async () => {
     withdrawErasure: vi.fn(),
     remakeErasureBranch: vi.fn(),
     deleteErasureBranch: vi.fn(),
+    getErasureOutcomes: vi.fn(),
+    checkErasure: vi.fn(),
     getStatus: vi.fn(),
   }
 })
 
 import {
-  ApiError, applyErasure, getErasure, getStatus, listErasures, newErasure, remakeErasureBranch,
-  type ErasureRequest, type ErasureTable, type Status,
+  ApiError, applyErasure, checkErasure, getErasure, getErasureOutcomes, getStatus, listErasures, newErasure, remakeErasureBranch,
+  type ErasureOutcomes, type ErasureRequest, type ErasureTable, type Status,
 } from '../api'
 import { ConfirmProvider } from '../confirm'
 import ErasureRequests, { readValues } from './ErasureRequests'
@@ -53,11 +55,28 @@ const request = (o: Partial<ErasureRequest> = {}): ErasureRequest => ({
   ...o,
 })
 
+const outcomes = (o: Partial<ErasureOutcomes> = {}): ErasureOutcomes => ({
+  request: 7, checked: '2026-11-27T10:00:00Z', never: [], unknown: [], notes: [],
+  outcomes: [
+    { key: 'live', name: 'Removed from live queries', state: 'met', date: '2026-11-25T10:00:00Z', evidence: ['main: 1 row(s) changed'] },
+    { key: 'backups', name: 'Backup and WAL expiry', state: 'pending', date: '2026-12-02T10:00:00Z', estimated: true,
+      why: 'held in backups and WAL until the prune after the 7-th backup', evidence: ['Backups every 24h0m0s, 7 kept'] },
+    { key: 'outside', name: 'Outside FoxByte', state: 'outside', evidence: ['2 place(s) listed'] },
+  ],
+  clearsOn: '2026-12-02T10:00:00Z',
+  outside: [
+    { kind: 'pipeline', what: 'pipeline "crm" loads main: its source holds the person and will bring them back on its next run', branch: 'main', warn: true },
+    { kind: 'disk', what: 'freed disk blocks, which FoxByte cannot read or wipe' },
+  ],
+  ...o,
+})
+
 function page() { render(<MemoryRouter><ConfirmProvider><ErasureRequests /></ConfirmProvider></MemoryRouter>) }
 
 describe('Erasure requests', () => {
   beforeEach(() => {
     vi.mocked(getStatus).mockResolvedValue(status(['dpdp']))
+    vi.mocked(getErasureOutcomes).mockResolvedValue(outcomes())
     vi.mocked(listErasures).mockReset().mockResolvedValue([request()])
     vi.mocked(getErasure).mockReset().mockResolvedValue(request())
     vi.mocked(newErasure).mockReset()
@@ -190,6 +209,34 @@ describe('Erasure requests', () => {
     expect(done.textContent).toContain('2 Aadhaar log report place(s) removed')
     expect(done.textContent).toContain('1 Aadhaar exposure report place(s)')
     expect(done.textContent).toContain('a law keeps the number')
+  })
+
+  it('shows the outcomes and the one date, searches again, and offers the evidence', async () => {
+    vi.mocked(getErasure).mockResolvedValue(request({
+      state: 'applied',
+      result: { applied: '2026-11-25T10:00:00Z', by: 'dpo@example.com', tables: [], rows: 1, verified: true, rewrites: [], notes: [] },
+    }))
+    vi.mocked(checkErasure).mockResolvedValue(outcomes({
+      clearsOn: undefined, never: ['Removed from live queries: searched again by the request\'s row keys, 1 row(s) of public.customers on main hold the person again'],
+      outcomes: [{ key: 'live', name: 'Removed from live queries', state: 'lost', why: '1 row(s) of public.customers on main hold the person again', evidence: [] }],
+      recheck: { checked: '2026-11-27T11:00:00Z', branches: [{ branch: 'main', tables: [{ schema: 'public', table: 'customers', found: 1 }] }] },
+    }))
+    page()
+    fireEvent.click(within(await screen.findByRole('table', { name: 'Erasure requests' })).getByRole('button', { name: 'Open' }))
+    const panel = await screen.findByTestId('erasure-outcomes')
+    expect(within(panel).getByTestId('erasure-clears-on').textContent).toContain(new Date('2026-12-02T10:00:00Z').toLocaleDateString())
+    expect(within(panel).getByTestId('erasure-outcome-backups').textContent).toContain('Pending')
+    expect(within(panel).getByTestId('erasure-outcome-backups').textContent).toContain('about ')
+    expect(within(panel).queryByTestId('erasure-outcome-outside')).toBeNull()
+    expect(within(panel).getByTestId('erasure-outside-pipeline').className).toContain('pii-warning')
+    expect(within(panel).getByTestId('erasure-evidence').getAttribute('href')).toContain('/api/dpdp/erasures/7/evidence?download=1')
+    expect(within(panel).getByTestId('erasure-evidence-keys').getAttribute('href')).toContain('keys=1')
+    fireEvent.click(within(panel).getByTestId('erasure-check'))
+    await waitFor(() => expect(within(panel).getByTestId('erasure-clears-on').textContent).toContain('never, as things stand'))
+    expect(within(panel).getByTestId('erasure-never').textContent).toContain('hold the person again')
+    expect(within(panel).getByTestId('erasure-outcome-live').textContent).toContain('Lost')
+    expect(within(panel).getByTestId('erasure-rechecked')).toBeTruthy()
+    expect(checkErasure).toHaveBeenCalledWith(7)
   })
 
   it('lists the restores past a request: who decided, why, and the erasure applied again', async () => {

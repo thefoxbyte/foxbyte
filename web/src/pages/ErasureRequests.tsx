@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  ApiError, applyErasure, deleteErasureBranch, getErasure, listErasures, newErasure, remakeErasureBranch, replanErasure,
-  rewriteErasure, withdrawErasure,
-  type ErasureBranch, type ErasureRequest, type ErasureRestore, type ErasureTable, type ErasureValue, type ReapplyDone,
+  ApiError, applyErasure, checkErasure, deleteErasureBranch, erasureEvidenceUrl, getErasure, getErasureOutcomes, listErasures,
+  newErasure, remakeErasureBranch, replanErasure, rewriteErasure, withdrawErasure,
+  type ErasureBranch, type ErasureOutcomes, type ErasureRequest, type ErasureRestore, type ErasureTable, type ErasureValue, type ReapplyDone,
 } from '../api'
 import { useConfirm } from '../confirm'
 import { useFeatures, why } from '../features'
@@ -294,6 +294,7 @@ function Detail({ r, licensed, onDone, onError, reload }: {
         onApply={b => { setAsking('apply'); setOnBranch(b); setValues(''); setTyped(''); window.scrollTo?.(0, 0) }} />}
       {r.state === 'applied' && <MadeBefore r={r} onDone={onDone} onError={onError} />}
       {(r.restores ?? []).length > 0 && <Restores r={r} />}
+      {r.state === 'applied' && <Outcomes r={r} licensed={licensed} onError={onError} />}
       {(r.old ?? []).length > 0 && (
         <div className="pii-warning" role="status" data-testid="erasure-old" style={{ marginTop: 12 }}>
           {(r.old ?? []).length} branch(es) are older than the maximum age: {(r.old ?? []).map(o => `${o.branch} (${o.days} days)`).join(', ')}.
@@ -354,6 +355,77 @@ function Detail({ r, licensed, onDone, onError, reload }: {
       <ul className="muted" style={{ fontSize: 13 }}>
         {p.limits.map((l, i) => <li key={i}>{l}</li>)}
       </ul>
+    </div>
+  )
+}
+
+const outcomeState: Record<string, string> = {
+  met: 'Met', pending: 'Pending', never: 'Never, as things stand', lost: 'Lost', kept: 'Kept by law',
+  'not traced': 'Not traced', 'not applicable': 'Not applicable', outside: 'Outside FoxByte',
+}
+
+// The outcomes, each with its date and what it rests on; the one date; and
+// what FoxByte cannot reach (F4 step 5). Read when the request is opened,
+// and searched again by row key on demand.
+function Outcomes({ r, licensed, onError }: { r: ErasureRequest; licensed: boolean; onError: (e: string) => void }) {
+  const [o, setO] = useState<ErasureOutcomes | null>(null)
+  const [busy, setBusy] = useState(false)
+  const errRef = useRef(onError)
+  errRef.current = onError
+  useEffect(() => {
+    let live = true
+    getErasureOutcomes(r.id).then(x => { if (live) setO(x) }).catch(x => { if (live) errRef.current((x as Error).message) })
+    return () => { live = false }
+  }, [r.id, r.result?.applied])
+  const day = (s?: string, about?: boolean) => (s ? (about ? `about ${new Date(s).toLocaleDateString()}` : new Date(s).toLocaleString()) : '')
+  if (!o) return <p className="muted" data-testid="erasure-outcomes-loading">Reading the outcomes…</p>
+  return (
+    <div className="panel" style={{ marginTop: 12 }} data-testid="erasure-outcomes">
+      <div className="row" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+        <h3 style={{ margin: 0 }}>Outcomes</h3>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <button disabled={!licensed || busy} title={licensed ? undefined : 'Searching the branches again needs FoxByte Enterprise; the outcomes above are read without it.'} data-testid="erasure-check" onClick={async () => {
+            setBusy(true)
+            try { setO(await checkErasure(r.id)) } catch (x) { onError((x as Error).message) } finally { setBusy(false) }
+          }}>{busy ? 'Searching…' : 'Search the branches again'}</button>
+          <a className="btn" href={erasureEvidenceUrl(r.id)} download={`erasure-${r.id}-evidence.json`} data-testid="erasure-evidence">Evidence (JSON)</a>
+          <a className="btn ghost" href={erasureEvidenceUrl(r.id, true)} download={`erasure-${r.id}-evidence-keys.json`} data-testid="erasure-evidence-keys"
+            title="The row keys identify the person; the security log records that they were taken">With the row keys</a>
+        </div>
+      </div>
+      <p data-testid="erasure-clears-on" style={{ fontSize: 15 }}>
+        <b>Clears on:</b>{' '}
+        {o.clearsOn ? new Date(o.clearsOn).toLocaleDateString() : o.never.length > 0 ? 'never, as things stand' : 'not known yet'}
+      </p>
+      {o.never.length > 0 && (
+        <ul className="pii-warning" role="status" data-testid="erasure-never">{o.never.map((n, i) => <li key={i}>{n}</li>)}</ul>
+      )}
+      {o.unknown.length > 0 && <ul className="muted" data-testid="erasure-unknown">{o.unknown.map((n, i) => <li key={i}>{n}</li>)}</ul>}
+      <div className="table-wrap">
+        <table aria-label="Outcomes">
+          <thead><tr><th>Outcome</th><th>State</th><th>Date</th><th>Evidence</th></tr></thead>
+          <tbody>
+            {o.outcomes.filter(x => x.key !== 'outside').map((x, i) => (
+              <tr key={`${x.key}-${i}`} data-testid={`erasure-outcome-${x.key}`}>
+                <td>{x.name}</td>
+                <td><span className="badge">{outcomeState[x.state] ?? x.state}</span></td>
+                <td>{day(x.date, x.estimated)}</td>
+                <td className="muted" style={{ fontSize: 13 }}>{[...(x.why && x.state !== 'met' ? [x.why] : []), ...x.evidence].join(' · ')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {o.recheck && <p className="muted" data-testid="erasure-rechecked">Searched again at {day(o.recheck.checked)} by the request&rsquo;s row keys.</p>}
+      <h4>Outside FoxByte&rsquo;s reach ({o.outside.length})</h4>
+      <ul data-testid="erasure-outside" style={{ fontSize: 13 }}>
+        {o.outside.map((c, i) => (
+          <li key={i} className={c.warn ? 'pii-warning' : 'muted'} data-testid={`erasure-outside-${c.kind}`}>
+            {c.at ? `${day(c.at)}: ` : ''}{c.what}
+          </li>
+        ))}
+      </ul>
+      {o.notes.length > 0 && <ul className="muted">{o.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>}
     </div>
   )
 }

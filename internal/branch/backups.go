@@ -175,9 +175,13 @@ func SetBackupTarget(t Target, o TargetOptions) error {
 			fmt.Println("  Backups already here are readable only while this target stays unencrypted; a new, empty prefix can be encrypted.")
 		}
 	}
+	from, _ := CurrentTarget()
 	if err := SaveTarget(t); err != nil {
 		return err
 	}
+	// The target moved away from keeps its backups: an erasure lists it
+	// (F4 step 5).
+	recordTargetLeft(from, t)
 	fmt.Printf("Backups now go to %s.\n", t.Describe())
 	// main's archive settings are fixed when its container starts.
 	fmt.Println("Restarting main so it archives there …")

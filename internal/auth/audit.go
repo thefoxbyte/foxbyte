@@ -235,7 +235,14 @@ const (
 	EvErasureRewritten = "erasure.rewritten"
 	EvErasureBranch    = "erasure.branch" // one branch applied or skipped, or remade or deleted from the request
 	EvErasureWithdrawn = "erasure.withdrawn"
-	EvErasureRestore   = "erasure.restore" // an admin restored past a request; the erasure is applied again
+	EvErasureRestore   = "erasure.restore"  // an admin restored past a request; the erasure is applied again
+	EvErasureEvidence  = "erasure.evidence" // a request's evidence produced; whether it carried the row keys
+	// Copies FoxByte makes that an erasure lists but does not reach (F4 step
+	// 5): an install tar written (its path, branches and time), a Blackbox
+	// exported, and the backup target moved away from (its backups stay).
+	EvBackupExport = "backup.export"
+	EvLedgerExport = "ledger.export"
+	EvBackupTarget = "backup.target"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence
