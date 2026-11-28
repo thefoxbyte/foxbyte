@@ -566,6 +566,13 @@ func BuildDPDPInventory(name string, findings []PIIFinding, entries []DPDPEntry)
 				"%s holds a child's data (a confirmed finding), but its entry does not list children: s.9(1) asks for a parent's verifiable consent before a child's data is processed",
 				strings.Join(childUnlisted, ", ")))
 		}
+		// Rule 8(3) keeps personal data and the logs of its processing a
+		// year from the processing: retention acts no sooner (point 11.3).
+		if e := t.Entry; e != nil && keepsUnderAYear(e.Keep) {
+			t.Notices = append(t.Notices, fmt.Sprintf(
+				"its entry keeps the data %s, under a year: Rule 8(3) keeps personal data and the logs of its processing at least a year from the processing, so retention erases these rows no sooner than a year from their date",
+				e.Keep.String()))
+		}
 		if t.Gaps > 0 {
 			inv.GapColumns += t.Gaps
 			inv.GapTables++
@@ -778,4 +785,15 @@ func dpdpCell(s string) string {
 		return "'" + s
 	}
 	return s
+}
+
+// keepsUnderAYear is a period, with a date to run from, shorter than a year.
+func keepsUnderAYear(k DPDPKeep) bool {
+	switch k.Unit {
+	case "days":
+		return k.Count > 0 && k.Count < 365
+	case "months":
+		return k.Count > 0 && k.Count < 12
+	}
+	return false
 }

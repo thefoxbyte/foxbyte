@@ -5629,6 +5629,127 @@ assert_eq "…and it holds every request's \"clears on\" back until an admin say
   "$($S dpdp erase status "$OQ" --json 2>/dev/null | hjson "print(any('s3://itremote/fox' in n for n in d['outcomes']['never']))")|$($S backup target forget s3://itremote/fox --reason 'the test bucket is emptied' >/dev/null 2>&1; $S dpdp erase status "$OQ" --json 2>/dev/null | hjson "print(any('s3://itremote/fox' in n for n in d['outcomes']['never']))")" "True|False"
 OP
 
+echo "### 11bf. retention acted on, and the safeguards evidence (points 11.3 and 11.4)"
+# Synthetic values only. rt_people is kept two years after collection, dated
+# by created_at; rt_orders refers to it and has its own retention. A webhook
+# on this machine receives the notices. Retention notices the rows past the
+# period, and erases them a notice period later (0s here) if they still
+# are: only rt_people's, on main and every branch, as an erasure request.
+RTD=/tmp/rt-hook; RTP=18089; RTN="http://127.0.0.1:$RTP/notice"
+RTOFF() {
+  $S dpdp retention off >/dev/null 2>&1; $S dpdp retention disarm public.rt_people >/dev/null 2>&1
+  [ -n "${RTPID:-}" ] && kill "$RTPID" 2>/dev/null; RTPID=""
+  for p in rt_people rt_orders; do $S dpdp unset "$p" --branch main >/dev/null 2>&1; done
+  pg pg-main "SET bb.allow_destructive=on; DROP TABLE IF EXISTS rt_orders; DROP TABLE IF EXISTS rt_people" >/dev/null
+  rm -rf "${RTD:?}"
+}
+RTOFF
+mkdir -p "$RTD"; echo 200 > "$RTD/status"
+cat > "$RTD/hook.py" <<'PY'
+import http.server, os, sys
+d = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        b = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        n = len([f for f in os.listdir(d) if f.endswith('.json')]) + 1
+        open(os.path.join(d, '%d.json' % n), 'wb').write(b)
+        open(os.path.join(d, '%d.sig' % n), 'w').write(self.headers.get('X-FoxByte-Signature', ''))
+        self.send_response(int(open(os.path.join(d, 'status')).read().strip())); self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(('127.0.0.1', int(sys.argv[2])), H).serve_forever()
+PY
+python3 "$RTD/hook.py" "$RTD" "$RTP" >/dev/null 2>&1 & RTPID=$!
+sleep 1
+pg pg-main "CREATE TABLE rt_people (id int PRIMARY KEY, email text, note text, created_at timestamptz NOT NULL DEFAULT now())" >/dev/null
+pg pg-main "INSERT INTO rt_people VALUES (1, 'rt.one@example.in', 'old', now() - interval '3 years'), (2, 'rt.two@example.in', 'old too', now() - interval '30 months'),
+  (3, 'rt.three@example.in', 'new', now())" >/dev/null
+pg pg-main "CREATE TABLE rt_orders (id int PRIMARY KEY, person int REFERENCES rt_people(id) ON DELETE CASCADE, email text)" >/dev/null
+pg pg-main "INSERT INTO rt_orders VALUES (10, 1, 'rt.one@example.in'), (11, 3, 'rt.three@example.in')" >/dev/null
+$S pii scan --branch main >/dev/null 2>&1
+for id in $($S pii --branch main --json | hjson "print(' '.join(str(f['id']) for f in d['findings'] if f['table'] in ('rt_people', 'rt_orders') and f['state']=='suggested'))"); do
+  $S pii mark "$id" confirm --branch main >/dev/null 2>&1
+done
+$S dpdp set rt_people --basis consent --purpose 'Receipts' --principals customer --keep 2y --from collection --reason purpose --branch main >/dev/null 2>&1
+$S dpdp set rt_orders --basis consent --purpose 'Orders' --principals customer --keep 5y --from collection --reason purpose --branch main >/dev/null 2>&1
+RTS() { $S dpdp retention status --json 2>/dev/null | hjson "t=[t for t in d['tables'] if t['table']=='$1'][0]; print($2)"; }
+assert_eq "(setup) retention is off; rt_people is listed with its period and no date column yet" \
+  "$($S dpdp retention status --json 2>/dev/null | hjson "print(d['settings']['on'])")|$(RTS rt_people "t['keep']['count'], t['keep']['unit'], t['column'] == '', 'no date column' in t['why']")" \
+  "False|2 years True True"
+
+assert_eq "on refuses plain HTTP to another machine; with this machine's address it is on, and says the signing key once" \
+  "$($S dpdp retention on --notify http://hooks.example/fox 2>&1 | grep -c 'goes over HTTPS')|$($S dpdp retention on --notify "$RTN" 2>&1 | grep -cE 'Retention is on|HMAC-SHA256 of the body, keyed with [0-9a-f]{64}')" "1|2"
+RTKEY="$(sudo python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["secret"])' "$HOME/$BRAND_STATE_DIR/retention.json")"
+assert_eq "the key is kept for signing, readable by the install's owner only, and never in status" \
+  "$(( ${#RTKEY} ))|$(stat -c %a "$HOME/$BRAND_STATE_DIR/retention.json")|$($S dpdp retention status --json 2>/dev/null | grep -c "$RTKEY")" "64|600|0"
+assert_eq "a date column must be a date; created_at is, and two rows are past the period" \
+  "$($S dpdp retention column public.rt_people email 2>&1 | grep -c 'not a date or a timestamp')|$($S dpdp retention column public.rt_people created_at 2>&1 | grep -c '2 row(s) are past it now')" "1|1"
+assert_eq "a run arms nothing: no table is acted on until an admin arms it" \
+  "$($S dpdp retention run --json 2>/dev/null | hjson "print(len(d['tables']))")|$(ls "$RTD"/*.json 2>/dev/null | wc -l | tr -d ' ')" "0|0"
+assert_eq "arming needs --yes off a terminal, and a reason; then it is armed, after its preview" \
+  "$(printf '' | $S dpdp retention arm public.rt_people --reason x 2>&1 | grep -c 'pass --yes')|$($S dpdp retention arm public.rt_people --yes 2>&1 | grep -c 'say why with --reason')|$($S dpdp retention arm public.rt_people --yes --reason 'DPO policy 7' 2>&1 | grep -cE '2 row\(s\) dated by created_at|is armed')|$(RTS rt_people "t['armed']")" \
+  "1|1|2|True"
+
+OUT="$(FOX_RETENTION_NOTICE=0s $S dpdp retention run --json 2>/dev/null)"
+assert_eq "the first run notices the two rows past the period, and erases nothing" \
+  "$(hjson "t=d['tables'][0]; print(t['noticed'], t['erased'])" <<<"$OUT")|$(pg pg-main "SELECT count(*) FROM rt_people WHERE email IS NOT NULL")" "2 0|3"
+assert_eq "…one notice for the table, signed with the key, naming the rows by key and no value" \
+  "$(python3 -c 'import hmac,hashlib,sys; b=open(sys.argv[1],"rb").read(); print(open(sys.argv[2]).read().strip() == "sha256=" + hmac.new(sys.argv[3].encode(), b, hashlib.sha256).hexdigest())' "$RTD/1.json" "$RTD/1.sig" "$RTKEY")|$(hjson "print(d['table'], sorted(r['key'][0] for r in d['rows']), d['rule'])" < "$RTD/1.json")|$(grep -c 'rt.one@' "$RTD/1.json")" \
+  "True|public.rt_people ['1', '2'] DPDP Rules, 2025, Rule 8(2)|0"
+
+# Row 2's person came back: its date moved. Row 1 is erased; row 2 is renewed.
+pg pg-main "UPDATE rt_people SET created_at = now() WHERE id = 2" >/dev/null
+OUT="$(FOX_RETENTION_NOTICE=0s $S dpdp retention run --json 2>/dev/null)"
+RQ="$(hjson "print(d['tables'][0].get('request', 0))" <<<"$OUT")"
+assert_eq "the second run erases the row still past it, and renews the one whose person came back" \
+  "$(hjson "t=d['tables'][0]; print(t['erased'], t['renewed'])" <<<"$OUT")|$(pg pg-main "SELECT string_agg(id || ':' || coalesce(email, '-'), ',' ORDER BY id) FROM rt_people")" \
+  "1 1|1:-,2:rt.two@example.in,3:rt.three@example.in"
+assert_eq "…only its own table: the order linked to the erased row keeps its email, under its own retention" \
+  "$(pg pg-main "SELECT string_agg(id || ':' || coalesce(email, '-'), ',' ORDER BY id) FROM rt_orders")" "10:rt.one@example.in,11:rt.three@example.in"
+assert_eq "…recorded as an erasure request, applied, saying it was retention's, with no value kept" \
+  "$([ "$RQ" -gt 0 ] && echo req)|$($S dpdp erase show "$RQ" --json 2>/dev/null | hjson "print(d['state'], 'retention of public.rt_people' in d['note'], d['refs'])")" \
+  "req|applied True []"
+assert_eq "…and the notices say which was erased by which request, and which renewed" \
+  "$($S dpdp retention notices public.rt_people --json 2>/dev/null | hjson "print(sorted((n['key'], n['state'], n.get('request', 0) == $RQ) for n in d))")" \
+  "[('[\"1\"]', 'erased', True), ('[\"2\"]', 'renewed', False)]"
+
+assert_eq "…and a run after it leaves the cleared row alone: its date stays, but retention erased it already" \
+  "$(FOX_RETENTION_NOTICE=0s $S dpdp retention run --json 2>/dev/null | hjson "t=d['tables'][0]; print(t['due'], t['noticed'], t['erased'])")|$(ls "$RTD"/*.json | wc -l | tr -d ' ')" "0 0 0|1"
+
+# A notice not delivered: nothing new is erased.
+echo 503 > "$RTD/status"
+pg pg-main "INSERT INTO rt_people VALUES (4, 'rt.four@example.in', 'old', now() - interval '3 years')" >/dev/null
+OUT="$(FOX_RETENTION_NOTICE=0s $S dpdp retention run --json 2>/dev/null)"
+OUT2="$(FOX_RETENTION_NOTICE=0s $S dpdp retention run --json 2>/dev/null)"
+assert_eq "a notice the address refuses is not a notice: the row is not erased, run after run" \
+  "$(hjson "t=d['tables'][0]; print(t['noticed'], t['erased'], 'could not be delivered' in t.get('error', ''))" <<<"$OUT2")|$(pg pg-main "SELECT email FROM rt_people WHERE id = 4")" \
+  "0 0 True|rt.four@example.in"
+echo 200 > "$RTD/status"
+assert_eq "disarmed, the table is not acted on at all" \
+  "$($S dpdp retention disarm public.rt_people >/dev/null 2>&1; FOX_RETENTION_NOTICE=0s $S dpdp retention run --json 2>/dev/null | hjson "print(len(d['tables']))")" "0"
+assert_eq "a period under a year is raised to a year (Rule 8(3)), in the status and the inventory's notices" \
+  "$($S dpdp set rt_orders --basis consent --purpose 'Orders' --principals customer --keep 6m --from collection --reason purpose --branch main >/dev/null 2>&1; RTS rt_orders "t['raised']")|$($S dpdp inventory --branch main --json 2>/dev/null | hjson "t=[t for t in d['tables'] if t['table']=='rt_orders'][0]; print(any('Rule 8(3)' in n for n in t['notices']))")" \
+  "True|True"
+assert_eq "GET /api/dpdp/retention for admins (403 otherwise); the key is not in it" \
+  "$(code "$KEY" https://localhost:8080/api/dpdp/retention)|$(code "$KA" https://localhost:8080/api/dpdp/retention)|$(curl -sk -H "Authorization: Bearer $KEY" https://localhost:8080/api/dpdp/retention | grep -c "$RTKEY")" "200|403|0"
+assert_eq "the security log has retention's steps, with no value" \
+  "$($S audit --limit 300 2>/dev/null | grep -cE 'retention\.(settings|table|notice|run)' | awk '{print ($1 >= 6)}')|$($S audit --limit 300 2>/dev/null | grep -E 'retention\.' | grep -c 'rt.one@')" "1|0"
+
+# The safeguards evidence (11.4).
+$S dpdp evidence --json > /tmp/rt-ev.json 2>/dev/null
+assert_eq "the safeguards evidence: Rule 6's seven clauses, each with its threat model; (f) open until declared" \
+  "$(hjson "print(d['format'], len(d['rules']), all(r['guards'] and r['notAgainst'] for r in d['rules']), [r['verdict'] for r in d['rules'] if r['clause']=='6(1)(f)'][0])" < /tmp/rt-ev.json)" \
+  "safeguards-evidence/1 7 True open"
+$S dpdp declare processors "No Data Processor handles this data." >/dev/null 2>&1
+assert_eq "…declared, (f) is met; the declaration names who and when; a withdrawal opens it again" \
+  "$($S dpdp evidence --json 2>/dev/null | hjson "r=[r for r in d['rules'] if r['clause']=='6(1)(f)'][0]; print(r['verdict'], r['declared'][0]['declared_by'] != '')")|$($S dpdp declare processors --withdraw >/dev/null 2>&1; $S dpdp evidence --json 2>/dev/null | hjson "print([r['verdict'] for r in d['rules'] if r['clause']=='6(1)(f)'][0])")" \
+  "met True|open"
+assert_eq "…an item that is not one is refused; the readable evidence lists each clause and its limits" \
+  "$($S dpdp declare nope "x" 2>&1 | grep -c 'not a safeguards declaration item')|$($S dpdp evidence 2>/dev/null | grep -cE '^6\(1\)\((a|b|c|d|e|f|g)\)|^Limits:')" "1|8"
+assert_eq "GET /api/dpdp/evidence and the declarations for admins (403 otherwise); the security log has both" \
+  "$(code "$KEY" https://localhost:8080/api/dpdp/evidence)|$(code "$KA" https://localhost:8080/api/dpdp/evidence)|$(code "$KEY" https://localhost:8080/api/dpdp/declarations)|$($S audit --limit 300 2>/dev/null | grep -c 'safeguards.evidence' | awk '{print ($1 >= 3)}')|$($S audit --limit 300 2>/dev/null | grep -c 'safeguards.declare' | awk '{print ($1 >= 2)}')" \
+  "200|403|200|1|1"
+RTOFF
+
 echo "### 12. fox uninstall (B1)"
 # Removal used to be a list of commands to run by hand. This runs last: it takes
 # the stack apart, so nothing after it has a stack to use.

@@ -49,6 +49,8 @@ export const APP_NAV: NavSection[] = [
       { to: '/aadhaar-exposure', label: 'Aadhaar exposure', icon: I.IconPersonalData },
       { to: '/dpdp-inventory', label: 'DPDP inventory', icon: I.IconPersonalData },
       { to: '/erasure-requests', label: 'Erasure requests', icon: I.IconPersonalData },
+      { to: '/retention', label: 'Retention', icon: I.IconPersonalData },
+      { to: '/safeguards', label: 'Safeguards evidence', icon: I.IconPolicies },
       { to: '/masking', label: 'Masking', icon: I.IconPersonalData },
       { to: '/vault', label: 'Vault', icon: I.IconKey },
       { to: '/access-review', label: 'Access review', icon: I.IconKey },

@@ -46,7 +46,7 @@ import (
 func init() {
 	branch.SetErasure(branch.ErasureEngine{Refs: erasureRefs, Plan: erasurePlan, Apply: erasureApply,
 		Settle: erasureSettle, AppliedOn: erasureAppliedOn, Forms: erasureForms, Reapply: erasureReapply,
-		Recheck: erasureRecheck})
+		Recheck: erasureRecheck, PlanRetention: retentionPlan, Due: retentionDue})
 }
 
 const (
@@ -103,6 +103,15 @@ func readValues(values []branch.ErasureValue) (matchSet, []branch.ErasureRef, er
 		return nil, nil, fmt.Errorf("%w: give at least one value the person is known by", branch.ErrInvalidRequest)
 	}
 	return ms, refs, nil
+}
+
+// valuesOf reads a request's values; a retention run has none, its rows
+// found by key alone (point 11.3).
+func valuesOf(values []branch.ErasureValue, retention bool) (matchSet, []branch.ErasureRef, error) {
+	if retention && len(values) == 0 {
+		return matchSet{}, []branch.ErasureRef{}, nil
+	}
+	return readValues(values)
 }
 
 // last4 is what a request keeps of a value: its last four characters, or
@@ -338,6 +347,18 @@ type state struct {
 	// numbers (design, section 4): a column the vault migrated holds the key,
 	// not the number, and is searched for it.
 	vaultRefs []string
+	// only and retention are a retention run's (point 11.3): rows of one
+	// table, found by key, whose period has ended. Other tables are left to
+	// their own retention, except what a foreign key takes with a delete;
+	// and the table's own entry no longer keeps them under its law.
+	only      string
+	retention bool
+}
+
+// buildOpts are what a retention run asks of build; a request asks nothing.
+type buildOpts struct {
+	only      string
+	retention bool
 }
 
 func (s *state) table(k tkey) (*tableRows, error) {
@@ -739,8 +760,14 @@ func (s *state) decide(k tkey, events map[string]string) (*decided, error) {
 		d.isDefault = true
 		d.notes = append(d.notes, "The table has no inventory entry, so its personal columns are cleared, the default; this is not a decision anybody made.")
 	} else {
-		switch e.table.Keep.Reason {
-		case "law":
+		switch {
+		case s.retention && k.String() == s.only:
+			// The period the entry gives has ended: a law that kept the rows
+			// for it keeps them no longer.
+			if e.table.Keep.Reason == "law" {
+				d.notes = append(d.notes, "Kept under "+e.table.Keep.Citation+" for "+e.table.Keep.String()+"; that period has ended for these rows.")
+			}
+		case e.table.Keep.Reason == "law":
 			d.act = branch.ErasureActKeptLaw
 			x := exception(e.table, "", events)
 			for c := range e.confirm {
@@ -749,7 +776,7 @@ func (s *state) decide(k tkey, events map[string]string) (*decided, error) {
 			x.Categories = uniqueSorted(x.Categories)
 			d.exceptions = append(d.exceptions, x)
 			return d, nil
-		case "contract":
+		case e.table.Keep.Reason == "contract":
 			d.notes = append(d.notes, "The entry keeps it under a contract ("+e.table.Keep.Citation+"); a contract does not override s.8(7), so it is erased.")
 		}
 		if e.table.OnErasure == branch.EraseDelete {
@@ -1004,7 +1031,7 @@ func rewriteMax() int64 {
 // build runs the whole of finding and deciding, in tx: the plan, its
 // fingerprint, and the run's state for an apply.
 func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []branch.ErasureRef, events map[string]string,
-	actor string, lock bool, seed branch.ErasureSeed, vaultRefs []string) (branch.ErasurePlan, string, *state, map[tkey]*decided, error) {
+	actor string, lock bool, seed branch.ErasureSeed, vaultRefs []string, bo buildOpts) (branch.ErasurePlan, string, *state, map[tkey]*decided, error) {
 	plan := branch.ErasurePlan{Branch: name, Made: time.Now().UTC(), By: actor, Refs: refs, Tables: []branch.ErasureTable{},
 		Review: branch.ErasureReview}
 	inv, err := branch.DPDPInventoryOf(name)
@@ -1016,7 +1043,7 @@ func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []bran
 		return plan, "", nil, nil, err
 	}
 	st := &state{cat: &catalog{ctx: ctx, tx: tx, rels: map[tkey]*relInfo{}}, lock: lock, ms: ms, inv: inv, vaultRefs: vaultRefs,
-		findings: rep.Findings, tables: map[tkey]*tableRows{}}
+		findings: rep.Findings, tables: map[tkey]*tableRows{}, only: bo.only, retention: bo.retention}
 	if err := st.match(); err != nil {
 		return plan, "", nil, nil, err
 	}
@@ -1036,6 +1063,14 @@ func build(ctx context.Context, tx pgx.Tx, name string, ms matchSet, refs []bran
 		d, err := st.decide(k, events)
 		if err != nil {
 			return plan, "", nil, nil, err
+		}
+		if st.only != "" && k.String() != st.only && (d.act == branch.ErasureActClear || d.act == branch.ErasureActDelete) {
+			// Rows linked to the ones a retention run erases are another
+			// table's: its own retention applies to them. A foreign key's
+			// cascade still takes what it takes (settle).
+			d.act, d.columns, d.sets, d.paths = branch.ErasureActKeep, nil, nil, map[string][]string{}
+			d.problems = filterClearProblems(d.problems)
+			d.notes = append(d.notes, "Linked to rows of "+st.only+" past their retention; this table's own retention applies to it.")
 		}
 		ds[k] = d
 	}
@@ -1206,7 +1241,13 @@ func size(n int64) string {
 // would change, the seed a masked branch is planned from.
 func erasurePlan(name string, values []branch.ErasureValue, events map[string]string, actor string,
 	seed branch.ErasureSeed, vaultRefs []string) (branch.ErasurePlan, string, branch.ErasureSeed, error) {
-	ms, refs, err := readValues(values)
+	return planWith(name, values, events, actor, seed, vaultRefs, buildOpts{})
+}
+
+// planWith is a plan, read-only, with a retention run's options or none.
+func planWith(name string, values []branch.ErasureValue, events map[string]string, actor string,
+	seed branch.ErasureSeed, vaultRefs []string, bo buildOpts) (branch.ErasurePlan, string, branch.ErasureSeed, error) {
+	ms, refs, err := valuesOf(values, bo.retention)
 	if err != nil {
 		return branch.ErasurePlan{}, "", nil, err
 	}
@@ -1230,7 +1271,7 @@ func erasurePlan(name string, values []branch.ErasureValue, events map[string]st
 	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = '5min'"); err != nil {
 		return branch.ErasurePlan{}, "", nil, err
 	}
-	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, events, actor, false, seed, vaultRefs)
+	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, events, actor, false, seed, vaultRefs, bo)
 	if err != nil {
 		return plan, fp, nil, err
 	}
@@ -1308,7 +1349,7 @@ func changedKeys(st *state, ds map[tkey]*decided) branch.ErasureSeed {
 
 func erasureApply(name string, a branch.ErasureApply) (branch.ErasurePlan, string, branch.ErasureResult, error) {
 	var res branch.ErasureResult
-	ms, refs, err := readValues(a.Values)
+	ms, refs, err := valuesOf(a.Values, a.Retention)
 	if err != nil {
 		return branch.ErasurePlan{}, "", res, err
 	}
@@ -1333,7 +1374,7 @@ func erasureApply(name string, a branch.ErasureApply) (branch.ErasurePlan, strin
 		"set_config('bb.actor', $1, true)", fmt.Sprintf("erasure request #%d", a.ID)); err != nil {
 		return branch.ErasurePlan{}, "", res, err
 	}
-	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, a.Events, a.Actor, true, a.Seed, a.VaultRefs)
+	plan, fp, st, ds, err := build(ctx, tx, name, ms, refs, a.Events, a.Actor, true, a.Seed, a.VaultRefs, buildOpts{only: a.Only, retention: a.Retention})
 	if err != nil {
 		return plan, fp, res, err
 	}

@@ -1563,3 +1563,53 @@ export const getUpkeep = (branch: string, schema: string, table: string) =>
   req('GET', `${API}/api/branches/${encodeURIComponent(branch)}/maintenance?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`) as Promise<{ branch: string; tables: TableUpkeepStats[] }>
 export const runMaintenance = (branch: string, schema: string, table: string, op: MaintenanceOp) =>
   req('POST', `${API}/api/branches/${encodeURIComponent(branch)}/maintenance`, { schema, table, op }) as Promise<{ branch: string; op: MaintenanceOp; ms: number; table: TableUpkeepStats }>
+
+// Retention acted on (point 11.3): each table with a period in main's
+// inventory, its date column, armed or not; a run notices the rows past the
+// period and erases them after the notice period, as erasure requests.
+// Admins; acting is Enterprise.
+export type RetentionSettings = { on: boolean; notify: string; by: string; since: string; lastRun?: string; lastSummary?: string }
+export type RetentionView = {
+  schema: string; table: string; keep: DPDPKeep; column: string; armed: boolean; armedBy?: string
+  cutoff?: string; raised: boolean; due: number; undated: number; noticed: number; why?: string
+}
+export type RetentionStatus = { settings: RetentionSettings; notice: string; tables: RetentionView[]; limits: string[] }
+export type RetentionDue = {
+  schema: string; table: string; column: string; keyColumns: string[]; cutoff: string; total: number; undated: number
+  rows: { key: string; since: string }[]
+}
+export type RetentionRunTable = { table: string; due: number; noticed: number; waiting: number; renewed: number; erased: number; request?: number; error?: string }
+export type RetentionRun = { at: string; by: string; tables: RetentionRunTable[]; notes: string[] }
+export type RetentionNotice = {
+  id: number; schema: string; table: string; key: string; since: string; noticed: string; eraseAfter: string
+  state: 'noticed' | 'erased' | 'renewed' | 'failed'; request?: number; error?: string; updated: string
+}
+const retentionURL = `${API}/api/dpdp/retention`
+const tableURL = (t: string) => `${retentionURL}/tables/${encodeURIComponent(t)}`
+export const getRetention = () => req('GET', retentionURL) as Promise<RetentionStatus>
+export const setRetention = (on: boolean, notify = '') =>
+  req('POST', retentionURL, on ? { on, notify } : { on }) as Promise<{ on: boolean; secret?: string; header?: string }>
+export const setRetentionColumn = (table: string, column: string) => req('POST', `${tableURL(table)}/column`, { column }) as Promise<RetentionDue>
+export const previewRetention = (table: string) => req('GET', `${tableURL(table)}/preview`) as Promise<RetentionDue>
+export const armRetention = (table: string, reason: string) => req('POST', `${tableURL(table)}/arm`, { reason }) as Promise<RetentionDue>
+export const disarmRetention = (table: string) => req('POST', `${tableURL(table)}/disarm`) as Promise<{ armed: boolean }>
+export const runRetention = () => req('POST', `${retentionURL}/run`) as Promise<RetentionRun>
+export const getRetentionNotices = (open = false) => req('GET', `${retentionURL}/notices${open ? '?open=1' : ''}`) as Promise<RetentionNotice[]>
+
+// The safeguards evidence (point 11.4): Rule 6, clause by clause. Admins;
+// Enterprise.
+export type SafeguardCheck = { what: string; ok: boolean; basis: 'checked' | 'built in'; detail: string }
+export type SafeguardRule = {
+  clause: string; requirement: string; verdict: 'met' | 'not met' | 'open'; checks: SafeguardCheck[]
+  items: string[]; declared: VaultDeclaration[]; guards: string; notAgainst: string; notes?: string[]
+}
+export type SafeguardItem = { item: string; clause: string; asks: string }
+export type SafeguardsEvidence = {
+  format: string; generated: string; by: string; product: string; version: string; edition: string
+  rule: string; inForce: string; rules: SafeguardRule[]; summary: Record<string, number>; items: SafeguardItem[]; limits: string[]
+}
+export const getSafeguards = () => req('GET', `${API}/api/dpdp/evidence`) as Promise<SafeguardsEvidence>
+export const safeguardsUrl = `${API}/api/dpdp/evidence?download=1`
+export const getSafeguardDeclarations = () =>
+  req('GET', `${API}/api/dpdp/declarations`) as Promise<{ items: SafeguardItem[]; declarations: VaultDeclaration[] }>
+export const declareSafeguard = (item: string, value: string) => req('POST', `${API}/api/dpdp/declarations`, { item, value }) as Promise<VaultDeclaration>
