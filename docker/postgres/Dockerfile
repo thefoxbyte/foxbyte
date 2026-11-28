@@ -81,8 +81,14 @@ RUN set -eux; \
 # database, and an install that never asks pays only the image size.
 #
 # Version-pinned like everything else here, so a rebuilt image is the same image;
-# apt verifies the package's signature against the repository's key.
-ARG PGVECTOR_VERSION=0.8.6-1.pgdg12+2
+# apt verifies the package's signature against the repository's key. PGDG keeps
+# only the newest few builds of a package, so a pin goes stale when newer ones
+# are published: 0.8.6-1.pgdg12+2 was dropped by 27 Nov 2026, and building the
+# image failed until this pin moved. A patch release is not something fox
+# depends on, so the image revision below stays; a database that already ran
+# CREATE EXTENSION vector keeps its objects, and ALTER EXTENSION vector UPDATE
+# is its owner's to run.
+ARG PGVECTOR_VERSION=0.8.7-2.pgdg12+1
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}-pgvector=${PGVECTOR_VERSION}"; \
