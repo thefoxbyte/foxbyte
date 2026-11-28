@@ -14,7 +14,7 @@ reviewed by a lawyer. Until it has, treat every label as a suggestion to check.
 | Source | Reference | Read from | Read on |
 |---|---|---|---|
 | The Digital Personal Data Protection Act, 2023 (No. 22 of 2023) | Gazette of India, Extraordinary, Part II, Section 1, No. 25, 11 August 2023 | The Gazette copy published on TRAI's website | 24 November 2026 |
-| The Digital Personal Data Protection Rules, 2025 | G.S.R. 846(E), Gazette of India, Extraordinary, Part II, Section 3(i), 13 November 2025 | A reproduction of the Gazette pages (dpdpa.com); India Code and MeitY's copies could not be fetched | 24 November 2026 |
+| The Digital Personal Data Protection Rules, 2025 | G.S.R. 846(E), Gazette of India, Extraordinary, Part II, Section 3(i), 13 November 2025 | A reproduction of the Gazette pages (dpdpa.com); India Code and MeitY's copies could not be fetched | 24 November 2026; Rules 6 and 8 and the Third and Seventh Schedules again on 28 November 2026 (points 11.3, 11.4) |
 | Corrigendum to the Rules | G.S.R. 892(E), 10 December 2025, as other sources report it | **Not read yet.** Check it before relying on this page | — |
 
 **When the Rules apply** (Rule 1). Rules 1, 2 and 17 to 21 applied on
@@ -114,8 +114,10 @@ is earlier, unless a law requires it to be kept.
   of its processing are kept for at least one year from the processing, for the
   purposes in the Seventh Schedule, and then erased unless a law requires more.
 
-The inventory records your retention. It does not yet check it against the
-Third Schedule or against Rule 8(3)'s one-year minimum; that is point 11.3.
+The inventory records your retention, and [retention](#retention-acted-on)
+acts on it. FoxByte does not check your periods against the Third Schedule:
+whether you are of one of its classes is yours to say. An entry kept under a
+year has a notice, as Rule 8(3) keeps the data a year at least.
 
 ## On erasure
 
@@ -259,6 +261,83 @@ whose source will bring the person back, a SIEM, backups of the state
 directory. `fox dpdp erase evidence` gives an auditor all of it, with counts;
 `--keys` adds the row keys, and the security log records that. FoxByte's reading of erasure has not yet been reviewed by a
 privacy lawyer or a storage engineer.
+
+## Retention acted on
+
+Point 11.3: a table's rows past its entry's period are erased, once each, on
+a schedule of their own (decided 28 November 2026; point 10's general
+scheduler waits).
+
+```sh
+fox dpdp retention on --notify https://hooks.example/fox   # prints the key notices are signed with, once
+fox dpdp retention column public.customers created_at      # the date each row's period runs from
+fox dpdp retention arm public.customers --reason "DPO policy 7"   # after its preview; --yes off a terminal
+fox dpdp retention                                         # each table with a period: its column, armed, rows past it
+fox dpdp retention run                                     # now, once; the control plane runs it daily
+fox dpdp retention notices public.customers --open
+fox dpdp retention disarm public.customers; fox dpdp retention off
+```
+
+- **Only an armed table is erased from.** An admin arms each one after seeing
+  the rows that would go now; every other table with a period is listed as
+  due and left alone.
+- **The date.** A table's period runs from the date in the column named for
+  it (a `date` or a timestamp). A row with no date there is counted and never
+  acted on. An entry kept `0` (until the purpose is served) has no date to act
+  on: its rows go by an erasure request.
+- **A year at least.** A row is erased no sooner than a year from its date,
+  whatever the entry says: Rule 8(3) keeps personal data and the logs of its
+  processing a year from the processing. The status says when that holds a
+  row longer than its entry.
+- **The notice, Rule 8(2).** A row past its period is told of first: one
+  notice a table a run, posted to your address, naming the rows by key (never
+  a value), with the time they will be erased. It is signed: the
+  `X-FoxByte-Signature` header is `sha256=` and the HMAC-SHA256 of the body,
+  keyed with what `retention on` printed. Telling the person is yours. A row
+  is erased only after a notice your address accepted (a 2xx), and 48 hours
+  later.
+- **If the person comes back.** When the notice's time is up, the row is
+  erased only if its date still puts it past the period; if it moved (they
+  logged in, say), the notice is closed as renewed.
+- **What is erased.** The table's own rows, by key, as its entry says (clear,
+  the default, or delete), on `main` and every branch, as an erasure request
+  made by the run. So a restore to before it is refused or re-applies it, and
+  its outcomes and evidence read as any request's (`fox dpdp erase show`). A
+  row of another table goes only where a foreign key takes it with a delete;
+  its own retention applies to it otherwise. Logs (the Blackbox, query
+  history, the audit log) follow their own retention.
+- Enterprise, under the `dpdp` feature. Reading the status and the notices is
+  free; so are `disarm` and `off`.
+
+## The safeguards evidence
+
+Point 11.4: Rule 6's reasonable security safeguards, clause by clause, for an
+auditor. Rule 6 applies from 13 May 2027.
+
+```sh
+fox dpdp evidence [--json]                        # each clause: checks, declarations, verdict, threat model
+fox dpdp declare                                  # what Rule 6 asks you to declare
+fox dpdp declare processors "No Data Processor handles this data."
+fox dpdp declare processors --withdraw
+fox dpdp declarations
+```
+
+| Clause | What FoxByte checks or does | What you declare |
+|---|---|---|
+| 6(1)(a) encryption, masking, tokens | backups on another machine encrypted; connections TLS (built in); Aadhaar numbers held as the vault's tokens; with masked accounts, every column they read masked | the disks' encryption at rest |
+| 6(1)(b) access control | every way in authenticates (built in); no account or key unused for 90 days; the access review read in the last 90 days | access to the machines themselves |
+| 6(1)(c) logs, monitoring, review | the audit log on, every personal-data table audited, its chain verifying; main's Blackbox and the security log verifying | who reviews the logs, and how often |
+| 6(1)(d) continued processing, backups | a recent base backup; a backup restored and checked recently | a recovery plan, last tested |
+| 6(1)(e) logs kept a year | the audit log and the security log kept a year or more; the Blackbox never pruned (built in); retention keeping a year at least (built in) | — |
+| 6(1)(f) processor contracts | — | each processor's contract, or none |
+| 6(1)(g) technical and organisational measures | main passes the hardening report | the security policy; training |
+
+A clause is **met** when every check passed and its declarations are made,
+**not met** when a check failed, and **open** when only a declaration is
+missing. Each says what it guards against and what it does not. A declaration
+is your statement, recorded with who made it and when, and never checked.
+Meeting every clause here is not a finding that your safeguards are
+reasonable. Enterprise, under the `dpdp` feature.
 
 ## What the inventory cannot claim
 

@@ -37,6 +37,14 @@ func dpdpCmd(args []string) {
 		erasureCmd(args[1:])
 		return
 	}
+	if len(args) > 0 && args[0] == "retention" {
+		retentionCmd(args[1:])
+		return
+	}
+	if len(args) > 0 && (args[0] == "evidence" || args[0] == "declare" || args[0] == "declarations") {
+		safeguardsCmd(args[0], args)
+		return
+	}
 	b := optValue(args, "--branch")
 	if b == "" {
 		b = "main"

@@ -1295,6 +1295,142 @@ paths:
         "409": { description: The request is not planned. }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /api/dpdp/retention:
+    get:
+      tags: [branches]
+      summary: "Retention acted on (point 11.3): on or off, where notices go, and each table with a period in main's inventory: its date column, armed or not, rows past the period (admins; reading free)."
+      responses:
+        "200":
+          description: The status.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [branches]
+      summary: "Turn retention on ({on: true, notify: https://...}; answers with the signing secret, shown once) or off ({on: false}) (admins; on is Enterprise)."
+      responses:
+        "200":
+          description: The new state.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "400": { description: Not an address notices can go to. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/retention/tables/{table}/column:
+    post:
+      tags: [branches]
+      summary: "Name the date column a table's period runs from ({column}), checked to be a date or timestamp (admins; Enterprise)."
+      parameters:
+        - { name: table, in: path, required: true, schema: { type: string }, description: "schema.table" }
+      responses:
+        "200":
+          description: What is past the period now.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "400": { description: Not a table with a period, or not a date column. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/retention/tables/{table}/preview:
+    get:
+      tags: [branches]
+      summary: "What arming the table would erase now: its rows past the period, the oldest first (admins; Enterprise)."
+      parameters:
+        - { name: table, in: path, required: true, schema: { type: string }, description: "schema.table" }
+      responses:
+        "200":
+          description: The rows past the period.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "400": { description: No date column, or no period. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/retention/tables/{table}/arm:
+    post:
+      tags: [branches]
+      summary: "Arm a table ({reason}): its rows past the period are noticed and, a notice period after a delivered notice, erased (admins; Enterprise)."
+      parameters:
+        - { name: table, in: path, required: true, schema: { type: string }, description: "schema.table" }
+      responses:
+        "200":
+          description: Armed.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "400": { description: No reason, no date column, or no period. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/retention/tables/{table}/disarm:
+    post:
+      tags: [branches]
+      summary: "Disarm a table: nothing of it is noticed or erased; open notices wait (admins; free)."
+      parameters:
+        - { name: table, in: path, required: true, schema: { type: string }, description: "schema.table" }
+      responses:
+        "200":
+          description: Disarmed.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/retention/run:
+    post:
+      tags: [branches]
+      summary: "Run retention now, once: notice the rows past their period, erase those whose notice's time is up and are still past it, as erasure requests (admins; Enterprise)."
+      responses:
+        "200":
+          description: What the run did.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "409": { description: Retention is off, or a plan has a problem. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/retention/notices:
+    get:
+      tags: [branches]
+      summary: "The notices sent before erasures, newest first; ?table=schema.table, ?open=1 (admins)."
+      parameters:
+        - { name: table, in: query, schema: { type: string } }
+        - { name: open, in: query, schema: { type: string, enum: ["1"] } }
+      responses:
+        "200":
+          description: The notices.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/evidence:
+    get:
+      tags: [branches]
+      summary: "The safeguards evidence (safeguards-evidence/1): Rule 6 of the DPDP Rules, clause by clause, against checks on this machine, what is built in and the customer's declarations, each with its threat model; ?download=1 sends it as a file (admins; Enterprise)."
+      parameters:
+        - { name: download, in: query, schema: { type: string, enum: ["1"] } }
+      responses:
+        "200":
+          description: The evidence.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/dpdp/declarations:
+    get:
+      tags: [branches]
+      summary: "What Rule 6 asks the customer to declare, and what is declared (admins)."
+      responses:
+        "200":
+          description: The items and declarations.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [branches]
+      summary: "Declare an item ({item, value}), recorded with who and when; an empty value withdraws it (admins; Enterprise)."
+      responses:
+        "201":
+          description: Declared.
+          content: { application/json: { schema: { type: object } } }
+        "403": { description: Not an admin, or the edition does not include it. }
+        "400": { description: Not an item, or not a statement that can be kept. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/dpdp/erasures/{id}/outcomes:
     get:
       tags: [branches]

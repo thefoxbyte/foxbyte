@@ -742,6 +742,11 @@ fox dpdp erase apply <id> [--yes]      # the values again; applied only if the p
 fox dpdp erase apply <id> --branch <b>  # a branch the apply skipped (its plan changed, or had a problem)
 fox dpdp erase status <id> [--branch b]  # every branch, and the branches made before the erasure to remake or delete
 fox dpdp erase plan|rewrite|withdraw|show <id>; fox dpdp erase list
+fox dpdp retention on --notify https://…  # retention acted on (11.3): notices posted there, signed; prints the key once
+fox dpdp retention column <schema.table> <date column>; fox dpdp retention arm <schema.table> --reason "…" [--yes]
+fox dpdp retention [status] | run | notices [<schema.table>] [--open] | disarm <schema.table> | off
+fox dpdp evidence [--json]               # Rule 6's safeguards, clause by clause (11.4)
+fox dpdp declare [ITEM "what is true" | ITEM --withdraw]; fox dpdp declarations
 FOX_BRANCH_MAX_AGE=90d fox check          # branches older than it are flagged (off by default), never acted on
 ```
 

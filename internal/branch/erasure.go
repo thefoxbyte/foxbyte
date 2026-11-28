@@ -266,6 +266,11 @@ type ErasureApply struct {
 	// VaultRefs are the vault's reference keys for the request's Aadhaar
 	// numbers: a column the vault migrated holds the key (section 4).
 	VaultRefs []string
+	// Only and Retention are a retention run's (point 11.3): the rows of one
+	// table (schema.table), found by Seed, whose period has ended. Other
+	// tables are left to their own retention.
+	Only      string
+	Retention bool
 }
 
 // ErasureSeed is rows found by their keys rather than by a value: for each
@@ -308,6 +313,13 @@ type ErasureEngine struct {
 	// 5): a row it deleted found again, or one it cleared holding a value
 	// again, is counted.
 	Recheck func(branch string, plan ErasurePlan, done []ErasureDone) ([]RecheckTable, error)
+	// PlanRetention plans a retention run (point 11.3): the rows of one table
+	// (schema.table), by key, whose period has ended; other tables left to
+	// their own retention. Changes nothing. Apply it with Only and Retention.
+	PlanRetention func(branch, only string, seed ErasureSeed, actor string) (ErasurePlan, string, ErasureSeed, error)
+	// Due finds the rows of a table whose start date is before a cutoff,
+	// oldest first, read-only.
+	Due func(branch string, q RetentionQuery) (RetentionDue, error)
 }
 
 // ErasureReapply is what applying a request again takes: no value, only

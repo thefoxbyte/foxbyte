@@ -127,6 +127,8 @@ func Serve(addr string) error {
 	registerAadhaarExposure(api)       // /api/branches/{name}/personal-data/aadhaar* (point 4.5)
 	registerDPDP(api)                  // /api/branches/{name}/dpdp/* (the DPDP inventory; setting it is Enterprise; point 11.1)
 	registerErasure(api, store)        // /api/dpdp/erasures* (erasure requests, admins; making and applying are Enterprise; F4)
+	registerRetention(api, store)      // /api/dpdp/retention* (retention acted on, admins; acting is Enterprise; point 11.3)
+	registerSafeguards(api, store)     // /api/dpdp/evidence, /api/dpdp/declarations (Rule 6 safeguards evidence, admins; Enterprise; point 11.4)
 	registerVault(api)                 // /api/vault* (admins; Enterprise; point 13)
 	registerVaultMigrate(api)          // /api/branches/{name}/personal-data/aadhaar/migrat*, /api/vault/orphans* (point 13.3)
 	registerEditionSwitch(api, store)  // /api/edition/switch (the Upgrade modal's Install button)
@@ -152,6 +154,8 @@ func Serve(addr string) error {
 	branch.StartAuditHeartbeat()
 	// Base backups on a schedule, pruned to a retention (audit v2 G19).
 	branch.StartBackupScheduler()
+	// Retention acted on (point 11.3): a run a day while it is on.
+	branch.StartRetentionScheduler(store)
 	// And proof that they restore: a backup nothing has ever restored is a hope,
 	// not a backup.
 	branch.StartRestoreVerifier()

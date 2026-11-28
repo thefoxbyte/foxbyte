@@ -243,6 +243,18 @@ const (
 	EvBackupExport = "backup.export"
 	EvLedgerExport = "ledger.export"
 	EvBackupTarget = "backup.target"
+	// Retention acted on (point 11.3): turned on or off, a table's date column
+	// set or a table armed or disarmed, a notice batch sent, and each run's
+	// erasure. Tables and counts, never a value; a row by its key only in the
+	// notices' own table.
+	EvRetentionSettings = "retention.settings"
+	EvRetentionTable    = "retention.table"
+	EvRetentionNotice   = "retention.notice"
+	EvRetentionRun      = "retention.run"
+	// The safeguards evidence (point 11.4): produced, and a declaration made
+	// or withdrawn. Counts and the item, never the statement.
+	EvSafeguardEvidence = "safeguards.evidence"
+	EvSafeguardDeclare  = "safeguards.declare"
 )
 
 // LicenseKindPrefix is what every licence event kind starts with. The licence
